@@ -1,5 +1,5 @@
-#include "../../src/blas.hpp"
-#include "../../src/tlas.hpp"
+#include "../../src/core/blas.hpp"
+#include "../../src/core/tlas.hpp"
 #include <iostream>
 #define GLM_ENABLE_EXPERIMENTAL
 #include <glm/gtx/transform.hpp>

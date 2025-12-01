@@ -2,10 +2,8 @@
 #include <iostream>
 #include <vector>
 #include <fstream>
-#include "../../src/blas.hpp"
-#include "../../src/tlas.hpp"
-#define GLM_ENABLE_EXPERIMENTAL
-#include <glm/gtx/transform.hpp>
+#include "../../src/core/blas.hpp"
+#include "../../src/core/tlas.hpp"
 
 using ShaderCallback = std::function<void(tracey::UVec2 pixelCoord, const tracey::Tlas &tlas)>;
 
@@ -83,11 +81,11 @@ int main()
     std::vector<tracey::Vec3> framebuffer(imageWidth * imageHeight);
 
     // Setup shader callback
-    const auto shader = [&framebuffer, &cube, imageWidth, imageHeight](tracey::UVec2 pixelCoord, const tracey::Tlas &tlas)
+    const auto shader = [&instance, &framebuffer, &cube, imageWidth, imageHeight](tracey::UVec2 pixelCoord, const tracey::Tlas &tlas)
     {
         // Simple pinhole camera ray generation
         float fov = 45.0f;
-        float aspectRatio = 1.0f; // Assume square for simplicity
+        float aspectRatio = static_cast<float>(imageWidth) / static_cast<float>(imageHeight);
         float px = (2.0f * ((pixelCoord.x + 0.5f) / imageWidth) - 1.0f) * tan(glm::radians(fov) / 2.0f) * aspectRatio;
         float py = (1.0f - 2.0f * ((pixelCoord.y + 0.5f) / imageHeight)) * tan(glm::radians(fov) / 2.0f);
         tracey::Vec3 rayDir = glm::normalize(tracey::Vec3(px, py, 1.0f));
@@ -99,18 +97,17 @@ int main()
         tracey::RayFlags flags = tracey::RAY_FLAG_OPAQUE;
         if (const auto intersection = tlas.intersect(ray, tMin, tMax, flags); intersection)
         {
-            // Simple shading based on the normal (here we just use the hit position for demonstration)
-            tracey::Vec3 color = glm::normalize(intersection->position);
-            // Calculate normal
-            const auto v0 = cube[intersection->primitiveId * 3 + 0];
-            const auto v1 = cube[intersection->primitiveId * 3 + 1];
-            const auto v2 = cube[intersection->primitiveId * 3 + 2];
-            const auto edge1 = v1 - v0;
-            const auto edge2 = v2 - v0;
-            const auto normal = glm::normalize(glm::cross(edge1, edge2));
+            // Transform triangle vertices to world space
+            const auto v0 = instance.transform * tracey::Vec4(cube[intersection->primitiveId * 3 + 0], 1.0f);
+            const auto v1 = instance.transform * tracey::Vec4(cube[intersection->primitiveId * 3 + 1], 1.0f);
+            const auto v2 = instance.transform * tracey::Vec4(cube[intersection->primitiveId * 3 + 2], 1.0f);
+            const auto edge1 = tracey::Vec3(v1 - v0);
+            const auto edge2 = tracey::Vec3(v2 - v0);
+            auto normal = tracey::normalize(tracey::cross(edge1, edge2));
 
+            // A fake directional light coming from (0,1,-1)
             const auto I = glm::dot(glm::normalize(tracey::Vec3(0, 1, -1)), normal);
-            framebuffer[pixelCoord.y * imageWidth + pixelCoord.x] = tracey::Vec3(std::max(I, 0.0f)); // Map to [0,1]
+            framebuffer[pixelCoord.y * imageWidth + pixelCoord.x] = tracey::Vec3(std::max(I * 0.5f, 0.0f)); // Map to [0,1]
         }
         else
         {
@@ -124,7 +121,7 @@ int main()
     trace(imageWidth, imageHeight, tlas, shader);
 
     // Save framebuffer to PPM image
-    std::ofstream ofs("output.ppm", std::ios::out | std::ios::binary);
+    std::ofstream ofs("ray_tracer.ppm", std::ios::out | std::ios::binary);
     ofs << "P6\n"
         << imageWidth << " " << imageHeight << "\n255\n";
     for (const auto &color : framebuffer)

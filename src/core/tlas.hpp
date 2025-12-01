@@ -13,7 +13,7 @@ namespace tracey
         {
             uint32_t instanceId : 24;
             uint8_t type : 8 = 0; // reserved for future use
-            uint32_t blasIndex;
+            uint32_t blasIndex = 0;
             Mat4 transform;
         };
 

@@ -3,18 +3,27 @@
 #include <cassert>
 namespace tracey
 {
-    Blas::Blas(std::span<const Vec3> positions) : m_positions(positions)
+    Blas::Blas(std::span<const Vec3> positions) : Blas(std::span<const float>(reinterpret_cast<const float *>(positions.data()), positions.size() * 3), 3)
     {
-        std::vector<PrimitiveRef> primRefs(positions.size() / 3);
+    }
+
+    Blas::Blas(std::span<const float> data, std::uint32_t stride)
+        : m_vertexBuffer(data),
+          vertexStride(stride),
+          fetchVertexFunc([this](uint32_t primIdx, uint32_t vertIdx)
+                          { return this->fetchVertex(primIdx, vertIdx); })
+    {
+        std::vector<PrimitiveRef> primRefs((data.size() / stride) / 3);
         const auto primCount = primRefs.size();
         for (size_t i = 0; i < primCount; ++i)
         {
-            const auto i0 = i * 3;
-            const auto i1 = i0 + 1;
-            const auto i2 = i0 + 2;
             primRefs[i].index = static_cast<uint32_t>(i);
-            primRefs[i].bMin = glm::min(glm::min(positions[i0], positions[i1]), positions[i2]);
-            primRefs[i].bMax = glm::max(glm::max(positions[i0], positions[i1]), positions[i2]);
+            const auto v0 = fetchVertexFunc(i, 0);
+            const auto v1 = fetchVertexFunc(i, 1);
+            const auto v2 = fetchVertexFunc(i, 2);
+            primRefs[i]
+                .bMin = glm::min(glm::min(v0, v1), v2);
+            primRefs[i].bMax = glm::max(glm::max(v0, v1), v2);
         }
 
         m_nodes.reserve(primCount * 2); // Rough estimate
@@ -33,35 +42,35 @@ namespace tracey
         buildRecursive(primRefs, 0, 0, static_cast<uint32_t>(primCount), 0);
     }
 
-    Blas::Blas(std::span<const Vec3> positions, std::span<const uint32_t> indices) : m_positions(positions), m_indices(indices)
-    {
-        std::vector<PrimitiveRef> primRefs(indices.size() / 3);
-        const auto primCount = primRefs.size();
-        for (size_t i = 0; i < primCount; ++i)
-        {
-            const auto index = i * 3;
-            const auto i0 = indices[index];
-            const auto i1 = indices[index + 1];
-            const auto i2 = indices[index + 2];
-            primRefs[i].index = static_cast<uint32_t>(i);
-            primRefs[i].bMin = glm::min(glm::min(positions[i0], positions[i1]), positions[i2]);
-            primRefs[i].bMax = glm::max(glm::max(positions[i0], positions[i1]), positions[i2]);
-        }
-        m_nodes.reserve(primCount * 2); // Rough estimate
-        m_nodes.emplace_back();         // root
-        if (primCount == 1)
-        {
-            // Special case: single triangle
-            BVHNode &node = m_nodes[0];
-            node.boundsMin = primRefs[0].bMin;
-            node.boundsMax = primRefs[0].bMax;
-            node.firstChildOrPrim = 0;
-            node.primCountAndType = 1; // one triangle
-            m_primIndices.push_back(primRefs[0].index);
-            return;
-        }
-        buildRecursive(primRefs, 0, 0, static_cast<uint32_t>(primCount), 0);
-    }
+    // Blas::Blas(std::span<const Vec3> positions, std::span<const uint32_t> indices) : m_vertexBuffer(std::span<const float>(reinterpret_cast<const float *>(positions.data()), positions.size() * 3)), m_vertexIndices(indices)
+    // {
+    //     std::vector<PrimitiveRef> primRefs(indices.size() / 3);
+    //     const auto primCount = primRefs.size();
+    //     for (size_t i = 0; i < primCount; ++i)
+    //     {
+    //         const auto index = i * 3;
+    //         const auto i0 = indices[index];
+    //         const auto i1 = indices[index + 1];
+    //         const auto i2 = indices[index + 2];
+    //         primRefs[i].index = static_cast<uint32_t>(i);
+    //         primRefs[i].bMin = glm::min(glm::min(positions[i0], positions[i1]), positions[i2]);
+    //         primRefs[i].bMax = glm::max(glm::max(positions[i0], positions[i1]), positions[i2]);
+    //     }
+    //     m_nodes.reserve(primCount * 2); // Rough estimate
+    //     m_nodes.emplace_back();         // root
+    //     if (primCount == 1)
+    //     {
+    //         // Special case: single triangle
+    //         BVHNode &node = m_nodes[0];
+    //         node.boundsMin = primRefs[0].bMin;
+    //         node.boundsMax = primRefs[0].bMax;
+    //         node.firstChildOrPrim = 0;
+    //         node.primCountAndType = 1; // one triangle
+    //         m_primIndices.push_back(primRefs[0].index);
+    //         return;
+    //     }
+    //     buildRecursive(primRefs, 0, 0, static_cast<uint32_t>(primCount), 0);
+    // }
 
     std::optional<Hit> Blas::intersect(const Ray &ray, float tMin, float tMax, RayFlags flags) const
     {
@@ -103,26 +112,23 @@ namespace tracey
                 case BVH_LEAF_TYPE_TRIANGLES:
                     for (size_t i = node.firstChildOrPrim; i < node.firstChildOrPrim + primCount; ++i)
                     {
-                        const uint32_t primIndex = m_primIndices.empty() ? i : m_primIndices[i];
-                        const uint32_t i0 = primIndex * 3;
-                        const uint32_t i1 = i0 + 1;
-                        const uint32_t i2 = i0 + 2;
-
+                        const auto v0 = fetchVertexFunc(i, 0);
+                        const auto v1 = fetchVertexFunc(i, 1);
+                        const auto v2 = fetchVertexFunc(i, 2);
                         Hit localHit;
                         if (intersectTriangle(ray,
-                                              m_positions[i0],
-                                              m_positions[i1],
-                                              m_positions[i2],
+                                              v0,
+                                              v1,
+                                              v2,
                                               localHit.t,
                                               localHit.u,
                                               localHit.v))
                         {
-                            localHit.primitiveId = primIndex;
+                            localHit.primitiveId = i;
                             if (localHit.t < closestT)
                             {
                                 closestT = localHit.t;
                                 hit = localHit;
-                                hit->position = ray.origin + ray.direction * localHit.t;
                                 hitSomething = true;
                                 if (flags & RAY_FLAG_TERMINATE_ON_FIRST_HIT)
                                     return hit;

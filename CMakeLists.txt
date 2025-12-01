@@ -7,16 +7,44 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 add_subdirectory(deps/glm)
 
 add_library(tracey 
-    src/types.hpp
-    src/ray.hpp
-    src/hit.hpp
-    src/blas.hpp
-    src/blas.cpp
-    src/tlas.hpp
-    src/tlas.cpp
-    src/bvh_node.hpp
-    src/intersect.hpp
-    src/intersect.cpp
+    src/core/types.hpp
+    src/core/ray.hpp
+    src/core/hit.hpp
+    src/core/blas.hpp
+    src/core/blas.cpp
+    src/core/tlas.hpp
+    src/core/tlas.cpp
+    src/core/bvh_node.hpp
+    src/core/intersect.hpp
+    src/core/intersect.cpp
+
+    src/shading/random/sampling.hpp
+    src/shading/random/sampling.cpp
+    src/shading/bsdf/pbr/pbr.hpp
+    src/shading/bsdf/pbr/pbr_bsdf.hpp
+    src/shading/bsdf/pbr/pbr_bsdf.cpp
+
+    src/scene/actor.hpp
+    src/scene/actor.cpp
+    src/scene/scene.hpp
+    src/scene/scene.cpp
+
+    src/graph/graph.hpp
+    src/graph/graph.cpp
+    src/graph/node.hpp
+    src/graph/node.cpp
+    src/graph/io_nodes/output_node.hpp
+    src/graph/io_nodes/output_node.cpp
+    src/graph/connection.hpp
+    src/graph/data_type.hpp
+    src/graph/port_info.hpp
+    src/graph/template.hpp
+    src/graph/prototype.hpp
+
+    src/graph/graphs/shader_graph/shader_graph.hpp
+    src/graph/graphs/shader_graph/shader_graph.cpp
+    src/graph/graphs/shader_graph/shader_graph_node.hpp
+    src/graph/graphs/shader_graph/shader_graph_node.cpp
 )
 
 target_link_libraries(tracey PRIVATE glm::glm)

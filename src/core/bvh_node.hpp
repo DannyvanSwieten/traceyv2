@@ -3,8 +3,7 @@
 namespace tracey
 {
     static constexpr uint8_t BVH_LEAF_TYPE_TRIANGLES = 0;
-    static constexpr uint8_t BVH_LEAF_SPHERE = 1;
-    static constexpr uint8_t BVH_LEAF_TYPE_PROCEDURAL = 2;
+    static constexpr uint8_t BVH_LEAF_TYPE_PROCEDURAL = 1;
 
     struct BVHNode
     {

@@ -10,6 +10,14 @@ add_executable(ray_tracer
     ray_tracing/ray_tracer.cpp
 )
 
+add_executable(path_tracer
+    ray_tracing/path_tracer.cpp
+)
+
+add_executable(scene_graph
+    graph/scene_graph.cpp
+)
+
 target_link_libraries(blas
     PRIVATE
     tracey
@@ -23,6 +31,12 @@ target_link_libraries(tlas
 )
 
 target_link_libraries(ray_tracer
+    PRIVATE
+    tracey
+    glm
+)
+
+target_link_libraries(path_tracer
     PRIVATE
     tracey
     glm

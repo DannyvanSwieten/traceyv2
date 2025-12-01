@@ -1,4 +1,4 @@
-#include "../../src/blas.hpp"
+#include "../../src/core/blas.hpp"
 #include <vector>
 #include <iostream>
 

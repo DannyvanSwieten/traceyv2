@@ -16,6 +16,15 @@
         {
             "type": "lldb",
             "request": "launch",
+            "name": "Blas Example Release",
+            "program": "${workspaceFolder}/build/Release/examples/blas",
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "CMake: build"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
             "name": "Tlas Example",
             "program": "${workspaceFolder}/build/Debug/examples/tlas",
             "args": [],
@@ -27,6 +36,24 @@
             "request": "launch",
             "name": "Ray Tracer Example",
             "program": "${workspaceFolder}/build/Debug/examples/ray_tracer",
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "CMake: build"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Path Tracer Example",
+            "program": "${workspaceFolder}/build/Debug/examples/path_tracer",
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "CMake: build"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Path Tracer Example Release",
+            "program": "${workspaceFolder}/build/Release/examples/path_tracer",
             "args": [],
             "cwd": "${workspaceFolder}",
             "preLaunchTask": "CMake: build"
