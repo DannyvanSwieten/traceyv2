@@ -5,7 +5,7 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 if(NOT TARGET glm::glm-header-only)
-    add_subdirectory(external/glm)
+    add_subdirectory(deps/glm)
 endif()
 
 add_library(tracey 
