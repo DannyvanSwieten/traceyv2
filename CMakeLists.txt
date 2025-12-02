@@ -4,7 +4,9 @@ project(Raytracer LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-add_subdirectory(deps/glm)
+if(NOT TARGET glm::glm-header-only)
+    add_subdirectory(external/glm)
+endif()
 
 add_library(tracey 
     src/core/types.hpp
@@ -48,4 +50,8 @@ add_library(tracey
 )
 
 target_link_libraries(tracey PRIVATE glm::glm)
+target_include_directories(tracey
+    PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
 add_subdirectory(./examples)
