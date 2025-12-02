@@ -1,4 +1,5 @@
 #pragma once
+#include <tuple>
 #include "ray.hpp"
 namespace tracey
 {
