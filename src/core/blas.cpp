@@ -7,20 +7,20 @@ namespace tracey
     {
     }
 
-    Blas::Blas(std::span<const float> data, std::uint32_t stride)
+    Blas::Blas(std::span<const float> data, std::uint32_t stride, std::optional<std::span<const uint32_t>> indices)
         : m_vertexBuffer(data),
-          vertexStride(stride),
-          fetchVertexFunc([this](uint32_t primIdx, uint32_t vertIdx)
-                          { return this->fetchVertex(primIdx, vertIdx); })
+          m_vertexStride(stride),
+          m_vertexIndices(indices ? *indices : std::span<const uint32_t>{}),
+          fetchVertexFunc(indices.has_value() ? &Blas::fetchVertexWithIndices : &Blas::fetchVertex)
     {
         std::vector<PrimitiveRef> primRefs((data.size() / stride) / 3);
         const auto primCount = primRefs.size();
         for (size_t i = 0; i < primCount; ++i)
         {
             primRefs[i].index = static_cast<uint32_t>(i);
-            const auto v0 = fetchVertexFunc(i, 0);
-            const auto v1 = fetchVertexFunc(i, 1);
-            const auto v2 = fetchVertexFunc(i, 2);
+            const auto v0 = (this->*fetchVertexFunc)(i, 0);
+            const auto v1 = (this->*fetchVertexFunc)(i, 1);
+            const auto v2 = (this->*fetchVertexFunc)(i, 2);
             primRefs[i]
                 .bMin = glm::min(glm::min(v0, v1), v2);
             primRefs[i].bMax = glm::max(glm::max(v0, v1), v2);
@@ -40,6 +40,10 @@ namespace tracey
             return;
         }
         buildRecursive(primRefs, 0, 0, static_cast<uint32_t>(primCount), 0);
+    }
+
+    Blas::Blas(std::span<const Vec3> positions, std::span<const uint32_t> indices): Blas(std::span<const float>(reinterpret_cast<const float *>(positions.data()), positions.size() * 3), 3, indices)
+    {
     }
 
     // Blas::Blas(std::span<const Vec3> positions, std::span<const uint32_t> indices) : m_vertexBuffer(std::span<const float>(reinterpret_cast<const float *>(positions.data()), positions.size() * 3)), m_vertexIndices(indices)
@@ -112,9 +116,9 @@ namespace tracey
                 case BVH_LEAF_TYPE_TRIANGLES:
                     for (size_t i = node.firstChildOrPrim; i < node.firstChildOrPrim + primCount; ++i)
                     {
-                        const auto v0 = fetchVertexFunc(i, 0);
-                        const auto v1 = fetchVertexFunc(i, 1);
-                        const auto v2 = fetchVertexFunc(i, 2);
+                        const auto v0 = (this->*fetchVertexFunc)(i, 0);
+                        const auto v1 = (this->*fetchVertexFunc)(i, 1);
+                        const auto v2 = (this->*fetchVertexFunc)(i, 2);
                         Hit localHit;
                         if (intersectTriangle(ray,
                                               v0,
