@@ -7,20 +7,7 @@
 #include "../../src/shading/random/sampling.hpp"
 #include "../../src/shading/onb.hpp"
 #include "../../src/shading/bsdf/pbr/pbr_bsdf.hpp"
-
-using ShaderCallback = std::function<void(tracey::UVec2 pixelCoord, const tracey::Tlas &tlas)>;
-
-void trace(uint32_t width, uint32_t height, const tracey::Tlas &tlas, const ShaderCallback shader)
-{
-    for (uint32_t y = 0; y < height; ++y)
-    {
-        for (uint32_t x = 0; x < width; ++x)
-        {
-            tracey::UVec2 pixelCoord(x, y);
-            shader(pixelCoord, tlas);
-        }
-    }
-}
+#include "../../src/ray_tracing/trace.hpp"
 
 int main()
 {
@@ -87,7 +74,7 @@ int main()
     std::vector<tracey::Vec3> framebuffer(imageWidth * imageHeight);
 
     // Setup shader callback
-    const auto shader = [&instances, &framebuffer, &cube, imageWidth, imageHeight](tracey::UVec2 pixelCoord, const tracey::Tlas &tlas)
+    const auto shader = [&instances, &framebuffer, &cube, imageWidth, imageHeight](const tracey::UVec2 &pixelCoord, const tracey::UVec2 &resolution, const tracey::Tlas &tlas)
     {
         // Simple pinhole camera ray generation
         float fov = 45.0f;
@@ -98,7 +85,7 @@ int main()
         const auto tMin = 0.001f;
         const auto tMax = 100.0f;
         const auto maxDepth = 8;
-        const auto numSamples = 1024;
+        const auto numSamples = 4;
 
         tracey::Vec3 accumulatedColor(0.0f);
 
@@ -179,7 +166,7 @@ int main()
     };
 
     // Trace rays
-    trace(imageWidth, imageHeight, tlas, shader);
+    traceRays(tracey::UVec2(imageWidth, imageHeight), shader, tlas);
 
     // Save framebuffer to PPM image
     std::ofstream ofs("path_tracer.ppm", std::ios::out | std::ios::binary);

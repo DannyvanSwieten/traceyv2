@@ -20,6 +20,9 @@ add_library(tracey
     src/core/intersect.hpp
     src/core/intersect.cpp
 
+    src/ray_tracing/trace.hpp
+    src/ray_tracing/trace.cpp
+
     src/shading/random/sampling.hpp
     src/shading/random/sampling.cpp
     src/shading/bsdf/pbr/pbr.hpp
