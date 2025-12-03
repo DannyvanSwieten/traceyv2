@@ -13,8 +13,8 @@ namespace tracey
           m_vertexIndices(indices ? *indices : std::span<const uint32_t>{}),
           fetchVertexFunc(indices.has_value() ? &Blas::fetchVertexWithIndices : &Blas::fetchVertex)
     {
-        std::vector<PrimitiveRef> primRefs((data.size() / stride) / 3);
-        const auto primCount = primRefs.size();
+        const auto primCount = (indices.has_value() ? indices->size() / 3 : (data.size() / stride) / 3);
+        std::vector<PrimitiveRef> primRefs(primCount);
         for (size_t i = 0; i < primCount; ++i)
         {
             primRefs[i].index = static_cast<uint32_t>(i);
@@ -116,9 +116,10 @@ namespace tracey
                 case BVH_LEAF_TYPE_TRIANGLES:
                     for (size_t i = node.firstChildOrPrim; i < node.firstChildOrPrim + primCount; ++i)
                     {
-                        const auto v0 = (this->*fetchVertexFunc)(i, 0);
-                        const auto v1 = (this->*fetchVertexFunc)(i, 1);
-                        const auto v2 = (this->*fetchVertexFunc)(i, 2);
+                        const uint32_t primId = m_primIndices[i];
+                        const auto v0 = (this->*fetchVertexFunc)(primId, 0);
+                        const auto v1 = (this->*fetchVertexFunc)(primId, 1);
+                        const auto v2 = (this->*fetchVertexFunc)(primId, 2);
                         Hit localHit;
                         if (intersectTriangle(ray,
                                               v0,
@@ -128,7 +129,7 @@ namespace tracey
                                               localHit.u,
                                               localHit.v))
                         {
-                            localHit.primitiveId = i;
+                            localHit.primitiveId = primId;
                             if (localHit.t < closestT)
                             {
                                 closestT = localHit.t;
