@@ -26,4 +26,7 @@ namespace tracey
                       const Vec3 &V,
                       RNG &rng,
                       const PBRMaterial &mat);
+
+    float pdfBRDF(const Vec3 &N, const Vec3 &V, const Vec3 &L, const PBRMaterial &mat);
+    Vec3 evalBRDF(const Vec3 &N, const Vec3 &V, const Vec3 &L, const PBRMaterial &mat);
 }
