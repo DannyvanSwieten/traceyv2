@@ -25,6 +25,13 @@ namespace tracey
             Vec3 bMax;
         };
 
+        struct TriangleData
+        {
+            Vec3 v0;
+            Vec3 edge1;
+            Vec3 edge2;
+        };
+
         uint32_t buildRecursive(std::span<PrimitiveRef> primRefs, uint32_t nodeIndex, uint32_t start, uint32_t end, int depth);
         Vec3 fetchVertex(uint32_t primitiveId, uint32_t element) const
         {
@@ -51,6 +58,7 @@ namespace tracey
     private:
         std::vector<BVHNode> m_nodes;
         std::vector<uint32_t> m_primIndices;
+        std::vector<TriangleData> m_triangleData;
         std::span<const float> m_vertexBuffer;
         std::span<const uint32_t> m_vertexIndices;
         const uint32_t m_vertexStride; // x, y, z

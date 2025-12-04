@@ -24,6 +24,12 @@ namespace tracey
             primRefs[i]
                 .bMin = glm::min(glm::min(v0, v1), v2);
             primRefs[i].bMax = glm::max(glm::max(v0, v1), v2);
+            // Store triangle data for intersection
+            TriangleData triData;
+            triData.v0 = v0;
+            triData.edge1 = v1 - v0;
+            triData.edge2 = v2 - v0;
+            m_triangleData.emplace_back(triData);
         }
 
         m_nodes.reserve(primCount * 2); // Rough estimate
@@ -42,7 +48,7 @@ namespace tracey
         buildRecursive(primRefs, 0, 0, static_cast<uint32_t>(primCount), 0);
     }
 
-    Blas::Blas(std::span<const Vec3> positions, std::span<const uint32_t> indices): Blas(std::span<const float>(reinterpret_cast<const float *>(positions.data()), positions.size() * 3), 3, indices)
+    Blas::Blas(std::span<const Vec3> positions, std::span<const uint32_t> indices) : Blas(std::span<const float>(reinterpret_cast<const float *>(positions.data()), positions.size() * 3), 3, indices)
     {
     }
 
@@ -81,7 +87,6 @@ namespace tracey
         if (m_nodes.empty())
             return std::nullopt;
 
-        bool hitSomething = false;
         float closestT = tMax;
         std::optional<Hit> hit = std::nullopt;
 
@@ -134,7 +139,6 @@ namespace tracey
                             {
                                 closestT = localHit.t;
                                 hit = localHit;
-                                hitSomething = true;
                                 if (flags & RAY_FLAG_TERMINATE_ON_FIRST_HIT)
                                     return hit;
                             }
