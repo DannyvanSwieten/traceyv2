@@ -4,7 +4,7 @@
 #include <chrono>
 namespace tracey
 {
-    void traceRays(const UVec2 &resolution, int tileSize, const RaytracerCallback &callback, const Tlas &tlas)
+    void traceRays(const UVec2 &resolution, int tileSize, uint32_t iteration, const RaytracerCallback &callback, const Tlas &tlas)
     {
         auto startTime = std::chrono::high_resolution_clock::now();
         const uint numThreads = std::thread::hardware_concurrency();
@@ -40,7 +40,7 @@ namespace tracey
                         // Don't call the callback for partially out of bounds tiles
                         if (pixelX < resolution.x && pixelY < resolution.y)
                         {
-                            callback(UVec2(pixelX, pixelY), resolution, tlas);
+                            callback(UVec2(pixelX, pixelY), resolution, iteration, tlas);
                         }
                     }
                 }
