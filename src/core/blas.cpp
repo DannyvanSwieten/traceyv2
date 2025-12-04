@@ -122,14 +122,12 @@ namespace tracey
                     for (size_t i = node.firstChildOrPrim; i < node.firstChildOrPrim + primCount; ++i)
                     {
                         const uint32_t primId = m_primIndices[i];
-                        const auto v0 = (this->*fetchVertexFunc)(primId, 0);
-                        const auto v1 = (this->*fetchVertexFunc)(primId, 1);
-                        const auto v2 = (this->*fetchVertexFunc)(primId, 2);
+                        const auto &triData = m_triangleData[primId];
                         Hit localHit;
                         if (intersectTriangle(ray,
-                                              v0,
-                                              v1,
-                                              v2,
+                                              triData.v0,
+                                              triData.edge1,
+                                              triData.edge2,
                                               localHit.t,
                                               localHit.u,
                                               localHit.v))
