@@ -1,30 +1,52 @@
 #include "trace.hpp"
 #include "../core/tlas.hpp"
 #include <thread>
+#include <chrono>
 namespace tracey
 {
-    void traceRays(const UVec2 &resolution, const RaytracerCallback &callback, const Tlas &tlas)
+    void traceRays(const UVec2 &resolution, int tileSize, const RaytracerCallback &callback, const Tlas &tlas)
     {
+        auto startTime = std::chrono::high_resolution_clock::now();
         const uint numThreads = std::thread::hardware_concurrency();
         std::vector<std::thread> threads;
         threads.reserve(numThreads);
-        const auto totalPixels = resolution.x * resolution.y;
-        std::atomic<int64_t> pixelsLeft(totalPixels);
+        const auto tilesPerRow = (resolution.x + tileSize - 1) / tileSize;
+        const auto tilesPerCol = (resolution.y + tileSize - 1) / tileSize;
+        const auto totalTiles = tilesPerRow * tilesPerCol;
+        std::atomic<int64_t> tilesLeft(totalTiles);
 
-        // Every thread is going to pick up a single pixel at a time, So we don't have thread going idle while others are still working.
+        // Every thread is going to pick up a single tile at a time, So we can keep them small and don't have threads going idle while others are still working.
         const auto threadFunction = [&]()
         {
+            const auto totalPixels = (resolution.x / tileSize) * tileSize;
             while (true)
             {
-                const auto pixelIndex = pixelsLeft.fetch_sub(1);
-                if (pixelIndex <= 0)
+                int64_t tileIndex = tilesLeft.fetch_sub(1, std::memory_order_relaxed);
+                if (tileIndex < 0)
                     break;
 
-                UVec2 location(pixelIndex % resolution.x, pixelIndex / resolution.x);
-                callback(location, resolution, tlas);
+                const uint32_t tileX = static_cast<uint32_t>(tileIndex) % tilesPerRow;
+                const uint32_t tileY = static_cast<uint32_t>(tileIndex) / tilesPerRow;
 
-                float progess = (totalPixels - pixelsLeft.load()) / static_cast<float>(totalPixels);
-                if (pixelIndex % 1000 == 0)
+                const uint32_t baseX = tileX * tileSize;
+                const uint32_t baseY = tileY * tileSize;
+
+                for (uint ty = 0; ty < tileSize; ++ty)
+                {
+                    for (uint tx = 0; tx < tileSize; ++tx)
+                    {
+                        const uint pixelX = baseX + tx;
+                        const uint pixelY = baseY + ty;
+                        // Don't call the callback for partially out of bounds tiles
+                        if (pixelX < resolution.x && pixelY < resolution.y)
+                        {
+                            callback(UVec2(pixelX, pixelY), resolution, tlas);
+                        }
+                    }
+                }
+
+                float progess = (totalTiles - tileIndex) / static_cast<float>(totalTiles);
+                if (tileIndex % 1000 == 0)
                 {
                     printf("\rProgress: %.2f%%", progess * 100.0f);
                     fflush(stdout);
@@ -41,5 +63,8 @@ namespace tracey
         {
             thread.join();
         }
+        auto endTime = std::chrono::high_resolution_clock::now();
+        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(endTime - startTime).count();
+        printf("\nTracing completed in %lld ms\n", duration);
     }
 }

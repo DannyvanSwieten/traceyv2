@@ -84,15 +84,15 @@ int main()
 
         const auto tMin = 0.001f;
         const auto tMax = 100.0f;
-        const auto maxDepth = 8;
-        const auto numSamples = 4;
+        const auto maxDepth = 3;
+        const auto numSamples = 128;
 
         tracey::Vec3 accumulatedColor(0.0f);
 
         for (int sample = 0; sample < numSamples; ++sample)
         {
             tracey::Vec3 radiance(0.0f);
-            tracey::RNG rng(static_cast<uint32_t>(pixelCoord.x + pixelCoord.y * imageWidth + sample * 9973));
+            tracey::PCG32 rng(static_cast<uint32_t>(pixelCoord.x + pixelCoord.y * imageWidth + sample * 9973));
             tracey::Vec3 jitter = tracey::Vec3(rng.next(), rng.next(), 0.0f) / tracey::Vec3(static_cast<float>(imageWidth - 1), static_cast<float>(imageHeight - 1), 1.0f);
             tracey::Ray ray;
             ray.origin = tracey::Vec3(0, 0, 0);
@@ -166,7 +166,7 @@ int main()
     };
 
     // Trace rays
-    traceRays(tracey::UVec2(imageWidth, imageHeight), shader, tlas);
+    traceRays(tracey::UVec2(imageWidth, imageHeight), 16, shader, tlas);
 
     // Save framebuffer to PPM image
     std::ofstream ofs("path_tracer.ppm", std::ios::out | std::ios::binary);

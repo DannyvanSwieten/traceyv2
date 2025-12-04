@@ -2,7 +2,7 @@
 #include "pbr.hpp"
 namespace tracey
 {
-    struct RNG;
+    class RNG;
 
     struct Sample
     {
