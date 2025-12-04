@@ -21,12 +21,12 @@ namespace tracey
         {
         }
 
-        float next()
+        float next() override
         {
             return dist(rng);
         }
 
-        Vec2 next2D()
+        Vec2 next2D() override
         {
             return Vec2{next(), next()};
         }
@@ -42,7 +42,7 @@ namespace tracey
         {
         }
 
-        float next()
+        float next() override
         {
             state ^= state << 13;
             state ^= state >> 17;
@@ -50,7 +50,7 @@ namespace tracey
             return static_cast<float>(state) / static_cast<float>(0xFFFFFFFF);
         }
 
-        Vec2 next2D()
+        Vec2 next2D() override
         {
             return Vec2{next(), next()};
         }
@@ -79,13 +79,13 @@ namespace tracey
             state += seed;
             nextUInt();
         }
-        float next()
+        float next() override
         {
             // Convert to float in [0,1)
             return (nextUInt() >> 8) * (1.0f / 16777216.0f); // 2^24
         }
 
-        Vec2 next2D()
+        Vec2 next2D() override
         {
             return Vec2{next(), next()};
         }
