@@ -27,9 +27,10 @@ namespace tracey
             // Transform the ray into the instance's local space
             const auto inverseTransform = glm::inverse(instance.transform);
             Vec3 localRayDirection = Vec3(inverseTransform * Vec4(ray.direction, 0.0f));
+            Vec3 localRayInvDirection = 1.0f / localRayDirection;
             Vec3 localRayOrigin = Vec3(inverseTransform * Vec4(ray.origin, 1.0f));
 
-            Ray localRay{localRayOrigin, localRayDirection};
+            Ray localRay{localRayOrigin, localRayDirection, localRayInvDirection};
 
             if (const auto hitOpt = blas.intersect(localRay, tMin, closestT, flags); hitOpt)
             {

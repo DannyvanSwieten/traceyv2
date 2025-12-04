@@ -87,16 +87,18 @@ int main()
         const auto maxDepth = 3;
         const auto numSamples = 128;
 
+        tracey::PCG32 rng(static_cast<uint32_t>(pixelCoord.x + pixelCoord.y * imageWidth));
+
         tracey::Vec3 accumulatedColor(0.0f);
 
         for (int sample = 0; sample < numSamples; ++sample)
         {
             tracey::Vec3 radiance(0.0f);
-            tracey::PCG32 rng(static_cast<uint32_t>(pixelCoord.x + pixelCoord.y * imageWidth + sample * 9973));
             tracey::Vec3 jitter = tracey::Vec3(rng.next(), rng.next(), 0.0f) / tracey::Vec3(static_cast<float>(imageWidth - 1), static_cast<float>(imageHeight - 1), 1.0f);
             tracey::Ray ray;
             ray.origin = tracey::Vec3(0, 0, 0);
             ray.direction = tracey::normalize(tracey::Vec3(px, py, 1.0f) + jitter);
+            ray.invDirection = 1.0f / ray.direction;
             tracey::Vec3 throughput = tracey::Vec3(1.0f);
             tracey::PBRMaterial material;
 
@@ -148,6 +150,7 @@ int main()
                     const auto hitPosition = ray.origin + ray.direction * intersection->t;
                     ray.origin = hitPosition + normal * 1e-4f; // offset to avoid self-intersection
                     ray.direction = tracey::normalize(s.wi);
+                    ray.invDirection = tracey::Vec3(1.0f) / ray.direction;
                 }
                 else
                 {

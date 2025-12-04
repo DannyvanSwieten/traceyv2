@@ -19,11 +19,9 @@ namespace tracey
 
         return tExit >= tEnter;
     }
-    inline bool intersectTriangle(const Ray &ray, const Vec3 &v0, const Vec3 &v1, const Vec3 &v2, float &tOut, float &uOut, float &vOut)
+    inline bool intersectTriangle(const Ray &ray, const Vec3 &v0, const Vec3 &edge1, const Vec3 &edge2, float &tOut, float &uOut, float &vOut)
     {
         const float EPSILON = 1e-8f;
-        Vec3 edge1 = v1 - v0;
-        Vec3 edge2 = v2 - v0;
         Vec3 h = glm::cross(ray.direction, edge2);
         float a = glm::dot(edge1, h);
         if (a > -EPSILON && a < EPSILON)

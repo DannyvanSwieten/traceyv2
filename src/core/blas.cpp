@@ -24,6 +24,12 @@ namespace tracey
             primRefs[i]
                 .bMin = glm::min(glm::min(v0, v1), v2);
             primRefs[i].bMax = glm::max(glm::max(v0, v1), v2);
+            // Store triangle data for intersection
+            TriangleData triData;
+            triData.v0 = v0;
+            triData.edge1 = v1 - v0;
+            triData.edge2 = v2 - v0;
+            m_triangleData.emplace_back(triData);
         }
 
         m_nodes.reserve(primCount * 2); // Rough estimate
@@ -42,7 +48,7 @@ namespace tracey
         buildRecursive(primRefs, 0, 0, static_cast<uint32_t>(primCount), 0);
     }
 
-    Blas::Blas(std::span<const Vec3> positions, std::span<const uint32_t> indices): Blas(std::span<const float>(reinterpret_cast<const float *>(positions.data()), positions.size() * 3), 3, indices)
+    Blas::Blas(std::span<const Vec3> positions, std::span<const uint32_t> indices) : Blas(std::span<const float>(reinterpret_cast<const float *>(positions.data()), positions.size() * 3), 3, indices)
     {
     }
 
@@ -81,7 +87,6 @@ namespace tracey
         if (m_nodes.empty())
             return std::nullopt;
 
-        bool hitSomething = false;
         float closestT = tMax;
         std::optional<Hit> hit = std::nullopt;
 
@@ -117,14 +122,12 @@ namespace tracey
                     for (size_t i = node.firstChildOrPrim; i < node.firstChildOrPrim + primCount; ++i)
                     {
                         const uint32_t primId = m_primIndices[i];
-                        const auto v0 = (this->*fetchVertexFunc)(primId, 0);
-                        const auto v1 = (this->*fetchVertexFunc)(primId, 1);
-                        const auto v2 = (this->*fetchVertexFunc)(primId, 2);
+                        const auto &triData = m_triangleData[primId];
                         Hit localHit;
                         if (intersectTriangle(ray,
-                                              v0,
-                                              v1,
-                                              v2,
+                                              triData.v0,
+                                              triData.edge1,
+                                              triData.edge2,
                                               localHit.t,
                                               localHit.u,
                                               localHit.v))
@@ -134,7 +137,6 @@ namespace tracey
                             {
                                 closestT = localHit.t;
                                 hit = localHit;
-                                hitSomething = true;
                                 if (flags & RAY_FLAG_TERMINATE_ON_FIRST_HIT)
                                     return hit;
                             }
