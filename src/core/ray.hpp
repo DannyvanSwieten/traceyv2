@@ -7,6 +7,7 @@ namespace tracey
     {
         Vec3 origin;
         Vec3 direction;
+        Vec3 invDirection;
     };
 
     using RayFlags = size_t;
