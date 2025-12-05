@@ -9,7 +9,8 @@ namespace tracey
         Vec3 wi;   // sampled direction (world space, toward next bounce)
         Vec3 f;    // BSDF value f(N,V,wi)
         float pdf; // pdf(wi | V)
-        bool specular;
+        bool specular = false;
+        bool delta = false;
     };
 
     // GGX half-vector sampling in local space (z up = N)

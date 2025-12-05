@@ -41,6 +41,7 @@ namespace tracey
     {
         Sample s{};
         s.specular = true;
+        s.delta = true;
 
         // Orient normal to oppose the incoming direction
         Vec3 Nf = N;
