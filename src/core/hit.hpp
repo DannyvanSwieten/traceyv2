@@ -6,6 +6,7 @@ namespace tracey
     struct Hit
     {
         Vec3 position;        // Position of the hit
+        Vec3 normal;          // Surface normal at the hit point
         float t;              // Distance along the ray
         float u, v;           // Barycentric coordinates
         uint32_t instanceId;  // ID of the instance hit

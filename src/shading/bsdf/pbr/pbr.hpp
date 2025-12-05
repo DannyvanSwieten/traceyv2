@@ -12,6 +12,8 @@ namespace tracey
         float sheen = 0.0f;               // Cloth-like sheen
         float clearcoat = 0.0f;           // Clear coat layer
         float clearcoatRoughness = 0.03f; // Clear coat roughness
+        float transmission = 0.0f;         // 0 = opaque, 1 = fully transmissive
+        float ior = 1.5f;                  // Index of refraction
     };
 
     // -----------------------------------------------------------------------------

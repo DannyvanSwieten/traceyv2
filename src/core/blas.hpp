@@ -30,6 +30,7 @@ namespace tracey
             Vec3 v0;
             Vec3 edge1;
             Vec3 edge2;
+            Vec3 normal;
         };
 
         uint32_t buildRecursive(std::span<PrimitiveRef> primRefs, uint32_t nodeIndex, uint32_t start, uint32_t end, int depth);

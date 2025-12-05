@@ -44,13 +44,6 @@ namespace tracey
                         }
                     }
                 }
-
-                float progess = (totalTiles - tileIndex) / static_cast<float>(totalTiles);
-                if (tileIndex % 1000 == 0)
-                {
-                    printf("\rProgress: %.2f%%", progess * 100.0f);
-                    fflush(stdout);
-                }
             }
         };
 

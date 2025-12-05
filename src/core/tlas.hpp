@@ -15,6 +15,7 @@ namespace tracey
             uint8_t type : 8 = 0; // reserved for future use
             uint32_t blasIndex = 0;
             Mat4 transform;
+            Mat3 normalTransform;
         };
 
         Tlas(std::span<const Blas> blases, std::span<const Instance> instances);
