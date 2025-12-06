@@ -74,8 +74,10 @@ namespace tracey
             }
 
             s.wi  = normalize(wi);
-            s.f   = mat.albedo; // reflection tint
-            s.pdf = F;
+            // Delta reflection: BSDF includes Fresnel weighting, PDF = F, so f/pdf ≈ tint.
+            Vec3 reflectionTint = mat.albedo;
+            s.f   = reflectionTint * F;
+            s.pdf = glm::max(F, 1.0e-6f);
         }
         else
         {
@@ -92,9 +94,11 @@ namespace tracey
             }
 
             s.wi  = normalize(wt);
-            // Simple transmission tint; you can refine with eta^2 scaling if desired
-            s.f   = mat.albedo * mat.transmission;
-            s.pdf = 1.0f - F;
+            // Transmission tint with Fresnel weighting and optional eta^2 scaling
+            float etaScale = (etaT * etaT) / (etaI * etaI); // set to 1.0f if you prefer no scaling
+            Vec3 transmissionTint = mat.albedo * mat.transmission;
+            s.f   = transmissionTint * (1.0f - F) * etaScale;
+            s.pdf = glm::max(1.0f - F, 1.0e-6f);
         }
 
         return s;
