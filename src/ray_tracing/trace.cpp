@@ -18,7 +18,6 @@ namespace tracey
         // Every thread is going to pick up a single tile at a time, So we can keep them small and don't have threads going idle while others are still working.
         const auto threadFunction = [&]()
         {
-            const auto totalPixels = (resolution.x / tileSize) * tileSize;
             while (true)
             {
                 int64_t tileIndex = tilesLeft.fetch_sub(1, std::memory_order_relaxed);
@@ -51,6 +50,10 @@ namespace tracey
         {
             threads.emplace_back(threadFunction);
         }
+
+        const auto spawnThreadsTimepoint = std::chrono::high_resolution_clock::now();
+        const auto spawnDuration = std::chrono::duration_cast<std::chrono::milliseconds>(spawnThreadsTimepoint - startTime).count();
+        printf("Spawned %u threads in %lld ms\n", numThreads, spawnDuration);
 
         for (auto &thread : threads)
         {

@@ -52,7 +52,9 @@ add_library(tracey
     src/graph/graphs/shader_graph/shader_graph_node.cpp
 )
 
-target_link_libraries(tracey PRIVATE glm::glm)
+find_package(Vulkan REQUIRED)
+
+target_link_libraries(tracey PRIVATE glm::glm Vulkan::Vulkan)
 target_include_directories(tracey
     PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
