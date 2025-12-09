@@ -39,6 +39,6 @@ namespace tracey
 
     private:
         std::vector<std::unique_ptr<Actor>> m_actors;
-        size_t m_root = -1;
+        int64_t m_root = -1;
     };
 }

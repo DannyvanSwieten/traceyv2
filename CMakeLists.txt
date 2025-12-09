@@ -50,7 +50,16 @@ add_library(tracey
     src/graph/graphs/shader_graph/shader_graph.cpp
     src/graph/graphs/shader_graph/shader_graph_node.hpp
     src/graph/graphs/shader_graph/shader_graph_node.cpp
+
+    src/gpu/vulkan_context.hpp
+    src/gpu/vulkan_context.cpp
 )
+
+if(MSVC)
+    target_compile_options(tracey PRIVATE /W4 /permissive-)
+else()
+    target_compile_options(tracey PRIVATE -Wall -Wextra -Wpedantic)
+endif()
 
 find_package(Vulkan REQUIRED)
 

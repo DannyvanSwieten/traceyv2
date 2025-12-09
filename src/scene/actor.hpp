@@ -10,6 +10,9 @@ namespace tracey
     public:
         ~Actor() = default;
 
+        Actor(const Actor &) = delete;
+        Actor &operator=(const Actor &) = delete;
+
         void setTransform(const Transform &transform);
         void applyTransform(const Transform &deltaTransform);
         const Transform &transform() const;
@@ -23,7 +26,7 @@ namespace tracey
         Actor(Scene *scene, size_t uid) : m_scene(scene), uid(uid) {}
 
     private:
-        Scene *m_scene = nullptr;
+        [[maybe_unused]] Scene *m_scene = nullptr;
         size_t uid = 0;
         Transform m_transform;
         std::vector<size_t> m_children;

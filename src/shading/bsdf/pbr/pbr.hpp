@@ -8,12 +8,12 @@ namespace tracey
     {
         Vec3 albedo = Vec3(0.5f);         // Base color
         float metallic = 0.0f;            // 0 = dielectric, 1 = metal
-        float roughness = 1.0f;           // Surface roughness
+        float roughness = 0.5f;           // Surface roughness
         float sheen = 0.0f;               // Cloth-like sheen
         float clearcoat = 0.0f;           // Clear coat layer
         float clearcoatRoughness = 0.03f; // Clear coat roughness
-        float transmission = 0.0f;         // 0 = opaque, 1 = fully transmissive
-        float ior = 1.5f;                  // Index of refraction
+        float transmission = 0.0f;        // 0 = opaque, 1 = fully transmissive
+        float ior = 1.5f;                 // Index of refraction
     };
 
     // -----------------------------------------------------------------------------
@@ -40,10 +40,11 @@ namespace tracey
     inline Vec3 fresnelSchlickRoughness(float cosTheta, const Vec3 &F0, float roughness)
     {
         cosTheta = saturate(cosTheta);
-        Vec3 oneMinusF0 = Vec3(1.0f) - F0;
-        Vec3 F90 = Vec3(1.0f); // at grazing angle
-        Vec3 Fr = F0 + (F90 - F0) * glm::pow(1.0f - cosTheta, 5.0f);
-        // Sometimes people remap F0 toward 0.04 for rough surfaces; tweak if you like.
+
+        // UE4's roughness-dependent Fresnel
+        Vec3 Fr = F0 + (max(Vec3(1.0f - roughness), F0) - F0) *
+                           pow(1.0f - cosTheta, 5.0f);
+
         return Fr;
     }
 

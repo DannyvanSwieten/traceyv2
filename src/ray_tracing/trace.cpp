@@ -4,9 +4,8 @@
 #include <chrono>
 namespace tracey
 {
-    void traceRays(const UVec2 &resolution, int tileSize, uint32_t iteration, const RaytracerCallback &callback, const Tlas &tlas)
+    void traceRays(const UVec2 &resolution, uint32_t tileSize, uint32_t iteration, const RaytracerCallback &callback, const Tlas &tlas)
     {
-        auto startTime = std::chrono::high_resolution_clock::now();
         const uint numThreads = std::thread::hardware_concurrency();
         std::vector<std::thread> threads;
         threads.reserve(numThreads);
@@ -51,16 +50,9 @@ namespace tracey
             threads.emplace_back(threadFunction);
         }
 
-        const auto spawnThreadsTimepoint = std::chrono::high_resolution_clock::now();
-        const auto spawnDuration = std::chrono::duration_cast<std::chrono::milliseconds>(spawnThreadsTimepoint - startTime).count();
-        printf("Spawned %u threads in %lld ms\n", numThreads, spawnDuration);
-
         for (auto &thread : threads)
         {
             thread.join();
         }
-        auto endTime = std::chrono::high_resolution_clock::now();
-        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(endTime - startTime).count();
-        printf("\nTracing completed in %lld ms\n", duration);
     }
 }

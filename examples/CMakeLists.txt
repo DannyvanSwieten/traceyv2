@@ -18,6 +18,10 @@ add_executable(scene_graph
     graph/scene_graph.cpp
 )
 
+add_executable(vulkan_setup
+    gpu/vulkan_setup.cpp
+)
+
 target_link_libraries(blas
     PRIVATE
     tracey
@@ -40,4 +44,11 @@ target_link_libraries(path_tracer
     PRIVATE
     tracey
     glm
+)
+
+target_link_libraries(vulkan_setup
+    PRIVATE
+    tracey
+    glm
+    Vulkan::Vulkan
 )

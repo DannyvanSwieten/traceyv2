@@ -9,8 +9,8 @@ namespace tracey
 
     Blas::Blas(std::span<const float> data, std::uint32_t stride, std::optional<std::span<const uint32_t>> indices)
         : m_vertexBuffer(data),
-          m_vertexStride(stride),
           m_vertexIndices(indices ? *indices : std::span<const uint32_t>{}),
+          m_vertexStride(stride),
           fetchVertexFunc(indices.has_value() ? &Blas::fetchVertexWithIndices : &Blas::fetchVertex)
     {
         const auto primCount = (indices.has_value() ? indices->size() / 3 : (data.size() / stride) / 3);
@@ -154,21 +154,21 @@ namespace tracey
             else
             {
                 // Interior: visit children. Push the farther child first so the nearer one is popped and processed first.
-                int left  = static_cast<int>(node.firstChildOrPrim);
+                int left = static_cast<int>(node.firstChildOrPrim);
                 int right = left + 1;
 
                 float tEnterL, tExitL, tEnterR, tExitR;
-                bool hitL = intersectAABB(ray, m_nodes[left].boundsMin,  m_nodes[left].boundsMax,
+                bool hitL = intersectAABB(ray, m_nodes[left].boundsMin, m_nodes[left].boundsMax,
                                           tMin, closestT, tEnterL, tExitL);
                 bool hitR = intersectAABB(ray, m_nodes[right].boundsMin, m_nodes[right].boundsMax,
                                           tMin, closestT, tEnterR, tExitR);
 
                 if (hitL && hitR)
                 {
-                    int   firstChild  = left;
-                    int   secondChild = right;
-                    float tFirst      = tEnterL;
-                    float tSecond     = tEnterR;
+                    int firstChild = left;
+                    int secondChild = right;
+                    float tFirst = tEnterL;
+                    float tSecond = tEnterR;
 
                     // Ensure firstChild is the nearer one
                     if (tSecond < tFirst)
@@ -221,13 +221,14 @@ namespace tracey
             node.primCountAndType = count;
             node.firstChildOrPrim = static_cast<uint32_t>(m_primIndices.size());
 
-            for (int i = start; i < end; ++i)
+            for (uint32_t i = start; i < end; ++i)
                 m_primIndices.emplace_back(prims[i].index);
 
             return nodeIndex;
         }
 
-        auto surfaceArea = [](const Vec3 &mn, const Vec3 &mx) -> float {
+        auto surfaceArea = [](const Vec3 &mn, const Vec3 &mx) -> float
+        {
             Vec3 e = mx - mn;
             return 2.0f * (e.x * e.y + e.x * e.z + e.y * e.z);
         };
@@ -240,16 +241,16 @@ namespace tracey
 
         struct Bin
         {
-            int  count = 0;
-            Vec3 bMin  = Vec3(std::numeric_limits<float>::max());
-            Vec3 bMax  = Vec3(std::numeric_limits<float>::lowest());
+            int count = 0;
+            Vec3 bMin = Vec3(std::numeric_limits<float>::max());
+            Vec3 bMax = Vec3(std::numeric_limits<float>::lowest());
         };
 
-        float bestCost      = std::numeric_limits<float>::infinity();
-        int   bestAxis      = -1;
-        int   bestSplitBin  = -1;
-        float bestCMin      = 0.0f;
-        float bestCMax      = 0.0f;
+        float bestCost = std::numeric_limits<float>::infinity();
+        int bestAxis = -1;
+        int bestSplitBin = -1;
+        float bestCMin = 0.0f;
+        float bestCMax = 0.0f;
 
         const int n = count;
 
@@ -281,8 +282,10 @@ namespace tracey
                 const PrimitiveRef &p = prims[start + i];
                 float c = 0.5f * (p.bMin[axis] + p.bMax[axis]);
                 int binIdx = (int)((c - cMin) * invBinSize);
-                if (binIdx < 0) binIdx = 0;
-                if (binIdx >= BIN_COUNT) binIdx = BIN_COUNT - 1;
+                if (binIdx < 0)
+                    binIdx = 0;
+                if (binIdx >= BIN_COUNT)
+                    binIdx = BIN_COUNT - 1;
 
                 Bin &b = bins[binIdx];
                 b.count++;
@@ -291,16 +294,16 @@ namespace tracey
             }
 
             // Prefix (left) and suffix (right) aggregates over bins
-            int  leftCount[BIN_COUNT];
+            int leftCount[BIN_COUNT];
             Vec3 leftMin[BIN_COUNT];
             Vec3 leftMax[BIN_COUNT];
 
-            int  rightCount[BIN_COUNT];
+            int rightCount[BIN_COUNT];
             Vec3 rightMin[BIN_COUNT];
             Vec3 rightMax[BIN_COUNT];
 
             // Build left side prefix
-            int  runningCount = 0;
+            int runningCount = 0;
             Vec3 runningMin(std::numeric_limits<float>::max());
             Vec3 runningMax(std::numeric_limits<float>::lowest());
             for (int i = 0; i < BIN_COUNT; ++i)
@@ -312,8 +315,8 @@ namespace tracey
                     runningMax = glm::max(runningMax, bins[i].bMax);
                 }
                 leftCount[i] = runningCount;
-                leftMin[i]   = runningMin;
-                leftMax[i]   = runningMax;
+                leftMin[i] = runningMin;
+                leftMax[i] = runningMax;
             }
 
             // Build right side suffix
@@ -329,8 +332,8 @@ namespace tracey
                     runningMax = glm::max(runningMax, bins[i].bMax);
                 }
                 rightCount[i] = runningCount;
-                rightMin[i]   = runningMin;
-                rightMax[i]   = runningMax;
+                rightMin[i] = runningMin;
+                rightMax[i] = runningMax;
             }
 
             // Evaluate SAH cost for splits between bins i and i+1
@@ -351,11 +354,11 @@ namespace tracey
 
                 if (cost < bestCost)
                 {
-                    bestCost     = cost;
-                    bestAxis     = axis;
+                    bestCost = cost;
+                    bestAxis = axis;
                     bestSplitBin = i;
-                    bestCMin     = cMin;
-                    bestCMax     = cMax;
+                    bestCMin = cMin;
+                    bestCMax = cMax;
                 }
             }
         }
@@ -365,22 +368,25 @@ namespace tracey
         {
             node.primCountAndType = count;
             node.firstChildOrPrim = static_cast<uint32_t>(m_primIndices.size());
-            for (int i = start; i < end; ++i)
+            for (uint32_t i = start; i < end; ++i)
                 m_primIndices.emplace_back(prims[i].index);
             return nodeIndex;
         }
 
         // Partition primitives in-place based on best axis and bin split
-        const float cMinBest     = bestCMin;
-        const float cMaxBest     = bestCMax;
+        const float cMinBest = bestCMin;
+        const float cMaxBest = bestCMax;
         const float invBinSizeBest = (float)BIN_COUNT / (cMaxBest - cMinBest);
 
         auto midIter = std::partition(prims.begin() + start, prims.begin() + end,
-                                      [bestAxis, bestSplitBin, cMinBest, invBinSizeBest](const PrimitiveRef &p) {
+                                      [bestAxis, bestSplitBin, cMinBest, invBinSizeBest](const PrimitiveRef &p)
+                                      {
                                           float c = 0.5f * (p.bMin[bestAxis] + p.bMax[bestAxis]);
                                           int binIdx = (int)((c - cMinBest) * invBinSizeBest);
-                                          if (binIdx < 0) binIdx = 0;
-                                          if (binIdx > bestSplitBin) return false;
+                                          if (binIdx < 0)
+                                              binIdx = 0;
+                                          if (binIdx > bestSplitBin)
+                                              return false;
                                           return true;
                                       });
         uint32_t mid = static_cast<uint32_t>(midIter - prims.begin());
@@ -391,7 +397,7 @@ namespace tracey
             mid = (start + end) / 2;
         }
 
-        node.primCountAndType = 0;                        // interior
+        node.primCountAndType = 0;                                     // interior
         node.firstChildOrPrim = static_cast<uint32_t>(m_nodes.size()); // left child index
 
         int leftIndex = static_cast<int>(m_nodes.size());

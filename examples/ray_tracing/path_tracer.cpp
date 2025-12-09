@@ -63,9 +63,11 @@ int main()
     instances[0].blasIndex = 0;
     instances[0].instanceId = 0;
     instances[0].transform = glm::translate(tracey::Vec3(0, 0, 5)) * glm::rotate(glm::radians(30.0f), tracey::Vec3(0, 1, 0)) * glm::rotate(glm::radians(30.0f), tracey::Vec3(-1, 0, 0));
+    instances[0].normalTransform = glm::mat3(glm::transpose(glm::inverse(instances[0].transform)));
     instances[1].blasIndex = 0;
     instances[1].instanceId = 1;
     instances[1].transform = glm::translate(tracey::Vec3(0, -3, 5)) * glm::scale(tracey::Vec3(10, 1, 10));
+    instances[1].normalTransform = glm::mat3(glm::transpose(glm::inverse(instances[1].transform)));
     tracey::Tlas tlas(std::span<const tracey::Blas>(&blas, 1), instances);
 
     const uint32_t imageWidth = 512;
@@ -74,7 +76,7 @@ int main()
     std::vector<tracey::Vec3> framebuffer(imageWidth * imageHeight);
 
     // Setup shader callback
-    const auto shader = [&instances, &framebuffer, &cube, imageWidth, imageHeight](const tracey::UVec2 &pixelCoord, const tracey::UVec2 &resolution, const tracey::Tlas &tlas)
+    const auto shader = [&instances, &framebuffer, &cube, imageWidth, imageHeight](const tracey::UVec2 &pixelCoord, const tracey::UVec2 &resolution, int iteration, const tracey::Tlas &tlas)
     {
         // Simple pinhole camera ray generation
         float fov = 45.0f;
@@ -87,7 +89,7 @@ int main()
         const auto maxDepth = 3;
         const auto numSamples = 128;
 
-        tracey::PCG32 rng(static_cast<uint32_t>(pixelCoord.x + pixelCoord.y * imageWidth));
+        tracey::PCG32 rng(static_cast<uint32_t>(pixelCoord.x + pixelCoord.y * imageWidth + iteration * imageWidth * imageHeight));
 
         tracey::Vec3 accumulatedColor(0.0f);
 
@@ -110,26 +112,20 @@ int main()
                 {
                     // Calculate normal
                     const auto &instance = instances[intersection->instanceId];
-                    // Transform triangle vertices to world space
-                    const auto v0 = instance.transform * tracey::Vec4(cube[intersection->primitiveId * 3 + 0], 1.0f);
-                    const auto v1 = instance.transform * tracey::Vec4(cube[intersection->primitiveId * 3 + 1], 1.0f);
-                    const auto v2 = instance.transform * tracey::Vec4(cube[intersection->primitiveId * 3 + 2], 1.0f);
-                    const auto edge1 = tracey::Vec3(v1 - v0);
-                    const auto edge2 = tracey::Vec3(v2 - v0);
-                    auto normal = tracey::normalize(tracey::cross(edge1, edge2));
-                    if (tracey::dot(normal, -ray.direction) < 0.0f)
-                        normal = -normal;
+                    auto geometricNormal = instance.normalTransform * intersection->normal;
+                    if (tracey::dot(geometricNormal, -ray.direction) < 0.0f)
+                        geometricNormal = -geometricNormal;
                     tracey::Vec3 V = tracey::normalize(-ray.direction);
 
                     // Optional: emission (none for cube)
                     // radiance += throughput * emission;
 
                     // Sample BSDF
-                    auto s = tracey::sampleBRDF(normal, V, rng, material);
+                    auto s = tracey::sampleBRDF(geometricNormal, V, rng, material);
                     if (s.pdf <= 0.0f || tracey::length2(s.f) == 0.0f)
                         break;
 
-                    float NdotL = tracey::max(tracey::dot(normal, s.wi), 0.0f);
+                    float NdotL = tracey::max(tracey::dot(geometricNormal, s.wi), 0.0f);
                     if (NdotL <= 0.0f)
                         break;
 
@@ -148,7 +144,7 @@ int main()
 
                     // Spawn next ray
                     const auto hitPosition = ray.origin + ray.direction * intersection->t;
-                    ray.origin = hitPosition + normal * 1e-4f; // offset to avoid self-intersection
+                    ray.origin = hitPosition + geometricNormal * 1e-4f; // offset to avoid self-intersection
                     ray.direction = tracey::normalize(s.wi);
                     ray.invDirection = tracey::Vec3(1.0f) / ray.direction;
                 }
@@ -168,8 +164,14 @@ int main()
         framebuffer[pixelCoord.y * imageWidth + pixelCoord.x] = accumulatedColor / static_cast<float>(numSamples);
     };
 
+    std::chrono::steady_clock::time_point startTime = std::chrono::steady_clock::now();
+
     // Trace rays
-    traceRays(tracey::UVec2(imageWidth, imageHeight), 16, shader, tlas);
+    traceRays(tracey::UVec2(imageWidth, imageHeight), 16, 0, shader, tlas);
+
+    std::chrono::steady_clock::time_point endTime = std::chrono::steady_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(endTime - startTime).count();
+    std::cout << "Rendering 128 samples completed in " << duration << " ms." << std::endl;
 
     // Save framebuffer to PPM image
     std::ofstream ofs("path_tracer.ppm", std::ios::out | std::ios::binary);
