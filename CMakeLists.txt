@@ -53,6 +53,46 @@ add_library(tracey
 
     src/gpu/vulkan_context.hpp
     src/gpu/vulkan_context.cpp
+    src/gpu/shader_compiler.hpp
+    src/gpu/shader_compiler.cpp
+
+    src/device/device.hpp
+    src/device/device.cpp
+
+    src/device/gpu/vulkan_compute_device.hpp
+    src/device/gpu/vulkan_compute_device.cpp
+
+    src/device/cpu/cpu_compute_device.hpp
+    src/device/cpu/cpu_compute_device.cpp
+    src/device/cpu/cpu_buffer.hpp
+    src/device/cpu/cpu_buffer.cpp
+    src/device/cpu/cpu_bottom_level_acceleration_structure.hpp
+    src/device/cpu/cpu_bottom_level_acceleration_structure.cpp
+
+    src/ray_tracing/ray_tracing_pipeline/ray_tracing_pipeline.hpp
+    src/ray_tracing/ray_tracing_pipeline/ray_tracing_pipeline_layout.hpp
+    src/ray_tracing/ray_tracing_pipeline/ray_tracing_pipeline_layout.cpp
+
+    src/ray_tracing/ray_tracing_pipeline/shader_binding_table.hpp
+
+    src/ray_tracing/ray_tracing_pipeline/cpu/cpu_shader_binding_table.hpp
+    src/ray_tracing/ray_tracing_pipeline/cpu/cpu_shader_binding_table.cpp
+    src/ray_tracing/ray_tracing_pipeline/cpu/cpu_ray_tracing_pipeline.hpp
+    src/ray_tracing/ray_tracing_pipeline/cpu/cpu_ray_tracing_pipeline.cpp
+    src/ray_tracing/ray_tracing_pipeline/descriptor_set.hpp
+    src/ray_tracing/ray_tracing_pipeline/cpu/cpu_descriptor_set.hpp
+    src/ray_tracing/ray_tracing_pipeline/cpu/cpu_descriptor_set.cpp
+
+    src/ray_tracing/ray_tracing_pipeline/gpu/vulkan_compute_raytracing_pipeline.hpp
+    src/ray_tracing/ray_tracing_pipeline/gpu/vulkan_compute_raytracing_pipeline.cpp
+
+    src/ray_tracing/ray_tracing_command_buffer/ray_tracing_command_buffer.hpp
+    src/ray_tracing/ray_tracing_command_buffer/cpu/cpu_ray_tracing_command_buffer.hpp
+    src/ray_tracing/ray_tracing_command_buffer/cpu/cpu_ray_tracing_command_buffer.cpp
+
+    src/ray_tracing/shader_module/shader_module.hpp
+    src/ray_tracing/shader_module/cpu/cpu_shader_module.hpp
+    src/ray_tracing/shader_module/cpu/cpu_shader_module.cpp
 )
 
 if(MSVC)
@@ -62,6 +102,12 @@ else()
 endif()
 
 find_package(Vulkan REQUIRED)
+
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(SHADERC REQUIRED shaderc)
+target_include_directories(tracey PRIVATE
+    ${SHADERC_INCLUDE_DIRS}
+)
 
 target_link_libraries(tracey PRIVATE glm::glm Vulkan::Vulkan)
 target_include_directories(tracey
