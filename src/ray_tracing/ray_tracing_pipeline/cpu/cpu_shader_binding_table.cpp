@@ -2,7 +2,7 @@
 
 namespace tracey
 {
-    CpuShaderBindingTable::CpuShaderBindingTable(const ShaderModule *rayGen, const std::span<const ShaderModule *> hitShaders) : m_rayGen(rayGen), m_shaderModules(hitShaders)
+    CpuShaderBindingTable::CpuShaderBindingTable(const ShaderModule *rayGen, const std::span<const ShaderModule *> hitShaders) : m_rayGen(rayGen), m_hitModules(hitShaders)
     {
     }
 }

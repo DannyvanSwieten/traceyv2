@@ -56,8 +56,8 @@ namespace tracey
     {
     public:
         virtual ~Device() = default;
-        virtual RayTracingPipeline *createRayTracingPipeline() = 0;
-        virtual ShaderModule *createShaderModule(const RayTracingPipelineLayout &layout, ShaderStage stage, const std::string_view source, const std::string_view entryPoint) = 0;
+        virtual RayTracingPipeline *createRayTracingPipeline(const RayTracingPipelineLayout &layout, const ShaderBindingTable *sbt) = 0;
+        virtual ShaderModule *createShaderModule(ShaderStage stage, const std::string_view source, const std::string_view entryPoint) = 0;
         virtual ShaderBindingTable *createShaderBindingTable(const ShaderModule *rayGen, const std::span<const ShaderModule *> hitShaders) = 0;
         virtual RayTracingCommandBuffer *createRayTracingCommandBuffer() = 0;
         virtual void allocateDescriptorSets(std::span<DescriptorSet *> sets, const RayTracingPipelineLayout &layout) = 0;

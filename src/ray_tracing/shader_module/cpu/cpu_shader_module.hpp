@@ -8,11 +8,15 @@ namespace tracey
     class CpuShaderModule : public ShaderModule
     {
     public:
-        CpuShaderModule(const RayTracingPipelineLayout &layout, ShaderStage stage, const std::string_view source, const std::string_view entryPoint = "");
+        CpuShaderModule(ShaderStage stage, const std::string_view source, const std::string_view entryPoint = "");
+
+        ShaderStage stage() const;
+        const std::string_view source() const;
+        const std::string_view entryPoint() const;
 
     private:
+        ShaderStage m_stage;
         std::string m_source;
-        void *m_dylibHandle = nullptr;
-        void (*m_entryPointFunc)() = nullptr;
+        std::string m_entryPoint;
     };
 } // namespace tracey

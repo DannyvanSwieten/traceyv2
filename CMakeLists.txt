@@ -74,6 +74,8 @@ add_library(tracey
     src/ray_tracing/ray_tracing_pipeline/ray_tracing_pipeline_layout.cpp
 
     src/ray_tracing/ray_tracing_pipeline/shader_binding_table.hpp
+    src/ray_tracing/ray_tracing_pipeline/data_structure.hpp
+    src/ray_tracing/ray_tracing_pipeline/data_structure.cpp
 
     src/ray_tracing/ray_tracing_pipeline/cpu/cpu_shader_binding_table.hpp
     src/ray_tracing/ray_tracing_pipeline/cpu/cpu_shader_binding_table.cpp
@@ -82,6 +84,8 @@ add_library(tracey
     src/ray_tracing/ray_tracing_pipeline/descriptor_set.hpp
     src/ray_tracing/ray_tracing_pipeline/cpu/cpu_descriptor_set.hpp
     src/ray_tracing/ray_tracing_pipeline/cpu/cpu_descriptor_set.cpp
+    src/ray_tracing/ray_tracing_pipeline/cpu/cpu_pipeline_compiler.hpp
+    src/ray_tracing/ray_tracing_pipeline/cpu/cpu_pipeline_compiler.cpp
 
     src/ray_tracing/ray_tracing_pipeline/gpu/vulkan_compute_raytracing_pipeline.hpp
     src/ray_tracing/ray_tracing_pipeline/gpu/vulkan_compute_raytracing_pipeline.cpp

@@ -16,41 +16,41 @@ namespace tracey
         return m_vulkanContext.device();
     }
 
-    RayTracingPipeline *VulkanComputeDevice::createRayTracingPipeline()
+    RayTracingPipeline *VulkanComputeDevice::createRayTracingPipeline(const RayTracingPipelineLayout &layout, const ShaderBindingTable *sbt)
     {
         return nullptr;
     }
 
-    ShaderModule *VulkanComputeDevice::createShaderModule(const RayTracingPipelineLayout &layout, ShaderStage stage, const std::string_view source, const std::string_view entryPoint)
+    ShaderModule *VulkanComputeDevice::createShaderModule(ShaderStage stage, const std::string_view source, const std::string_view entryPoint)
     {
-        std::stringstream shaderPrelude;
-        shaderPrelude << "#version 450\n";
-        const auto bindings = layout.bindingsForStage(stage);
-        for (const auto &binding : bindings)
-        {
-            switch (binding.type)
-            {
-            case RayTracingPipelineLayout::DescriptorType::Image2D:
-                shaderPrelude << "layout(binding = " << binding.index << ") uniform writeonly image2D " << binding.name << ";\n";
-                break;
-            case RayTracingPipelineLayout::DescriptorType::Buffer:
-                shaderPrelude << "layout(binding = " << binding.index << ") buffer " << binding.name << "Buffer {\n"
-                              << "    // Define buffer structure here\n"
-                              << "} " << binding.name << ";\n";
-                break;
-            case RayTracingPipelineLayout::DescriptorType::AccelerationStructure:
-                // Vulkan compute shaders do not support acceleration structures directly.
-                // But we have our own definition for an opaque TLAS buffer.
-                shaderPrelude << "layout(binding = " << binding.index << ") buffer " << binding.name << "Buffer {\n"
-                              << "    // Define TLAS structure here\n"
-                              << "} " << binding.name << ";\n";
-                break;
-            default:
-                return nullptr;
-            }
-        }
+        // std::stringstream shaderPrelude;
+        // shaderPrelude << "#version 450\n";
+        // const auto bindings = layout.bindingsForStage(stage);
+        // for (const auto &binding : bindings)
+        // {
+        //     switch (binding.type)
+        //     {
+        //     case RayTracingPipelineLayout::DescriptorType::Image2D:
+        //         shaderPrelude << "layout(binding = " << binding.index << ") uniform writeonly image2D " << binding.name << ";\n";
+        //         break;
+        //     case RayTracingPipelineLayout::DescriptorType::Buffer:
+        //         shaderPrelude << "layout(binding = " << binding.index << ") buffer " << binding.name << "Buffer {\n"
+        //                       << "    // Define buffer structure here\n"
+        //                       << "} " << binding.name << ";\n";
+        //         break;
+        //     case RayTracingPipelineLayout::DescriptorType::AccelerationStructure:
+        //         // Vulkan compute shaders do not support acceleration structures directly.
+        //         // But we have our own definition for an opaque TLAS buffer.
+        //         shaderPrelude << "layout(binding = " << binding.index << ") buffer " << binding.name << "Buffer {\n"
+        //                       << "    // Define TLAS structure here\n"
+        //                       << "} " << binding.name << ";\n";
+        //         break;
+        //     default:
+        //         return nullptr;
+        //     }
+        // }
 
-        shaderPrelude << source;
+        // shaderPrelude << source;
 
         return nullptr;
     }

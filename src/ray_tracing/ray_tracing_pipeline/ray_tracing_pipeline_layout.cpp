@@ -6,9 +6,9 @@ namespace tracey
         m_bindings.emplace_back(DescriptorBinding{name, index, DescriptorType::Image2D, stage});
     }
 
-    void RayTracingPipelineLayout::addBuffer(std::string name, uint32_t index, ShaderStage stage)
+    void RayTracingPipelineLayout::addBuffer(std::string name, uint32_t index, ShaderStage stage, const BufferLayout &structure)
     {
-        m_bindings.emplace_back(DescriptorBinding{name, index, DescriptorType::Buffer, stage});
+        m_bindings.emplace_back(DescriptorBinding{name, index, DescriptorType::Buffer, stage, structure});
     }
     void RayTracingPipelineLayout::addAccelerationStructure(std::string name, uint32_t index, ShaderStage stage)
     {

@@ -61,8 +61,8 @@
         {
             "type": "lldb",
             "request": "launch",
-            "name": "Vulkan Setup Example",
-            "program": "${workspaceFolder}/build/Debug/examples/vulkan_setup",
+            "name": "Device Setup Example",
+            "program": "${workspaceFolder}/build/Debug/examples/device_api",
             "args": [],
             "cwd": "${workspaceFolder}",
             "preLaunchTask": "CMake: build"

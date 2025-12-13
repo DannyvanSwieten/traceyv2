@@ -18,8 +18,8 @@ add_executable(scene_graph
     graph/scene_graph.cpp
 )
 
-add_executable(vulkan_setup
-    gpu/vulkan_setup.cpp
+add_executable(device_api
+    device_api/device_setup.cpp
 )
 
 target_link_libraries(blas
@@ -46,7 +46,7 @@ target_link_libraries(path_tracer
     glm
 )
 
-target_link_libraries(vulkan_setup
+target_link_libraries(device_api
     PRIVATE
     tracey
     glm

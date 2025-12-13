@@ -4,6 +4,8 @@
 #include "../../ray_tracing/shader_module/cpu/cpu_shader_module.hpp"
 #include "../../ray_tracing/ray_tracing_pipeline/cpu/cpu_shader_binding_table.hpp"
 #include "../../ray_tracing/ray_tracing_pipeline/cpu/cpu_descriptor_set.hpp"
+#include "../../ray_tracing/ray_tracing_pipeline/cpu/cpu_ray_tracing_pipeline.hpp"
+#include "../../ray_tracing/ray_tracing_command_buffer/cpu/cpu_ray_tracing_command_buffer.hpp"
 #include <sstream>
 namespace tracey
 {
@@ -15,14 +17,19 @@ namespace tracey
     {
     }
 
-    RayTracingPipeline *CpuComputeDevice::createRayTracingPipeline()
+    RayTracingPipeline *CpuComputeDevice::createRayTracingPipeline(const RayTracingPipelineLayout &layout, const ShaderBindingTable *sbt)
     {
-        return nullptr;
+        auto cpuSbt = dynamic_cast<const CpuShaderBindingTable *>(sbt);
+        if (!cpuSbt)
+        {
+            return nullptr;
+        }
+        return new CpuRayTracingPipeline(layout, *cpuSbt);
     }
 
-    ShaderModule *CpuComputeDevice::createShaderModule(const RayTracingPipelineLayout &layout, ShaderStage stage, const std::string_view source, const std::string_view entryPoint)
+    ShaderModule *CpuComputeDevice::createShaderModule(ShaderStage stage, const std::string_view source, const std::string_view entryPoint)
     {
-        return new CpuShaderModule(layout, stage, source, entryPoint);
+        return new CpuShaderModule(stage, source, entryPoint);
     }
     ShaderBindingTable *CpuComputeDevice::createShaderBindingTable(const ShaderModule *rayGen, const std::span<const ShaderModule *> hitShaders)
     {
@@ -30,7 +37,7 @@ namespace tracey
     }
     RayTracingCommandBuffer *CpuComputeDevice::createRayTracingCommandBuffer()
     {
-        return nullptr;
+        return new CpuRayTracingCommandBuffer();
     }
     void CpuComputeDevice::allocateDescriptorSets(std::span<DescriptorSet *> sets, const RayTracingPipelineLayout &layout)
     {

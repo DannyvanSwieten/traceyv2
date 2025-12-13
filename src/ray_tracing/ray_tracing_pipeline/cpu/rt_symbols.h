@@ -30,15 +30,15 @@ namespace rt
     struct Image2D_T;
     using Image2D = Image2D_T *;
 
-    struct Buffer_T;
-    using Buffer = Buffer_T *;
+    using Buffer_T = void *;
+    using Buffer = Buffer_T;
 
     //
     // Opaque acceleration structure handle, matching GLSL:
     //   accelerationStructureEXT topLevel
     //
-    struct accelerationStructureEXT_T;
-    using accelerationStructureEXT = accelerationStructureEXT_T *;
+    struct TopLevelAccelerationStructure_T;
+    using TopLevelAccelerationStructure = TopLevelAccelerationStructure_T *;
 
 // Shader code sees these as “gl_” builtins:
 #define gl_GlobalInvocationID g_builtins.GlobalInvocationID
