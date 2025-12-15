@@ -66,8 +66,14 @@ add_library(tracey
     src/device/cpu/cpu_compute_device.cpp
     src/device/cpu/cpu_buffer.hpp
     src/device/cpu/cpu_buffer.cpp
+    src/device/buffer.hpp
+    src/device/image2d.hpp
+    src/device/cpu/cpu_image_2d.hpp
+    src/device/cpu/cpu_image_2d.cpp
     src/device/cpu/cpu_bottom_level_acceleration_structure.hpp
     src/device/cpu/cpu_bottom_level_acceleration_structure.cpp
+    src/device/cpu/cpu_top_level_acceleration_structure.hpp
+    src/device/cpu/cpu_top_level_acceleration_structure.cpp
 
     src/ray_tracing/ray_tracing_pipeline/ray_tracing_pipeline.hpp
     src/ray_tracing/ray_tracing_pipeline/ray_tracing_pipeline_layout.hpp
@@ -86,6 +92,8 @@ add_library(tracey
     src/ray_tracing/ray_tracing_pipeline/cpu/cpu_descriptor_set.cpp
     src/ray_tracing/ray_tracing_pipeline/cpu/cpu_pipeline_compiler.hpp
     src/ray_tracing/ray_tracing_pipeline/cpu/cpu_pipeline_compiler.cpp
+    src/ray_tracing/ray_tracing_pipeline/cpu/trace_rays_ext.hpp
+    src/ray_tracing/ray_tracing_pipeline/cpu/trace_rays_ext.cpp
 
     src/ray_tracing/ray_tracing_pipeline/gpu/vulkan_compute_raytracing_pipeline.hpp
     src/ray_tracing/ray_tracing_pipeline/gpu/vulkan_compute_raytracing_pipeline.cpp

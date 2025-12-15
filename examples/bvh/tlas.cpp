@@ -13,15 +13,16 @@ int main()
 
     // 3) Create some instances. One on the left and one on the right.
     std::array<tracey::Tlas::Instance, 2> instances;
-    instances[0].blasIndex = 0;
-    instances[0].instanceId = 0;
-    instances[0].transform = glm::translate(tracey::Vec3(-2, 0, 0));
+    instances[0].blasAddress = 0;
+    instances[0].instanceCustomIndexAndMask = 0;
+    instances[0].setTransform(glm::translate(tracey::Vec3(-2, 0, 0)));
 
-    instances[1].blasIndex = 0;
-    instances[1].instanceId = 1;
-    instances[1].transform = glm::translate(tracey::Vec3(2, 0, 0));
+    instances[1].blasAddress = 0;
+    instances[1].instanceCustomIndexAndMask = 1;
+    instances[1].setTransform(glm::translate(tracey::Vec3(2, 0, 0)));
     // 4) Build Tlas
-    tracey::Tlas tlas(std::span<const tracey::Blas>(&blas, 1), instances);
+    const tracey::Blas *blasPtr = &blas;
+    tracey::Tlas tlas(std::span<const tracey::Blas *>(&blasPtr, 1), instances);
 
     // 5) Shoot a ray from the origin to -X direction, hitting the triangle on the left
     tracey::Ray ray;

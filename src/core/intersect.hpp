@@ -51,7 +51,7 @@ namespace tracey
             return false;
     }
 
-    inline std::tuple<tracey::Vec3, tracey::Vec3> transformAABB(const tracey::Mat4 &M,
+    inline std::tuple<tracey::Vec3, tracey::Vec3> transformAABB(const float M[3][4],
                                                                 const tracey::Vec3 &localMin,
                                                                 const tracey::Vec3 &localMax)
     {
@@ -59,23 +59,20 @@ namespace tracey
         tracey::Vec3 center = 0.5f * (localMin + localMax);
         tracey::Vec3 half = 0.5f * (localMax - localMin);
 
-        // Transform the center
-        tracey::Vec3 worldCenter = M * tracey::Vec4(center, 1.0f);
+        // Transform the center (M is Vk-style row-major 3x4)
+        tracey::Vec3 worldCenter = transformPoint(M, center);
 
-        // Take the linear (3x3) part of M (rotation + scale)
-        tracey::Mat3 R = tracey::Mat3(M);
+        // Rows of the linear (3x3) part of M (rotation + scale)
+        tracey::Vec3 r0(M[0][0], M[0][1], M[0][2]);
+        tracey::Vec3 r1(M[1][0], M[1][1], M[1][2]);
+        tracey::Vec3 r2(M[2][0], M[2][1], M[2][2]);
 
-        // Absolute value matrix so we get conservative extents
-        glm::mat3 A;
-        A[0] = glm::abs(R[0]);
-        A[1] = glm::abs(R[1]);
-        A[2] = glm::abs(R[2]);
+        // New conservative half-extents: |R| * half, but using row-major rows
+        tracey::Vec3 worldHalf(
+            std::abs(r0.x) * half.x + std::abs(r0.y) * half.y + std::abs(r0.z) * half.z,
+            std::abs(r1.x) * half.x + std::abs(r1.y) * half.y + std::abs(r1.z) * half.z,
+            std::abs(r2.x) * half.x + std::abs(r2.y) * half.y + std::abs(r2.z) * half.z);
 
-        // New half-extents
-        tracey::Vec3 worldHalf = A * half;
-
-        return {
-            worldCenter - worldHalf,
-            worldCenter + worldHalf};
+        return {worldCenter - worldHalf, worldCenter + worldHalf};
     }
 }

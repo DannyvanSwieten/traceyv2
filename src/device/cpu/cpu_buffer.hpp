@@ -6,6 +6,7 @@ namespace tracey
     {
     public:
         CpuBuffer(uint32_t size);
+        ~CpuBuffer() override;
 
         void *mapForWriting() override;
         const void *mapForReading() const override;

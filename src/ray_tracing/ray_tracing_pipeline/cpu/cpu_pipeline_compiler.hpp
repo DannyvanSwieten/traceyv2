@@ -1,5 +1,6 @@
 #pragma once
 #include <vector>
+#include "runtime/rt_symbols.h"
 #include "../shader_binding_table.hpp"
 #include "../../../device/device.hpp"
 
@@ -16,14 +17,37 @@ namespace tracey
 
     struct CompiledShader
     {
-        RayTracingEntryPointFunc sbt;
+        RayTracingEntryPointFunc func;
+        void *dylib = nullptr;
         std::vector<BindingSlot> bindingSlots;
+
+        void setTraceRaysExt();
+    };
+
+    using setBuiltinsFunc = void (*)(const rt::Builtins &b);
+    using getBuiltinsFunc = void (*)(rt::Builtins *b);
+
+    struct RayGenShader
+    {
+        RayGenShader(CompiledShader shader);
+        CompiledShader shader;
+        setBuiltinsFunc setBuiltins = nullptr;
+        getBuiltinsFunc getBuiltins = nullptr;
+    };
+
+    struct ClosestHitShader
+    {
+        ClosestHitShader(CompiledShader shader);
+        CompiledShader shader;
+        setBuiltinsFunc setBuiltins = nullptr;
+        getBuiltinsFunc getBuiltins = nullptr;
     };
 
     struct Sbt
     {
-        CompiledShader rayGen;
-        std::vector<CompiledShader> hits;
+        Sbt(RayGenShader rayGenShader);
+        RayGenShader rayGen;
+        std::vector<ClosestHitShader> hits;
     };
 
     CompiledShader

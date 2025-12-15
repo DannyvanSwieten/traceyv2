@@ -5,9 +5,8 @@
 
 namespace tracey
 {
-    CpuRayTracingPipeline::CpuRayTracingPipeline(const RayTracingPipelineLayout &layout, const CpuShaderBindingTable &sbt) : m_layout(layout), m_sbt(sbt)
+    CpuRayTracingPipeline::CpuRayTracingPipeline(const RayTracingPipelineLayout &layout, const CpuShaderBindingTable &sbt) : m_layout(layout), m_sbt(sbt), m_compiledSbt(compileShaders())
     {
-        m_compiledSbt = compileShaders();
     }
     const RayTracingPipelineLayout &CpuRayTracingPipeline::layout() const
     {
@@ -19,13 +18,9 @@ namespace tracey
     }
     Sbt CpuRayTracingPipeline::compileShaders()
     {
-        Sbt sbt;
+        ;
         const auto rayGenModule = dynamic_cast<const CpuShaderModule *>(m_sbt.rayGen());
-        if (rayGenModule)
-        {
-            auto rayGenFunction = compileShader(*rayGenModule);
-            sbt.rayGen = rayGenFunction;
-        }
+        Sbt sbt{RayGenShader(compileShader(*rayGenModule))};
 
         for (const auto &hitModulePtr : m_sbt.hitModules())
         {

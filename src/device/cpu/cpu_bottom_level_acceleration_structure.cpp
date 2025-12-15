@@ -4,6 +4,16 @@ namespace tracey
 {
     CpuBottomLevelAccelerationStructure::CpuBottomLevelAccelerationStructure(const Buffer *positions, uint32_t positionCount, uint32_t positionStride, const Buffer *indices, uint32_t indexCount)
     {
+        if (!indices)
+        {
+            const auto posData = static_cast<const float *>(positions->mapForReading());
+            const auto stride = positionStride / sizeof(float);
+            const std::span<const float> positionsSpan(posData, positionCount * stride);
+
+            m_blas.emplace(positionsSpan, stride);
+            return;
+        }
+
         const auto posData = static_cast<const float *>(positions->mapForReading());
         const auto indexData = static_cast<const uint32_t *>(indices->mapForReading());
         const auto stride = positionStride / sizeof(float);

@@ -12,6 +12,7 @@ namespace tracey
         CpuRayTracingPipeline(const RayTracingPipelineLayout &layout, const CpuShaderBindingTable &sbt);
         const RayTracingPipelineLayout &layout() const;
         const CpuShaderBindingTable &sbt() const;
+        Sbt &compiledSbt() { return m_compiledSbt; }
 
     private:
         Sbt compileShaders();

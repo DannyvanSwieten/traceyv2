@@ -1,7 +1,10 @@
 #include "cpu_pipeline_compiler.hpp"
 #include "../ray_tracing_pipeline_layout.hpp"
+#include "../../../device/cpu/cpu_top_level_acceleration_structure.hpp"
 #include "../../shader_module/cpu/cpu_shader_module.hpp"
+#include "../../../core/tlas.hpp"
 #include "cpu_shader_binding_table.hpp"
+#include "trace_rays_ext.hpp"
 #include <sstream>
 #include <iostream>
 #include <filesystem>
@@ -12,15 +15,19 @@
 
 namespace tracey
 {
+    constexpr const std::string_view TLAS_TYPE_NAME = "accelerationStructureEXT";
+    constexpr const std::string_view IMAGE2D_TYPE_NAME = "image2d";
+    constexpr const std::string_view BUFFER_TYPE_NAME = "buffer";
+
     CompiledShader compileCpuRayTracingPipeline(const RayTracingPipelineLayout &layout, const CpuShaderBindingTable &sbt)
     {
-        Sbt compiledSbt;
         const auto rayGenModule = dynamic_cast<const CpuShaderModule *>(sbt.rayGen());
         if (!rayGenModule)
         {
             throw std::runtime_error("Invalid ray generation shader module in SBT.");
         }
-        compiledSbt.rayGen = compileCpuShader(layout, rayGenModule->stage(), rayGenModule->source(), rayGenModule->entryPoint());
+
+        Sbt compiledSbt{RayGenShader(compileCpuShader(layout, rayGenModule->stage(), rayGenModule->source(), rayGenModule->entryPoint()))};
         for (const auto &hitModulePtr : sbt.hitModules())
         {
             const auto hitModule = dynamic_cast<const CpuShaderModule *>(hitModulePtr);
@@ -38,9 +45,13 @@ namespace tracey
         assert(!entryPoint.empty());
         std::string userSourceModified = std::string(source);
         std::stringstream shader;
-        shader << "#include <rt_symbols.h>\n";
+        shader << "#include <runtime/rt_symbols.h>\n";
         shader << "using namespace rt;\n";
-        shader << "\n";
+        shader << "extern \"C\" TraceRaysFunc_t traceRaysEXT = nullptr;" << "\n";
+        shader << "extern \"C\" ImageStoreFunc_t imageStore = nullptr;\n";
+        shader << "extern \"C\" thread_local Builtins g_Builtins = {};\n";
+        shader << "extern \"C\" void setBuiltins(const Builtins &b) { g_Builtins = b; }\n";
+        shader << "extern \"C\" void getBuiltins(Builtins* b) { *b = g_Builtins; }\n";
 
         const auto bindings = layout.bindingsForStage(stage);
         for (const auto &binding : bindings)
@@ -48,7 +59,7 @@ namespace tracey
             switch (binding.type)
             {
             case RayTracingPipelineLayout::DescriptorType::Image2D:
-                shader << "extern \"C\" Image2D " << binding.name << ";\n";
+                shader << "extern \"C\" " << IMAGE2D_TYPE_NAME << " " << binding.name << " = nullptr;\n";
                 break;
             case RayTracingPipelineLayout::DescriptorType::Buffer:
             {
@@ -70,15 +81,15 @@ namespace tracey
                         shader << ";\n";
                     }
                     shader << "};\n";
-                    shader << "extern \"C\" Buffer " << "buffer_" << binding.index << " = nullptr;\n";
+                    shader << "extern \"C\" " << BUFFER_TYPE_NAME << " " << binding.name << " = nullptr;\n";
                     // Define a macro to access elements
-                    shader << "#define " << binding.name << " reinterpret_cast<" << binding.structure->name() << "*>(" << "buffer_" << binding.index << ")\n";
+                    shader << "#define " << binding.name << " reinterpret_cast<" << binding.structure->name() << "*>(" << binding.name << ")\n";
                 }
 
                 break;
             }
             case RayTracingPipelineLayout::DescriptorType::AccelerationStructure:
-                shader << "extern \"C\" TopLevelAccelerationStructure " << binding.name << ";\n";
+                shader << "extern \"C\" " << TLAS_TYPE_NAME << " " << binding.name << " = nullptr;\n";
                 break;
             default:
                 break;
@@ -144,25 +155,55 @@ namespace tracey
             throw std::runtime_error("Failed to find entry point function in dylib: " + std::string(dlerror()));
         }
         CompiledShader compiledShader;
-        compiledShader.sbt = entryPointFunc;
+        compiledShader.func = entryPointFunc;
         // load all global bindingslots
         for (const auto &binding : layout.bindingsForStage(stage))
         {
-            if (binding.type == RayTracingPipelineLayout::DescriptorType::Buffer)
+            void **slotPtr = reinterpret_cast<void **>(dlsym(dylib, binding.name.c_str()));
+            if (!slotPtr)
             {
-                std::string slotName = "buffer_" + std::to_string(binding.index);
-                void **slotPtr = reinterpret_cast<void **>(dlsym(dylib, slotName.c_str()));
-                if (!slotPtr)
-                {
-                    std::cerr << "dlopen error: " << dlerror() << std::endl;
-                    dlclose(dylib);
-                    std::filesystem::remove(outputPath);
-                    throw std::runtime_error("Failed to find binding slot in dylib: " + std::string(dlerror()));
-                }
-                // Store the slot pointer somewhere to be set later during execution
-                compiledShader.bindingSlots.push_back(BindingSlot{slotPtr});
+                std::cerr << "dlopen error: " << dlerror() << std::endl;
+                dlclose(dylib);
+                std::filesystem::remove(outputPath);
+                throw std::runtime_error("Failed to find binding slot in dylib: " + std::string(dlerror()));
+            }
+            // Store the slot pointer somewhere to be set later during execution
+            compiledShader.bindingSlots.push_back(BindingSlot{slotPtr});
+        }
+
+        compiledShader.dylib = dylib;
+
+        return compiledShader;
+    }
+    void CompiledShader::setTraceRaysExt()
+    {
+        if (dylib)
+        {
+            rt::TraceRaysFunc_t *traceFuncPtr = reinterpret_cast<rt::TraceRaysFunc_t *>(dlsym(dylib, "traceRaysEXT"));
+            if (traceFuncPtr)
+            {
+                *traceFuncPtr = reinterpret_cast<rt::TraceRaysFunc_t>(traceRaysExtFunc);
+            }
+
+            rt::ImageStoreFunc_t *imageStorePtr = reinterpret_cast<rt::ImageStoreFunc_t *>(dlsym(dylib, "imageStore"));
+            if (imageStorePtr)
+            {
+                *imageStorePtr = reinterpret_cast<rt::ImageStoreFunc_t>(imageStoreFunc);
             }
         }
-        return compiledShader;
+    }
+    RayGenShader::RayGenShader(CompiledShader shader) : shader(shader)
+    {
+        this->setBuiltins = reinterpret_cast<setBuiltinsFunc>(dlsym(this->shader.dylib, "setBuiltins"));
+        this->getBuiltins = reinterpret_cast<getBuiltinsFunc>(dlsym(this->shader.dylib, "getBuiltins"));
+    }
+    Sbt::Sbt(RayGenShader rayGenShader) : rayGen(rayGenShader), hits()
+    {
+        rayGen.shader.setTraceRaysExt();
+    }
+    ClosestHitShader::ClosestHitShader(CompiledShader shader) : shader(shader)
+    {
+        this->setBuiltins = reinterpret_cast<setBuiltinsFunc>(dlsym(this->shader.dylib, "setBuiltins"));
+        this->getBuiltins = reinterpret_cast<getBuiltinsFunc>(dlsym(this->shader.dylib, "getBuiltins"));
     }
 }

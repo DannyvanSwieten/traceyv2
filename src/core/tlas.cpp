@@ -4,8 +4,8 @@
 namespace tracey
 {
 
-    Tlas::Tlas(std::span<const Blas> blases, std::span<const Instance> instances) : blases(blases),
-                                                                                    instances(instances)
+    Tlas::Tlas(std::span<const Blas *> blases, std::span<const Instance> instances) : blases(blases),
+                                                                                      instances(instances)
     {
     }
     std::optional<Hit> Tlas::intersect(const Ray &ray, float tMin, float tMax, RayFlags flags) const
@@ -13,35 +13,47 @@ namespace tracey
         std::optional<Hit> closestHit = std::nullopt;
         float closestT = tMax;
 
-        for (const auto &instance : instances)
+        for (size_t instanceIndex = 0; instanceIndex < instances.size(); ++instanceIndex)
         {
-            const uint32_t blasIndex = instance.blasIndex;
-            const Blas &blas = blases[blasIndex];
+            const auto &instance = instances[instanceIndex];
+            const uint32_t blasIndex = static_cast<uint32_t>(instance.blasAddress);
+            const Blas &blas = *blases[blasIndex];
             const auto [min, max] = blas.getBounds();
-            // Transform the AABB into world space
+
             const auto [worldMin, worldMax] = transformAABB(instance.transform, min, max);
             float tEnter, tExit;
             if (!intersectAABB(ray, worldMin, worldMax, tMin, tMax, tEnter, tExit))
                 continue; // Ray misses the instance's bounds
 
             // Transform the ray into the instance's local space
-            const auto inverseTransform = glm::inverse(instance.transform);
-            Vec3 localRayDirection = Vec3(inverseTransform * Vec4(ray.direction, 0.0f));
+            float inverseTransform[3][4];
+            invert3x4(instance.transform, inverseTransform);
+            Vec3 localRayDirection = transformVector(inverseTransform, ray.direction);
             Vec3 localRayInvDirection = 1.0f / localRayDirection;
-            Vec3 localRayOrigin = Vec3(inverseTransform * Vec4(ray.origin, 1.0f));
+            Vec3 localRayOrigin = transformPoint(inverseTransform, ray.origin);
 
             Ray localRay{localRayOrigin, localRayDirection, localRayInvDirection};
 
-            if (const auto hitOpt = blas.intersect(localRay, tMin, closestT, flags); hitOpt)
+            // Intersect in local space with generous bounds; we'll convert to world-space t for comparison.
+            if (const auto hitOpt = blas.intersect(localRay, 0.0f, 1e30f, flags); hitOpt)
             {
-                if (hitOpt->t < closestT)
+                // Compute hit position in local space and transform back to world space.
+                const Vec3 localHitPos = localRay.origin + localRay.direction * hitOpt->t;
+                const Vec3 worldHitPos = transformPoint(instance.transform, localHitPos);
+
+                // Convert to world-space t (ray.direction is expected to be normalized in the renderer).
+                const float tWorld = glm::dot(worldHitPos - ray.origin, ray.direction);
+
+                // Apply world-space tMin/tMax and closest-hit test.
+                if (tWorld >= tMin && tWorld < closestT)
                 {
                     closestHit = hitOpt;
-                    closestT = hitOpt->t;
-                    closestHit->instanceId = instance.instanceId;
-                    // primitiveId remains as in the BLAS hit
-                    // Transform the hit position back to world space
-                    closestHit->position = ray.origin + ray.direction * closestHit->t;
+                    closestT = tWorld;
+
+                    closestHit->instanceId = static_cast<uint32_t>(instanceIndex);
+                    closestHit->position = worldHitPos;
+                    closestHit->t = tWorld;
+
                     if (flags & RAY_FLAG_TERMINATE_ON_FIRST_HIT)
                         break;
                 }

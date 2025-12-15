@@ -68,12 +68,13 @@ int main()
     };
 
     tracey::Blas blas(cube);
+    const tracey::Blas *blasPtr = &blas;
     // Create a TLAS with one instance of the triangle
     tracey::Tlas::Instance instance;
-    instance.blasIndex = 0;
-    instance.instanceId = 0;
-    instance.transform = glm::translate(tracey::Vec3(0, 0, 5)) * glm::rotate(glm::radians(30.0f), tracey::Vec3(0, 1, 0)) * glm::rotate(glm::radians(30.0f), tracey::Vec3(-1, 0, 0));
-    tracey::Tlas tlas(std::span<const tracey::Blas>(&blas, 1), std::span<const tracey::Tlas::Instance>(&instance, 1));
+    instance.blasAddress = 0;
+    instance.setCustomIndex(0);
+    instance.setTransform(glm::translate(tracey::Vec3(0, 0, 5)) * glm::rotate(glm::radians(30.0f), tracey::Vec3(0, 1, 0)) * glm::rotate(glm::radians(30.0f), tracey::Vec3(-1, 0, 0)));
+    tracey::Tlas tlas(std::span<const tracey::Blas *>(&blasPtr, 1), std::span<const tracey::Tlas::Instance>(&instance, 1));
 
     const uint32_t imageWidth = 512;
     const uint32_t imageHeight = 512;
@@ -92,15 +93,17 @@ int main()
         tracey::Ray ray;
         ray.origin = tracey::Vec3(0, 0, 0);
         ray.direction = rayDir;
+        ray.invDirection = tracey::Vec3(1.0f) / ray.direction;
         const auto tMin = 0.0f;
         const auto tMax = 100.0f;
         tracey::RayFlags flags = tracey::RAY_FLAG_OPAQUE;
         if (const auto intersection = tlas.intersect(ray, tMin, tMax, flags); intersection)
         {
             // Transform triangle vertices to world space
-            const auto v0 = instance.transform * tracey::Vec4(cube[intersection->primitiveId * 3 + 0], 1.0f);
-            const auto v1 = instance.transform * tracey::Vec4(cube[intersection->primitiveId * 3 + 1], 1.0f);
-            const auto v2 = instance.transform * tracey::Vec4(cube[intersection->primitiveId * 3 + 2], 1.0f);
+            const auto objectToWorldMatrix = instance.transform;
+            const auto v0 = tracey::transformPoint(objectToWorldMatrix, cube[intersection->primitiveId * 3 + 0]);
+            const auto v1 = tracey::transformPoint(objectToWorldMatrix, cube[intersection->primitiveId * 3 + 1]);
+            const auto v2 = tracey::transformPoint(objectToWorldMatrix, cube[intersection->primitiveId * 3 + 2]);
             const auto edge1 = tracey::Vec3(v1 - v0);
             const auto edge2 = tracey::Vec3(v2 - v0);
             auto normal = tracey::normalize(tracey::cross(edge1, edge2));

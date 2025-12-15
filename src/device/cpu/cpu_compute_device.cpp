@@ -1,11 +1,13 @@
 #include "cpu_compute_device.hpp"
 #include "cpu_buffer.hpp"
+#include "cpu_image_2d.hpp"
 #include "cpu_bottom_level_acceleration_structure.hpp"
 #include "../../ray_tracing/shader_module/cpu/cpu_shader_module.hpp"
 #include "../../ray_tracing/ray_tracing_pipeline/cpu/cpu_shader_binding_table.hpp"
 #include "../../ray_tracing/ray_tracing_pipeline/cpu/cpu_descriptor_set.hpp"
 #include "../../ray_tracing/ray_tracing_pipeline/cpu/cpu_ray_tracing_pipeline.hpp"
 #include "../../ray_tracing/ray_tracing_command_buffer/cpu/cpu_ray_tracing_command_buffer.hpp"
+#include "../../device/cpu/cpu_top_level_acceleration_structure.hpp"
 #include <sstream>
 namespace tracey
 {
@@ -50,8 +52,16 @@ namespace tracey
     {
         return new CpuBuffer(size);
     }
+    Image2D *CpuComputeDevice::createImage2D(uint32_t width, uint32_t height, ImageFormat format)
+    {
+        return new CpuImage2D(width, height, format);
+    }
     BottomLevelAccelerationStructure *CpuComputeDevice::createBottomLevelAccelerationStructure(const Buffer *positions, uint32_t positionCount, uint32_t positionStride, const Buffer *indices, uint32_t indexCount)
     {
         return new CpuBottomLevelAccelerationStructure(positions, positionCount, positionStride, indices, indexCount);
+    }
+    TopLevelAccelerationStructure *CpuComputeDevice::createTopLevelAccelerationStructure(std::span<const BottomLevelAccelerationStructure *> blases, std::span<const struct Tlas::Instance> instances)
+    {
+        return new CpuTopLevelAccelerationStructure(blases, instances);
     }
 } // namespace tracey

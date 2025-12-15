@@ -12,6 +12,7 @@ namespace tracey
     {
     public:
         CpuBottomLevelAccelerationStructure(const Buffer *positions, uint32_t positionCount, uint32_t positionStride, const Buffer *indices, uint32_t indexCount);
+        const Blas &blas() const { return m_blas.value(); }
 
     private:
         std::optional<Blas> m_blas;

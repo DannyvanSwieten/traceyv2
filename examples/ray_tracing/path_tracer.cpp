@@ -58,17 +58,16 @@ int main()
     };
 
     tracey::Blas blas(cube);
+    const tracey::Blas *blasPtr = &blas;
     // Create a TLAS with one instance of the triangle
     std::array<tracey::Tlas::Instance, 2> instances;
-    instances[0].blasIndex = 0;
-    instances[0].instanceId = 0;
-    instances[0].transform = glm::translate(tracey::Vec3(0, 0, 5)) * glm::rotate(glm::radians(30.0f), tracey::Vec3(0, 1, 0)) * glm::rotate(glm::radians(30.0f), tracey::Vec3(-1, 0, 0));
-    instances[0].normalTransform = glm::mat3(glm::transpose(glm::inverse(instances[0].transform)));
-    instances[1].blasIndex = 0;
-    instances[1].instanceId = 1;
-    instances[1].transform = glm::translate(tracey::Vec3(0, -3, 5)) * glm::scale(tracey::Vec3(10, 1, 10));
-    instances[1].normalTransform = glm::mat3(glm::transpose(glm::inverse(instances[1].transform)));
-    tracey::Tlas tlas(std::span<const tracey::Blas>(&blas, 1), instances);
+    instances[0].blasAddress = 0;
+    instances[0].instanceCustomIndexAndMask = 0;
+    instances[0].setTransform(glm::translate(tracey::Vec3(0, 0, 5)) * glm::rotate(glm::radians(30.0f), tracey::Vec3(0, 1, 0)) * glm::rotate(glm::radians(30.0f), tracey::Vec3(-1, 0, 0)));
+    instances[1].blasAddress = 0;
+    instances[1].instanceCustomIndexAndMask = 1;
+    instances[1].setTransform(glm::translate(tracey::Vec3(0, -3, 5)) * glm::scale(tracey::Vec3(10, 1, 10)));
+    tracey::Tlas tlas(std::span<const tracey::Blas *>(&blasPtr, 1), instances);
 
     const uint32_t imageWidth = 512;
     const uint32_t imageHeight = 512;
@@ -87,7 +86,7 @@ int main()
         const auto tMin = 0.001f;
         const auto tMax = 100.0f;
         const auto maxDepth = 3;
-        const auto numSamples = 128;
+        const auto numSamples = 2;
 
         tracey::PCG32 rng(static_cast<uint32_t>(pixelCoord.x + pixelCoord.y * imageWidth + iteration * imageWidth * imageHeight));
 
@@ -112,7 +111,8 @@ int main()
                 {
                     // Calculate normal
                     const auto &instance = instances[intersection->instanceId];
-                    auto geometricNormal = instance.normalTransform * intersection->normal;
+                    const auto objectToWorldMatrix = instance.transform;
+                    auto geometricNormal = tracey::Vec3(tracey::transformVector(objectToWorldMatrix, intersection->normal));
                     if (tracey::dot(geometricNormal, -ray.direction) < 0.0f)
                         geometricNormal = -geometricNormal;
                     tracey::Vec3 V = tracey::normalize(-ray.direction);

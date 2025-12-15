@@ -9,6 +9,11 @@ namespace tracey
         m_data = std::malloc(size);
     }
 
+    CpuBuffer::~CpuBuffer()
+    {
+        std::free(m_data);
+    }
+
     void *CpuBuffer::mapForWriting()
     {
         return m_data;

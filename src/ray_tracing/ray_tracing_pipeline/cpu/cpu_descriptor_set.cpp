@@ -16,7 +16,7 @@ namespace tracey
                 m_descriptors[binding.index] = static_cast<Buffer *>(nullptr);
                 break;
             case RayTracingPipelineLayout::DescriptorType::AccelerationStructure:
-                m_descriptors[binding.index] = static_cast<const TopLevelAccelerationStructure *>(nullptr);
+                m_descriptors[binding.index] = DispatchedTlas{nullptr, nullptr};
                 break;
             default:
                 assert(false && "Unknown descriptor type");
@@ -36,6 +36,8 @@ namespace tracey
     }
     void CpuDescriptorSet::setAccelerationStructure(uint32_t binding, const TopLevelAccelerationStructure *tlas)
     {
-        m_descriptors[binding] = tlas;
+        DispatchedTlas dispatched;
+        dispatched.tlasInterface = tlas;
+        m_descriptors[binding] = dispatched;
     }
 }

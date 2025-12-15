@@ -1,6 +1,8 @@
 #pragma once
 #include <cstdint>
 #include <span>
+#include "../core/tlas.hpp"
+
 namespace tracey
 {
     enum class DeviceType
@@ -35,6 +37,9 @@ namespace tracey
         AccelerationStructureStorage = 1 << 4,
     };
 
+    BufferUsage operator|(BufferUsage a, BufferUsage b);
+    BufferUsage &operator|=(BufferUsage &a, BufferUsage b);
+
     enum class ImageFormat
     {
         R8G8B8A8Unorm,
@@ -62,7 +67,9 @@ namespace tracey
         virtual RayTracingCommandBuffer *createRayTracingCommandBuffer() = 0;
         virtual void allocateDescriptorSets(std::span<DescriptorSet *> sets, const RayTracingPipelineLayout &layout) = 0;
         virtual Buffer *createBuffer(uint32_t size, BufferUsage usageFlags) = 0;
+        virtual Image2D *createImage2D(uint32_t width, uint32_t height, ImageFormat format) = 0;
         virtual BottomLevelAccelerationStructure *createBottomLevelAccelerationStructure(const Buffer *positions, uint32_t positionCount, uint32_t positionStride, const Buffer *indices, uint32_t indexCount) = 0;
+        virtual TopLevelAccelerationStructure *createTopLevelAccelerationStructure(std::span<const BottomLevelAccelerationStructure *> blases, std::span<const struct Tlas::Instance> instances) = 0;
     };
 
     Device *createDevice(DeviceType type, DeviceBackend backend);

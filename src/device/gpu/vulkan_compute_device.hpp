@@ -1,6 +1,7 @@
 #pragma once
 #include "device/device.hpp"
 #include "../../gpu/vulkan_context.hpp"
+
 namespace tracey
 {
     class VulkanComputeDevice : public Device
@@ -17,7 +18,9 @@ namespace tracey
         RayTracingCommandBuffer *createRayTracingCommandBuffer() override;
         void allocateDescriptorSets(std::span<DescriptorSet *> sets, const RayTracingPipelineLayout &layout) override;
         Buffer *createBuffer(uint32_t size, BufferUsage usageFlags) override;
+        Image2D *createImage2D(uint32_t width, uint32_t height, ImageFormat format) override;
         BottomLevelAccelerationStructure *createBottomLevelAccelerationStructure(const Buffer *positions, uint32_t positionCount, uint32_t positionStride, const Buffer *indices, uint32_t indexCount) override;
+        TopLevelAccelerationStructure *createTopLevelAccelerationStructure(std::span<const BottomLevelAccelerationStructure *> blases, std::span<const struct Tlas::Instance> instances) override;
 
     private:
         VulkanContext m_vulkanContext;
