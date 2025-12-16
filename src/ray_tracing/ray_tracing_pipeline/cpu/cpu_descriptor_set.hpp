@@ -35,7 +35,7 @@ namespace tracey
         }
 
     private:
-        using DescriptorValue = std::variant<std::monostate, Image2D *, Buffer *, DispatchedTlas>;
+        using DescriptorValue = std::variant<std::monostate, Image2D *, Buffer *, DispatchedTlas, void *>;
         std::vector<DescriptorValue> m_descriptors;
     };
 } // namespace tracey

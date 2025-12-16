@@ -28,7 +28,7 @@ namespace tracey
             if (hitModule)
             {
                 const auto hitFunction = compileShader(*hitModule);
-                sbt.hits.push_back(hitFunction);
+                sbt.hits.emplace_back(hitFunction);
             }
         }
 

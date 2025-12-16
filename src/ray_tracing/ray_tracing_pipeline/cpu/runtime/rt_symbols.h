@@ -39,6 +39,13 @@ namespace rt
     using Buffer_T = void *;
     using buffer = Buffer_T;
 
+    using Payload_T = void *;
+    using payload = Payload_T;
+
+    extern "C" thread_local payload payloads[4];
+    extern "C" void setPayload(payload *p, unsigned int index);
+    extern "C" void getPayload(payload *p, unsigned int index);
+
     //
     // Opaque acceleration structure handle, matching GLSL:
     //   accelerationStructureEXT topLevel
@@ -47,8 +54,8 @@ namespace rt
     using accelerationStructureEXT = TopLevelAccelerationStructure_T *;
 
 // Shader code sees these as “gl_” builtins:
-#define gl_LaunchIDEXT g_Builtins.LaunchIDEXT
-#define gl_LaunchSizeEXT g_Builtins.LaunchSizeEXT
+#define gl_LaunchIDEXT g_Builtins.glLaunchIDEXT
+#define gl_LaunchSizeEXT g_Builtins.glLaunchSizeEXT
 #define gl_PrimitiveID g_Builtins.glPrimitiveID
 #define gl_InstanceID g_Builtins.glInstanceID
 #define gl_InstanceCustomIndexEXT g_Builtins.glInstanceCustomIndexEXT

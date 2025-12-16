@@ -18,6 +18,9 @@ namespace tracey
             case RayTracingPipelineLayout::DescriptorType::AccelerationStructure:
                 m_descriptors[binding.index] = DispatchedTlas{nullptr, nullptr};
                 break;
+            case RayTracingPipelineLayout::DescriptorType::RayPayload:
+                m_descriptors[binding.index] = static_cast<void *>(nullptr);
+                break;
             default:
                 assert(false && "Unknown descriptor type");
                 m_descriptors[binding.index] = std::monostate{};

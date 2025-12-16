@@ -27,20 +27,19 @@ namespace tracey
             builtins.glIncomingRayFlagsEXT = flags;
             // Set builtins for the hit shader
             sbt.hits[0].setBuiltins(builtins);
-            // Call hit shader from SBT based on instance and primitive IDs
+            // transfer payload to shader
+            auto raygenPayload = sbt.rayGen.shader.payloadSlots[payloadIndex];
+            raygenPayload->getPayload(&raygenPayload->payloadPtr, payloadIndex);
+
+            auto &hitPayloadSlot = sbt.hits[0].shader.payloadSlots[payloadIndex];
+            hitPayloadSlot->setPayload(&raygenPayload->payloadPtr, payloadIndex);
             sbt.hits[0].shader.func();
         }
 
-        (void)flags;
         (void)cullMask;
         (void)sbtRecordOffset;
         (void)sbtRecordStride;
         (void)missIndex;
-        (void)origin;
-        (void)tMin;
-        (void)direction;
-        (void)tMax;
-        (void)payloadIndex;
     }
     void imageStoreFunc(rt::image2d image, rt::uvec2 coord, rt::vec4 value)
     {

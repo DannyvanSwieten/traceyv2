@@ -1,5 +1,6 @@
 #pragma once
 #include <vector>
+#include <memory>
 #include "runtime/rt_symbols.h"
 #include "../shader_binding_table.hpp"
 #include "../../../device/device.hpp"
@@ -10,9 +11,31 @@ namespace tracey
     class RayTracingPipelineLayout;
     using RayTracingEntryPointFunc = void (*)();
 
+    using setBuiltinsFunc = void (*)(const rt::Builtins &b);
+    using getBuiltinsFunc = void (*)(rt::Builtins *b);
+    using setPayloadFunc = void (*)(rt::payload *p, unsigned int index);
+    using getPayloadFunc = void (*)(rt::payload *p, unsigned int index);
+
     struct BindingSlot
     {
         void **slotPtr;
+    };
+
+    struct PayloadSlot
+    {
+        size_t payloadSize = 0;
+        void *payloadPtr = nullptr;
+        setPayloadFunc setPayload = nullptr;
+        getPayloadFunc getPayload = nullptr;
+
+        ~PayloadSlot()
+        {
+            if (payloadPtr)
+            {
+                std::free(payloadPtr);
+                payloadPtr = nullptr;
+            }
+        }
     };
 
     struct CompiledShader
@@ -20,12 +43,10 @@ namespace tracey
         RayTracingEntryPointFunc func;
         void *dylib = nullptr;
         std::vector<BindingSlot> bindingSlots;
+        std::vector<std::shared_ptr<PayloadSlot>> payloadSlots;
 
         void setTraceRaysExt();
     };
-
-    using setBuiltinsFunc = void (*)(const rt::Builtins &b);
-    using getBuiltinsFunc = void (*)(rt::Builtins *b);
 
     struct RayGenShader
     {

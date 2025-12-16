@@ -67,7 +67,7 @@ add_library(tracey
     src/device/cpu/cpu_buffer.hpp
     src/device/cpu/cpu_buffer.cpp
     src/device/buffer.hpp
-    src/device/image2d.hpp
+    src/device/image_2d.hpp
     src/device/cpu/cpu_image_2d.hpp
     src/device/cpu/cpu_image_2d.cpp
     src/device/cpu/cpu_bottom_level_acceleration_structure.hpp

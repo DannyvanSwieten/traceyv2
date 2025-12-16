@@ -99,6 +99,7 @@ namespace rt
     struct vec4
     {
         vec4() : x(0), y(0), z(0), w(0) {}
+        vec4(vec3 v3, float wVal) : x(v3.x), y(v3.y), z(v3.z), w(wVal) {}
         vec4(float xVal, float yVal, float zVal, float wVal) : x(xVal), y(yVal), z(zVal), w(wVal) {}
         union
         {

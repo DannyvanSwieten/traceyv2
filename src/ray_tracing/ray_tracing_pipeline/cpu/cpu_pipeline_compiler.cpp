@@ -52,6 +52,9 @@ namespace tracey
         shader << "extern \"C\" thread_local Builtins g_Builtins = {};\n";
         shader << "extern \"C\" void setBuiltins(const Builtins &b) { g_Builtins = b; }\n";
         shader << "extern \"C\" void getBuiltins(Builtins* b) { *b = g_Builtins; }\n";
+        shader << "extern \"C\" thread_local payload payloads[4] = {};\n";
+        shader << "extern \"C\" void getPayload(payload *p, unsigned int index) { *p = payloads[index]; }\n";
+        shader << "extern \"C\" void setPayload(payload *p, unsigned int index) { payloads[index] = *p; }\n";
 
         const auto bindings = layout.bindingsForStage(stage);
         for (const auto &binding : bindings)
@@ -88,12 +91,57 @@ namespace tracey
 
                 break;
             }
+            case RayTracingPipelineLayout::DescriptorType::RayPayload:
+            {
+                if (binding.structure.has_value())
+                {
+                    shader << "struct " << binding.structure->name() << " {\n";
+                    for (const auto &field : binding.structure->fields())
+                    {
+                        shader << "    " << field.type << " " << field.name;
+                        if (field.isArray)
+                        {
+                            if (field.elementCount == 0)
+                            {
+                                shader << "[]";
+                            }
+                            else
+                                shader << "[" << field.elementCount << "]";
+                        }
+                        shader << ";\n";
+                    }
+                    shader << "};\n";
+                    shader << "extern \"C\" " << binding.structure->name() << "* " << binding.name << " = nullptr;\n";
+                }
+                break;
+            }
             case RayTracingPipelineLayout::DescriptorType::AccelerationStructure:
                 shader << "extern \"C\" " << TLAS_TYPE_NAME << " " << binding.name << " = nullptr;\n";
                 break;
             default:
                 break;
             }
+        }
+
+        for (auto &payload : layout.payloads())
+        {
+            shader << "struct " << payload.structure.name() << " {\n";
+            for (const auto &field : payload.structure.fields())
+            {
+                shader << "    " << field.type << " " << field.name;
+                if (field.isArray)
+                {
+                    if (field.elementCount == 0)
+                    {
+                        shader << "[]";
+                    }
+                    else
+                        shader << "[" << field.elementCount << "]";
+                }
+                shader << ";\n";
+            }
+            shader << "};\n";
+            shader << "#define " << payload.name << " (*reinterpret_cast<" << payload.structure.name() << "*>(payloads[" << payload.index << "]))\n";
         }
 
         std::string toReplace = "void " + std::string(entryPoint) + "()";
@@ -169,6 +217,28 @@ namespace tracey
             }
             // Store the slot pointer somewhere to be set later during execution
             compiledShader.bindingSlots.push_back(BindingSlot{slotPtr});
+        }
+
+        const auto getPayload = reinterpret_cast<getPayloadFunc>(dlsym(dylib, "getPayload"));
+        const auto setPayload = reinterpret_cast<setPayloadFunc>(dlsym(dylib, "setPayload"));
+        if (!getPayload || !setPayload)
+        {
+            std::cerr << "dlopen error: " << dlerror() << std::endl;
+            dlclose(dylib);
+            std::filesystem::remove(outputPath);
+            throw std::runtime_error("Failed to find payload accessors in dylib: " + std::string(dlerror()));
+        }
+
+        for (const auto &payload : layout.payloads())
+        {
+            compiledShader.payloadSlots.emplace_back(std::make_shared<PayloadSlot>());
+            auto &slot = compiledShader.payloadSlots.back();
+
+            slot->payloadPtr = std::malloc(payload.structure.size());
+            slot->setPayload = setPayload;
+            slot->setPayload(&slot->payloadPtr, payload.index);
+            slot->getPayload = getPayload;
+            slot->payloadSize = payload.structure.size();
         }
 
         compiledShader.dylib = dylib;

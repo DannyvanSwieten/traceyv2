@@ -68,7 +68,7 @@ int main()
     auto blas = cpuComputeDevice->createBottomLevelAccelerationStructure(vertexBuffer, 36, sizeof(tracey::Vec3), nullptr, 0);
     std::array<tracey::Tlas::Instance, 1> instances;
     instances[0].blasAddress = 0;
-    instances[0].setTransform(glm::mat4(1.0f));
+    instances[0].setTransform(glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 0.0f, -5.0f)));
 
     std::array<const tracey::BottomLevelAccelerationStructure *, 1> blasPtr = {blas};
 
@@ -79,9 +79,13 @@ int main()
     layout.addImage2D("outputImage", 0, tracey::ShaderStage::RayGeneration);
     layout.addAccelerationStructure("tlas", 1, tracey::ShaderStage::RayGeneration);
 
-    tracey::BufferLayout bufferStructure("Vertex");
+    tracey::StructureLayout bufferStructure("Vertex");
     bufferStructure.addMember({"position", "vec3", false, 0});
     layout.addBuffer("vertexBuffer", 2, tracey::ShaderStage::ClosestHit, bufferStructure);
+
+    tracey::StructureLayout payloadLayout("RayPayload");
+    payloadLayout.addMember({"color", "vec3", false, 0});
+    layout.addPayload("rayPayload", 0, tracey::ShaderStage::RayGeneration, payloadLayout);
 
     std::array<tracey::DescriptorSet *, 1> descriptorSets;
     cpuComputeDevice->allocateDescriptorSets(descriptorSets, layout);
@@ -101,12 +105,14 @@ void shader() {
     vec3 origin = vec3(0.0f, 0.0f, 0.0f);
     vec3 direction = normalize(vec3(u - 0.5f, v - 0.5f, -1.0f));
 
-    imageStore(outputImage, launchID.xy, vec4(direction.x, direction.y, 0.0, 1.0));
+    rayPayload.color = vec3(0.0f, 0.0f, 0.0f);
 
     traceRaysEXT(tlas, 0, 0, 0, 0, 0,
                   origin, 0.01f,
                   direction, 100.0f,
                   0);
+
+    imageStore(outputImage, launchID.xy, vec4(rayPayload.color, 1.0));
 }
     )",
                                                              "shader");
@@ -115,7 +121,7 @@ void shader() {
                                                                  R"(
 void shader() {
     // Closest hit shader code
-    
+    rayPayload.color = vec3(1.0f, 0.0f, 0.0f);
 }
     )",
                                                                  "shader");

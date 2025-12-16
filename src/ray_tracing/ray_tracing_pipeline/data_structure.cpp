@@ -1,14 +1,51 @@
 #include "data_structure.hpp"
-
+#include <cassert>
 namespace tracey
 {
-    BufferLayout::BufferLayout(const std::string_view name)
+    StructureLayout::StructureLayout(const std::string_view name)
         : m_name(name)
     {
     }
 
-    void BufferLayout::addMember(const StructField &field)
+    void StructureLayout::addMember(const StructField &field)
     {
+        if (field.type == "float")
+        {
+            m_size += 4;
+        }
+        else if (field.type == "vec2")
+        {
+            m_size += 8;
+        }
+        else if (field.type == "vec3")
+        {
+            m_size += 12;
+        }
+        else if (field.type == "vec4")
+        {
+            m_size += 16;
+        }
+        else if (field.type == "int")
+        {
+            m_size += 4;
+        }
+        else if (field.type == "ivec2")
+        {
+            m_size += 8;
+        }
+        else if (field.type == "ivec3")
+        {
+            m_size += 12;
+        }
+        else if (field.type == "ivec4")
+        {
+            m_size += 16;
+        }
+        else
+        {
+            // Handle other types or throw an error
+            assert(false && "Unknown type in StructField");
+        }
         m_fields.push_back(field);
     }
 }
