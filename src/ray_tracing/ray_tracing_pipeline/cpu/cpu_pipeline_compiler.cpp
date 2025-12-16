@@ -84,9 +84,9 @@ namespace tracey
                         shader << ";\n";
                     }
                     shader << "};\n";
-                    shader << "extern \"C\" " << BUFFER_TYPE_NAME << " " << binding.name << " = nullptr;\n";
+                    shader << "extern \"C\" " << BUFFER_TYPE_NAME << " " << "buffer" << binding.index << " = nullptr;\n";
                     // Define a macro to access elements
-                    shader << "#define " << binding.name << " reinterpret_cast<" << binding.structure->name() << "*>(" << binding.name << ")\n";
+                    shader << "#define " << binding.name << " reinterpret_cast<" << binding.structure->name() << "*>(" << "buffer" << binding.index << ")\n";
                 }
 
                 break;
@@ -167,9 +167,18 @@ namespace tracey
         outFile << newSource;
         outFile.close();
 
-        // Compile it to a dylib and import it again...
+// Compile it to a dylib and import it again...
+#ifdef DEBUG
+        std::cout << "Compiling generated shader to dylib at: " << outputPath << std::endl;
+        std::string debugFlag = "-g ";
+        std::string optimizationFlag = "-O0 ";
+#else
+        std::string debugFlag = "";
+        std::string optimizationFlag = "-O3 ";
+#endif
         std::stringstream cmdStream;
-        cmdStream << "clang++ -std=c++20 -O3 -shared -fPIC "
+        cmdStream << "clang++ -std=c++20 " << optimizationFlag << " -shared -fPIC "
+                  << debugFlag
                   << "-I" << includePath << " "
                   << cppPath.string() << " -o "
                   << outputPath.string();
@@ -204,10 +213,30 @@ namespace tracey
         }
         CompiledShader compiledShader;
         compiledShader.func = entryPointFunc;
+        compiledShader.bindingSlots.resize(layout.bindings().size());
         // load all global bindingslots
         for (const auto &binding : layout.bindingsForStage(stage))
         {
-            void **slotPtr = reinterpret_cast<void **>(dlsym(dylib, binding.name.c_str()));
+            void **slotPtr;
+            switch (binding.type)
+            {
+            case RayTracingPipelineLayout::DescriptorType::Image2D:
+                slotPtr = reinterpret_cast<void **>(dlsym(dylib, binding.name.c_str()));
+                break;
+            case RayTracingPipelineLayout::DescriptorType::Buffer:
+                slotPtr = reinterpret_cast<void **>(dlsym(dylib, ("buffer" + std::to_string(binding.index)).c_str()));
+                break;
+            case RayTracingPipelineLayout::DescriptorType::RayPayload:
+                slotPtr = reinterpret_cast<void **>(dlsym(dylib, binding.name.c_str()));
+                break;
+            case RayTracingPipelineLayout::DescriptorType::AccelerationStructure:
+                slotPtr = reinterpret_cast<void **>(dlsym(dylib, binding.name.c_str()));
+                break;
+            default:
+                slotPtr = nullptr;
+                break;
+            }
+
             if (!slotPtr)
             {
                 std::cerr << "dlopen error: " << dlerror() << std::endl;
@@ -216,7 +245,7 @@ namespace tracey
                 throw std::runtime_error("Failed to find binding slot in dylib: " + std::string(dlerror()));
             }
             // Store the slot pointer somewhere to be set later during execution
-            compiledShader.bindingSlots.push_back(BindingSlot{slotPtr});
+            compiledShader.bindingSlots[binding.index] = BindingSlot{slotPtr};
         }
 
         const auto getPayload = reinterpret_cast<getPayloadFunc>(dlsym(dylib, "getPayload"));

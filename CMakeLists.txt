@@ -61,6 +61,10 @@ add_library(tracey
 
     src/device/gpu/vulkan_compute_device.hpp
     src/device/gpu/vulkan_compute_device.cpp
+    src/device/gpu/vulkan_buffer.hpp
+    src/device/gpu/vulkan_buffer.cpp
+    src/device/gpu/vulkan_image_2d.hpp
+    src/device/gpu/vulkan_image_2d.cpp
 
     src/device/cpu/cpu_compute_device.hpp
     src/device/cpu/cpu_compute_device.cpp
@@ -105,6 +109,12 @@ add_library(tracey
     src/ray_tracing/shader_module/shader_module.hpp
     src/ray_tracing/shader_module/cpu/cpu_shader_module.hpp
     src/ray_tracing/shader_module/cpu/cpu_shader_module.cpp
+)
+
+# Define DEBUG for Debug builds, NDEBUG for non-Debug
+add_compile_definitions(
+    $<$<CONFIG:Debug>:DEBUG>
+    $<$<NOT:$<CONFIG:Debug>>:NDEBUG>
 )
 
 if(MSVC)

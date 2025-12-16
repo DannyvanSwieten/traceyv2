@@ -7,6 +7,14 @@ namespace tracey
     Tlas::Tlas(std::span<const Blas *> blases, std::span<const Instance> instances) : blases(blases),
                                                                                       instances(instances)
     {
+        for (const auto &instance : instances)
+        {
+            // Precompute inverse transforms for each instance
+            Transforms transforms;
+            std::memcpy(transforms.toWorld, instance.transform, sizeof(instance.transform));
+            invert3x4(instance.transform, transforms.toObject);
+            instanceTransforms.push_back(transforms);
+        }
     }
     std::optional<Hit> Tlas::intersect(const Ray &ray, float tMin, float tMax, RayFlags flags) const
     {

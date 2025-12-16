@@ -19,8 +19,9 @@ namespace rt
         unsigned int glIncomingRayFlagsEXT;
         float glHitTEXT;
         unsigned int glHitKindEXT;
-        mat3x4 glWorldToObjectEXT;
-        mat3x4 glObjectToWorldEXT;
+        vec3 glWorldNormalEXT;
+        const mat3x4 *glWorldToObjectEXT;
+        const mat3x4 *glObjectToWorldEXT;
     };
 
     // Each thread gets its own copy
@@ -65,8 +66,9 @@ namespace rt
 #define gl_IncomingRayFlagsEXT g_Builtins.glIncomingRayFlagsEXT
 #define gl_HitTEXT g_Builtins.glHitTEXT
 #define gl_HitKindEXT g_Builtins.glHitKindEXT
-#define gl_WorldToObjectEXT g_Builtins.glWorldToObjectEXT
-#define gl_ObjectToWorldEXT g_Builtins.glObjectToWorldEXT
+#define gl_WorldNormalEXT g_Builtins.glWorldNormalEXT
+#define gl_WorldToObjectEXT *g_Builtins.glWorldToObjectEXT
+#define gl_ObjectToWorldEXT *g_Builtins.glObjectToWorldEXT
 
     using TraceRaysFunc_t = void (*)(accelerationStructureEXT tlas, unsigned int flags, unsigned int cullMask, unsigned int sbtRecordOffset, unsigned int sbtRecordStride, unsigned int missIndex, const vec3 &origin, float tMin, const vec3 &direction, float tMax, unsigned int payloadIndex);
     extern "C" TraceRaysFunc_t traceRaysEXT;
@@ -74,4 +76,6 @@ namespace rt
     using ImageStoreFunc_t = void (*)(image2d image, uvec2 coord, vec4 value);
     extern "C" ImageStoreFunc_t imageStore;
 
+#define max(a, b) ((a) > (b) ? (a) : (b))
+#define min(a, b) ((a) < (b) ? (a) : (b))
 }

@@ -15,4 +15,12 @@ namespace rt
             m.rows[2].x * v.x + m.rows[2].y * v.y + m.rows[2].z * v.z + m.rows[2].w * v.w,
             1.0f};
     }
+
+    inline vec3 operator*(const mat3x4 &m, const vec3 &v)
+    {
+        return {
+            m.rows[0].x * v.x + m.rows[0].y * v.y + m.rows[0].z * v.z + m.rows[0].w,
+            m.rows[1].x * v.x + m.rows[1].y * v.y + m.rows[1].z * v.z + m.rows[1].w,
+            m.rows[2].x * v.x + m.rows[2].y * v.y + m.rows[2].z * v.z + m.rows[2].w};
+    }
 }

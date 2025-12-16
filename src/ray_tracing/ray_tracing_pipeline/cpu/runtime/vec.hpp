@@ -9,7 +9,7 @@ namespace rt
     template <int A, int B>
     struct swizzle2
     {
-        float v[4]; // shares storage with the owning vector (via union)
+        float v[2]; // shares storage with the owning vector (via union)
 
         inline operator vec2() const;
         inline swizzle2 &operator=(const vec2 &rhs);
@@ -18,7 +18,7 @@ namespace rt
     template <int A, int B, int C>
     struct swizzle3
     {
-        float v[4];
+        float v[3];
 
         inline operator vec3() const;
         inline swizzle3 &operator=(const vec3 &rhs);
@@ -60,21 +60,20 @@ namespace rt
     // vec3 is padded to 16 bytes (like many GPU ABIs) so swizzles can share a 4-float storage.
     struct vec3
     {
-        vec3() : x(0), y(0), z(0), _pad(0) {}
-        vec3(float xVal, float yVal, float zVal) : x(xVal), y(yVal), z(zVal), _pad(0) {}
+        vec3() : x(0), y(0), z(0) {}
+        vec3(float v) : x(v), y(v), z(v) {}
+        vec3(float xVal, float yVal, float zVal) : x(xVal), y(yVal), z(zVal) {}
         union
         {
             struct
             {
                 float x, y, z;
-                float _pad;
             };
             struct
             {
                 float r, g, b;
-                float _pad2;
             };
-            float data[4];
+            float data[3];
 
             // Common 2-component swizzles
             swizzle2<0, 1> xy;
@@ -214,9 +213,27 @@ namespace rt
         return vec3{a.x * b, a.y * b, a.z * b};
     }
 
+    inline vec3 operator*(float a, const vec3 &b)
+    {
+        return vec3{a * b.x, a * b.y, a * b.z};
+    }
+
     inline vec3 normalize(const vec3 &v)
     {
         float len = std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
         return vec3{v.x / len, v.y / len, v.z / len};
+    }
+
+    inline vec3 cross(const vec3 &a, const vec3 &b)
+    {
+        return vec3{
+            a.y * b.z - a.z * b.y,
+            a.z * b.x - a.x * b.z,
+            a.x * b.y - a.y * b.x};
+    }
+
+    inline float dot(const vec3 &a, const vec3 &b)
+    {
+        return a.x * b.x + a.y * b.y + a.z * b.z;
     }
 } // namespace rt

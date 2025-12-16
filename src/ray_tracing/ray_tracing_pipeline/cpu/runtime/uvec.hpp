@@ -9,7 +9,7 @@ namespace rt
     template <int A, int B>
     struct uswizzle2
     {
-        unsigned int v[4];
+        unsigned int v[2];
         inline operator uvec2() const;
         inline uswizzle2 &operator=(const uvec2 &rhs);
     };
@@ -17,7 +17,7 @@ namespace rt
     template <int A, int B, int C>
     struct uswizzle3
     {
-        unsigned int v[4];
+        unsigned int v[3];
         inline operator uvec3() const;
         inline uswizzle3 &operator=(const uvec3 &rhs);
     };
@@ -40,7 +40,6 @@ namespace rt
             {
                 unsigned int x, y;
             };
-            float _pad;
             unsigned int data[2];
             uswizzle2<0, 1> xy;
             uswizzle2<1, 0> yx;
@@ -49,16 +48,15 @@ namespace rt
 
     struct uvec3
     {
-        uvec3() : x(0), y(0), z(0), _pad(0) {}
-        uvec3(unsigned int xVal, unsigned int yVal, unsigned int zVal) : x(xVal), y(yVal), z(zVal), _pad(0) {}
+        uvec3() : x(0), y(0), z(0) {}
+        uvec3(unsigned int xVal, unsigned int yVal, unsigned int zVal) : x(xVal), y(yVal), z(zVal) {}
         union
         {
             struct
             {
                 unsigned int x, y, z;
-                unsigned int _pad;
             };
-            unsigned int data[4];
+            unsigned int data[3];
             uswizzle2<0, 1> xy;
             uswizzle3<0, 1, 2> xyz;
         };

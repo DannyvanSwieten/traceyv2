@@ -9,7 +9,7 @@ namespace rt
     template <int A, int B>
     struct iswizzle2
     {
-        int v[4];
+        int v[2];
         inline operator ivec2() const;
         inline iswizzle2 &operator=(const ivec2 &rhs);
     };
@@ -17,7 +17,7 @@ namespace rt
     template <int A, int B, int C>
     struct iswizzle3
     {
-        int v[4];
+        int v[3];
         inline operator ivec3() const;
         inline iswizzle3 &operator=(const ivec3 &rhs);
     };
@@ -40,7 +40,6 @@ namespace rt
             {
                 int x, y;
             };
-            float _pad;
             int data[2];
             iswizzle2<0, 1> xy;
             iswizzle2<1, 0> yx;
@@ -49,16 +48,15 @@ namespace rt
 
     struct ivec3
     {
-        ivec3() : x(0), y(0), z(0), _pad(0) {}
-        ivec3(int xVal, int yVal, int zVal) : x(xVal), y(yVal), z(zVal), _pad(0) {}
+        ivec3() : x(0), y(0), z(0) {}
+        ivec3(int xVal, int yVal, int zVal) : x(xVal), y(yVal), z(zVal) {}
         union
         {
             struct
             {
                 int x, y, z;
-                int _pad;
             };
-            int data[4];
+            int data[3];
             iswizzle2<0, 1> xy;
             iswizzle3<0, 1, 2> xyz;
         };

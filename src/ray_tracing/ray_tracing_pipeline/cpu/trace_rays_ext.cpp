@@ -3,19 +3,27 @@
 #include "../../../device/cpu/cpu_top_level_acceleration_structure.hpp"
 #include "../../../core/tlas.hpp"
 #include "../../../device/cpu/cpu_image_2d.hpp"
+#include <limits>
 namespace tracey
 {
     void traceRaysExtFunc(rt::accelerationStructureEXT tlas, unsigned int flags, unsigned int cullMask, unsigned int sbtRecordOffset, unsigned int sbtRecordStride, unsigned int missIndex, const rt::vec3 &origin, float tMin, const rt::vec3 &direction, float tMax, unsigned int payloadIndex)
     {
         auto tlasInterface = reinterpret_cast<DispatchedTlas *>(tlas);
-        const Tlas &cpuTlas = dynamic_cast<const CpuTopLevelAccelerationStructure *>(tlasInterface->tlasInterface)->tlas();
+        const Tlas &cpuTlas = static_cast<const CpuTopLevelAccelerationStructure *>(tlasInterface->tlasInterface)->tlas();
         const auto &sbt = tlasInterface->pipeline->compiledSbt();
         tracey::Ray ray;
         ray.origin = Vec3{origin.x, origin.y, origin.z};
         ray.direction = Vec3{direction.x, direction.y, direction.z};
-        ray.invDirection = Vec3{1.0f / direction.x, 1.0f / direction.y, 1.0f / direction.z};
+        auto safeRcp = [](float x) -> float
+        {
+            // Avoid inf/NaN on exact zero; matches typical RT behavior.
+            return (x != 0.0f) ? (1.0f / x) : std::numeric_limits<float>::infinity();
+        };
+        ray.invDirection = Vec3{safeRcp(direction.x), safeRcp(direction.y), safeRcp(direction.z)};
 
-        if (const auto intersection = cpuTlas.intersect(ray, tMin, tMax, RAY_FLAG_OPAQUE); intersection)
+        const auto intersection = cpuTlas.intersect(ray, tMin, tMax, RAY_FLAG_OPAQUE);
+
+        if (intersection)
         {
             rt::Builtins builtins;
             sbt.rayGen.getBuiltins(&builtins);
@@ -25,15 +33,30 @@ namespace tracey
             builtins.glRayTmaxEXT = tMax;
             builtins.glHitTEXT = intersection->t;
             builtins.glIncomingRayFlagsEXT = flags;
+            builtins.glWorldNormalEXT = rt::vec3{intersection->normal.x, intersection->normal.y, intersection->normal.z};
+            const auto &instanceTransforms = cpuTlas.getInstanceTransforms(intersection->instanceId);
+            // Set object to world and world to object matrices
+            builtins.glObjectToWorldEXT = reinterpret_cast<const rt::mat3x4 *>(&instanceTransforms.toWorld);
+            builtins.glWorldToObjectEXT = reinterpret_cast<const rt::mat3x4 *>(&instanceTransforms.toObject);
+
             // Set builtins for the hit shader
             sbt.hits[0].setBuiltins(builtins);
-            // transfer payload to shader
-            auto raygenPayload = sbt.rayGen.shader.payloadSlots[payloadIndex];
-            raygenPayload->getPayload(&raygenPayload->payloadPtr, payloadIndex);
+            // transfer payload to shader without mutating shared slot state
+            void *payloadPtr = nullptr;
+            if (payloadIndex < sbt.rayGen.shader.payloadSlots.size() && sbt.rayGen.shader.payloadSlots[payloadIndex])
+            {
+                sbt.rayGen.shader.payloadSlots[payloadIndex]->getPayload(&payloadPtr, payloadIndex);
+            }
 
-            auto &hitPayloadSlot = sbt.hits[0].shader.payloadSlots[payloadIndex];
-            hitPayloadSlot->setPayload(&raygenPayload->payloadPtr, payloadIndex);
-            sbt.hits[0].shader.func();
+            if (payloadIndex < sbt.hits[0].shader.payloadSlots.size() && sbt.hits[0].shader.payloadSlots[payloadIndex])
+            {
+                sbt.hits[0].shader.payloadSlots[payloadIndex]->setPayload(&payloadPtr, payloadIndex);
+            }
+
+            if (sbt.hits[0].shader.func)
+            {
+                sbt.hits[0].shader.func();
+            }
         }
 
         (void)cullMask;

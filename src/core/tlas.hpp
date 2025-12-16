@@ -116,10 +116,26 @@ namespace tracey
         Tlas(std::span<const Blas *> blases, std::span<const Instance> instances);
 
         std::optional<Hit> intersect(const Ray &ray, float tMin, float tMax, RayFlags flags) const;
+        const Instance &getInstance(uint32_t index) const
+        {
+            return instances[index];
+        }
+
+        struct Transforms
+        {
+            float toWorld[3][4];
+            float toObject[3][4];
+        };
+
+        const Transforms &getInstanceTransforms(uint32_t index) const
+        {
+            return instanceTransforms[index];
+        }
 
     private:
         std::span<const Blas *> blases;
         std::span<const Instance> instances;
+        std::vector<Transforms> instanceTransforms;
         std::vector<BVHNode> m_nodes;
     };
 }

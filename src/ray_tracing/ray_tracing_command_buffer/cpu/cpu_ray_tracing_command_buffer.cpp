@@ -2,7 +2,9 @@
 #include "../../ray_tracing_pipeline/cpu/cpu_ray_tracing_pipeline.hpp"
 #include "../../ray_tracing_pipeline/cpu/cpu_descriptor_set.hpp"
 #include "../../ray_tracing_pipeline/ray_tracing_pipeline_layout.hpp"
+#include "../../../device/buffer.hpp"
 #include <cassert>
+#include <thread>
 namespace tracey
 {
     CpuRayTracingCommandBuffer::CpuRayTracingCommandBuffer()
@@ -48,9 +50,10 @@ namespace tracey
             return;
         }
 
+        std::chrono::high_resolution_clock::time_point startTime = std::chrono::high_resolution_clock::now();
+
         auto compiledSbt = m_pipeline->compiledSbt();
-        const auto &descriptors = m_pipeline->layout().bindings();
-        for (const auto &binding : descriptors)
+        for (const auto &binding : m_pipeline->layout().bindings())
         {
             // Binding setup logic would go here
             if (binding.stage == ShaderStage::RayGeneration)
@@ -66,6 +69,7 @@ namespace tracey
                     else if constexpr (std::is_same_v<T, Buffer *>)
                     {
                         // Setup buffer
+                        *m_pipeline->compiledSbt().rayGen.shader.bindingSlots[binding.index].slotPtr = arg;
                     }
                     else if constexpr (std::is_same_v<T,  DispatchedTlas>)
                     {
@@ -76,27 +80,101 @@ namespace tracey
             else if (binding.stage == ShaderStage::ClosestHit)
             {
                 // Setup for hit shaders
+                m_descriptorSet->visitMut([&](auto &&arg)
+                                          {
+                    using T = std::decay_t<decltype(arg)>;
+                    if constexpr (std::is_same_v<T, Image2D *>)
+                    {
+                        *m_pipeline->compiledSbt().hits[0].shader.bindingSlots[binding.index].slotPtr = arg;
+                    }
+                    else if constexpr (std::is_same_v<T, Buffer *>)
+                    {
+                        // Setup buffer
+                        *m_pipeline->compiledSbt().hits[0].shader.bindingSlots[binding.index].slotPtr = arg->mapForWriting();
+                    }
+                    else if constexpr (std::is_same_v<T,  DispatchedTlas>)
+                    {
+                        *m_pipeline->compiledSbt().hits[0].shader.bindingSlots[binding.index].slotPtr = &arg;
+                    } },
+                                          binding.index);
             }
         }
 
-        // CPU-based ray tracing execution logic would go here
-        for (uint32_t y = 0; y < height; ++y)
+        std::vector<std::thread> threads;
+
+        // 2D tiling for better locality
+        constexpr int64_t tileW = 16;
+        constexpr int64_t tileH = 16;
+        const int64_t tilesX = (static_cast<int64_t>(width) + tileW - 1) / tileW;
+        const int64_t tilesY = (static_cast<int64_t>(height) + tileH - 1) / tileH;
+        const int64_t totalTiles = tilesX * tilesY;
+
+        // Atomic tile index (counting down)
+        std::atomic<int64_t> nextTile = totalTiles;
+
+        for (size_t i = 0; i < std::thread::hardware_concurrency(); ++i)
         {
-            for (uint32_t x = 0; x < width; ++x)
-            {
-                // Invoke ray generation shader function
-                if (compiledSbt.rayGen.shader.func)
+            threads.emplace_back([&]()
+                                 {
+                // Each thread processes tiles. Avoid mutating shared SBT state.
+                void* payloadPtr = nullptr;
+                if (!compiledSbt.rayGen.shader.payloadSlots.empty() && compiledSbt.rayGen.shader.payloadSlots[0])
                 {
-                    rt::Builtins builtins;
-                    builtins.glLaunchIDEXT = {x, y, 0};
-                    builtins.glLaunchSizeEXT = {width, height, 1};
-                    if (compiledSbt.rayGen.setBuiltins)
-                    {
-                        compiledSbt.rayGen.setBuiltins(builtins);
-                    }
+                    payloadPtr = std::malloc(compiledSbt.rayGen.shader.payloadSlots[0]->payloadSize);
+                    compiledSbt.rayGen.shader.payloadSlots[0]->setPayload(&payloadPtr, 0);
                 }
-                compiledSbt.rayGen.shader.func();
-            }
+
+                // Reuse builtins per thread to reduce per-pixel overhead.
+                rt::Builtins builtins;
+                builtins.glLaunchSizeEXT = {width, height, 1};
+
+                for (;;)
+                {
+                    // fetch next tile index (counting down)
+                    int64_t tileIndex = nextTile.fetch_sub(1, std::memory_order_relaxed) - 1;
+                    if (tileIndex < 0)
+                        break;
+
+                    const int64_t tileX = tileIndex % tilesX;
+                    const int64_t tileY = tileIndex / tilesX;
+
+                    const uint32_t baseX = static_cast<uint32_t>(tileX * tileW);
+                    const uint32_t baseY = static_cast<uint32_t>(tileY * tileH);
+
+                    // Iterate pixels inside the tile
+                    for (uint32_t localY = 0; localY < static_cast<uint32_t>(tileH); ++localY)
+                    {
+                        const uint32_t py = baseY + localY;
+                        if (py >= height)
+                            break;
+
+                        for (uint32_t localX = 0; localX < static_cast<uint32_t>(tileW); ++localX)
+                        {
+                            const uint32_t px = baseX + localX;
+                            if (px >= width)
+                                break;
+
+                            if (compiledSbt.rayGen.shader.func)
+                            {
+                                builtins.glLaunchIDEXT = {px, py, 0};
+                                if (compiledSbt.rayGen.setBuiltins)
+                                {
+                                    compiledSbt.rayGen.setBuiltins(builtins);
+                                }
+                                compiledSbt.rayGen.shader.func();
+                            }
+                        }
+                    }
+                } });
         }
+
+        for (auto &thread : threads)
+        {
+            thread.join();
+        }
+
+        std::chrono::high_resolution_clock::time_point endTime = std::chrono::high_resolution_clock::now();
+        std::chrono::duration<double, std::milli> duration = endTime - startTime;
+        printf("Ray tracing completed in %.2f ms\n", duration.count());
     }
 }

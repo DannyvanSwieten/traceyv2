@@ -68,12 +68,12 @@ int main()
     auto blas = cpuComputeDevice->createBottomLevelAccelerationStructure(vertexBuffer, 36, sizeof(tracey::Vec3), nullptr, 0);
     std::array<tracey::Tlas::Instance, 1> instances;
     instances[0].blasAddress = 0;
-    instances[0].setTransform(glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 0.0f, -5.0f)));
+    instances[0].setTransform(glm::translate(tracey::Vec3(0, 0, -5)) * glm::rotate(glm::radians(30.0f), tracey::Vec3(0, 1, 0)) * glm::rotate(glm::radians(30.0f), tracey::Vec3(-1, 0, 0)));
 
     std::array<const tracey::BottomLevelAccelerationStructure *, 1> blasPtr = {blas};
 
     tracey::TopLevelAccelerationStructure *tlas = cpuComputeDevice->createTopLevelAccelerationStructure(std::span<const tracey::BottomLevelAccelerationStructure *>(blasPtr), instances);
-    tracey::Image2D *outputImage = cpuComputeDevice->createImage2D(800, 600, tracey::ImageFormat::R8G8B8A8Unorm);
+    tracey::Image2D *outputImage = cpuComputeDevice->createImage2D(512, 512, tracey::ImageFormat::R8G8B8A8Unorm);
 
     tracey::RayTracingPipelineLayout layout;
     layout.addImage2D("outputImage", 0, tracey::ShaderStage::RayGeneration);
@@ -91,6 +91,7 @@ int main()
     cpuComputeDevice->allocateDescriptorSets(descriptorSets, layout);
     descriptorSets[0]->setImage2D(0, outputImage);
     descriptorSets[0]->setAccelerationStructure(1, tlas);
+    descriptorSets[0]->setBuffer(2, vertexBuffer);
 
     auto rayGenModule = cpuComputeDevice->createShaderModule(tracey::ShaderStage::RayGeneration,
                                                              R"(
@@ -105,7 +106,8 @@ void shader() {
     vec3 origin = vec3(0.0f, 0.0f, 0.0f);
     vec3 direction = normalize(vec3(u - 0.5f, v - 0.5f, -1.0f));
 
-    rayPayload.color = vec3(0.0f, 0.0f, 0.0f);
+    // set up sky color based on ray direction
+    rayPayload.color = vec3(0.5f, 0.7f, 1.0f) * (1.0f - direction.y);
 
     traceRaysEXT(tlas, 0, 0, 0, 0, 0,
                   origin, 0.01f,
@@ -121,7 +123,19 @@ void shader() {
                                                                  R"(
 void shader() {
     // Closest hit shader code
-    rayPayload.color = vec3(1.0f, 0.0f, 0.0f);
+    // fetch the positions
+    int vertexIndex = gl_PrimitiveID * 3;
+    vec3 v0 = gl_ObjectToWorldEXT * vertexBuffer[vertexIndex + 0].position;
+    vec3 v1 = gl_ObjectToWorldEXT * vertexBuffer[vertexIndex + 1].position;
+    vec3 v2 = gl_ObjectToWorldEXT * vertexBuffer[vertexIndex + 2].position;
+
+    // Simple shading based on normal
+    vec3 normal = normalize(cross(v1 - v0, v2 - v0));
+
+    // Some fake lighting
+    vec3 L = normalize(vec3(-1.0f, -1.0f, 1.0f));
+    float I = max(dot(L, normal), 0.0f);
+    rayPayload.color = vec3(I);
 }
     )",
                                                                  "shader");
@@ -135,7 +149,7 @@ void shader() {
     commandBuffer->begin();
     commandBuffer->setPipeline(pipeline);
     commandBuffer->setDescriptorSet(descriptorSets[0]);
-    commandBuffer->traceRays(*sbt, 800, 600);
+    commandBuffer->traceRays(*sbt, 512, 512);
     commandBuffer->end();
 
     const auto imageData = outputImage->data();
@@ -143,14 +157,14 @@ void shader() {
     std::ofstream outFile("output.ppm", std::ios::binary);
     // write only rgb channels
     outFile << "P6\n"
-            << 800 << " " << 600 << "\n255\n";
-    for (uint32_t y = 0; y < 600; ++y)
+            << 512 << " " << 512 << "\n255\n";
+    for (uint32_t y = 0; y < 512; ++y)
     {
-        for (uint32_t x = 0; x < 800; ++x)
+        for (uint32_t x = 0; x < 512; ++x)
         {
-            uint8_t r = imageData[(y * 800 + x) * 4 + 0];
-            uint8_t g = imageData[(y * 800 + x) * 4 + 1];
-            uint8_t b = imageData[(y * 800 + x) * 4 + 2];
+            uint8_t r = imageData[(y * 512 + x) * 4 + 0];
+            uint8_t g = imageData[(y * 512 + x) * 4 + 1];
+            uint8_t b = imageData[(y * 512 + x) * 4 + 2];
             outFile << r << g << b;
         }
     }

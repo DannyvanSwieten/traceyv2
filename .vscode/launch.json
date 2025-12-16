@@ -66,6 +66,15 @@
             "args": [],
             "cwd": "${workspaceFolder}",
             "preLaunchTask": "CMake: build"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Device Setup Example Release",
+            "program": "${workspaceFolder}/build/Release/examples/device_api",
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "CMake: build"
         }
     ]
 }
