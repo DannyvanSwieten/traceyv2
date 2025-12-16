@@ -171,16 +171,16 @@ namespace tracey
 #ifdef DEBUG
         std::cout << "Compiling generated shader to dylib at: " << outputPath << std::endl;
         std::string debugFlag = "-g ";
-        std::string optimizationFlag = "-O0 ";
+        std::string optimizationFlag = "-O0 -fno-omit-frame-pointer ";
 #else
         std::string debugFlag = "";
-        std::string optimizationFlag = "-O3 ";
+        std::string optimizationFlag = "-O3 -flto";
 #endif
         std::stringstream cmdStream;
         cmdStream << "clang++ -std=c++20 " << optimizationFlag << " -shared -fPIC "
                   << debugFlag
                   << "-I" << includePath << " "
-                  << cppPath.string() << " -o "
+                  << cppPath.string() << " -o"
                   << outputPath.string();
 
         int result = std::system(cmdStream.str().c_str());
@@ -191,7 +191,7 @@ namespace tracey
         }
 
         // Delete the temporary source file
-        std::filesystem::remove(cppPath);
+        // std::filesystem::remove(cppPath);
 
         // Load the dylib and get function pointers as needed...
         const auto dylib = dlopen(outputPath.string().c_str(), RTLD_NOW);
