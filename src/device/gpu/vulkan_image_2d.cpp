@@ -1,5 +1,6 @@
 #include "vulkan_image_2d.hpp"
 #include "vulkan_compute_device.hpp"
+#include <stdexcept>
 namespace tracey
 {
     VulkanImage2D::VulkanImage2D(VulkanComputeDevice &device, uint32_t width, uint32_t height, ImageFormat format)

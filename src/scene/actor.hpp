@@ -1,5 +1,6 @@
 #pragma once
 #include <span>
+#include <vector>
 #include "transform.hpp"
 
 namespace tracey
