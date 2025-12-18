@@ -1,6 +1,7 @@
 #pragma once
 #include <span>
 #include <optional>
+#include <vector>
 #include "types.hpp"
 #include "ray.hpp"
 #include "hit.hpp"

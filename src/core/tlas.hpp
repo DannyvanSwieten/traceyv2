@@ -2,6 +2,8 @@
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <optional>
+#include <vector>
 #include "hit.hpp"
 #include "bvh_node.hpp"
 #include "ray.hpp"
