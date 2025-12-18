@@ -70,11 +70,14 @@ int main()
     tracey::Blas blas(cube);
     const tracey::Blas *blasPtr = &blas;
     // Create a TLAS with one instance of the triangle
-    tracey::Tlas::Instance instance;
-    instance.blasAddress = 0;
-    instance.setCustomIndex(0);
-    instance.setTransform(glm::translate(tracey::Vec3(0, 0, 5)) * glm::rotate(glm::radians(30.0f), tracey::Vec3(0, 1, 0)) * glm::rotate(glm::radians(30.0f), tracey::Vec3(-1, 0, 0)));
-    tracey::Tlas tlas(std::span<const tracey::Blas *>(&blasPtr, 1), std::span<const tracey::Tlas::Instance>(&instance, 1));
+    std::array<tracey::Tlas::Instance, 2> instances;
+    instances[0].blasAddress = 0;
+    instances[0].instanceCustomIndexAndMask = 0;
+    instances[0].setTransform(glm::translate(tracey::Vec3(0, 0, 5)) * glm::rotate(glm::radians(30.0f), tracey::Vec3(0, 1, 0)) * glm::rotate(glm::radians(30.0f), tracey::Vec3(-1, 0, 0)));
+    instances[1].blasAddress = 0;
+    instances[1].instanceCustomIndexAndMask = 1;
+    instances[1].setTransform(glm::translate(tracey::Vec3(0, -3, 5)) * glm::scale(tracey::Vec3(10, 1, 10)));
+    tracey::Tlas tlas(std::span<const tracey::Blas *>(&blasPtr, 1), instances);
 
     const uint32_t imageWidth = 512;
     const uint32_t imageHeight = 512;
@@ -82,7 +85,7 @@ int main()
     std::vector<tracey::Vec3> framebuffer(imageWidth * imageHeight);
 
     // Setup shader callback
-    const auto shader = [&instance, &framebuffer, &cube, imageWidth, imageHeight](tracey::UVec2 pixelCoord, const tracey::Tlas &tlas)
+    const auto shader = [&instances, &framebuffer, &cube, imageWidth, imageHeight](tracey::UVec2 pixelCoord, const tracey::Tlas &tlas)
     {
         // Simple pinhole camera ray generation
         float fov = 45.0f;
@@ -100,7 +103,7 @@ int main()
         if (const auto intersection = tlas.intersect(ray, tMin, tMax, flags); intersection)
         {
             // Transform triangle vertices to world space
-            const auto objectToWorldMatrix = instance.transform;
+            const auto objectToWorldMatrix = instances[intersection->instanceId].transform;
             const auto v0 = tracey::transformPoint(objectToWorldMatrix, cube[intersection->primitiveId * 3 + 0]);
             const auto v1 = tracey::transformPoint(objectToWorldMatrix, cube[intersection->primitiveId * 3 + 1]);
             const auto v2 = tracey::transformPoint(objectToWorldMatrix, cube[intersection->primitiveId * 3 + 2]);

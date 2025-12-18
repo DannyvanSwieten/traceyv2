@@ -66,9 +66,13 @@ int main()
     }
 
     auto blas = cpuComputeDevice->createBottomLevelAccelerationStructure(vertexBuffer, 36, sizeof(tracey::Vec3), nullptr, 0);
-    std::array<tracey::Tlas::Instance, 1> instances;
+    std::array<tracey::Tlas::Instance, 2> instances;
     instances[0].blasAddress = 0;
-    instances[0].setTransform(glm::translate(tracey::Vec3(0, 0, -5)) * glm::rotate(glm::radians(30.0f), tracey::Vec3(0, 1, 0)) * glm::rotate(glm::radians(30.0f), tracey::Vec3(-1, 0, 0)));
+    instances[0].instanceCustomIndexAndMask = 0;
+    instances[0].setTransform(glm::translate(tracey::Vec3(0, 0, 5)) * glm::rotate(glm::radians(30.0f), tracey::Vec3(0, 1, 0)) * glm::rotate(glm::radians(30.0f), tracey::Vec3(-1, 0, 0)));
+    instances[1].blasAddress = 0;
+    instances[1].instanceCustomIndexAndMask = 1;
+    instances[1].setTransform(glm::translate(tracey::Vec3(0, -3, 5)) * glm::scale(tracey::Vec3(10, 1, 10)));
 
     std::array<const tracey::BottomLevelAccelerationStructure *, 1> blasPtr = {blas};
 
@@ -84,7 +88,8 @@ int main()
     layout.addBuffer("vertexBuffer", 2, tracey::ShaderStage::ClosestHit, bufferStructure);
 
     tracey::StructureLayout payloadLayout("RayPayload");
-    payloadLayout.addMember({"color", "vec3", false, 0});
+    payloadLayout.addMember({"color", "vec3", false, false});
+    payloadLayout.addMember({"hit", "bool", false, false});
     layout.addPayload("rayPayload", 0, tracey::ShaderStage::RayGeneration, payloadLayout);
 
     std::array<tracey::DescriptorSet *, 1> descriptorSets;
@@ -95,24 +100,53 @@ int main()
 
     auto rayGenModule = cpuComputeDevice->createShaderModule(tracey::ShaderStage::RayGeneration,
                                                              R"(
+
+                                                             inline float radians(float degrees) {
+    return degrees * 3.14159265358979323846 / 180.0;
+}
 void shader() {
     // Ray generation shader code
 
     // Generate a pinhole camera ray
     uvec2 launchID = gl_LaunchIDEXT.xy;
+    vec2 pixelCoord = vec2(launchID.x, launchID.y);
     uvec2 launchSize = gl_LaunchSizeEXT.xy;
-    float u = (float(launchID.x) + 0.5f) / float(launchSize.x);
-    float v = (float(launchID.y) + 0.5f) / float(launchSize.y);
+    float width = float(launchSize.x);
+    float height = float(launchSize.y);
+    float fov = 45.0f;
+    float aspectRatio = width / height;
+    float px = (2.0f * ((pixelCoord.x + 0.5f) / width) - 1.0f) * tan(radians(fov) / 2.0f) * aspectRatio; 
+    float py = (1.0f - 2.0f * ((pixelCoord.y + 0.5f) / height)) * tan(radians(fov) / 2.0f);
+
     vec3 origin = vec3(0.0f, 0.0f, 0.0f);
-    vec3 direction = normalize(vec3(u - 0.5f, v - 0.5f, -1.0f));
+    vec3 direction = normalize(vec3(px, py, 1.0f));
 
     // set up sky color based on ray direction
-    rayPayload.color = vec3(0.5f, 0.7f, 1.0f) * (1.0f - direction.y);
+    float t = 0.5f * (direction.y + 1.0f);
+    vec3 sky = (1.0f - t) * vec3(1.0f) + t * vec3(0.5f, 0.7f, 1.0f);
+    rayPayload.color = sky;
 
     traceRaysEXT(tlas, 0, 0, 0, 0, 0,
                   origin, 0.01f,
                   direction, 100.0f,
                   0);
+
+    if(rayPayload.hit) {
+        // send shadow ray
+        vec3 lightDir = normalize(vec3(-1.0f, -1.0f, -1.0f));
+        bool occluded = false;
+        origin = origin + direction * gl_HitTEXT;
+        rayPayload.hit = false;
+        traceRaysEXT(tlas, 0, 0, 0, 0, 0,
+                      origin, 0.01f,
+                      normalize(vec3(0.0f, 1.0f, -1.0f)), 100.0f,
+                      1);
+
+        
+        if(rayPayload.hit) {
+            rayPayload.color = rayPayload.color * 0.2f; // in shadow
+        }
+    }
 
     imageStore(outputImage, launchID.xy, vec4(rayPayload.color, 1.0));
 }
@@ -133,9 +167,10 @@ void shader() {
     vec3 normal = normalize(cross(v1 - v0, v2 - v0));
 
     // Some fake lighting
-    vec3 L = normalize(vec3(-1.0f, -1.0f, 1.0f));
+    vec3 L = normalize(vec3(0.0f, 1.0f, -1.0f));
     float I = max(dot(L, normal), 0.0f);
-    rayPayload.color = vec3(I);
+    rayPayload.color = vec3(I * 0.5);
+    rayPayload.hit = true;
 }
     )",
                                                                  "shader");

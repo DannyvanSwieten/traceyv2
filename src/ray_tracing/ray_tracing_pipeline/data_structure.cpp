@@ -41,6 +41,10 @@ namespace tracey
         {
             m_size += 16;
         }
+        else if (field.type == "bool")
+        {
+            m_size += 1;
+        }
         else
         {
             // Handle other types or throw an error
