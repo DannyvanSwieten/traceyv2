@@ -1,6 +1,7 @@
 #pragma once
 #include <vector>
 #include <memory>
+#include <filesystem>
 #include "runtime/rt_symbols.h"
 #include "../shader_binding_table.hpp"
 #include "../../../device/device.hpp"
@@ -83,4 +84,7 @@ namespace tracey
     CompiledShader
     compileCpuRayTracingPipeline(const RayTracingPipelineLayout &layout, const CpuShaderBindingTable &sbt);
     CompiledShader compileCpuShader(const RayTracingPipelineLayout &layout, ShaderStage stage, const std::string_view source, const std::string_view entryPoint);
+
+    void* loadLibrary(const std::filesystem::path& path);
+    void* loadSymbol(void* dylib, const char* symbolName);
 }

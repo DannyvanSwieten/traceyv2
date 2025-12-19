@@ -2,6 +2,9 @@
 #include "../../core/types.hpp"
 #include <random>
 
+#pragma warning(push)
+#pragma warning( disable : 4146 ) // unary minus operator applied to unsigned type, result still unsigned
+
 namespace tracey
 {
     class RNG
@@ -94,3 +97,5 @@ namespace tracey
     Vec3 uniformSampleHemisphere(const Vec2 &xi);
     Vec3 cosineSampleHemisphere(const Vec2 &xi);
 } // namespace tracey
+
+#pragma warning(pop)

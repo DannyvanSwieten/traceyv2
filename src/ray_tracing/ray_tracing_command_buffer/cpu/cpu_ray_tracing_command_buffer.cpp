@@ -4,6 +4,7 @@
 #include "../../ray_tracing_pipeline/ray_tracing_pipeline_layout.hpp"
 #include "../../../device/buffer.hpp"
 #include <cassert>
+#include <chrono>
 #include <thread>
 namespace tracey
 {

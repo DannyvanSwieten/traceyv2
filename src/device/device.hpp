@@ -1,6 +1,7 @@
 #pragma once
 #include <cstdint>
 #include <span>
+#include <string_view>
 #include "../core/tlas.hpp"
 
 namespace tracey

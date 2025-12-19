@@ -53,8 +53,8 @@ add_library(tracey
 
     src/gpu/vulkan_context.hpp
     src/gpu/vulkan_context.cpp
-    src/gpu/shader_compiler.hpp
-    src/gpu/shader_compiler.cpp
+    # src/gpu/shader_compiler.hpp
+    # src/gpu/shader_compiler.cpp
 
     src/device/device.hpp
     src/device/device.cpp
@@ -126,10 +126,10 @@ endif()
 find_package(Vulkan REQUIRED)
 
 find_package(PkgConfig REQUIRED)
-pkg_check_modules(SHADERC REQUIRED shaderc)
-target_include_directories(tracey PRIVATE
-    ${SHADERC_INCLUDE_DIRS}
-)
+# pkg_check_modules(SHADERC REQUIRED shaderc)
+# target_include_directories(tracey PRIVATE
+#     ${SHADERC_INCLUDE_DIRS}
+# )
 
 target_link_libraries(tracey PRIVATE glm::glm Vulkan::Vulkan)
 target_include_directories(tracey

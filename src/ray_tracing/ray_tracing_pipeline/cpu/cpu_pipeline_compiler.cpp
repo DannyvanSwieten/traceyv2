@@ -10,7 +10,11 @@
 #include <filesystem>
 #include <fstream>
 #include <cstdlib>
+#ifdef _WIN32
+#include <windows.h>
+#else
 #include <dlfcn.h>
+#endif
 #include <cassert>
 
 namespace tracey
@@ -18,6 +22,41 @@ namespace tracey
     constexpr const std::string_view TLAS_TYPE_NAME = "accelerationStructureEXT";
     constexpr const std::string_view IMAGE2D_TYPE_NAME = "image2d";
     constexpr const std::string_view BUFFER_TYPE_NAME = "buffer";
+
+    void* loadLibrary(const std::filesystem::path& path)
+    {
+    #ifdef _WIN32
+        HMODULE handle = LoadLibraryA(path.string().c_str());
+        if (!handle) {
+            throw std::runtime_error("Failed to load library: " + path.string());
+        }
+        return reinterpret_cast<void*>(handle);
+    #else
+        void* handle = dlopen(path.string().c_str(), RTLD_LAZY);
+        if (!handle) {
+            throw std::runtime_error("Failed to load library: " + std::string(dlerror()));
+        }
+        return handle;
+    #endif
+    }
+
+    void* loadSymbol(void* dylib, const char* symbolName)
+    {
+    #ifdef _WIN32
+        void* symbol = reinterpret_cast<void*>(GetProcAddress(reinterpret_cast<HMODULE>(dylib), symbolName));
+        if (!symbol) {
+            throw std::runtime_error("Failed to load symbol: " + std::string(symbolName));
+        }
+        return symbol;
+
+    #else
+        void* symbol = dlsym(dylib, symbolName);
+        if (!symbol) {
+            throw std::runtime_error("Failed to load symbol: " + std::string(dlerror()));
+        }
+        return symbol;
+    #endif
+    }
 
     CompiledShader compileCpuRayTracingPipeline(const RayTracingPipelineLayout &layout, const CpuShaderBindingTable &sbt)
     {
@@ -194,23 +233,9 @@ namespace tracey
         // std::filesystem::remove(cppPath);
 
         // Load the dylib and get function pointers as needed...
-        const auto dylib = dlopen(outputPath.string().c_str(), RTLD_NOW);
-        if (!dylib)
-        {
-            // Check the error
-            std::cerr << "dlopen error: " << dlerror() << std::endl;
-            std::filesystem::remove(outputPath);
-            throw std::runtime_error("Failed to load compiled shader dylib: " + std::string(dlerror()));
-        }
-
-        const auto entryPointFunc = reinterpret_cast<RayTracingEntryPointFunc>(dlsym(dylib, entryPoint.data()));
-        if (!entryPointFunc)
-        {
-            std::cerr << "dlopen error: " << dlerror() << std::endl;
-            dlclose(dylib);
-            std::filesystem::remove(outputPath);
-            throw std::runtime_error("Failed to find entry point function in dylib: " + std::string(dlerror()));
-        }
+        const auto dylib = loadLibrary(outputPath);
+        const auto entryPointFunc = reinterpret_cast<RayTracingEntryPointFunc>(loadSymbol(dylib, entryPoint.data()));
+        
         CompiledShader compiledShader;
         compiledShader.func = entryPointFunc;
         compiledShader.bindingSlots.resize(layout.bindings().size());
@@ -221,42 +246,27 @@ namespace tracey
             switch (binding.type)
             {
             case RayTracingPipelineLayout::DescriptorType::Image2D:
-                slotPtr = reinterpret_cast<void **>(dlsym(dylib, binding.name.c_str()));
+                slotPtr = reinterpret_cast<void **>(loadSymbol(dylib, binding.name.c_str()));
                 break;
             case RayTracingPipelineLayout::DescriptorType::Buffer:
-                slotPtr = reinterpret_cast<void **>(dlsym(dylib, ("buffer" + std::to_string(binding.index)).c_str()));
+                slotPtr = reinterpret_cast<void **>(loadSymbol(dylib, ("buffer" + std::to_string(binding.index)).c_str()));
                 break;
             case RayTracingPipelineLayout::DescriptorType::RayPayload:
-                slotPtr = reinterpret_cast<void **>(dlsym(dylib, binding.name.c_str()));
+                slotPtr = reinterpret_cast<void **>(loadSymbol(dylib, binding.name.c_str()));
                 break;
             case RayTracingPipelineLayout::DescriptorType::AccelerationStructure:
-                slotPtr = reinterpret_cast<void **>(dlsym(dylib, binding.name.c_str()));
+                slotPtr = reinterpret_cast<void **>(loadSymbol(dylib, binding.name.c_str()));
                 break;
             default:
                 slotPtr = nullptr;
                 break;
             }
-
-            if (!slotPtr)
-            {
-                std::cerr << "dlopen error: " << dlerror() << std::endl;
-                dlclose(dylib);
-                std::filesystem::remove(outputPath);
-                throw std::runtime_error("Failed to find binding slot in dylib: " + std::string(dlerror()));
-            }
             // Store the slot pointer somewhere to be set later during execution
             compiledShader.bindingSlots[binding.index] = BindingSlot{slotPtr};
         }
 
-        const auto getPayload = reinterpret_cast<getPayloadFunc>(dlsym(dylib, "getPayload"));
-        const auto setPayload = reinterpret_cast<setPayloadFunc>(dlsym(dylib, "setPayload"));
-        if (!getPayload || !setPayload)
-        {
-            std::cerr << "dlopen error: " << dlerror() << std::endl;
-            dlclose(dylib);
-            std::filesystem::remove(outputPath);
-            throw std::runtime_error("Failed to find payload accessors in dylib: " + std::string(dlerror()));
-        }
+        const auto getPayload = reinterpret_cast<getPayloadFunc>(loadSymbol(dylib, "getPayload"));
+        const auto setPayload = reinterpret_cast<setPayloadFunc>(loadSymbol(dylib, "setPayload"));
 
         for (const auto &payload : layout.payloads())
         {
@@ -278,13 +288,13 @@ namespace tracey
     {
         if (dylib)
         {
-            rt::TraceRaysFunc_t *traceFuncPtr = reinterpret_cast<rt::TraceRaysFunc_t *>(dlsym(dylib, "traceRaysEXT"));
+            rt::TraceRaysFunc_t *traceFuncPtr = reinterpret_cast<rt::TraceRaysFunc_t *>(loadSymbol(dylib, "traceRaysEXT"));
             if (traceFuncPtr)
             {
                 *traceFuncPtr = reinterpret_cast<rt::TraceRaysFunc_t>(traceRaysExtFunc);
             }
 
-            rt::ImageStoreFunc_t *imageStorePtr = reinterpret_cast<rt::ImageStoreFunc_t *>(dlsym(dylib, "imageStore"));
+            rt::ImageStoreFunc_t *imageStorePtr = reinterpret_cast<rt::ImageStoreFunc_t *>(loadSymbol(dylib, "imageStore"));
             if (imageStorePtr)
             {
                 *imageStorePtr = reinterpret_cast<rt::ImageStoreFunc_t>(imageStoreFunc);
@@ -293,8 +303,8 @@ namespace tracey
     }
     RayGenShader::RayGenShader(CompiledShader shader) : shader(shader)
     {
-        this->setBuiltins = reinterpret_cast<setBuiltinsFunc>(dlsym(this->shader.dylib, "setBuiltins"));
-        this->getBuiltins = reinterpret_cast<getBuiltinsFunc>(dlsym(this->shader.dylib, "getBuiltins"));
+        this->setBuiltins = reinterpret_cast<setBuiltinsFunc>(loadSymbol(this->shader.dylib, "setBuiltins"));
+        this->getBuiltins = reinterpret_cast<getBuiltinsFunc>(loadSymbol(this->shader.dylib, "getBuiltins"));
     }
     Sbt::Sbt(RayGenShader rayGenShader) : rayGen(rayGenShader), hits()
     {
@@ -302,8 +312,8 @@ namespace tracey
     }
     ClosestHitShader::ClosestHitShader(CompiledShader shader) : shader(shader)
     {
-        this->setBuiltins = reinterpret_cast<setBuiltinsFunc>(dlsym(this->shader.dylib, "setBuiltins"));
-        this->getBuiltins = reinterpret_cast<getBuiltinsFunc>(dlsym(this->shader.dylib, "getBuiltins"));
+        this->setBuiltins = reinterpret_cast<setBuiltinsFunc>(loadSymbol(this->shader.dylib, "setBuiltins"));
+        this->getBuiltins = reinterpret_cast<getBuiltinsFunc>(loadSymbol(this->shader.dylib, "getBuiltins"));
     }
     MissShader::MissShader(CompiledShader shader) : shader(shader)
     {

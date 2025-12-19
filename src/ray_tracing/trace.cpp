@@ -6,7 +6,8 @@ namespace tracey
 {
     void traceRays(const UVec2 &resolution, uint32_t tileSize, uint32_t iteration, const RaytracerCallback &callback, const Tlas &tlas)
     {
-        const uint numThreads = std::thread::hardware_concurrency();
+        auto startTime = std::chrono::high_resolution_clock::now();
+        const size_t numThreads = std::thread::hardware_concurrency();
         std::vector<std::thread> threads;
         threads.reserve(numThreads);
         const auto tilesPerRow = (resolution.x + tileSize - 1) / tileSize;
@@ -29,12 +30,12 @@ namespace tracey
                 const uint32_t baseX = tileX * tileSize;
                 const uint32_t baseY = tileY * tileSize;
 
-                for (uint ty = 0; ty < tileSize; ++ty)
+                for (size_t ty = 0; ty < tileSize; ++ty)
                 {
-                    for (uint tx = 0; tx < tileSize; ++tx)
+                    for (size_t tx = 0; tx < tileSize; ++tx)
                     {
-                        const uint pixelX = baseX + tx;
-                        const uint pixelY = baseY + ty;
+                        const size_t pixelX = baseX + tx;
+                        const size_t pixelY = baseY + ty;
                         // Don't call the callback for partially out of bounds tiles
                         if (pixelX < resolution.x && pixelY < resolution.y)
                         {
@@ -45,7 +46,7 @@ namespace tracey
             }
         };
 
-        for (uint t = 0; t < numThreads; ++t)
+        for (size_t t = 0; t < numThreads; ++t)
         {
             threads.emplace_back(threadFunction);
         }
