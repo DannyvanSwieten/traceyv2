@@ -125,7 +125,7 @@ endif()
 
 find_package(Vulkan REQUIRED)
 
-find_package(PkgConfig REQUIRED)
+# find_package(PkgConfig REQUIRED)
 # pkg_check_modules(SHADERC REQUIRED shaderc)
 # target_include_directories(tracey PRIVATE
 #     ${SHADERC_INCLUDE_DIRS}
