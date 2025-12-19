@@ -70,7 +70,7 @@ namespace tracey
         virtual Buffer *createBuffer(uint32_t size, BufferUsage usageFlags) = 0;
         virtual Image2D *createImage2D(uint32_t width, uint32_t height, ImageFormat format) = 0;
         virtual BottomLevelAccelerationStructure *createBottomLevelAccelerationStructure(const Buffer *positions, uint32_t positionCount, uint32_t positionStride, const Buffer *indices, uint32_t indexCount) = 0;
-        virtual TopLevelAccelerationStructure *createTopLevelAccelerationStructure(std::span<const BottomLevelAccelerationStructure *> blases, std::span<const struct Tlas::Instance> instances) = 0;
+        virtual TopLevelAccelerationStructure *createTopLevelAccelerationStructure(std::span<const BottomLevelAccelerationStructure *> blases, std::span<const Tlas::Instance> instances) = 0;
     };
 
     Device *createDevice(DeviceType type, DeviceBackend backend);

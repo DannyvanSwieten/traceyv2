@@ -11,16 +11,17 @@ namespace tracey
             const std::span<const float> positionsSpan(posData, positionCount * stride);
 
             m_blas.emplace(positionsSpan, stride);
-            return;
         }
+        else
+        {
+            const auto posData = static_cast<const float *>(positions->mapForReading());
+            const auto indexData = static_cast<const uint32_t *>(indices->mapForReading());
+            const auto stride = positionStride / sizeof(float);
+            const std::span<const float> positionsSpan(posData, positionCount * stride);
+            const std::span<const uint32_t> indicesSpan(indexData, indexCount);
 
-        const auto posData = static_cast<const float *>(positions->mapForReading());
-        const auto indexData = static_cast<const uint32_t *>(indices->mapForReading());
-        const auto stride = positionStride / sizeof(float);
-        const std::span<const float> positionsSpan(posData, positionCount * stride);
-        const std::span<const uint32_t> indicesSpan(indexData, indexCount);
-
-        m_blas.emplace(positionsSpan, stride, indicesSpan);
+            m_blas.emplace(positionsSpan, stride, indicesSpan);
+        }
 
         m_blas_buffer = std::make_unique<VulkanBuffer>(m_device, sizeof(BVHNode) * m_blas->nodeCount(), BufferUsage::StorageBuffer);
         m_blas_device_address = m_blas_buffer->deviceAddress();

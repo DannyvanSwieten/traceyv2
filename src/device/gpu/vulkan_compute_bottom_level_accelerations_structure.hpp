@@ -15,6 +15,7 @@ namespace tracey
     {
     public:
         VulkanComputeBottomLevelAccelerationStructure(VulkanComputeDevice &device, const Buffer *positions, uint32_t positionCount, uint32_t positionStride, const Buffer *indices, uint32_t indexCount);
+        VkDeviceAddress address() const { return m_blas_device_address; }
 
     private:
         VulkanComputeDevice &m_device;

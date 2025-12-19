@@ -4,6 +4,9 @@
 #include "vulkan_buffer.hpp"
 #include "vulkan_image_2d.hpp"
 #include "vulkan_compute_bottom_level_accelerations_structure.hpp"
+#include "vulkan_compute_top_level_acceleration_structure.hpp"
+#include "../../ray_tracing/shader_module/cpu/cpu_shader_module.hpp"
+#include "../../ray_tracing/ray_tracing_pipeline/cpu/cpu_shader_binding_table.hpp"
 #include <sstream>
 namespace tracey
 {
@@ -44,11 +47,11 @@ namespace tracey
 
     ShaderModule *VulkanComputeDevice::createShaderModule(ShaderStage stage, const std::string_view source, const std::string_view entryPoint)
     {
-        return nullptr;
+        return new CpuShaderModule(stage, source, entryPoint);
     }
     ShaderBindingTable *VulkanComputeDevice::createShaderBindingTable(const ShaderModule *rayGen, const std::span<const ShaderModule *> hitShaders, const std::span<const ShaderModule *> missShaders)
     {
-        return nullptr;
+        return new CpuShaderBindingTable(rayGen, hitShaders, missShaders);
     }
     RayTracingCommandBuffer *VulkanComputeDevice::createRayTracingCommandBuffer()
     {
@@ -74,9 +77,9 @@ namespace tracey
     {
         return new VulkanComputeBottomLevelAccelerationStructure(*this, positions, positionCount, positionStride, indices, indexCount);
     }
-    TopLevelAccelerationStructure *VulkanComputeDevice::createTopLevelAccelerationStructure(std::span<const BottomLevelAccelerationStructure *> blases, std::span<const struct Tlas::Instance> instances)
+    TopLevelAccelerationStructure *VulkanComputeDevice::createTopLevelAccelerationStructure(std::span<const BottomLevelAccelerationStructure *> blases, std::span<const Tlas::Instance> instances)
     {
-        return nullptr;
+        return new VulkanComputeTopLevelAccelerationStructure(*this, blases, instances);
     }
     int VulkanComputeDevice::findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties)
     {

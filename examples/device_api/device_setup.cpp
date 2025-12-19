@@ -12,9 +12,9 @@
 
 int main()
 {
-    tracey::Device *cpuComputeDevice = tracey::createDevice(tracey::DeviceType::Gpu, tracey::DeviceBackend::Compute);
+    tracey::Device *computeDevice = tracey::createDevice(tracey::DeviceType::Gpu, tracey::DeviceBackend::Compute);
 
-    const auto vertexBuffer = cpuComputeDevice->createBuffer(36 * sizeof(tracey::Vec3), tracey::BufferUsage::AccelerationStructureBuildInput | tracey::BufferUsage::StorageBuffer);
+    const auto vertexBuffer = computeDevice->createBuffer(36 * sizeof(tracey::Vec3), tracey::BufferUsage::AccelerationStructureBuildInput | tracey::BufferUsage::StorageBuffer);
     // Fill vertex buffer with cube vertices
     {
         auto *data = static_cast<tracey::Vec3 *>(vertexBuffer->mapForWriting());
@@ -66,7 +66,7 @@ int main()
         vertexBuffer->flush();
     }
 
-    auto blas = cpuComputeDevice->createBottomLevelAccelerationStructure(vertexBuffer, 36, sizeof(tracey::Vec3), nullptr, 0);
+    auto blas = computeDevice->createBottomLevelAccelerationStructure(vertexBuffer, 36, sizeof(tracey::Vec3), nullptr, 0);
     std::array<tracey::Tlas::Instance, 2> instances;
     instances[0].blasAddress = 0;
     instances[0].instanceCustomIndexAndMask = 0;
@@ -77,8 +77,8 @@ int main()
 
     std::array<const tracey::BottomLevelAccelerationStructure *, 1> blasPtr = {blas};
 
-    tracey::TopLevelAccelerationStructure *tlas = cpuComputeDevice->createTopLevelAccelerationStructure(std::span<const tracey::BottomLevelAccelerationStructure *>(blasPtr), instances);
-    tracey::Image2D *outputImage = cpuComputeDevice->createImage2D(512, 512, tracey::ImageFormat::R8G8B8A8Unorm);
+    tracey::TopLevelAccelerationStructure *tlas = computeDevice->createTopLevelAccelerationStructure(std::span<const tracey::BottomLevelAccelerationStructure *>(blasPtr), instances);
+    tracey::Image2D *outputImage = computeDevice->createImage2D(512, 512, tracey::ImageFormat::R8G8B8A8Unorm);
 
     tracey::RayTracingPipelineLayout layout;
     layout.addImage2D("outputImage", 0, tracey::ShaderStage::RayGeneration);
@@ -95,13 +95,13 @@ int main()
     layout.addPayload("rayPayload", 0, tracey::ShaderStage::RayGeneration, payloadLayout);
 
     std::array<tracey::DescriptorSet *, 1> descriptorSets;
-    cpuComputeDevice->allocateDescriptorSets(descriptorSets, layout);
+    computeDevice->allocateDescriptorSets(descriptorSets, layout);
     descriptorSets[0]->setImage2D(0, outputImage);
     descriptorSets[0]->setAccelerationStructure(1, tlas);
     descriptorSets[0]->setBuffer(2, vertexBuffer);
 
-    auto rayGenModule = cpuComputeDevice->createShaderModule(tracey::ShaderStage::RayGeneration,
-                                                             R"(
+    auto rayGenModule = computeDevice->createShaderModule(tracey::ShaderStage::RayGeneration,
+                                                          R"(
 
 inline float radians(float degrees) {
     return degrees * 3.14159265358979323846 / 180.0;
@@ -155,10 +155,10 @@ void shader() {
     imageStore(outputImage, launchID.xy, vec4(color, 1.0));
 }
     )",
-                                                             "shader");
+                                                          "shader");
 
-    auto closestHitModule = cpuComputeDevice->createShaderModule(tracey::ShaderStage::ClosestHit,
-                                                                 R"(
+    auto closestHitModule = computeDevice->createShaderModule(tracey::ShaderStage::ClosestHit,
+                                                              R"(
 void shader() {
     // Closest hit shader code
     // fetch the positions
@@ -177,10 +177,10 @@ void shader() {
     rayPayload.hit = true;
 }
     )",
-                                                                 "shader");
+                                                              "shader");
 
-    auto primaryMissModule = cpuComputeDevice->createShaderModule(tracey::ShaderStage::Miss,
-                                                                  R"(
+    auto primaryMissModule = computeDevice->createShaderModule(tracey::ShaderStage::Miss,
+                                                               R"(
 void shader() {
     // Miss shader code
     // set up sky color based on ray direction
@@ -190,15 +190,15 @@ void shader() {
     rayPayload.hit = false;
 }
     )",
-                                                                  "shader");
+                                                               "shader");
 
     std::array<const tracey::ShaderModule *, 1> hitModules = {closestHitModule};
     std::array<const tracey::ShaderModule *, 1> missModules = {primaryMissModule};
-    auto sbt = cpuComputeDevice->createShaderBindingTable(rayGenModule, hitModules, missModules);
+    auto sbt = computeDevice->createShaderBindingTable(rayGenModule, hitModules, missModules);
     // This is where the shaders are compiled
-    auto pipeline = cpuComputeDevice->createRayTracingPipeline(layout, sbt);
+    auto pipeline = computeDevice->createRayTracingPipeline(layout, sbt);
 
-    auto commandBuffer = cpuComputeDevice->createRayTracingCommandBuffer();
+    auto commandBuffer = computeDevice->createRayTracingCommandBuffer();
     commandBuffer->begin();
     commandBuffer->setPipeline(pipeline);
     commandBuffer->setDescriptorSet(descriptorSets[0]);
@@ -223,7 +223,7 @@ void shader() {
     }
     outFile.close();
 
-    delete cpuComputeDevice;
+    delete computeDevice;
     delete commandBuffer;
     delete pipeline;
     delete sbt;

@@ -12,6 +12,9 @@ namespace tracey
         VulkanBuffer(VulkanComputeDevice &device, uint32_t size, BufferUsage usageFlags);
         ~VulkanBuffer();
 
+        VulkanBuffer(const VulkanBuffer &) = delete;
+        VulkanBuffer &operator=(const VulkanBuffer &) = delete;
+
         void *mapForWriting() override;
         const void *mapForReading() const override;
         void mapRange(uint32_t offset, uint32_t size) override;
