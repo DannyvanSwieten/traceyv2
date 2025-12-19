@@ -23,6 +23,12 @@ namespace tracey
         TopLevelAccelerationStructure *createTopLevelAccelerationStructure(std::span<const BottomLevelAccelerationStructure *> blases, std::span<const struct Tlas::Instance> instances) override;
 
         int findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties);
+        uint32_t queueFamilyIndex() const { return m_vulkanContext.computeQueueFamilyIndex(); }
+
+        VkDescriptorPool descriptorPool() const { return m_descriptorPool; }
+
+    private:
+        VkDescriptorPool m_descriptorPool = VK_NULL_HANDLE;
 
     private:
         VulkanContext m_vulkanContext;

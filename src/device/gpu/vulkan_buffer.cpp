@@ -8,9 +8,11 @@ namespace tracey
         VkBufferCreateInfo bufferInfo{};
         bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
         bufferInfo.size = size;
-        bufferInfo.usage = VK_BUFFER_USAGE_2_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+        bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
         bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-
+        bufferInfo.queueFamilyIndexCount = 1;
+        std::array<uint32_t, 1> queueFamilyIndices = {device.queueFamilyIndex()};
+        bufferInfo.pQueueFamilyIndices = queueFamilyIndices.data();
         if (vkCreateBuffer(m_device, &bufferInfo, nullptr, &m_buffer) != VK_SUCCESS)
         {
             throw std::runtime_error("Failed to create Vulkan buffer");
@@ -38,8 +40,11 @@ namespace tracey
 
     VulkanBuffer::~VulkanBuffer()
     {
-        vkDestroyBuffer(m_device, m_buffer, nullptr);
-        vkFreeMemory(m_device, m_memory, nullptr);
+        if (m_buffer != VK_NULL_HANDLE)
+        {
+            vkDestroyBuffer(m_device, m_buffer, nullptr);
+            vkFreeMemory(m_device, m_memory, nullptr);
+        }
     }
 
     void *VulkanBuffer::mapForWriting()
@@ -56,7 +61,14 @@ namespace tracey
 
     const void *VulkanBuffer::mapForReading() const
     {
-        return nullptr;
+        VkMappedMemoryRange mappedRange{};
+        mappedRange.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+        mappedRange.memory = m_memory;
+        mappedRange.offset = 0;
+        mappedRange.size = VK_WHOLE_SIZE;
+        const void *data;
+        vkMapMemory(m_device, m_memory, 0, VK_WHOLE_SIZE, 0, (void **)&data);
+        return data;
     }
 
     void VulkanBuffer::mapRange(uint32_t offset, uint32_t size)
@@ -66,10 +78,24 @@ namespace tracey
     }
     void VulkanBuffer::flush()
     {
+        vkUnmapMemory(m_device, m_memory);
+        VkMappedMemoryRange mappedRange{};
+        mappedRange.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+        mappedRange.memory = m_memory;
+        mappedRange.offset = 0;
+        mappedRange.size = VK_WHOLE_SIZE;
+        vkFlushMappedMemoryRanges(m_device, 1, &mappedRange);
     }
     void VulkanBuffer::flushRange(uint32_t offset, uint32_t size)
     {
         (void)offset;
         (void)size;
+    }
+    VkDeviceAddress VulkanBuffer::deviceAddress() const
+    {
+        VkBufferDeviceAddressInfo bufferDeviceAI{};
+        bufferDeviceAI.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+        bufferDeviceAI.buffer = m_buffer;
+        return vkGetBufferDeviceAddress(m_device, &bufferDeviceAI);
     }
 }

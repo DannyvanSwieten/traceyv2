@@ -1,6 +1,6 @@
 #pragma once
 
-#include <vulkan/vulkan.h>
+#include <volk.h>
 #include <vector>
 #include <optional>
 #include <cstdint>
@@ -13,6 +13,11 @@ namespace tracey
     public:
         VulkanContext();
         ~VulkanContext();
+
+        VulkanContext(const VulkanContext &) = delete;
+        VulkanContext &operator=(const VulkanContext &) = delete;
+
+        VulkanContext(VulkanContext &&);
 
         VkInstance instance() const { return m_instance; }
         VkPhysicalDevice physicalDevice() const { return m_physicalDevice; }

@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <iostream>
+#include <volk.h>
 
 namespace tracey
 {
@@ -61,6 +62,11 @@ namespace tracey
 
     VulkanContext::VulkanContext()
     {
+        VkResult res = volkInitialize();
+        if (res != VK_SUCCESS)
+        {
+            throw std::runtime_error("Failed to initialize Volk");
+        }
         createInstance();
         pickPhysicalDevice();
         createDeviceAndQueue();
@@ -81,6 +87,20 @@ namespace tracey
         }
     }
 
+    VulkanContext::VulkanContext(VulkanContext &&other) : m_instance(other.m_instance),
+                                                          m_physicalDevice(other.m_physicalDevice),
+                                                          m_device(other.m_device),
+                                                          m_computeQueueFamilyIndex(other.m_computeQueueFamilyIndex),
+                                                          m_computeQueue(other.m_computeQueue),
+                                                          m_commandPool(other.m_commandPool)
+    {
+        other.m_instance = VK_NULL_HANDLE;
+        other.m_physicalDevice = VK_NULL_HANDLE;
+        other.m_device = VK_NULL_HANDLE;
+        other.m_computeQueue = VK_NULL_HANDLE;
+        other.m_commandPool = VK_NULL_HANDLE;
+    }
+
     void VulkanContext::createInstance()
     {
         VkApplicationInfo appInfo{};
@@ -89,7 +109,7 @@ namespace tracey
         appInfo.applicationVersion = VK_MAKE_VERSION(0, 1, 0);
         appInfo.pEngineName = "Custom";
         appInfo.engineVersion = VK_MAKE_VERSION(0, 1, 0);
-        appInfo.apiVersion = VK_API_VERSION_1_3;
+        appInfo.apiVersion = VK_API_VERSION_1_4;
 
         // --- macOS / MoltenVK: portability extension + flag ---
 
@@ -127,6 +147,8 @@ namespace tracey
         {
             throw std::runtime_error("Failed to create Vulkan instance (vkCreateInstance)");
         }
+
+        volkLoadInstance(m_instance);
     }
 
     void VulkanContext::pickPhysicalDevice()
@@ -191,6 +213,8 @@ namespace tracey
         {
             throw std::runtime_error("Failed to create logical device");
         }
+
+        volkLoadDevice(m_device);
 
         vkGetDeviceQueue(m_device, m_computeQueueFamilyIndex, 0, &m_computeQueue);
     }

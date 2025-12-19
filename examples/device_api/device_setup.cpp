@@ -12,7 +12,7 @@
 
 int main()
 {
-    tracey::Device *cpuComputeDevice = tracey::createDevice(tracey::DeviceType::Cpu, tracey::DeviceBackend::None);
+    tracey::Device *cpuComputeDevice = tracey::createDevice(tracey::DeviceType::Gpu, tracey::DeviceBackend::Compute);
 
     const auto vertexBuffer = cpuComputeDevice->createBuffer(36 * sizeof(tracey::Vec3), tracey::BufferUsage::AccelerationStructureBuildInput | tracey::BufferUsage::StorageBuffer);
     // Fill vertex buffer with cube vertices
@@ -63,6 +63,7 @@ int main()
             tracey::Vec3{-1, -1, 1},
         };
         std::copy(cube.begin(), cube.end(), data);
+        vertexBuffer->flush();
     }
 
     auto blas = cpuComputeDevice->createBottomLevelAccelerationStructure(vertexBuffer, 36, sizeof(tracey::Vec3), nullptr, 0);

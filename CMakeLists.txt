@@ -8,6 +8,10 @@ if(NOT TARGET glm::glm-header-only)
     add_subdirectory(deps/glm)
 endif()
 
+if(NOT TARGET volk)
+    add_subdirectory(deps/volk)
+endif()
+
 add_library(tracey 
     src/core/types.hpp
     src/core/ray.hpp
@@ -103,6 +107,8 @@ add_library(tracey
 
     src/ray_tracing/ray_tracing_pipeline/gpu/vulkan_compute_raytracing_pipeline.hpp
     src/ray_tracing/ray_tracing_pipeline/gpu/vulkan_compute_raytracing_pipeline.cpp
+    src/ray_tracing/ray_tracing_pipeline/gpu/vulkan_compute_raytracing_descriptor_set.hpp
+    src/ray_tracing/ray_tracing_pipeline/gpu/vulkan_compute_raytracing_descriptor_set.cpp
 
     src/ray_tracing/ray_tracing_command_buffer/ray_tracing_command_buffer.hpp
     src/ray_tracing/ray_tracing_command_buffer/cpu/cpu_ray_tracing_command_buffer.hpp
@@ -133,7 +139,7 @@ find_package(Vulkan REQUIRED)
 #     ${SHADERC_INCLUDE_DIRS}
 # )
 
-target_link_libraries(tracey PRIVATE glm::glm Vulkan::Vulkan)
+target_link_libraries(tracey PRIVATE glm::glm Vulkan::Vulkan volk::volk)
 target_include_directories(tracey
     PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src

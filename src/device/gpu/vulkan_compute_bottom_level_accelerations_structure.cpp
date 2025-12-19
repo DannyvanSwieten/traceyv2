@@ -21,5 +21,8 @@ namespace tracey
         const std::span<const uint32_t> indicesSpan(indexData, indexCount);
 
         m_blas.emplace(positionsSpan, stride, indicesSpan);
+
+        m_blas_buffer = std::make_unique<VulkanBuffer>(m_device, sizeof(BVHNode) * m_blas->nodeCount(), BufferUsage::StorageBuffer);
+        m_blas_device_address = m_blas_buffer->deviceAddress();
     }
 }

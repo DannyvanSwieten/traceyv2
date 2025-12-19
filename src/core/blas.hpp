@@ -17,6 +17,7 @@ namespace tracey
 
         std::optional<Hit> intersect(const Ray &ray, float tMin, float tMax, RayFlags flags) const;
         std::tuple<Vec3, Vec3> getBounds() const;
+        size_t nodeCount() const { return m_nodes.size(); }
 
     private:
         struct PrimitiveRef

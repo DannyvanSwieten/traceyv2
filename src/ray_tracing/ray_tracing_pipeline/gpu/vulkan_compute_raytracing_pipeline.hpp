@@ -1,7 +1,7 @@
 #pragma once
 
 #include "../ray_tracing_pipeline.hpp"
-#include <vulkan/vulkan.h>
+#include <volk.h>
 
 namespace tracey
 {

@@ -1,12 +1,31 @@
 #include "vulkan_compute_device.hpp"
 #include "../../ray_tracing/ray_tracing_pipeline/ray_tracing_pipeline_layout.hpp"
+#include "../../ray_tracing/ray_tracing_pipeline/gpu/vulkan_compute_raytracing_descriptor_set.hpp"
 #include "vulkan_buffer.hpp"
 #include "vulkan_image_2d.hpp"
+#include "vulkan_compute_bottom_level_accelerations_structure.hpp"
 #include <sstream>
 namespace tracey
 {
     VulkanComputeDevice::VulkanComputeDevice(VulkanContext context) : m_vulkanContext(std::move(context))
     {
+        VkDescriptorPoolCreateInfo poolInfo{};
+        poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        poolInfo.maxSets = 1000;
+        std::array<VkDescriptorPoolSize, 3> poolSizes{};
+        poolSizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        poolSizes[0].descriptorCount = 2048;
+        poolSizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        poolSizes[1].descriptorCount = 500;
+        poolSizes[2].type = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+        poolSizes[2].descriptorCount = 100;
+        poolInfo.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
+        poolInfo.pPoolSizes = poolSizes.data();
+
+        if (vkCreateDescriptorPool(m_vulkanContext.device(), &poolInfo, nullptr, &m_descriptorPool) != VK_SUCCESS)
+        {
+            throw std::runtime_error("Failed to create descriptor pool");
+        }
     }
 
     VulkanComputeDevice::~VulkanComputeDevice()
@@ -37,6 +56,11 @@ namespace tracey
     }
     void VulkanComputeDevice::allocateDescriptorSets(std::span<DescriptorSet *> sets, const RayTracingPipelineLayout &layout)
     {
+        for (auto &set : sets)
+        {
+            auto vkSet = new VulkanComputeRayTracingDescriptorSet(*this, layout);
+            set = vkSet;
+        }
     }
     Buffer *VulkanComputeDevice::createBuffer(uint32_t size, BufferUsage usageFlags)
     {
@@ -48,7 +72,7 @@ namespace tracey
     }
     BottomLevelAccelerationStructure *VulkanComputeDevice::createBottomLevelAccelerationStructure(const Buffer *positions, uint32_t positionCount, uint32_t positionStride, const Buffer *indices, uint32_t indexCount)
     {
-        return nullptr;
+        return new VulkanComputeBottomLevelAccelerationStructure(*this, positions, positionCount, positionStride, indices, indexCount);
     }
     TopLevelAccelerationStructure *VulkanComputeDevice::createTopLevelAccelerationStructure(std::span<const BottomLevelAccelerationStructure *> blases, std::span<const struct Tlas::Instance> instances)
     {

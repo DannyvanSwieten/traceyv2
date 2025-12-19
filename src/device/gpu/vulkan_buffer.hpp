@@ -1,6 +1,5 @@
 #pragma once
-
-#include <vulkan/vulkan.h>
+#include <volk.h>
 #include "../buffer.hpp"
 #include "../device.hpp"
 
@@ -21,6 +20,7 @@ namespace tracey
 
         VkBuffer vkBuffer() const { return m_buffer; }
         VkDeviceMemory vkDeviceMemory() const { return m_memory; }
+        VkDeviceAddress deviceAddress() const;
 
     private:
         VkDevice m_device;
