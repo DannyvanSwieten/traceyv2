@@ -208,6 +208,11 @@ namespace rt
         return vec3{a.x - b.x, a.y - b.y, a.z - b.z};
     }
 
+    inline vec3 operator*(const vec3 &a, const vec3 &b)
+    {
+        return vec3{a.x * b.x, a.y * b.y, a.z * b.z};
+    }
+
     inline vec3 operator*(const vec3 &a, float b)
     {
         return vec3{a.x * b, a.y * b, a.z * b};
@@ -216,6 +221,21 @@ namespace rt
     inline vec3 operator*(float a, const vec3 &b)
     {
         return vec3{a * b.x, a * b.y, a * b.z};
+    }
+
+    inline vec3 operator*=(vec3 &a, const vec3 &b)
+    {
+        return a * b;
+    }
+
+    inline vec3 operator*=(float b, vec3 &a)
+    {
+        return b * a;
+    }
+
+    inline vec3 operator*=(vec3 &a, float b)
+    {
+        return a * b;
     }
 
     inline vec3 normalize(const vec3 &v)

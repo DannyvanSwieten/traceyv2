@@ -23,6 +23,6 @@ namespace tracey
             return new CpuComputeDevice();
         }
 
-        return new VulkanComputeDevice();
+        return new VulkanComputeDevice(VulkanContext{});
     }
 }

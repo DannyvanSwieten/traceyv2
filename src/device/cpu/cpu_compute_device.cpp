@@ -33,9 +33,9 @@ namespace tracey
     {
         return new CpuShaderModule(stage, source, entryPoint);
     }
-    ShaderBindingTable *CpuComputeDevice::createShaderBindingTable(const ShaderModule *rayGen, const std::span<const ShaderModule *> hitShaders)
+    ShaderBindingTable *CpuComputeDevice::createShaderBindingTable(const ShaderModule *rayGen, const std::span<const ShaderModule *> hitShaders, const std::span<const ShaderModule *> missShaders)
     {
-        return new CpuShaderBindingTable(rayGen, hitShaders);
+        return new CpuShaderBindingTable(rayGen, hitShaders, missShaders);
     }
     RayTracingCommandBuffer *CpuComputeDevice::createRayTracingCommandBuffer()
     {

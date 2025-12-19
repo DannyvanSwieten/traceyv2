@@ -43,6 +43,11 @@ namespace tracey
             sbt.hits[0].setBuiltins(builtins);
             // transfer payload to shader without mutating shared slot state
             void *payloadPtr = nullptr;
+            struct PayloadDummy
+            {
+                Vec3 dummy;
+                bool hitDummy;
+            };
             if (payloadIndex < sbt.rayGen.shader.payloadSlots.size() && sbt.rayGen.shader.payloadSlots[payloadIndex])
             {
                 sbt.rayGen.shader.payloadSlots[payloadIndex]->getPayload(&payloadPtr, payloadIndex);
@@ -56,6 +61,23 @@ namespace tracey
             if (sbt.hits[0].shader.func)
             {
                 sbt.hits[0].shader.func();
+            }
+        }
+        else
+        {
+            // Miss shader
+            rt::Builtins builtins;
+            sbt.rayGen.getBuiltins(&builtins);
+            builtins.glRayTminEXT = tMin;
+            builtins.glRayTmaxEXT = tMax;
+            builtins.glIncomingRayFlagsEXT = flags;
+
+            // Set builtins for the miss shader
+            sbt.misses[missIndex].setBuiltins(builtins);
+
+            if (sbt.misses[missIndex].shader.func)
+            {
+                sbt.misses[missIndex].shader.func();
             }
         }
 

@@ -14,9 +14,6 @@ namespace tracey
         VulkanContext();
         ~VulkanContext();
 
-        VulkanContext(const VulkanContext &) = delete;
-        VulkanContext &operator=(const VulkanContext &) = delete;
-
         VkInstance instance() const { return m_instance; }
         VkPhysicalDevice physicalDevice() const { return m_physicalDevice; }
         VkDevice device() const { return m_device; }

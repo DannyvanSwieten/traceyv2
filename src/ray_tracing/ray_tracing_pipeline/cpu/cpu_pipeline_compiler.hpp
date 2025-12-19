@@ -64,11 +64,20 @@ namespace tracey
         getBuiltinsFunc getBuiltins = nullptr;
     };
 
+    struct MissShader
+    {
+        MissShader(CompiledShader shader);
+        CompiledShader shader;
+        setBuiltinsFunc setBuiltins = nullptr;
+        getBuiltinsFunc getBuiltins = nullptr;
+    };
+
     struct Sbt
     {
         Sbt(RayGenShader rayGenShader);
         RayGenShader rayGen;
         std::vector<ClosestHitShader> hits;
+        std::vector<MissShader> misses;
     };
 
     CompiledShader

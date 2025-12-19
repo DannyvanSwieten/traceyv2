@@ -60,11 +60,15 @@ namespace tracey
 
     void VulkanBuffer::mapRange(uint32_t offset, uint32_t size)
     {
+        (void)offset;
+        (void)size;
     }
     void VulkanBuffer::flush()
     {
     }
     void VulkanBuffer::flushRange(uint32_t offset, uint32_t size)
     {
+        (void)offset;
+        (void)size;
     }
 }

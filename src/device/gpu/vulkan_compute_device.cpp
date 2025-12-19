@@ -5,7 +5,7 @@
 #include <sstream>
 namespace tracey
 {
-    VulkanComputeDevice::VulkanComputeDevice()
+    VulkanComputeDevice::VulkanComputeDevice(VulkanContext context) : m_vulkanContext(std::move(context))
     {
     }
 
@@ -27,7 +27,7 @@ namespace tracey
     {
         return nullptr;
     }
-    ShaderBindingTable *VulkanComputeDevice::createShaderBindingTable(const ShaderModule *rayGen, const std::span<const ShaderModule *> hitShaders)
+    ShaderBindingTable *VulkanComputeDevice::createShaderBindingTable(const ShaderModule *rayGen, const std::span<const ShaderModule *> hitShaders, const std::span<const ShaderModule *> missShaders)
     {
         return nullptr;
     }

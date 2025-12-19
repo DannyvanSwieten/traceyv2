@@ -122,6 +122,8 @@ namespace tracey
                 {
                     payloadPtr = std::malloc(compiledSbt.rayGen.shader.payloadSlots[0]->payloadSize);
                     compiledSbt.rayGen.shader.payloadSlots[0]->setPayload(&payloadPtr, 0);
+                    compiledSbt.hits[0].shader.payloadSlots[0]->setPayload(&payloadPtr, 0);
+                    compiledSbt.misses[0].shader.payloadSlots[0]->setPayload(&payloadPtr, 0);
                 }
 
                 // Reuse builtins per thread to reduce per-pixel overhead.

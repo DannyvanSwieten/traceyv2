@@ -18,7 +18,6 @@ namespace tracey
     }
     Sbt CpuRayTracingPipeline::compileShaders()
     {
-        ;
         const auto rayGenModule = dynamic_cast<const CpuShaderModule *>(m_sbt.rayGen());
         Sbt sbt{RayGenShader(compileShader(*rayGenModule))};
 
@@ -29,6 +28,16 @@ namespace tracey
             {
                 const auto hitFunction = compileShader(*hitModule);
                 sbt.hits.emplace_back(hitFunction);
+            }
+        }
+
+        for (const auto &missModulePtr : m_sbt.missModules())
+        {
+            const auto missModule = dynamic_cast<const CpuShaderModule *>(missModulePtr);
+            if (missModule)
+            {
+                const auto missFunction = compileShader(*missModule);
+                sbt.misses.emplace_back(missFunction);
             }
         }
 

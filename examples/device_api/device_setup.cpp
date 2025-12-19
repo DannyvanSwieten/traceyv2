@@ -89,6 +89,7 @@ int main()
 
     tracey::StructureLayout payloadLayout("RayPayload");
     payloadLayout.addMember({"color", "vec3", false, false});
+    payloadLayout.addMember({"direction", "vec3", false, false});
     payloadLayout.addMember({"hit", "bool", false, false});
     layout.addPayload("rayPayload", 0, tracey::ShaderStage::RayGeneration, payloadLayout);
 
@@ -101,7 +102,7 @@ int main()
     auto rayGenModule = cpuComputeDevice->createShaderModule(tracey::ShaderStage::RayGeneration,
                                                              R"(
 
-                                                             inline float radians(float degrees) {
+inline float radians(float degrees) {
     return degrees * 3.14159265358979323846 / 180.0;
 }
 void shader() {
@@ -121,34 +122,36 @@ void shader() {
     vec3 origin = vec3(0.0f, 0.0f, 0.0f);
     vec3 direction = normalize(vec3(px, py, 1.0f));
 
-    // set up sky color based on ray direction
-    float t = 0.5f * (direction.y + 1.0f);
-    vec3 sky = (1.0f - t) * vec3(1.0f) + t * vec3(0.5f, 0.7f, 1.0f);
-    rayPayload.color = sky;
+    rayPayload.color = vec3(0.0f);
+    rayPayload.direction = direction;
+    rayPayload.hit = false;
+
+    vec3 color = vec3(1.0f);
 
     traceRaysEXT(tlas, 0, 0, 0, 0, 0,
                   origin, 0.01f,
                   direction, 100.0f,
                   0);
 
+    color = rayPayload.color;
+
     if(rayPayload.hit) {
         // send shadow ray
-        vec3 lightDir = normalize(vec3(-1.0f, -1.0f, -1.0f));
-        bool occluded = false;
-        origin = origin + direction * gl_HitTEXT;
+        vec3 lightDir = normalize(vec3(0.0f, 1.0f, -1.0f));
+        origin = (origin + direction * gl_HitTEXT) + lightDir * 0.01f;
+        direction = lightDir;
         rayPayload.hit = false;
         traceRaysEXT(tlas, 0, 0, 0, 0, 0,
                       origin, 0.01f,
-                      normalize(vec3(0.0f, 1.0f, -1.0f)), 100.0f,
-                      1);
-
+                      lightDir, 100.0f,
+                      0);
         
         if(rayPayload.hit) {
-            rayPayload.color = rayPayload.color * 0.2f; // in shadow
-        }
+            color *= 0.2f; // in shadow
+        } 
     }
 
-    imageStore(outputImage, launchID.xy, vec4(rayPayload.color, 1.0));
+    imageStore(outputImage, launchID.xy, vec4(color, 1.0));
 }
     )",
                                                              "shader");
@@ -175,8 +178,22 @@ void shader() {
     )",
                                                                  "shader");
 
+    auto primaryMissModule = cpuComputeDevice->createShaderModule(tracey::ShaderStage::Miss,
+                                                                  R"(
+void shader() {
+    // Miss shader code
+    // set up sky color based on ray direction
+    float t = 0.5f * (rayPayload.direction.y + 1.0f);
+    vec3 sky = (1.0f - t) * vec3(1.0f) + t * vec3(0.5f, 0.7f, 1.0f);
+    rayPayload.color = sky;
+    rayPayload.hit = false;
+}
+    )",
+                                                                  "shader");
+
     std::array<const tracey::ShaderModule *, 1> hitModules = {closestHitModule};
-    auto sbt = cpuComputeDevice->createShaderBindingTable(rayGenModule, hitModules);
+    std::array<const tracey::ShaderModule *, 1> missModules = {primaryMissModule};
+    auto sbt = cpuComputeDevice->createShaderBindingTable(rayGenModule, hitModules, missModules);
     // This is where the shaders are compiled
     auto pipeline = cpuComputeDevice->createRayTracingPipeline(layout, sbt);
 
