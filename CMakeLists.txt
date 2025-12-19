@@ -65,6 +65,8 @@ add_library(tracey
     src/device/gpu/vulkan_buffer.cpp
     src/device/gpu/vulkan_image_2d.hpp
     src/device/gpu/vulkan_image_2d.cpp
+    src/device/gpu/vulkan_compute_bottom_level_accelerations_structure.hpp
+    src/device/gpu/vulkan_compute_bottom_level_accelerations_structure.cpp
 
     src/device/cpu/cpu_compute_device.hpp
     src/device/cpu/cpu_compute_device.cpp
