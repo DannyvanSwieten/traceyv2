@@ -2,8 +2,10 @@
 #include "../../core/types.hpp"
 #include <random>
 
+#ifdef _WIN32
 #pragma warning(push)
 #pragma warning( disable : 4146 ) // unary minus operator applied to unsigned type, result still unsigned
+#endif
 
 namespace tracey
 {
@@ -98,4 +100,6 @@ namespace tracey
     Vec3 cosineSampleHemisphere(const Vec2 &xi);
 } // namespace tracey
 
+#ifdef _WIN32
 #pragma warning(pop)
+#endif
