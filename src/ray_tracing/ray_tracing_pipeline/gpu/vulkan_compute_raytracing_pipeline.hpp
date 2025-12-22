@@ -6,10 +6,12 @@
 namespace tracey
 {
     class VulkanComputeDevice;
+    class CpuShaderBindingTable;
+    class RayTracingPipelineLayout;
     class VulkanComputeRaytracingPipeline : public RayTracingPipeline
     {
     public:
-        VulkanComputeRaytracingPipeline(VulkanComputeDevice &device);
+        VulkanComputeRaytracingPipeline(VulkanComputeDevice &device, const RayTracingPipelineLayout &layout, const CpuShaderBindingTable &sbt);
         ~VulkanComputeRaytracingPipeline() override;
 
     private:

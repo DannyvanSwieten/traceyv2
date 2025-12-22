@@ -103,7 +103,7 @@ int main()
     auto rayGenModule = computeDevice->createShaderModule(tracey::ShaderStage::RayGeneration,
                                                           R"(
 
-inline float radians(float degrees) {
+float radians(float degrees) {
     return degrees * 3.14159265358979323846 / 180.0;
 }
 void shader() {

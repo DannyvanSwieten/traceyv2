@@ -1,10 +1,13 @@
 #include "vulkan_compute_raytracing_pipeline.hpp"
 #include "../../../device/gpu/vulkan_compute_device.hpp"
+#include "vulkan_compute_pipeline_compiler.hpp"
+// #include "../ray_tracing_pipeline_layout.hpp"
 namespace tracey
 {
-    VulkanComputeRaytracingPipeline::VulkanComputeRaytracingPipeline(VulkanComputeDevice &device)
+    VulkanComputeRaytracingPipeline::VulkanComputeRaytracingPipeline(VulkanComputeDevice &device, const RayTracingPipelineLayout &layout, const CpuShaderBindingTable &sbt)
         : m_device(device)
     {
+        compileVulkanComputeRayTracingPipeline(layout, sbt);
     }
 
     VulkanComputeRaytracingPipeline::~VulkanComputeRaytracingPipeline()

@@ -137,13 +137,13 @@ endif()
 
 find_package(Vulkan REQUIRED)
 
-# find_package(PkgConfig REQUIRED)
-# pkg_check_modules(SHADERC REQUIRED shaderc)
-# target_include_directories(tracey PRIVATE
-#     ${SHADERC_INCLUDE_DIRS}
-# )
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(SHADERC REQUIRED IMPORTED_TARGET shaderc shaderc_combined)
+target_include_directories(tracey PRIVATE
+    ${SHADERC_INCLUDE_DIRS}
+)
 
-target_link_libraries(tracey PRIVATE glm::glm Vulkan::Vulkan volk::volk)
+target_link_libraries(tracey PRIVATE glm::glm Vulkan::Vulkan PkgConfig::SHADERC volk::volk)
 target_include_directories(tracey
     PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src

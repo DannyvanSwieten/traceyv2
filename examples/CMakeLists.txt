@@ -51,4 +51,5 @@ target_link_libraries(device_api
     tracey
     glm
     Vulkan::Vulkan
+    shaderc
 )

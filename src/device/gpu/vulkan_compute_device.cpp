@@ -7,6 +7,7 @@
 #include "vulkan_compute_top_level_acceleration_structure.hpp"
 #include "../../ray_tracing/shader_module/cpu/cpu_shader_module.hpp"
 #include "../../ray_tracing/ray_tracing_pipeline/cpu/cpu_shader_binding_table.hpp"
+#include "../../ray_tracing/ray_tracing_pipeline/gpu/vulkan_compute_raytracing_pipeline.hpp"
 #include <sstream>
 namespace tracey
 {
@@ -42,7 +43,7 @@ namespace tracey
 
     RayTracingPipeline *VulkanComputeDevice::createRayTracingPipeline(const RayTracingPipelineLayout &layout, const ShaderBindingTable *sbt)
     {
-        return nullptr;
+        return new VulkanComputeRaytracingPipeline(*this, layout, *dynamic_cast<const CpuShaderBindingTable *>(sbt));
     }
 
     ShaderModule *VulkanComputeDevice::createShaderModule(ShaderStage stage, const std::string_view source, const std::string_view entryPoint)
