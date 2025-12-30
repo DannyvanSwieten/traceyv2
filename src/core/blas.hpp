@@ -18,8 +18,8 @@ namespace tracey
         std::optional<Hit> intersect(const Ray &ray, float tMin, float tMax, RayFlags flags) const;
         std::tuple<Vec3, Vec3> getBounds() const;
         size_t nodeCount() const { return m_nodes.size(); }
+        const std::vector<BVHNode> &nodes() const { return m_nodes; }
 
-    private:
         struct PrimitiveRef
         {
             uint32_t index;
@@ -35,6 +35,17 @@ namespace tracey
             Vec3 normal;
         };
 
+        const auto &triangleData() const
+        {
+            return m_triangleData;
+        }
+
+        const auto &primIndices() const
+        {
+            return m_primIndices;
+        }
+
+    private:
         uint32_t buildRecursive(std::span<PrimitiveRef> primRefs, uint32_t nodeIndex, uint32_t start, uint32_t end, int depth);
         Vec3 fetchVertex(uint32_t primitiveId, uint32_t element) const
         {

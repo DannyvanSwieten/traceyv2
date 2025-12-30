@@ -3,22 +3,22 @@
 #include <cassert>
 namespace tracey
 {
-    CpuDescriptorSet::CpuDescriptorSet(const RayTracingPipelineLayout &layout) : m_descriptors(layout.bindings().size())
+    CpuDescriptorSet::CpuDescriptorSet(const RayTracingPipelineLayoutDescriptor &layout) : m_descriptors(layout.bindings().size())
     {
         for (const auto &binding : layout.bindings())
         {
             switch (binding.type)
             {
-            case RayTracingPipelineLayout::DescriptorType::Image2D:
+            case RayTracingPipelineLayoutDescriptor::DescriptorType::Image2D:
                 m_descriptors[binding.index] = static_cast<Image2D *>(nullptr);
                 break;
-            case RayTracingPipelineLayout::DescriptorType::Buffer:
+            case RayTracingPipelineLayoutDescriptor::DescriptorType::Buffer:
                 m_descriptors[binding.index] = static_cast<Buffer *>(nullptr);
                 break;
-            case RayTracingPipelineLayout::DescriptorType::AccelerationStructure:
+            case RayTracingPipelineLayoutDescriptor::DescriptorType::AccelerationStructure:
                 m_descriptors[binding.index] = DispatchedTlas{nullptr, nullptr};
                 break;
-            case RayTracingPipelineLayout::DescriptorType::RayPayload:
+            case RayTracingPipelineLayoutDescriptor::DescriptorType::RayPayload:
                 m_descriptors[binding.index] = static_cast<void *>(nullptr);
                 break;
             default:

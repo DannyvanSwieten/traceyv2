@@ -36,6 +36,9 @@ namespace tracey
         StorageBuffer = 1 << 2,
         AccelerationStructureBuildInput = 1 << 3,
         AccelerationStructureStorage = 1 << 4,
+        UniformBuffer = 1 << 5,
+        TransferSrc = 1 << 6,
+        TransferDst = 1 << 7,
     };
 
     BufferUsage operator|(BufferUsage a, BufferUsage b);
@@ -51,7 +54,7 @@ namespace tracey
     class BottomLevelAccelerationStructure;
     class TopLevelAccelerationStructure;
     class RayTracingPipeline;
-    class RayTracingPipelineLayout;
+    class RayTracingPipelineLayoutDescriptor;
     class ShaderModule;
     class ShaderBindingTable;
     class RayTracingCommandBuffer;
@@ -62,11 +65,10 @@ namespace tracey
     {
     public:
         virtual ~Device() = default;
-        virtual RayTracingPipeline *createRayTracingPipeline(const RayTracingPipelineLayout &layout, const ShaderBindingTable *sbt) = 0;
+        virtual RayTracingPipeline *createRayTracingPipeline(const RayTracingPipelineLayoutDescriptor &layout, const ShaderBindingTable *sbt) = 0;
         virtual ShaderModule *createShaderModule(ShaderStage stage, const std::string_view source, const std::string_view entryPoint) = 0;
         virtual ShaderBindingTable *createShaderBindingTable(const ShaderModule *rayGen, const std::span<const ShaderModule *> hitShaders, const std::span<const ShaderModule *> missShaders) = 0;
         virtual RayTracingCommandBuffer *createRayTracingCommandBuffer() = 0;
-        virtual void allocateDescriptorSets(std::span<DescriptorSet *> sets, const RayTracingPipelineLayout &layout) = 0;
         virtual Buffer *createBuffer(uint32_t size, BufferUsage usageFlags) = 0;
         virtual Image2D *createImage2D(uint32_t width, uint32_t height, ImageFormat format) = 0;
         virtual BottomLevelAccelerationStructure *createBottomLevelAccelerationStructure(const Buffer *positions, uint32_t positionCount, uint32_t positionStride, const Buffer *indices, uint32_t indexCount) = 0;

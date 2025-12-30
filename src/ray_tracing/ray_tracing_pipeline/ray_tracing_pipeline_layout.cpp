@@ -1,24 +1,24 @@
 #include "ray_tracing_pipeline_layout.hpp"
 namespace tracey
 {
-    void RayTracingPipelineLayout::addImage2D(std::string name, uint32_t index, ShaderStage stage)
+    void RayTracingPipelineLayoutDescriptor::addImage2D(std::string name, uint32_t index, ShaderStage stage)
     {
         m_bindings.emplace_back(DescriptorBinding{name, index, DescriptorType::Image2D, stage});
     }
 
-    void RayTracingPipelineLayout::addBuffer(std::string name, uint32_t index, ShaderStage stage, const StructureLayout &structure)
+    void RayTracingPipelineLayoutDescriptor::addBuffer(std::string name, uint32_t index, ShaderStage stage, const StructureLayout &structure)
     {
         m_bindings.emplace_back(DescriptorBinding{name, index, DescriptorType::Buffer, stage, structure});
     }
-    void RayTracingPipelineLayout::addAccelerationStructure(std::string name, uint32_t index, ShaderStage stage)
+    void RayTracingPipelineLayoutDescriptor::addAccelerationStructure(std::string name, uint32_t index, ShaderStage stage)
     {
         m_bindings.emplace_back(DescriptorBinding{name, index, DescriptorType::AccelerationStructure, stage});
     }
-    void RayTracingPipelineLayout::addPayload(std::string name, uint32_t index, ShaderStage stage, const StructureLayout &structure)
+    void RayTracingPipelineLayoutDescriptor::addPayload(std::string name, uint32_t index, ShaderStage stage, const StructureLayout &structure)
     {
         m_payloads.emplace_back(PayloadBinding{name, index, stage, structure});
     }
-    std::vector<RayTracingPipelineLayout::DescriptorBinding> RayTracingPipelineLayout::bindingsForStage(ShaderStage stage) const
+    std::vector<RayTracingPipelineLayoutDescriptor::DescriptorBinding> RayTracingPipelineLayoutDescriptor::bindingsForStage(ShaderStage stage) const
     {
         std::vector<DescriptorBinding> result;
         for (const auto &binding : m_bindings)
@@ -30,7 +30,7 @@ namespace tracey
         }
         return result;
     }
-    std::vector<RayTracingPipelineLayout::PayloadBinding> RayTracingPipelineLayout::payloadsForStage(ShaderStage stage) const
+    std::vector<RayTracingPipelineLayoutDescriptor::PayloadBinding> RayTracingPipelineLayoutDescriptor::payloadsForStage(ShaderStage stage) const
     {
         std::vector<PayloadBinding> result;
         for (const auto &payload : m_payloads)

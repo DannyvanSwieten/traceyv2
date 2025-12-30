@@ -6,7 +6,7 @@
 
 namespace tracey
 {
-    class RayTracingPipelineLayout;
+    class RayTracingPipelineLayoutDescriptor;
     class CpuRayTracingPipeline;
     struct DispatchedTlas
     {
@@ -16,7 +16,7 @@ namespace tracey
     class CpuDescriptorSet : public DescriptorSet
     {
     public:
-        CpuDescriptorSet(const RayTracingPipelineLayout &layout);
+        CpuDescriptorSet(const RayTracingPipelineLayoutDescriptor &layout);
 
         void setImage2D(uint32_t binding, Image2D *image) override;
         void setBuffer(uint32_t binding, Buffer *buffer) override;

@@ -117,6 +117,8 @@ add_library(tracey
     src/ray_tracing/ray_tracing_command_buffer/ray_tracing_command_buffer.hpp
     src/ray_tracing/ray_tracing_command_buffer/cpu/cpu_ray_tracing_command_buffer.hpp
     src/ray_tracing/ray_tracing_command_buffer/cpu/cpu_ray_tracing_command_buffer.cpp
+    src/ray_tracing/ray_tracing_command_buffer/gpu/vulkan_compute_ray_tracing_command_buffer.hpp
+    src/ray_tracing/ray_tracing_command_buffer/gpu/vulkan_compute_ray_tracing_command_buffer.cpp
 
     src/ray_tracing/shader_module/shader_module.hpp
     src/ray_tracing/shader_module/cpu/cpu_shader_module.hpp

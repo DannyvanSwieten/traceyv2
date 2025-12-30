@@ -9,7 +9,7 @@
 namespace tracey
 {
     class CpuShaderBindingTable;
-    class RayTracingPipelineLayout;
+    class RayTracingPipelineLayoutDescriptor;
     using RayTracingEntryPointFunc = void (*)();
 
     using setBuiltinsFunc = void (*)(const rt::Builtins &b);
@@ -82,9 +82,9 @@ namespace tracey
     };
 
     CompiledShader
-    compileCpuRayTracingPipeline(const RayTracingPipelineLayout &layout, const CpuShaderBindingTable &sbt);
-    CompiledShader compileCpuShader(const RayTracingPipelineLayout &layout, ShaderStage stage, const std::string_view source, const std::string_view entryPoint);
+    compileCpuRayTracingPipeline(const RayTracingPipelineLayoutDescriptor &layout, const CpuShaderBindingTable &sbt);
+    CompiledShader compileCpuShader(const RayTracingPipelineLayoutDescriptor &layout, ShaderStage stage, const std::string_view source, const std::string_view entryPoint);
 
-    void* loadLibrary(const std::filesystem::path& path);
-    void* loadSymbol(void* dylib, const char* symbolName);
+    void *loadLibrary(const std::filesystem::path &path);
+    void *loadSymbol(void *dylib, const char *symbolName);
 }

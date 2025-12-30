@@ -1,5 +1,6 @@
 #include "vulkan_compute_bottom_level_accelerations_structure.hpp"
 #include "vulkan_buffer.hpp"
+#include <cassert>
 namespace tracey
 {
     VulkanComputeBottomLevelAccelerationStructure::VulkanComputeBottomLevelAccelerationStructure(VulkanComputeDevice &device, const Buffer *positions, uint32_t positionCount, uint32_t positionStride, const Buffer *indices, uint32_t indexCount) : m_device(device)
@@ -23,7 +24,10 @@ namespace tracey
             m_blas.emplace(positionsSpan, stride, indicesSpan);
         }
 
-        m_blas_buffer = std::make_unique<VulkanBuffer>(m_device, sizeof(BVHNode) * m_blas->nodeCount(), BufferUsage::StorageBuffer);
-        m_blas_device_address = m_blas_buffer->deviceAddress();
+        assert(m_blas->primIndices().size() == triangleCount());
+    }
+    size_t VulkanComputeBottomLevelAccelerationStructure::triangleCount() const
+    {
+        return m_blas ? m_blas->triangleData().size() : 0;
     }
 }

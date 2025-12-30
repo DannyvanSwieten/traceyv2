@@ -4,13 +4,16 @@
 namespace tracey
 {
     class CpuShaderBindingTable;
-    class RayTracingPipelineLayout;
+    class RayTracingPipelineLayoutDescriptor;
     class CpuShaderModule;
     class CpuRayTracingPipeline : public RayTracingPipeline
     {
     public:
-        CpuRayTracingPipeline(const RayTracingPipelineLayout &layout, const CpuShaderBindingTable &sbt);
-        const RayTracingPipelineLayout &layout() const;
+        CpuRayTracingPipeline(const RayTracingPipelineLayoutDescriptor &layout, const CpuShaderBindingTable &sbt);
+
+        void allocateDescriptorSets(std::span<DescriptorSet *> sets) override;
+
+        const RayTracingPipelineLayoutDescriptor &layout() const;
         const CpuShaderBindingTable &sbt() const;
         Sbt &compiledSbt() { return m_compiledSbt; }
 
@@ -19,7 +22,7 @@ namespace tracey
         CompiledShader compileShader(const CpuShaderModule &module);
 
     private:
-        const RayTracingPipelineLayout &m_layout;
+        const RayTracingPipelineLayoutDescriptor &m_layout;
         const CpuShaderBindingTable &m_sbt;
         Sbt m_compiledSbt;
     };

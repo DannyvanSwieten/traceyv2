@@ -5,7 +5,7 @@
 #include "data_structure.hpp"
 namespace tracey
 {
-    class RayTracingPipelineLayout
+    class RayTracingPipelineLayoutDescriptor
     {
     public:
         enum class DescriptorType

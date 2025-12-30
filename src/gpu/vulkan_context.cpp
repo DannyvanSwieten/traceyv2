@@ -7,6 +7,8 @@
 #include <cstdint>
 #include <iostream>
 #include <volk.h>
+#include <cstring>
+#include <string>
 
 namespace tracey
 {
@@ -60,8 +62,58 @@ namespace tracey
         throw std::runtime_error("Failed to find suitable memory type");
     }
 
+    static bool hasLayer(const char *name)
+    {
+        uint32_t count = 0;
+        vkEnumerateInstanceLayerProperties(&count, nullptr);
+        std::vector<VkLayerProperties> layers(count);
+        vkEnumerateInstanceLayerProperties(&count, layers.data());
+        for (const auto &l : layers)
+        {
+            if (std::strcmp(l.layerName, name) == 0)
+                return true;
+        }
+        return false;
+    }
+
+    static bool hasInstanceExtension(const char *name)
+    {
+        uint32_t count = 0;
+        vkEnumerateInstanceExtensionProperties(nullptr, &count, nullptr);
+        std::vector<VkExtensionProperties> exts(count);
+        vkEnumerateInstanceExtensionProperties(nullptr, &count, exts.data());
+        for (const auto &e : exts)
+        {
+            if (std::strcmp(e.extensionName, name) == 0)
+                return true;
+        }
+        return false;
+    }
+
+    static VkResult createDebugMessenger(VkInstance instance,
+                                         const VkDebugUtilsMessengerCreateInfoEXT *createInfo,
+                                         VkDebugUtilsMessengerEXT *messenger)
+    {
+        auto fn = (PFN_vkCreateDebugUtilsMessengerEXT)vkGetInstanceProcAddr(instance, "vkCreateDebugUtilsMessengerEXT");
+        if (!fn)
+            return VK_ERROR_EXTENSION_NOT_PRESENT;
+        return fn(instance, createInfo, nullptr, messenger);
+    }
+
+    static void destroyDebugMessenger(VkInstance instance, VkDebugUtilsMessengerEXT messenger)
+    {
+        auto fn = (PFN_vkDestroyDebugUtilsMessengerEXT)vkGetInstanceProcAddr(instance, "vkDestroyDebugUtilsMessengerEXT");
+        if (fn && messenger != VK_NULL_HANDLE)
+            fn(instance, messenger, nullptr);
+    }
+
     VulkanContext::VulkanContext()
     {
+#ifndef NDEBUG
+        m_enableValidation = true;
+#else
+        m_enableValidation = false;
+#endif
         VkResult res = volkInitialize();
         if (res != VK_SUCCESS)
         {
@@ -70,7 +122,6 @@ namespace tracey
         createInstance();
         pickPhysicalDevice();
         createDeviceAndQueue();
-        createCommandPool();
     }
 
     VulkanContext::~VulkanContext()
@@ -83,6 +134,8 @@ namespace tracey
 
         if (m_instance != VK_NULL_HANDLE)
         {
+            destroyDebugMessenger(m_instance, m_debugMessenger);
+            m_debugMessenger = VK_NULL_HANDLE;
             vkDestroyInstance(m_instance, nullptr);
         }
     }
@@ -99,6 +152,7 @@ namespace tracey
         other.m_device = VK_NULL_HANDLE;
         other.m_computeQueue = VK_NULL_HANDLE;
         other.m_commandPool = VK_NULL_HANDLE;
+        other.m_debugMessenger = VK_NULL_HANDLE;
     }
 
     void VulkanContext::createInstance()
@@ -109,38 +163,60 @@ namespace tracey
         appInfo.applicationVersion = VK_MAKE_VERSION(0, 1, 0);
         appInfo.pEngineName = "Custom";
         appInfo.engineVersion = VK_MAKE_VERSION(0, 1, 0);
-        appInfo.apiVersion = VK_API_VERSION_1_4;
+        appInfo.apiVersion = VK_API_VERSION_1_2;
 
-        // --- macOS / MoltenVK: portability extension + flag ---
+        std::vector<const char *> extensions;
+        std::vector<const char *> layers;
 
-        const char *extensions[] = {
-            VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME, // "VK_KHR_portability_enumeration"
-            VK_EXT_DEBUG_UTILS_EXTENSION_NAME              // "VK_EXT_debug_utils"
-        };
+        // macOS / MoltenVK: portability enumeration
+        if (hasInstanceExtension(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME))
+        {
+            extensions.push_back(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
+        }
+
+        // Debug utils for validation output
+        if (m_enableValidation && hasInstanceExtension(VK_EXT_DEBUG_UTILS_EXTENSION_NAME))
+        {
+            extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+        }
+
+        // Validation layer (only if present)
+        if (m_enableValidation && hasLayer("VK_LAYER_KHRONOS_validation"))
+        {
+            layers.push_back("VK_LAYER_KHRONOS_validation");
+        }
 
         VkInstanceCreateInfo createInfo{};
         createInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
         createInfo.pApplicationInfo = &appInfo;
-        createInfo.enabledExtensionCount = sizeof(extensions) / sizeof(extensions[0]);
-        createInfo.ppEnabledExtensionNames = extensions;
+        createInfo.enabledExtensionCount = static_cast<uint32_t>(extensions.size());
+        createInfo.ppEnabledExtensionNames = extensions.data();
+        createInfo.enabledLayerCount = static_cast<uint32_t>(layers.size());
+        createInfo.ppEnabledLayerNames = layers.data();
 
-        // Required on Apple platforms:
+        // Required on Apple platforms (MoltenVK) when using portability enumeration.
         createInfo.flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
 
-        // No layers to keep it minimal for now
-        createInfo.enabledLayerCount = 0;
-        createInfo.ppEnabledLayerNames = nullptr;
-
-        // Add debug messenger info
         VkDebugUtilsMessengerCreateInfoEXT debugCreateInfo{};
-        debugCreateInfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
-        debugCreateInfo.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
-                                          VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
-        debugCreateInfo.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
-                                      VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
-                                      VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
-        debugCreateInfo.pfnUserCallback = debugCallback;
-        createInfo.pNext = (VkDebugUtilsMessengerCreateInfoEXT *)&debugCreateInfo;
+        if (m_enableValidation && hasInstanceExtension(VK_EXT_DEBUG_UTILS_EXTENSION_NAME))
+        {
+            debugCreateInfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
+            debugCreateInfo.messageSeverity =
+                VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT |
+                VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT |
+                VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
+                VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+            debugCreateInfo.messageType =
+                VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
+                VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
+                VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+            debugCreateInfo.pfnUserCallback = debugCallback;
+            createInfo.pNext = &debugCreateInfo;
+        }
+        else
+        {
+            createInfo.pNext = nullptr;
+        }
 
         VkResult res = vkCreateInstance(&createInfo, nullptr, &m_instance);
         if (res != VK_SUCCESS)
@@ -149,6 +225,24 @@ namespace tracey
         }
 
         volkLoadInstance(m_instance);
+
+        if (m_enableValidation && hasInstanceExtension(VK_EXT_DEBUG_UTILS_EXTENSION_NAME))
+        {
+            VkDebugUtilsMessengerCreateInfoEXT dbg{};
+            dbg.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
+            dbg.messageSeverity =
+                VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT |
+                VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT |
+                VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
+                VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+            dbg.messageType =
+                VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
+                VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
+                VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+            dbg.pfnUserCallback = debugCallback;
+
+            (void)createDebugMessenger(m_instance, &dbg, &m_debugMessenger);
+        }
     }
 
     void VulkanContext::pickPhysicalDevice()
@@ -205,9 +299,15 @@ namespace tracey
         createInfo.pQueueCreateInfos = &queueInfo;
         createInfo.pEnabledFeatures = &deviceFeatures;
 
-        // No device extensions yet; we only need compute.
-        createInfo.enabledExtensionCount = 0;
-        createInfo.ppEnabledExtensionNames = nullptr;
+        std::vector<const char *> devExts;
+
+#ifdef __APPLE__
+        // MoltenVK exposes VK_KHR_portability_subset; some apps need to enable it explicitly.
+        devExts.push_back("VK_KHR_portability_subset");
+#endif
+
+        createInfo.enabledExtensionCount = static_cast<uint32_t>(devExts.size());
+        createInfo.ppEnabledExtensionNames = devExts.empty() ? nullptr : devExts.data();
 
         if (vkCreateDevice(m_physicalDevice, &createInfo, nullptr, &m_device) != VK_SUCCESS)
         {
@@ -217,19 +317,6 @@ namespace tracey
         volkLoadDevice(m_device);
 
         vkGetDeviceQueue(m_device, m_computeQueueFamilyIndex, 0, &m_computeQueue);
-    }
-
-    void VulkanContext::createCommandPool()
-    {
-        VkCommandPoolCreateInfo info{};
-        info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-        info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-        info.queueFamilyIndex = m_computeQueueFamilyIndex;
-
-        if (vkCreateCommandPool(m_device, &info, nullptr, &m_commandPool) != VK_SUCCESS)
-        {
-            throw std::runtime_error("Failed to create command pool");
-        }
     }
 
     VkCommandBuffer VulkanContext::beginSingleTimeCommands()
@@ -274,126 +361,5 @@ namespace tracey
 
         vkDestroyFence(m_device, fence, nullptr);
         vkFreeCommandBuffers(m_device, m_commandPool, 1, &cmd);
-    }
-
-    VkPipeline VulkanContext::createComputePipeline(VkShaderModule module, VkPipelineLayout pipelineLayout)
-    {
-        VkPipelineShaderStageCreateInfo stage{};
-        stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-        stage.module = module;
-        stage.pName = "main";
-
-        VkComputePipelineCreateInfo info{};
-        info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-        info.stage = stage;
-        info.layout = pipelineLayout;
-
-        VkPipeline pipeline;
-        if (vkCreateComputePipelines(m_device, VK_NULL_HANDLE, 1, &info, nullptr, &pipeline) != VK_SUCCESS)
-        {
-            vkDestroyShaderModule(m_device, module, nullptr);
-            throw std::runtime_error("Failed to create compute pipeline");
-        }
-
-        vkDestroyShaderModule(m_device, module, nullptr);
-    }
-
-    VkImage VulkanContext::createImage(uint32_t width, uint32_t height, VkFormat format, VkImageUsageFlags usage)
-    {
-        VkImageCreateInfo info{};
-        info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-        info.imageType = VK_IMAGE_TYPE_2D;
-        info.extent.width = width;
-        info.extent.height = height;
-        info.extent.depth = 1;
-        info.mipLevels = 1;
-        info.arrayLayers = 1;
-        info.format = format;
-        info.tiling = VK_IMAGE_TILING_OPTIMAL;
-        info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        info.usage = usage;
-        info.samples = VK_SAMPLE_COUNT_1_BIT;
-        info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-
-        VkImage image;
-        if (vkCreateImage(m_device, &info, nullptr, &image) != VK_SUCCESS)
-        {
-            throw std::runtime_error("Failed to create image");
-        }
-        return image;
-    }
-
-    VkDeviceMemory VulkanContext::allocateImage(VkImage image, VkMemoryPropertyFlags properties)
-    {
-        VkMemoryRequirements memReq;
-        vkGetImageMemoryRequirements(m_device, image, &memReq);
-
-        VkMemoryAllocateInfo alloc{};
-        alloc.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        alloc.allocationSize = memReq.size;
-        alloc.memoryTypeIndex = findMemoryType(
-            m_physicalDevice,
-            memReq.memoryTypeBits,
-            properties);
-
-        VkDeviceMemory memory;
-        if (vkAllocateMemory(m_device, &alloc, nullptr, &memory) != VK_SUCCESS)
-        {
-            throw std::runtime_error("Failed to allocate image memory");
-        }
-        return memory;
-    }
-
-    VkImageView VulkanContext::createImageView(VkImage image, VkFormat format)
-    {
-        VkImageViewCreateInfo view{};
-        view.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-        view.image = image;
-        view.viewType = VK_IMAGE_VIEW_TYPE_2D;
-        view.format = format;
-        view.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        view.subresourceRange.baseMipLevel = 0;
-        view.subresourceRange.levelCount = 1;
-        view.subresourceRange.baseArrayLayer = 0;
-        view.subresourceRange.layerCount = 1;
-
-        VkImageView imageView;
-        if (vkCreateImageView(m_device, &view, nullptr, &imageView) != VK_SUCCESS)
-        {
-            throw std::runtime_error("Failed to create image view");
-        }
-        return imageView;
-    }
-
-    VkDescriptorPool VulkanContext::createDescriptorPool(uint32_t maxSets, const std::span<const VkDescriptorPoolSize> poolSizes)
-    {
-        VkDescriptorPoolCreateInfo poolInfo{};
-        poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-        poolInfo.maxSets = maxSets;
-        poolInfo.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
-        poolInfo.pPoolSizes = poolSizes.data();
-
-        VkDescriptorPool descriptorPool;
-        if (vkCreateDescriptorPool(m_device, &poolInfo, nullptr, &descriptorPool) != VK_SUCCESS)
-        {
-            throw std::runtime_error("Failed to create descriptor pool");
-        }
-        return descriptorPool;
-    }
-
-    VkShaderModule VulkanContext::createShaderModule(const std::span<const uint32_t> code)
-    {
-        VkShaderModuleCreateInfo info{};
-        info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-        info.codeSize = code.size() * sizeof(uint32_t);
-        info.pCode = code.data();
-
-        VkShaderModule module;
-        if (vkCreateShaderModule(m_device, &info, nullptr, &module) != VK_SUCCESS)
-        {
-            throw std::runtime_error("Failed to create shader module");
-        }
-        return module;
     }
 }

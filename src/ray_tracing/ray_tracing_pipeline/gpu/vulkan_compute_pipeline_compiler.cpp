@@ -2,74 +2,94 @@
 #include "../ray_tracing_pipeline_layout.hpp"
 #include "../cpu/cpu_shader_binding_table.hpp"
 #include "../../../ray_tracing/shader_module/cpu/cpu_shader_module.hpp"
+#include <filesystem>
+#include <fstream>
 #include <sstream>
 #include <shaderc/shaderc.hpp>
 namespace tracey
 {
-    void compileVulkanComputeRayTracingPipeline(const RayTracingPipelineLayout &layout, const CpuShaderBindingTable &sbt)
+    std::vector<uint32_t> compileVulkanComputeRayTracingPipeline(const RayTracingPipelineLayoutDescriptor &layout, const CpuShaderBindingTable &sbt)
     {
         const auto rayGenShader = sbt.rayGen();
 
+        std::stringstream shaderTemplate;
+
+        // Load prelude shader code
+        std::filesystem::path preludePath = std::filesystem::path(__FILE__).parent_path() / "vulkan_compute_prelude.comp";
+        std::ifstream preludeFile(preludePath);
+        if (!preludeFile.is_open())
+        {
+            throw std::runtime_error("Failed to open Vulkan compute prelude file: " + preludePath.string());
+        }
+        shaderTemplate << preludeFile.rdbuf() << "\n";
+
+        std::filesystem::path intersectPath = std::filesystem::path(__FILE__).parent_path() / "vulkan_compute_intersect.comp";
+        std::ifstream intersectFile(intersectPath);
+        if (!intersectFile.is_open())
+        {
+            throw std::runtime_error("Failed to open Vulkan compute intersect file: " + intersectPath.string());
+        }
+
+        shaderTemplate << intersectFile.rdbuf() << "\n";
+
         std::stringstream ss;
-        ss << "#version 460\n";
-        ss << "layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;\n";
 
-        ss << "struct BvhNode {\n";
-        ss << "    vec3 aabbMin;\n";
-        ss << "    uint leftChild;\n";
-        ss << "    vec3 aabbMax;\n";
-        ss << "    uint rightChild;\n";
-        ss << "};\n";
+        int tlasCount = 0;
+        bool sawTlas = false;
 
-        ss << "struct Ray {\n";
-        ss << "    vec3 origin;\n";
-        ss << "    vec3 direction;\n";
-        ss << "    vec3 invDirection;\n";
-        ss << "};\n";
-
-        ss << "struct InstanceData {\n";
-        ss << "    vec4 t0;\n";
-        ss << "    vec4 t1;\n";
-        ss << "    vec4 t2;\n";
-        ss << "    uint customIndexAndMask;\n";
-        ss << "    uint sbtOffsetAndFlags;\n";
-        ss << "    uint blasAddress;\n";
-        ss << "    uint padding;\n";
-        ss << "};\n";
-
-        ss << "#define gl_LaunchIDEXT gl_GlobalInvocationID" << "\n";
-        ss << "#define gl_LaunchSizeEXT gl_NumWorkGroups * gl_WorkGroupSize" << "\n";
+        const auto bindingStartOffset = 4;
 
         for (const auto &binding : layout.bindings())
         {
+            if (sawTlas)
+            {
+                throw std::runtime_error("Layout limitation: TLAS must be the last descriptor binding (no bindings allowed after AccelerationStructure).");
+            }
+
             switch (binding.type)
             {
-            case RayTracingPipelineLayout::DescriptorType::Image2D:
-                ss << "layout(binding = " << binding.index << ", set = 0) uniform writeonly image2D " << binding.name << ";\n";
+            case RayTracingPipelineLayoutDescriptor::DescriptorType::Image2D:
+                ss << "layout(set = 0, binding = " << binding.index + bindingStartOffset << ", rgba8) uniform writeonly image2D " << binding.name << ";\n";
                 break;
-            case RayTracingPipelineLayout::DescriptorType::Buffer:
-                ss << "layout(binding = " << binding.index << ", set = 0) buffer " << binding.name << "Buffer {\n";
+            case RayTracingPipelineLayoutDescriptor::DescriptorType::Buffer:
+                ss << "layout(std430, set = 0, binding = " << binding.index + bindingStartOffset << ") buffer " << "Buffer" << binding.index + bindingStartOffset << " {\n";
                 for (const auto &field : binding.structure->fields())
                 {
-                    ss << "    " << field.type << " " << field.name << ";\n";
+                    ss << "    " << field.type << " " << field.name;
+                    if (field.isArray)
+                    {
+                        ss << "[";
+                        if (field.elementCount > 0)
+                        {
+                            ss << field.elementCount;
+                        }
+                        ss << "]";
+                    }
+                    ss << ";\n";
                 }
                 ss << "} " << binding.name << ";\n";
                 break;
-            case RayTracingPipelineLayout::DescriptorType::AccelerationStructure:
+            case RayTracingPipelineLayoutDescriptor::DescriptorType::AccelerationStructure:
             {
-                const auto actualBinding = binding.index * 2; // Using two bindings for TLAS (instances and nodes)
-                ss << "layout(binding = " << actualBinding << ", set = 1) buffer " << binding.name << "Instances {\n";
-                ss << "    InstanceData instances[];\n";
-                ss << "} " << binding.name << "Instances;\n";
-                ss << "layout(binding = " << actualBinding + 1 << ", set = 1) buffer " << binding.name << "BvhNodes {\n";
-                ss << "    BvhNode bvhNodes[];\n";
-                ss << "} " << binding.name << "BvhNodes;\n";
+                ++tlasCount;
+                if (tlasCount > 1)
+                {
+                    throw std::runtime_error("Layout limitation: only one TLAS (AccelerationStructure) is supported for the compute pipeline.");
+                }
+
+                // Mark that we've encountered TLAS; no further bindings are allowed (enforced at top of loop).
+                sawTlas = true;
 
                 break;
             }
             default:
                 throw std::runtime_error("Unsupported descriptor type in Vulkan Compute pipeline compiler");
             }
+        }
+
+        if (tlasCount == 0)
+        {
+            throw std::runtime_error("Layout limitation: exactly one TLAS (AccelerationStructure) must be provided and it must be the last descriptor.");
         }
 
         for (const auto &payload : layout.payloads())
@@ -98,6 +118,24 @@ namespace tracey
             ss << "#define " << payload.name << " payloads." << payload.name << "\n";
         }
 
+        const std::string userShaderBindings = ss.str();
+        ss = std::stringstream();
+
+        for (size_t i = 0; i < sbt.hitModules().size(); ++i)
+        {
+            const auto hitModule = sbt.hitModules()[i];
+            const auto cpuModule = dynamic_cast<const CpuShaderModule *>(hitModule);
+            std::string userSource(cpuModule->source());
+            // replace user entry point with rayGenMain
+            size_t entryPointPos = userSource.find(cpuModule->entryPoint());
+            if (entryPointPos != std::string_view::npos)
+            {
+                userSource.replace(entryPointPos, cpuModule->entryPoint().size(), "HitShader" + std::to_string(i));
+            }
+
+            ss << userSource << "\n";
+        }
+
         const auto cpuModule = dynamic_cast<const CpuShaderModule *>(rayGenShader);
 
         std::string userSource(cpuModule->source());
@@ -109,17 +147,90 @@ namespace tracey
         }
         ss << userSource;
 
-        printf("Vulkan Compute Ray Tracing Shader Source:\n%s\n", ss.str().c_str());
+        std::stringstream missShaderCalls;
+        for (size_t i = 0; i < sbt.missModules().size(); ++i)
+        {
+            const auto missModule = sbt.missModules()[i];
+            const auto cpuModule = dynamic_cast<const CpuShaderModule *>(missModule);
+            std::string userSource(cpuModule->source());
+            // replace user entry point with MissShaderX
+            size_t entryPointPos = userSource.find(cpuModule->entryPoint());
+            if (entryPointPos != std::string_view::npos)
+            {
+                userSource.replace(entryPointPos, cpuModule->entryPoint().size(), "MissShader" + std::to_string(i));
+            }
+            ss << userSource << "\n";
+        }
 
-        const std::string finalSource = ss.str();
-        // Compile finalSource using shaderc
+        const std::string userShaderCode = ss.str();
+        ss = std::stringstream();
+
+        ss << "switch(missIndex)\n{\n";
+        for (size_t i = 0; i < sbt.missModules().size(); ++i)
+        {
+            ss << "    case " << i << ":\n";
+            ss << "        " << "MissShader" + std::to_string(i) + "();\n";
+            ss << "        break;\n";
+        }
+        ss << "    default:\n";
+        ss << "        break;\n";
+        ss << "}\n";
+
+        const std::string missShaderCallsCode = ss.str();
+        ss = std::stringstream();
+
+        ss << "switch(hitIndex)\n{\n";
+        for (size_t i = 0; i < sbt.hitModules().size(); ++i)
+        {
+            ss << "    case " << i << ":\n";
+            ss << "        " << "HitShader" + std::to_string(i) + "();\n";
+            ss << "        break;\n";
+        }
+        ss << "    default:\n";
+        ss << "        break;\n";
+        ss << "}\n";
+
+        const std::string hitShaderCallsCode = ss.str();
+
+        std::string finalShader = shaderTemplate.str();
+        // Replace placeholders
+        size_t pos = finalShader.find("// [USER_SHADER_BINDINGS]");
+        if (pos != std::string::npos)
+        {
+            finalShader.replace(pos, std::string("// [USER_SHADER_BINDINGS]").length(), userShaderBindings);
+        }
+
+        pos = finalShader.find("// [USER_SHADER_CODE]");
+        if (pos != std::string::npos)
+        {
+            finalShader.replace(pos, std::string("// [USER_SHADER_CODE]").length(), userShaderCode);
+        }
+
+        pos = finalShader.find("// [MISS_SHADER_CALLS]");
+        if (pos != std::string::npos)
+        {
+            finalShader.replace(pos, std::string("// [MISS_SHADER_CALLS]").length(), missShaderCallsCode);
+        }
+
+        pos = finalShader.find("// [HIT_SHADER_CALLS]");
+        if (pos != std::string::npos)
+        {
+            finalShader.replace(pos, std::string("// [HIT_SHADER_CALLS]").length(), hitShaderCallsCode);
+        }
+
+        printf("Vulkan Compute Ray Tracing Shader Source:\n%s\n", finalShader.c_str());
+
+        // Compile finalShader using shaderc
         shaderc::Compiler compiler;
         shaderc::CompileOptions options;
         shaderc::SpvCompilationResult module =
-            compiler.CompileGlslToSpv(finalSource.c_str(), finalSource.size(), shaderc_compute_shader, "RayGenShader", options);
+            compiler.CompileGlslToSpv(finalShader.c_str(), finalShader.size(), shaderc_compute_shader, "RayGenShader", options);
         if (module.GetCompilationStatus() != shaderc_compilation_status_success)
         {
             throw std::runtime_error("Vulkan Compute Ray Tracing Pipeline compilation failed: " + module.GetErrorMessage());
         }
+
+        std::vector<uint32_t> spirvCode(module.cbegin(), module.cend());
+        return spirvCode;
     }
 }

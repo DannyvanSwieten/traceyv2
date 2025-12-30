@@ -19,7 +19,7 @@ namespace tracey
     {
     }
 
-    RayTracingPipeline *CpuComputeDevice::createRayTracingPipeline(const RayTracingPipelineLayout &layout, const ShaderBindingTable *sbt)
+    RayTracingPipeline *CpuComputeDevice::createRayTracingPipeline(const RayTracingPipelineLayoutDescriptor &layout, const ShaderBindingTable *sbt)
     {
         auto cpuSbt = dynamic_cast<const CpuShaderBindingTable *>(sbt);
         if (!cpuSbt)
@@ -41,13 +41,13 @@ namespace tracey
     {
         return new CpuRayTracingCommandBuffer();
     }
-    void CpuComputeDevice::allocateDescriptorSets(std::span<DescriptorSet *> sets, const RayTracingPipelineLayout &layout)
-    {
-        for (auto &set : sets)
-        {
-            set = new CpuDescriptorSet(layout);
-        }
-    }
+    // void CpuComputeDevice::allocateDescriptorSets(std::span<DescriptorSet *> sets, const RayTracingPipelineLayoutDescriptor &layout)
+    // {
+    //     for (auto &set : sets)
+    //     {
+    //         set = new CpuDescriptorSet(layout);
+    //     }
+    // }
     Buffer *CpuComputeDevice::createBuffer(uint32_t size, BufferUsage usageFlags)
     {
         return new CpuBuffer(size);

@@ -22,4 +22,6 @@ namespace tracey
 
         // Make sure padding/layout is understood if you share it with GLSL.
     };
+
+    static_assert(sizeof(BVHNode) == 32);
 }

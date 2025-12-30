@@ -1,0 +1,257 @@
+void traceRaysEXT(uint tlas, uint sbtRecordOffset, uint sbtRecordStride, uint missIndex, uint rayFlags, uint cullFlags, vec3 rayOrigin, float rayTmin, vec3 rayDirection, float rayTmax, uint payloadIndex);
+
+const uint INVALID_INDEX = 0xFFFFFFFFu;
+
+// [USER_SHADER_CODE]
+
+bool intersectAABB(Ray r, vec3 bmin, vec3 bmax, float tMin, float tMax, out float tEnter, out float tExit)
+{
+    vec3 t0 = (bmin - r.origin) * r.invDirection;
+    vec3 t1 = (bmax - r.origin) * r.invDirection;
+
+    vec3 tmin3 = min(t0, t1);
+    vec3 tmax3 = max(t0, t1);
+
+    tEnter = max(tMin, max(tmin3.x, max(tmin3.y, tmin3.z)));
+    tExit  = min(tMax, min(tmax3.x, min(tmax3.y, tmax3.z)));
+
+    return tExit >= tEnter;
+}
+
+bool intersectTriangle(Ray r, vec3 v0, vec3 v1, vec3 v2, float tMin, float tMax, out float t, out vec2 uv)
+{
+    vec3 e1 = v1 - v0;
+    vec3 e2 = v2 - v0;
+    vec3 p  = cross(r.direction, e2);
+    float det = dot(e1, p);
+
+    // check for degeneracy
+    if (isinf(det)) {
+        builtIn.errorFlag = 3u;
+        return false;
+    }
+
+    if(det > -1e-8 && det < 1e-8) {
+        builtIn.errorFlag = 4u;
+        return false;
+    }
+
+    // two-sided:
+    if (abs(det) < 1e-8) return false;
+    float invDet = 1.0 / det;
+
+    vec3 s = r.origin - v0;
+    float u = dot(s, p) * invDet;
+    if (u < 0.0 || u > 1.0) return false;
+
+    vec3 q = cross(s, e1);
+    float v = dot(r.direction, q) * invDet;
+    if (v < 0.0 || (u + v) > 1.0) return false;
+
+    float tt = dot(e2, q) * invDet;
+    if (tt < tMin || tt > tMax) return false;
+
+    t = tt;
+    uv = vec2(u, v);
+    return true;
+}
+
+void loadTriangleInfo(uint triangleIndex, out vec3 v0, out vec3 e0, out vec3 e1, out vec3 normal)
+{
+    TriangleInfo tri = blasTriangles.triangles[triangleIndex];
+
+    v0 = vec3(tri.v0x, tri.v0y, tri.v0z);
+    e0 = vec3(tri.e0x, tri.e0y, tri.e0z);
+    e1 = vec3(tri.e1x, tri.e1y, tri.e1z);
+    normal = vec3(tri.nx, tri.ny, tri.nz);
+}
+
+// BvhNode encoding (CPU-identical):
+// - firstChildOrPrim: inner = left child offset relative to bvhBase (right is implicit left+1),
+//                    leaf  = first index into BLAS primIndices stream
+// - primCountAndType: inner = 0, leaf = count in low 24 bits (type in high 8 bits)
+
+HitInfo traverseBVH(uint bvhBase, uint triangleOffset, Ray ray, float tMin, float tMax)
+{   
+    HitInfo best;
+    best.t = tMax;
+    best.triangleIndex = INVALID_INDEX;
+    best.instanceIndex = INVALID_INDEX;
+    best.barycentricU = 0.0;
+    best.barycentricV = 0.0;
+    best.errorFlag = 0u;
+
+    const int MAX_STACK = 64;
+    // small fixed stack
+    uint stack[MAX_STACK];
+    int sp = 0;
+    int iterGuard = 0;
+
+    // push root
+    stack[sp++] = bvhBase; // root index (absolute)
+
+    while (sp > 0)
+    {
+        // Safety guards against malformed BVHs causing infinite loops / stack overflow
+        if (++iterGuard > 1000000) { best.errorFlag = 1u; break; }
+        // sp is the next free slot; valid range is [0..MAX_STACK]
+        if (sp < 0 || sp > MAX_STACK) { best.errorFlag = 2u; break; }
+
+        uint nodeIndex = stack[--sp];
+        BvhNode node = blasNodes.nodes[nodeIndex];
+        vec3 aabbMin = vec3(node.minx, node.miny, node.minz);
+        vec3 aabbMax = vec3(node.maxx, node.maxy, node.maxz);
+
+        float tE, tX;
+        if (!intersectAABB(ray, aabbMin, aabbMax, tMin, best.t, tE, tX))
+            continue;
+
+        uint primCount = (node.primCountAndType & 0x00FFFFFFu);
+        bool isLeaf = (primCount > 0u);
+        if (isLeaf)
+        {
+            // Leaf: indices are a contiguous range in the BLAS primIndices stream.
+            // NOTE: This shader assumes the primIndices stream is also concatenated per-BLAS using the same base offset as triangles.
+            uint firstPrimIndex = triangleOffset + node.firstChildOrPrim;
+
+            for (uint i = 0u; i < primCount; ++i)
+            {
+                uint originalPrimId = blasPrimitiveIndices.primitiveIndices[firstPrimIndex + i];
+
+                // Triangles are stored in original triangle-id order per BLAS, concatenated by triangleOffset.
+                uint triIndex = triangleOffset + originalPrimId;
+
+                vec3 v0, e0, e1, normal;
+                loadTriangleInfo(triIndex, v0, e0, e1, normal);
+
+                float t;
+                vec2 uv;
+                if (intersectTriangle(ray, v0, v0 + e0, v0 + e1, tMin, best.t, t, uv))
+                {
+                    best.t = t;
+                    best.triangleIndex = originalPrimId;
+                    best.barycentricU = uv.x;
+                    best.barycentricV = uv.y;
+                }
+            }
+        }
+        else
+        {
+            // Interior (CPU-identical): right child is implicit left+1
+            uint left  = bvhBase + node.firstChildOrPrim;
+            uint right = left + 1u;
+
+            // Guard against malformed BVHs that create self-loops (infinite traversal)
+            if (left == nodeIndex || right == nodeIndex)
+                continue;
+
+            // Another safety guard: if either child index is INVALID_INDEX, skip.
+            if (left == INVALID_INDEX || right == INVALID_INDEX)
+                continue;
+
+            float tEL, tXL, tER, tXR;
+            vec3 aabbMinL = vec3(blasNodes.nodes[left].minx, blasNodes.nodes[left].miny, blasNodes.nodes[left].minz);
+            vec3 aabbMaxL = vec3(blasNodes.nodes[left].maxx, blasNodes.nodes[left].maxy, blasNodes.nodes[left].maxz);
+            vec3 aabbMinR = vec3(blasNodes.nodes[right].minx, blasNodes.nodes[right].miny, blasNodes.nodes[right].minz);
+            vec3 aabbMaxR = vec3(blasNodes.nodes[right].maxx, blasNodes.nodes[right].maxy, blasNodes.nodes[right].maxz);
+            bool hitL = intersectAABB(ray, aabbMinL,  aabbMaxL,  tMin, best.t, tEL, tXL);
+            bool hitR = intersectAABB(ray, aabbMinR, aabbMaxR, tMin, best.t, tER, tXR);
+
+            if (hitL && hitR)
+            {
+                // push farther first so nearer is processed next
+                if (tEL < tER)
+                {
+                    if (sp + 2 > MAX_STACK) { best.errorFlag = 3u; break; }
+                    stack[sp++] = right;
+                    stack[sp++] = left;
+                }
+                else
+                {
+                    if (sp + 2 > MAX_STACK) { best.errorFlag = 3u; break; }
+                    stack[sp++] = left;
+                    stack[sp++] = right;
+                }
+            }
+            else if (hitL)
+            {
+                if (sp + 1 > MAX_STACK) { best.errorFlag = 3u; break; }
+                stack[sp++] = left;
+            }
+            else if (hitR)
+            {
+                if (sp + 1 > MAX_STACK) { best.errorFlag = 3u; break; }
+                stack[sp++] = right;
+            }
+        }
+    }
+
+    return best;
+}
+
+bool intersectTlas(Ray ray, out HitInfo hitInfo)
+{
+    for (uint i = 0u; i < tlasInstances.instanceCount; ++i)
+    {
+        Instance instance = tlasInstances.instances[i];
+        BlasInfo blasInfo = blasInfos.blases[instance.blasAddress];
+        uint bvhBase = blasInfo.rootNodeIndex;
+        uint triangleOffset = blasInfo.triangleOffset;
+
+        HitInfo hit = traverseBVH(bvhBase, triangleOffset, ray, 0.001, hitInfo.t);
+        if (hit.triangleIndex != INVALID_INDEX && hit.t < hitInfo.t)
+        {
+            hit.instanceIndex = i;
+            hitInfo = hit;
+        }
+    }
+
+    if (hitInfo.triangleIndex != INVALID_INDEX)
+    {
+        return true;
+    }
+
+    return false;
+}
+
+void traceRaysEXT(uint tlas, uint sbtRecordOffset, uint sbtRecordStride, uint missIndex, uint rayFlags, uint foo, vec3 rayOrigin, float rayTmin, vec3 rayDirection, float rayTmax, uint payloadIndex)
+{
+    Ray ray;
+    ray.origin = rayOrigin;
+    ray.direction = rayDirection;
+    ray.invDirection = 1.0 / rayDirection;
+
+    HitInfo hitInfo;
+    hitInfo.errorFlag = 0u;
+    hitInfo.t = rayTmax;
+    hitInfo.triangleIndex = INVALID_INDEX;
+    hitInfo.instanceIndex = INVALID_INDEX;
+    hitInfo.barycentricU = 0.0;
+    hitInfo.barycentricV = 0.0;
+
+    bool hit = intersectTlas(ray, hitInfo);
+    builtIn.errorFlag = hitInfo.errorFlag;
+    uint hitIndex = 0u;
+
+    if (hit)
+    {
+        // [HIT_SHADER_CALLS]
+    }
+    else
+    {
+        // [MISS_SHADER_CALLS]
+    }
+
+    rayPayload.color = vec3(hitInfo.barycentricU, hitInfo.barycentricV, 0.0);
+}
+
+void main()
+{
+    // Populate built-in variables
+    builtIn.hitT = 1000000;
+    builtIn.launchID = gl_GlobalInvocationID.xyz;
+    builtIn.launchSize = gl_NumWorkGroups.xyz * gl_WorkGroupSize.xyz;
+    builtIn.errorFlag = 0u;
+
+    rayGenMain();
+}

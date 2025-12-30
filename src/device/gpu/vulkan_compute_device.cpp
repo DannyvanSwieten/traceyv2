@@ -8,6 +8,7 @@
 #include "../../ray_tracing/shader_module/cpu/cpu_shader_module.hpp"
 #include "../../ray_tracing/ray_tracing_pipeline/cpu/cpu_shader_binding_table.hpp"
 #include "../../ray_tracing/ray_tracing_pipeline/gpu/vulkan_compute_raytracing_pipeline.hpp"
+#include "../../ray_tracing/ray_tracing_command_buffer/gpu/vulkan_compute_ray_tracing_command_buffer.hpp"
 #include <sstream>
 namespace tracey
 {
@@ -16,13 +17,11 @@ namespace tracey
         VkDescriptorPoolCreateInfo poolInfo{};
         poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
         poolInfo.maxSets = 1000;
-        std::array<VkDescriptorPoolSize, 3> poolSizes{};
+        std::array<VkDescriptorPoolSize, 2> poolSizes{};
         poolSizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
         poolSizes[0].descriptorCount = 2048;
         poolSizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         poolSizes[1].descriptorCount = 500;
-        poolSizes[2].type = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
-        poolSizes[2].descriptorCount = 100;
         poolInfo.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
         poolInfo.pPoolSizes = poolSizes.data();
 
@@ -30,10 +29,21 @@ namespace tracey
         {
             throw std::runtime_error("Failed to create descriptor pool");
         }
+
+        VkCommandPoolCreateInfo cmdPoolInfo{};
+        cmdPoolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+        cmdPoolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+        cmdPoolInfo.queueFamilyIndex = m_vulkanContext.computeQueueFamilyIndex();
+        if (vkCreateCommandPool(m_vulkanContext.device(), &cmdPoolInfo, nullptr, &m_commandPool) != VK_SUCCESS)
+        {
+            throw std::runtime_error("Failed to create command pool");
+        }
     }
 
     VulkanComputeDevice::~VulkanComputeDevice()
     {
+        vkDestroyCommandPool(m_vulkanContext.device(), m_commandPool, nullptr);
+        vkDestroyDescriptorPool(m_vulkanContext.device(), m_descriptorPool, nullptr);
     }
 
     VkDevice VulkanComputeDevice::vkDevice() const
@@ -41,7 +51,7 @@ namespace tracey
         return m_vulkanContext.device();
     }
 
-    RayTracingPipeline *VulkanComputeDevice::createRayTracingPipeline(const RayTracingPipelineLayout &layout, const ShaderBindingTable *sbt)
+    RayTracingPipeline *VulkanComputeDevice::createRayTracingPipeline(const RayTracingPipelineLayoutDescriptor &layout, const ShaderBindingTable *sbt)
     {
         return new VulkanComputeRaytracingPipeline(*this, layout, *dynamic_cast<const CpuShaderBindingTable *>(sbt));
     }
@@ -56,15 +66,7 @@ namespace tracey
     }
     RayTracingCommandBuffer *VulkanComputeDevice::createRayTracingCommandBuffer()
     {
-        return nullptr;
-    }
-    void VulkanComputeDevice::allocateDescriptorSets(std::span<DescriptorSet *> sets, const RayTracingPipelineLayout &layout)
-    {
-        for (auto &set : sets)
-        {
-            auto vkSet = new VulkanComputeRayTracingDescriptorSet(*this, layout);
-            set = vkSet;
-        }
+        return new VulkanComputeRayTracingCommandBuffer(*this);
     }
     Buffer *VulkanComputeDevice::createBuffer(uint32_t size, BufferUsage usageFlags)
     {

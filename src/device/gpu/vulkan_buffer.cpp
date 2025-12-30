@@ -8,7 +8,7 @@ namespace tracey
         VkBufferCreateInfo bufferInfo{};
         bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
         bufferInfo.size = size;
-        bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+        bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
         bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         bufferInfo.queueFamilyIndexCount = 1;
         std::array<uint32_t, 1> queueFamilyIndices = {device.queueFamilyIndex()};
@@ -78,18 +78,19 @@ namespace tracey
     }
     void VulkanBuffer::flush()
     {
-        vkUnmapMemory(m_device, m_memory);
         VkMappedMemoryRange mappedRange{};
         mappedRange.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
         mappedRange.memory = m_memory;
         mappedRange.offset = 0;
         mappedRange.size = VK_WHOLE_SIZE;
         vkFlushMappedMemoryRanges(m_device, 1, &mappedRange);
+        vkUnmapMemory(m_device, m_memory);
     }
     void VulkanBuffer::flushRange(uint32_t offset, uint32_t size)
     {
         (void)offset;
         (void)size;
+        vkUnmapMemory(m_device, m_memory);
     }
     VkDeviceAddress VulkanBuffer::deviceAddress() const
     {

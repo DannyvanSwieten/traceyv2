@@ -23,42 +23,46 @@ namespace tracey
     constexpr const std::string_view IMAGE2D_TYPE_NAME = "image2d";
     constexpr const std::string_view BUFFER_TYPE_NAME = "buffer";
 
-    void* loadLibrary(const std::filesystem::path& path)
+    void *loadLibrary(const std::filesystem::path &path)
     {
-    #ifdef _WIN32
+#ifdef _WIN32
         HMODULE handle = LoadLibraryA(path.string().c_str());
-        if (!handle) {
+        if (!handle)
+        {
             throw std::runtime_error("Failed to load library: " + path.string());
         }
-        return reinterpret_cast<void*>(handle);
-    #else
-        void* handle = dlopen(path.string().c_str(), RTLD_LAZY);
-        if (!handle) {
+        return reinterpret_cast<void *>(handle);
+#else
+        void *handle = dlopen(path.string().c_str(), RTLD_LAZY);
+        if (!handle)
+        {
             throw std::runtime_error("Failed to load library: " + std::string(dlerror()));
         }
         return handle;
-    #endif
+#endif
     }
 
-    void* loadSymbol(void* dylib, const char* symbolName)
+    void *loadSymbol(void *dylib, const char *symbolName)
     {
-    #ifdef _WIN32
-        void* symbol = reinterpret_cast<void*>(GetProcAddress(reinterpret_cast<HMODULE>(dylib), symbolName));
-        if (!symbol) {
+#ifdef _WIN32
+        void *symbol = reinterpret_cast<void *>(GetProcAddress(reinterpret_cast<HMODULE>(dylib), symbolName));
+        if (!symbol)
+        {
             throw std::runtime_error("Failed to load symbol: " + std::string(symbolName));
         }
         return symbol;
 
-    #else
-        void* symbol = dlsym(dylib, symbolName);
-        if (!symbol) {
+#else
+        void *symbol = dlsym(dylib, symbolName);
+        if (!symbol)
+        {
             throw std::runtime_error("Failed to load symbol: " + std::string(dlerror()));
         }
         return symbol;
-    #endif
+#endif
     }
 
-    CompiledShader compileCpuRayTracingPipeline(const RayTracingPipelineLayout &layout, const CpuShaderBindingTable &sbt)
+    CompiledShader compileCpuRayTracingPipeline(const RayTracingPipelineLayoutDescriptor &layout, const CpuShaderBindingTable &sbt)
     {
         const auto rayGenModule = dynamic_cast<const CpuShaderModule *>(sbt.rayGen());
         if (!rayGenModule)
@@ -79,7 +83,7 @@ namespace tracey
         }
         return CompiledShader();
     }
-    CompiledShader compileCpuShader(const RayTracingPipelineLayout &layout, ShaderStage stage, const std::string_view source, const std::string_view entryPoint)
+    CompiledShader compileCpuShader(const RayTracingPipelineLayoutDescriptor &layout, ShaderStage stage, const std::string_view source, const std::string_view entryPoint)
     {
         assert(!entryPoint.empty());
         std::string userSourceModified = std::string(source);
@@ -100,10 +104,10 @@ namespace tracey
         {
             switch (binding.type)
             {
-            case RayTracingPipelineLayout::DescriptorType::Image2D:
+            case RayTracingPipelineLayoutDescriptor::DescriptorType::Image2D:
                 shader << "extern \"C\" " << IMAGE2D_TYPE_NAME << " " << binding.name << " = nullptr;\n";
                 break;
-            case RayTracingPipelineLayout::DescriptorType::Buffer:
+            case RayTracingPipelineLayoutDescriptor::DescriptorType::Buffer:
             {
                 if (binding.structure.has_value())
                 {
@@ -130,7 +134,7 @@ namespace tracey
 
                 break;
             }
-            case RayTracingPipelineLayout::DescriptorType::RayPayload:
+            case RayTracingPipelineLayoutDescriptor::DescriptorType::RayPayload:
             {
                 if (binding.structure.has_value())
                 {
@@ -154,7 +158,7 @@ namespace tracey
                 }
                 break;
             }
-            case RayTracingPipelineLayout::DescriptorType::AccelerationStructure:
+            case RayTracingPipelineLayoutDescriptor::DescriptorType::AccelerationStructure:
                 shader << "extern \"C\" " << TLAS_TYPE_NAME << " " << binding.name << " = nullptr;\n";
                 break;
             default:
@@ -235,7 +239,7 @@ namespace tracey
         // Load the dylib and get function pointers as needed...
         const auto dylib = loadLibrary(outputPath);
         const auto entryPointFunc = reinterpret_cast<RayTracingEntryPointFunc>(loadSymbol(dylib, entryPoint.data()));
-        
+
         CompiledShader compiledShader;
         compiledShader.func = entryPointFunc;
         compiledShader.bindingSlots.resize(layout.bindings().size());
@@ -245,16 +249,16 @@ namespace tracey
             void **slotPtr;
             switch (binding.type)
             {
-            case RayTracingPipelineLayout::DescriptorType::Image2D:
+            case RayTracingPipelineLayoutDescriptor::DescriptorType::Image2D:
                 slotPtr = reinterpret_cast<void **>(loadSymbol(dylib, binding.name.c_str()));
                 break;
-            case RayTracingPipelineLayout::DescriptorType::Buffer:
+            case RayTracingPipelineLayoutDescriptor::DescriptorType::Buffer:
                 slotPtr = reinterpret_cast<void **>(loadSymbol(dylib, ("buffer" + std::to_string(binding.index)).c_str()));
                 break;
-            case RayTracingPipelineLayout::DescriptorType::RayPayload:
+            case RayTracingPipelineLayoutDescriptor::DescriptorType::RayPayload:
                 slotPtr = reinterpret_cast<void **>(loadSymbol(dylib, binding.name.c_str()));
                 break;
-            case RayTracingPipelineLayout::DescriptorType::AccelerationStructure:
+            case RayTracingPipelineLayoutDescriptor::DescriptorType::AccelerationStructure:
                 slotPtr = reinterpret_cast<void **>(loadSymbol(dylib, binding.name.c_str()));
                 break;
             default:

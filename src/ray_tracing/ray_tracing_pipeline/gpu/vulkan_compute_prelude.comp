@@ -1,0 +1,105 @@
+#version 460
+
+struct BvhNode{
+    float minx, miny, minz;
+    uint firstChildOrPrim; // For inner nodes: left child index. For leaf nodes: first triangle index.
+    float maxx, maxy, maxz;
+    uint primCountAndType; // For inner nodes: right child index. For leaf nodes: number of triangles.
+};
+
+struct Ray{
+    vec3 origin;
+    vec3 direction;
+    vec3 invDirection;
+};
+
+struct Instance{
+    vec4 row0;
+    vec4 row1;
+    vec4 row2;
+    uint customIndexAndMask;
+    uint sbtOffsetAndFlags;
+    uint blasAddress;
+    uint padding;
+};
+
+struct BlasInfo{
+    uint rootNodeIndex;
+    uint triangleCount;
+    uint triangleOffset;
+    uint padding;
+};
+
+struct HitInfo{
+    float t;
+    uint triangleIndex;
+    uint instanceIndex;
+    float barycentricU;
+    float barycentricV;
+    uint errorFlag;
+};
+
+struct BuiltIn {
+    uvec3 launchID;
+    uvec3 launchSize;
+    vec3 rayOrigin;
+    float rayTmin;
+    float hitT;
+    vec3 rayDirection;
+    float rayTmax;
+    uint instanceID;
+    uint primitiveID;
+    uint instanceCustomIndex;
+    uint geometryIndex;
+    mat4x3 worldToObject;
+    mat4x3 objectToWorld;
+    uint errorFlag;
+};
+
+struct TriangleInfo{
+    float v0x, v0y, v0z;
+    float e0x, e0y, e0z;
+    float e1x, e1y, e1z;
+    float nx, ny, nz;
+};
+
+BuiltIn builtIn;
+#define gl_LaunchIDEXT builtIn.launchID
+#define gl_LaunchSizeEXT builtIn.launchSize
+#define gl_RayOriginEXT builtIn.rayOrigin
+#define gl_RayTminEXT builtIn.rayTmin
+#define gl_RayDirectionEXT builtIn.rayDirection
+#define gl_RayTmaxEXT builtIn.rayTmax
+#define gl_InstanceIDEXT builtIn.instanceID
+#define gl_PrimitiveID builtIn.primitiveID
+#define gl_InstanceCustomIndexEXT builtIn.instanceCustomIndex
+#define gl_GeometryIndexEXT builtIn.geometryIndex
+#define gl_WorldToObjectEXT builtIn.worldToObject
+#define gl_ObjectToWorldEXT builtIn.objectToWorld
+#define gl_HitTEXT builtIn.hitT
+#define gl_RayFlagsEXT 0u
+#define gl_ErrorFlagEXT builtIn.errorFlag
+
+layout(std430, set = 0, binding = 0) buffer TLASInstances {
+    uint instanceCount;
+    uint padding[3];
+    Instance instances[];
+} tlasInstances;
+
+layout(std430, set = 0, binding = 1) buffer BvhNodes {
+    BvhNode nodes[];
+} blasNodes;
+
+layout(std430, set = 0, binding = 2) buffer BlasInfos {
+    BlasInfo blases[];
+} blasInfos;
+
+layout(std430, set = 0, binding = 3) buffer Triangles {
+    TriangleInfo triangles[];
+} blasTriangles;
+
+layout(std430, set = 0, binding = 4) buffer PrimitiveIndices {
+    uint primitiveIndices[];
+} blasPrimitiveIndices;
+
+// [USER_SHADER_BINDINGS]

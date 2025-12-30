@@ -29,7 +29,7 @@ namespace tracey
         for (size_t i = 0; i < m_pipeline->layout().bindings().size(); ++i)
         {
             const auto &binding = m_pipeline->layout().bindings()[i];
-            if (binding.type == RayTracingPipelineLayout::DescriptorType::AccelerationStructure)
+            if (binding.type == RayTracingPipelineLayoutDescriptor::DescriptorType::AccelerationStructure)
             {
                 // Set the pipeline pointer in the DispatchedTlas
                 m_descriptorSet->visitMut([this](auto &&arg)
@@ -179,5 +179,12 @@ namespace tracey
         std::chrono::high_resolution_clock::time_point endTime = std::chrono::high_resolution_clock::now();
         std::chrono::duration<double, std::milli> duration = endTime - startTime;
         printf("Ray tracing completed in %.2f ms\n", duration.count());
+    }
+    void CpuRayTracingCommandBuffer::copyImageToBuffer(const Image2D *image, Buffer *buffer)
+    {
+        // TODO: Implement image to buffer copy for CPU ray tracing
+    }
+    void CpuRayTracingCommandBuffer::waitUntilCompleted()
+    {
     }
 }

@@ -5,10 +5,13 @@
 
 namespace tracey
 {
-    CpuRayTracingPipeline::CpuRayTracingPipeline(const RayTracingPipelineLayout &layout, const CpuShaderBindingTable &sbt) : m_layout(layout), m_sbt(sbt), m_compiledSbt(compileShaders())
+    CpuRayTracingPipeline::CpuRayTracingPipeline(const RayTracingPipelineLayoutDescriptor &layout, const CpuShaderBindingTable &sbt) : m_layout(layout), m_sbt(sbt), m_compiledSbt(compileShaders())
     {
     }
-    const RayTracingPipelineLayout &CpuRayTracingPipeline::layout() const
+    void CpuRayTracingPipeline::allocateDescriptorSets(std::span<DescriptorSet *> sets)
+    {
+    }
+    const RayTracingPipelineLayoutDescriptor &CpuRayTracingPipeline::layout() const
     {
         return m_layout;
     }

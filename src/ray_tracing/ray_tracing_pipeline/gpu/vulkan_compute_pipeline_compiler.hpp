@@ -1,9 +1,10 @@
 #pragma once
+#include <vector>
 
 namespace tracey
 {
-    class RayTracingPipelineLayout;
+    class RayTracingPipelineLayoutDescriptor;
     class CpuShaderBindingTable;
 
-    void compileVulkanComputeRayTracingPipeline(const RayTracingPipelineLayout &layout, const CpuShaderBindingTable &sbt);
+    std::vector<uint32_t> compileVulkanComputeRayTracingPipeline(const RayTracingPipelineLayoutDescriptor &layout, const CpuShaderBindingTable &sbt);
 }

@@ -1,20 +1,20 @@
 #pragma once
-#include <vector>
+#include <volk.h>
 #include "../ray_tracing_command_buffer.hpp"
 
 namespace tracey
 {
-    class CpuRayTracingPipeline;
-    class CpuDescriptorSet;
-    class TopLevelAccelerationStructure;
-    class CpuRayTracingCommandBuffer : public RayTracingCommandBuffer
+    class VulkanComputeDevice;
+    class VulkanComputeRayTracingCommandBuffer : public RayTracingCommandBuffer
     {
     public:
-        CpuRayTracingCommandBuffer();
+        VulkanComputeRayTracingCommandBuffer(VulkanComputeDevice &device);
+        ~VulkanComputeRayTracingCommandBuffer() override;
+
+        VkCommandBuffer vkCommandBuffer() const { return m_vkCommandBuffer; }
 
         void begin() override;
         void end() override;
-
         void setPipeline(RayTracingPipeline *pipeline) override;
         void setDescriptorSet(DescriptorSet *set) override;
         void traceRays(const ShaderBindingTable &sbt, uint32_t width, uint32_t height) override;
@@ -23,7 +23,8 @@ namespace tracey
         void waitUntilCompleted() override;
 
     private:
-        CpuRayTracingPipeline *m_pipeline = nullptr;
-        CpuDescriptorSet *m_descriptorSet = nullptr;
+        VulkanComputeDevice &m_device;
+        VkCommandBuffer m_vkCommandBuffer;
+        RayTracingPipeline *m_pipeline = nullptr;
     };
-}
+} // namespace tracey

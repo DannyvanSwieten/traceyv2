@@ -4,7 +4,7 @@
 #include "../../../device/device.hpp"
 namespace tracey
 {
-    class RayTracingPipelineLayout;
+    class RayTracingPipelineLayoutDescriptor;
     class CpuShaderModule : public ShaderModule
     {
     public:
