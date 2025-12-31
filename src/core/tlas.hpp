@@ -13,7 +13,7 @@ namespace tracey
     class Tlas
     {
     public:
-        struct Instance
+        struct alignas(16) Instance
         {
             float transform[3][4]; // row-major 3x4 matrix
             // Default mask = 0xFF so instances are visible unless the caller overrides it.
@@ -114,6 +114,9 @@ namespace tracey
                 };
             }
         };
+
+        static_assert(sizeof(Instance) == 64, "Tlas::Instance size must be 64 bytes");
+        static_assert(alignof(Instance) == 16, "Tlas::Instance alignment must be 16 bytes");
 
         Tlas(std::span<const Blas *> blases, std::span<const Instance> instances);
 

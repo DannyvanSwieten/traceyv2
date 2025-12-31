@@ -11,6 +11,7 @@
 #include "../src/device/top_level_acceleration_structure.hpp"
 
 #include <fstream>
+#include <iostream>
 
 int main()
 {
@@ -124,35 +125,19 @@ void shader() {
 
     vec3 color = vec3(0.0);
 
-    traceRaysEXT(0, 0, 0, 0, 0, 0,
+    traceRaysEXT(0, 0, 0xFF, 0, 0, 0,
                   origin, 0.01,
                   direction, 100.0,
                   0);
 
     color = rayPayload.color;
 
-    // if(rayPayload.hit) {
-    //     // send shadow ray
-    //     vec3 lightDir = normalize(vec3(0.0, 1.0, -1.0));
-    //     origin = (origin + direction * gl_HitTEXT) + lightDir * 0.01;
-    //     direction = lightDir;
-    //     rayPayload.hit = false;
-    //     traceRaysEXT(0, 0, 0, 0, 0, 0,
-    //                   origin, 0.01,
-    //                   lightDir, 100.0,
-    //                   0);
-        
-    //     if(rayPayload.hit) {
-    //         color *= 0.2; // in shadow
-    //     } 
-    // }
-
     if(gl_ErrorFlagEXT != 0u) {
         // error occurred during ray tracing
         color = vec3(1.0, 0.0, 1.0); // magenta for error
     }
 
-    imageStore(outputImage, ivec2(gl_GlobalInvocationID.xy), vec4(color, 1.0));
+    imageStore(outputImage, ivec2(launchID.xy), vec4(color, 1.0));
 }
     )",
                                                                                                                                  "shader"));
@@ -161,24 +146,10 @@ void shader() {
                                                                                                                                      R"(
 void shader() {
     // Closest hit shader code
-    // fetch the positions
-    uint vertexIndex = gl_PrimitiveID * 3;
-    vec4 p0 = vec4(vertexBuffer.positions[vertexIndex], 1.0);
-    vec4 p1 = vec4(vertexBuffer.positions[vertexIndex + 1], 1.0);
-    vec4 p2 = vec4(vertexBuffer.positions[vertexIndex + 2], 1.0);
-    mat4 transform = mat4(gl_ObjectToWorldEXT);
-    vec3 v0 = (transform * p0).xyz;
-    vec3 v1 = (transform * p1).xyz;
-    vec3 v2 = (transform * p2).xyz;
-
-    // Simple shading based on normal
-    vec3 normal = normalize(cross(v1 - v0, v2 - v0));
-
     // Some fake lighting
     vec3 L = normalize(vec3(0.0, 1.0, -1.0));
-    float I = max(dot(L, normal), 0.0);
+    float I = max(dot(L, gl_HitNormalEXT), 0.0);
     rayPayload.color = vec3(I * 0.5);
-    rayPayload.color = vec3(1.0, 0.0, 0.0);
     rayPayload.hit = true;
 }
     )",
@@ -225,7 +196,11 @@ void shader() {
     std::unique_ptr<tracey::Buffer> imageReadbackBuffer = std::unique_ptr<tracey::Buffer>(computeDevice->createBuffer(imageBufferSize, tracey::BufferUsage::TransferDst));
     commandBuffer->copyImageToBuffer(outputImage.get(), imageReadbackBuffer.get());
     commandBuffer->end();
+    std::chrono::high_resolution_clock::time_point startTime = std::chrono::high_resolution_clock::now();
     commandBuffer->waitUntilCompleted();
+    std::chrono::high_resolution_clock::time_point endTime = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double, std::milli> executionTime = endTime - startTime;
+    std::cout << "Ray tracing execution time: " << executionTime.count() << " ms" << std::endl;
 
     const auto imageData = static_cast<const char *>(imageReadbackBuffer->mapForReading());
     // Save imageData to a ppm file

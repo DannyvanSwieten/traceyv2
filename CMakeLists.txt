@@ -140,9 +140,20 @@ endif()
 find_package(Vulkan REQUIRED)
 
 find_package(PkgConfig REQUIRED)
-pkg_check_modules(SHADERC REQUIRED IMPORTED_TARGET shaderc shaderc_combined)
+
+pkg_check_modules(SHADERC REQUIRED IMPORTED_TARGET shaderc)
+
+# Optional: shaderc_combined (not commonly available on macOS)
+pkg_check_modules(SHADERC_COMBINED QUIET IMPORTED_TARGET shaderc_combined)
 target_include_directories(tracey PRIVATE
     ${SHADERC_INCLUDE_DIRS}
+)
+
+# IMPORTANT: static deps (glslang + spirv-tools) are only in the --static output
+execute_process(
+    COMMAND pkg-config --libs --static shaderc
+    OUTPUT_VARIABLE SHADERC_STATIC_LIBS
+    OUTPUT_STRIP_TRAILING_WHITESPACE
 )
 
 target_link_libraries(tracey PRIVATE glm::glm Vulkan::Vulkan PkgConfig::SHADERC volk::volk)
@@ -150,4 +161,17 @@ target_include_directories(tracey
     PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
-add_subdirectory(./examples)
+target_link_libraries(tracey PRIVATE
+    shaderc
+    shaderc_util
+    glslang
+    SPIRV-Tools
+    SPIRV-Tools-opt
+)
+add_subdirectory(./examples) 
+# After you define your executable target
+set_target_properties(device_api PROPERTIES
+    MACOSX_RPATH ON
+    BUILD_RPATH "/usr/local/lib"
+    INSTALL_RPATH "/usr/local/lib"
+)

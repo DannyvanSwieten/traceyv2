@@ -1,5 +1,7 @@
 #version 460
 
+layout (local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
 struct BvhNode{
     float minx, miny, minz;
     uint firstChildOrPrim; // For inner nodes: left child index. For leaf nodes: first triangle index.
@@ -53,6 +55,7 @@ struct BuiltIn {
     uint geometryIndex;
     mat4x3 worldToObject;
     mat4x3 objectToWorld;
+    vec3 hitNormal;
     uint errorFlag;
 };
 
@@ -76,6 +79,7 @@ BuiltIn builtIn;
 #define gl_GeometryIndexEXT builtIn.geometryIndex
 #define gl_WorldToObjectEXT builtIn.worldToObject
 #define gl_ObjectToWorldEXT builtIn.objectToWorld
+#define gl_HitNormalEXT builtIn.hitNormal
 #define gl_HitTEXT builtIn.hitT
 #define gl_RayFlagsEXT 0u
 #define gl_ErrorFlagEXT builtIn.errorFlag

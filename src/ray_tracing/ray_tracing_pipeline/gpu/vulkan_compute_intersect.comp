@@ -4,7 +4,7 @@ const uint INVALID_INDEX = 0xFFFFFFFFu;
 
 // [USER_SHADER_CODE]
 
-bool intersectAABB(Ray r, vec3 bmin, vec3 bmax, float tMin, float tMax, out float tEnter, out float tExit)
+bool intersectAABB(Ray r, vec3 bmin, vec3 bmax, float tMin, float tMax, inout float tEnter, inout float tExit)
 {
     vec3 t0 = (bmin - r.origin) * r.invDirection;
     vec3 t1 = (bmax - r.origin) * r.invDirection;
@@ -18,23 +18,10 @@ bool intersectAABB(Ray r, vec3 bmin, vec3 bmax, float tMin, float tMax, out floa
     return tExit >= tEnter;
 }
 
-bool intersectTriangle(Ray r, vec3 v0, vec3 v1, vec3 v2, float tMin, float tMax, out float t, out vec2 uv)
+bool intersectTriangle(Ray r, vec3 v0, vec3 e1, vec3 e2, float tMin, float tMax, inout float t, inout vec2 uv)
 {
-    vec3 e1 = v1 - v0;
-    vec3 e2 = v2 - v0;
     vec3 p  = cross(r.direction, e2);
     float det = dot(e1, p);
-
-    // check for degeneracy
-    if (isinf(det)) {
-        builtIn.errorFlag = 3u;
-        return false;
-    }
-
-    if(det > -1e-8 && det < 1e-8) {
-        builtIn.errorFlag = 4u;
-        return false;
-    }
 
     // two-sided:
     if (abs(det) < 1e-8) return false;
@@ -56,7 +43,7 @@ bool intersectTriangle(Ray r, vec3 v0, vec3 v1, vec3 v2, float tMin, float tMax,
     return true;
 }
 
-void loadTriangleInfo(uint triangleIndex, out vec3 v0, out vec3 e0, out vec3 e1, out vec3 normal)
+void loadTriangleInfo(uint triangleIndex, inout vec3 v0, inout vec3 e0, inout vec3 e1, inout vec3 normal)
 {
     TriangleInfo tri = blasTriangles.triangles[triangleIndex];
 
@@ -64,6 +51,61 @@ void loadTriangleInfo(uint triangleIndex, out vec3 v0, out vec3 e0, out vec3 e1,
     e0 = vec3(tri.e0x, tri.e0y, tri.e0z);
     e1 = vec3(tri.e1x, tri.e1y, tri.e1z);
     normal = vec3(tri.nx, tri.ny, tri.nz);
+}
+
+// --- Instance transform helpers (VkAccelerationStructureInstanceKHR-style, 3x4 row-major) ---
+
+// Row-major point transform: p' = A*p + t
+vec3 transformPointRowMajor(vec4 r0, vec4 r1, vec4 r2, vec3 p)
+{
+    return vec3(
+        r0.x * p.x + r0.y * p.y + r0.z * p.z + r0.w,
+        r1.x * p.x + r1.y * p.y + r1.z * p.z + r1.w,
+        r2.x * p.x + r2.y * p.y + r2.z * p.z + r2.w
+    );
+}
+
+// Row-major vector transform: v' = A*v
+vec3 transformVectorRowMajor(vec4 r0, vec4 r1, vec4 r2, vec3 v)
+{
+    return vec3(
+        r0.x * v.x + r0.y * v.y + r0.z * v.z,
+        r1.x * v.x + r1.y * v.y + r1.z * v.z,
+        r2.x * v.x + r2.y * v.y + r2.z * v.z
+    );
+}
+
+// Invert a 3x4 row-major affine transform (works for uniform/non-uniform scale as long as A is invertible).
+void invertRowMajor3x4(vec4 r0, vec4 r1, vec4 r2, out vec4 ir0, out vec4 ir1, out vec4 ir2)
+{
+    // Build A using COLUMNS (GLSL matrices are column-major)
+    mat3 A = mat3(
+        vec3(r0.x, r1.x, r2.x),
+        vec3(r0.y, r1.y, r2.y),
+        vec3(r0.z, r1.z, r2.z)
+    );
+
+    vec3 t = vec3(r0.w, r1.w, r2.w);
+
+    mat3 Ainv = inverse(A);
+    vec3 tinv = -(Ainv * t);
+
+    // We want to output ROWS of Ainv in ir0/ir1/ir2
+    mat3 AinvT = transpose(Ainv);
+
+    ir0 = vec4(AinvT[0][0], AinvT[0][1], AinvT[0][2], tinv.x);
+    ir1 = vec4(AinvT[1][0], AinvT[1][1], AinvT[1][2], tinv.y);
+    ir2 = vec4(AinvT[2][0], AinvT[2][1], AinvT[2][2], tinv.z);
+}
+
+// Convert row-major 3x4 rows into a column-major mat4x3 (as used by gl_ObjectToWorldEXT/gl_WorldToObjectEXT).
+mat4x3 rowMajor3x4ToMat4x3(vec4 r0, vec4 r1, vec4 r2)
+{
+    vec3 c0 = vec3(r0.x, r1.x, r2.x);
+    vec3 c1 = vec3(r0.y, r1.y, r2.y);
+    vec3 c2 = vec3(r0.z, r1.z, r2.z);
+    vec3 c3 = vec3(r0.w, r1.w, r2.w);
+    return mat4x3(c0, c1, c2, c3);
 }
 
 // BvhNode encoding (CPU-identical):
@@ -92,11 +134,6 @@ HitInfo traverseBVH(uint bvhBase, uint triangleOffset, Ray ray, float tMin, floa
 
     while (sp > 0)
     {
-        // Safety guards against malformed BVHs causing infinite loops / stack overflow
-        if (++iterGuard > 1000000) { best.errorFlag = 1u; break; }
-        // sp is the next free slot; valid range is [0..MAX_STACK]
-        if (sp < 0 || sp > MAX_STACK) { best.errorFlag = 2u; break; }
-
         uint nodeIndex = stack[--sp];
         BvhNode node = blasNodes.nodes[nodeIndex];
         vec3 aabbMin = vec3(node.minx, node.miny, node.minz);
@@ -126,7 +163,7 @@ HitInfo traverseBVH(uint bvhBase, uint triangleOffset, Ray ray, float tMin, floa
 
                 float t;
                 vec2 uv;
-                if (intersectTriangle(ray, v0, v0 + e0, v0 + e1, tMin, best.t, t, uv))
+                if (intersectTriangle(ray, v0, e0, e1, tMin, best.t, t, uv))
                 {
                     best.t = t;
                     best.triangleIndex = originalPrimId;
@@ -141,14 +178,6 @@ HitInfo traverseBVH(uint bvhBase, uint triangleOffset, Ray ray, float tMin, floa
             uint left  = bvhBase + node.firstChildOrPrim;
             uint right = left + 1u;
 
-            // Guard against malformed BVHs that create self-loops (infinite traversal)
-            if (left == nodeIndex || right == nodeIndex)
-                continue;
-
-            // Another safety guard: if either child index is INVALID_INDEX, skip.
-            if (left == INVALID_INDEX || right == INVALID_INDEX)
-                continue;
-
             float tEL, tXL, tER, tXR;
             vec3 aabbMinL = vec3(blasNodes.nodes[left].minx, blasNodes.nodes[left].miny, blasNodes.nodes[left].minz);
             vec3 aabbMaxL = vec3(blasNodes.nodes[left].maxx, blasNodes.nodes[left].maxy, blasNodes.nodes[left].maxz);
@@ -162,25 +191,21 @@ HitInfo traverseBVH(uint bvhBase, uint triangleOffset, Ray ray, float tMin, floa
                 // push farther first so nearer is processed next
                 if (tEL < tER)
                 {
-                    if (sp + 2 > MAX_STACK) { best.errorFlag = 3u; break; }
                     stack[sp++] = right;
                     stack[sp++] = left;
                 }
                 else
                 {
-                    if (sp + 2 > MAX_STACK) { best.errorFlag = 3u; break; }
                     stack[sp++] = left;
                     stack[sp++] = right;
                 }
             }
             else if (hitL)
             {
-                if (sp + 1 > MAX_STACK) { best.errorFlag = 3u; break; }
                 stack[sp++] = left;
             }
             else if (hitR)
             {
-                if (sp + 1 > MAX_STACK) { best.errorFlag = 3u; break; }
                 stack[sp++] = right;
             }
         }
@@ -189,29 +214,72 @@ HitInfo traverseBVH(uint bvhBase, uint triangleOffset, Ray ray, float tMin, floa
     return best;
 }
 
-bool intersectTlas(Ray ray, out HitInfo hitInfo)
+bool intersectTlas(Ray ray, inout HitInfo hitInfo)
 {
+    // Assumes ray.direction is normalized in raygen (so tWorld can be computed via dot(delta, dir)).
     for (uint i = 0u; i < tlasInstances.instanceCount; ++i)
     {
         Instance instance = tlasInstances.instances[i];
+
+        // Compute objectToWorld and worldToObject from row-major 3x4 rows.
+        vec4 r0 = instance.row0;
+        vec4 r1 = instance.row1;
+        vec4 r2 = instance.row2;
+
+        vec4 ir0, ir1, ir2;
+        invertRowMajor3x4(r0, r1, r2, ir0, ir1, ir2);
+
+        // Transform ray into object space.
+        vec3 localO = transformPointRowMajor(ir0, ir1, ir2, ray.origin);
+        vec3 localD = transformVectorRowMajor(ir0, ir1, ir2, ray.direction);
+
+        // Avoid inf/nan invDirection if localD has zeros
+        Ray localRay;
+        localRay.origin = localO;
+        localRay.direction = localD;
+        localRay.invDirection = 1.0 / localD;
+
+        // Fetch BLAS info (blasAddress is used as an index in the compute path).
         BlasInfo blasInfo = blasInfos.blases[instance.blasAddress];
         uint bvhBase = blasInfo.rootNodeIndex;
         uint triangleOffset = blasInfo.triangleOffset;
 
-        HitInfo hit = traverseBVH(bvhBase, triangleOffset, ray, 0.001, hitInfo.t);
-        if (hit.triangleIndex != INVALID_INDEX && hit.t < hitInfo.t)
+        // Traverse in object space, but keep the best.t bound in world space (convert on accept).
+        HitInfo hit = traverseBVH(bvhBase, triangleOffset, localRay, 0.001, 1e30);
+
+        if (hit.triangleIndex != INVALID_INDEX)
         {
+            // Convert local hit to world-space t along the original ray.
+            vec3 hitPosLocal = localRay.origin + localRay.direction * hit.t;
+            vec3 hitPosWorld = transformPointRowMajor(r0, r1, r2, hitPosLocal);
+
+            float tWorld = dot(hitPosWorld - ray.origin, ray.direction);
+
+            // Reject behind/too-far hits.
+            if (tWorld <= 0.0 || tWorld >= hitInfo.t)
+                continue;
+
+            // Accept best hit.
+            hit.t = tWorld;
             hit.instanceIndex = i;
             hitInfo = hit;
+
+            // Populate built-ins for shading (matches ray tracing built-ins convention).
+            builtIn.hitT = tWorld;
+            builtIn.primitiveID = hitInfo.triangleIndex;
+            builtIn.instanceID = i;
+            builtIn.instanceCustomIndex = instance.customIndexAndMask;
+
+            builtIn.objectToWorld = rowMajor3x4ToMat4x3(r0, r1, r2);
+            builtIn.worldToObject = rowMajor3x4ToMat4x3(ir0, ir1, ir2);
+            TriangleInfo triangleInfo = blasTriangles.triangles[triangleOffset + hitInfo.triangleIndex];
+            builtIn.hitNormal = vec3(triangleInfo.nx, triangleInfo.ny, triangleInfo.nz);
+            // Transform normal to world space
+            builtIn.hitNormal = normalize(transformVectorRowMajor(r0, r1, r2, builtIn.hitNormal));
         }
     }
 
-    if (hitInfo.triangleIndex != INVALID_INDEX)
-    {
-        return true;
-    }
-
-    return false;
+    return (hitInfo.triangleIndex != INVALID_INDEX);
 }
 
 void traceRaysEXT(uint tlas, uint sbtRecordOffset, uint sbtRecordStride, uint missIndex, uint rayFlags, uint foo, vec3 rayOrigin, float rayTmin, vec3 rayDirection, float rayTmax, uint payloadIndex)
@@ -231,6 +299,14 @@ void traceRaysEXT(uint tlas, uint sbtRecordOffset, uint sbtRecordStride, uint mi
 
     bool hit = intersectTlas(ray, hitInfo);
     builtIn.errorFlag = hitInfo.errorFlag;
+
+    // Ensure these are valid for user hit shaders even if intersectTlas didn't set them (miss path).
+    if (!hit) {
+        builtIn.hitT = rayTmax;
+        builtIn.primitiveID = INVALID_INDEX;
+        builtIn.instanceID = INVALID_INDEX;
+    }
+
     uint hitIndex = 0u;
 
     if (hit)
@@ -242,7 +318,6 @@ void traceRaysEXT(uint tlas, uint sbtRecordOffset, uint sbtRecordStride, uint mi
         // [MISS_SHADER_CALLS]
     }
 
-    rayPayload.color = vec3(hitInfo.barycentricU, hitInfo.barycentricV, 0.0);
 }
 
 void main()
