@@ -85,8 +85,8 @@ int main()
 
         const auto tMin = 0.001f;
         const auto tMax = 100.0f;
-        const auto maxDepth = 3;
-        const auto numSamples = 2;
+        const auto maxDepth = 2;
+        const auto numSamples = 1;
 
         tracey::PCG32 rng(static_cast<uint32_t>(pixelCoord.x + pixelCoord.y * imageWidth + iteration * imageWidth * imageHeight));
 
@@ -171,7 +171,7 @@ int main()
 
     std::chrono::steady_clock::time_point endTime = std::chrono::steady_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(endTime - startTime).count();
-    std::cout << "Rendering 128 samples completed in " << duration << " ms." << std::endl;
+    std::cout << "Rendering 1 samples completed in " << duration << " ms." << std::endl;
 
     // Save framebuffer to PPM image
     std::ofstream ofs("path_tracer.ppm", std::ios::out | std::ios::binary);

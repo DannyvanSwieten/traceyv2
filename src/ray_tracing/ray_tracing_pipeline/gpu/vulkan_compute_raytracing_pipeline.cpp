@@ -23,13 +23,13 @@ namespace tracey
             case RayTracingPipelineLayoutDescriptor::DescriptorType::Image2D:
                 vkBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
                 vkBinding.descriptorCount = 1;
-                vkBinding.binding += 4;
+                vkBinding.binding += 6;
                 bindings.push_back(vkBinding);
                 break;
             case RayTracingPipelineLayoutDescriptor::DescriptorType::Buffer:
                 vkBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
                 vkBinding.descriptorCount = 1;
-                vkBinding.binding += 4;
+                vkBinding.binding += 6;
                 bindings.push_back(vkBinding);
                 break;
             case RayTracingPipelineLayoutDescriptor::DescriptorType::AccelerationStructure:
@@ -45,6 +45,8 @@ namespace tracey
                 vkBinding.binding = binding.index + 3;
                 bindings.push_back(vkBinding);
                 vkBinding.binding = binding.index + 4;
+                bindings.push_back(vkBinding);
+                vkBinding.binding = binding.index + 5;
                 bindings.push_back(vkBinding);
 
                 break;

@@ -37,7 +37,7 @@ namespace tracey
         int tlasCount = 0;
         bool sawTlas = false;
 
-        const auto bindingStartOffset = 4;
+        const auto bindingStartOffset = 6;
 
         for (const auto &binding : layout.bindings())
         {

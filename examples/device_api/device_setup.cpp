@@ -132,11 +132,6 @@ void shader() {
 
     color = rayPayload.color;
 
-    if(gl_ErrorFlagEXT != 0u) {
-        // error occurred during ray tracing
-        color = vec3(1.0, 0.0, 1.0); // magenta for error
-    }
-
     imageStore(outputImage, ivec2(launchID.xy), vec4(color, 1.0));
 }
     )",
@@ -148,7 +143,8 @@ void shader() {
     // Closest hit shader code
     // Some fake lighting
     vec3 L = normalize(vec3(0.0, 1.0, -1.0));
-    float I = max(dot(L, gl_HitNormalEXT), 0.0);
+    vec3 N = gl_ObjectToWorldEXT * vec4(gl_HitNormalEXT, 0.0);
+    float I = max(dot(L, N), 0.0);
     rayPayload.color = vec3(I * 0.5);
     rayPayload.hit = true;
 }

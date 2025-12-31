@@ -38,7 +38,6 @@ struct HitInfo{
     uint instanceIndex;
     float barycentricU;
     float barycentricV;
-    uint errorFlag;
 };
 
 struct BuiltIn {
@@ -52,11 +51,9 @@ struct BuiltIn {
     uint instanceID;
     uint primitiveID;
     uint instanceCustomIndex;
-    uint geometryIndex;
     mat4x3 worldToObject;
     mat4x3 objectToWorld;
     vec3 hitNormal;
-    uint errorFlag;
 };
 
 struct TriangleInfo{
@@ -64,6 +61,11 @@ struct TriangleInfo{
     float e0x, e0y, e0z;
     float e1x, e1y, e1z;
     float nx, ny, nz;
+};
+
+struct InverseTransforms{
+    mat4x3 objToWorld;
+    mat4x3 worldToObj;
 };
 
 BuiltIn builtIn;
@@ -76,13 +78,11 @@ BuiltIn builtIn;
 #define gl_InstanceIDEXT builtIn.instanceID
 #define gl_PrimitiveID builtIn.primitiveID
 #define gl_InstanceCustomIndexEXT builtIn.instanceCustomIndex
-#define gl_GeometryIndexEXT builtIn.geometryIndex
 #define gl_WorldToObjectEXT builtIn.worldToObject
 #define gl_ObjectToWorldEXT builtIn.objectToWorld
 #define gl_HitNormalEXT builtIn.hitNormal
 #define gl_HitTEXT builtIn.hitT
 #define gl_RayFlagsEXT 0u
-#define gl_ErrorFlagEXT builtIn.errorFlag
 
 layout(std430, set = 0, binding = 0) buffer TLASInstances {
     uint instanceCount;
@@ -105,5 +105,9 @@ layout(std430, set = 0, binding = 3) buffer Triangles {
 layout(std430, set = 0, binding = 4) buffer PrimitiveIndices {
     uint primitiveIndices[];
 } blasPrimitiveIndices;
+
+layout(std430, set = 0, binding = 5) buffer TLASInstanceTransforms {
+    InverseTransforms inv[];
+} tlasInstanceTransforms;
 
 // [USER_SHADER_BINDINGS]

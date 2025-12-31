@@ -121,9 +121,8 @@ HitInfo traverseBVH(uint bvhBase, uint triangleOffset, Ray ray, float tMin, floa
     best.instanceIndex = INVALID_INDEX;
     best.barycentricU = 0.0;
     best.barycentricV = 0.0;
-    best.errorFlag = 0u;
 
-    const int MAX_STACK = 64;
+    const int MAX_STACK = 32;
     // small fixed stack
     uint stack[MAX_STACK];
     int sp = 0;
@@ -220,19 +219,30 @@ bool intersectTlas(Ray ray, inout HitInfo hitInfo)
     for (uint i = 0u; i < tlasInstances.instanceCount; ++i)
     {
         Instance instance = tlasInstances.instances[i];
+        InverseTransforms instanceInverseTransform = tlasInstanceTransforms.inv[i];
 
-        // Compute objectToWorld and worldToObject from row-major 3x4 rows.
-        vec4 r0 = instance.row0;
-        vec4 r1 = instance.row1;
-        vec4 r2 = instance.row2;
+        vec4 inverseRow0, inverseRow1, inverseRow2;
+        invertRowMajor3x4(
+            instance.row0,
+            instance.row1,
+            instance.row2,
+            inverseRow0,
+            inverseRow1,
+            inverseRow2
+        );
 
-        vec4 ir0, ir1, ir2;
-        invertRowMajor3x4(r0, r1, r2, ir0, ir1, ir2);
-
-        // Transform ray into object space.
-        vec3 localO = transformPointRowMajor(ir0, ir1, ir2, ray.origin);
-        vec3 localD = transformVectorRowMajor(ir0, ir1, ir2, ray.direction);
-
+        vec3 localO = transformPointRowMajor(
+            inverseRow0,
+            inverseRow1,
+            inverseRow2,
+            ray.origin
+        );
+        vec3 localD = transformVectorRowMajor(
+            inverseRow0,
+            inverseRow1,
+            inverseRow2,
+            ray.direction
+        );
         // Avoid inf/nan invDirection if localD has zeros
         Ray localRay;
         localRay.origin = localO;
@@ -245,13 +255,18 @@ bool intersectTlas(Ray ray, inout HitInfo hitInfo)
         uint triangleOffset = blasInfo.triangleOffset;
 
         // Traverse in object space, but keep the best.t bound in world space (convert on accept).
-        HitInfo hit = traverseBVH(bvhBase, triangleOffset, localRay, 0.001, 1e30);
+        HitInfo hit = traverseBVH(bvhBase, triangleOffset, localRay, 0.001, hitInfo.t);
 
         if (hit.triangleIndex != INVALID_INDEX)
         {
             // Convert local hit to world-space t along the original ray.
             vec3 hitPosLocal = localRay.origin + localRay.direction * hit.t;
-            vec3 hitPosWorld = transformPointRowMajor(r0, r1, r2, hitPosLocal);
+            vec3 hitPosWorld = transformPointRowMajor(
+                instance.row0,
+                instance.row1,
+                instance.row2,
+                hitPosLocal
+            );
 
             float tWorld = dot(hitPosWorld - ray.origin, ray.direction);
 
@@ -269,13 +284,15 @@ bool intersectTlas(Ray ray, inout HitInfo hitInfo)
             builtIn.primitiveID = hitInfo.triangleIndex;
             builtIn.instanceID = i;
             builtIn.instanceCustomIndex = instance.customIndexAndMask;
+            builtIn.objectToWorld = rowMajor3x4ToMat4x3(
+                instance.row0,
+                instance.row1,
+                instance.row2
+            );
 
-            builtIn.objectToWorld = rowMajor3x4ToMat4x3(r0, r1, r2);
-            builtIn.worldToObject = rowMajor3x4ToMat4x3(ir0, ir1, ir2);
             TriangleInfo triangleInfo = blasTriangles.triangles[triangleOffset + hitInfo.triangleIndex];
             builtIn.hitNormal = vec3(triangleInfo.nx, triangleInfo.ny, triangleInfo.nz);
             // Transform normal to world space
-            builtIn.hitNormal = normalize(transformVectorRowMajor(r0, r1, r2, builtIn.hitNormal));
         }
     }
 
@@ -290,7 +307,6 @@ void traceRaysEXT(uint tlas, uint sbtRecordOffset, uint sbtRecordStride, uint mi
     ray.invDirection = 1.0 / rayDirection;
 
     HitInfo hitInfo;
-    hitInfo.errorFlag = 0u;
     hitInfo.t = rayTmax;
     hitInfo.triangleIndex = INVALID_INDEX;
     hitInfo.instanceIndex = INVALID_INDEX;
@@ -298,7 +314,6 @@ void traceRaysEXT(uint tlas, uint sbtRecordOffset, uint sbtRecordStride, uint mi
     hitInfo.barycentricV = 0.0;
 
     bool hit = intersectTlas(ray, hitInfo);
-    builtIn.errorFlag = hitInfo.errorFlag;
 
     // Ensure these are valid for user hit shaders even if intersectTlas didn't set them (miss path).
     if (!hit) {
@@ -326,7 +341,6 @@ void main()
     builtIn.hitT = 1000000;
     builtIn.launchID = gl_GlobalInvocationID.xyz;
     builtIn.launchSize = gl_NumWorkGroups.xyz * gl_WorkGroupSize.xyz;
-    builtIn.errorFlag = 0u;
 
     rayGenMain();
 }

@@ -28,17 +28,19 @@ namespace tracey
             const Blas &blas = *blases[blasIndex];
             const auto [min, max] = blas.getBounds();
 
-            const auto [worldMin, worldMax] = transformAABB(instance.transform, min, max);
+            const auto [worldMin, worldMax] = transformAABB(instanceTransforms[instanceIndex].toWorld, min, max);
             float tEnter, tExit;
-            if (!intersectAABB(ray, worldMin, worldMax, tMin, tMax, tEnter, tExit))
+            if (!intersectAABB(ray, worldMin, worldMax, tMin, closestT, tEnter, tExit))
                 continue; // Ray misses the instance's bounds
 
-            // Transform the ray into the instance's local space
-            float inverseTransform[3][4];
-            invert3x4(instance.transform, inverseTransform);
-            Vec3 localRayDirection = transformVector(inverseTransform, ray.direction);
+            // Transform the ray into the instance's local space (use precomputed inverse)
+            const auto &xf = instanceTransforms[instanceIndex];
+            const float (*toObject)[4] = xf.toObject;
+            const float (*toWorld)[4] = xf.toWorld;
+
+            Vec3 localRayDirection = transformVector(toObject, ray.direction);
             Vec3 localRayInvDirection = 1.0f / localRayDirection;
-            Vec3 localRayOrigin = transformPoint(inverseTransform, ray.origin);
+            Vec3 localRayOrigin = transformPoint(toObject, ray.origin);
 
             Ray localRay{localRayOrigin, localRayDirection, localRayInvDirection};
 
@@ -47,7 +49,7 @@ namespace tracey
             {
                 // Compute hit position in local space and transform back to world space.
                 const Vec3 localHitPos = localRay.origin + localRay.direction * hitOpt->t;
-                const Vec3 worldHitPos = transformPoint(instance.transform, localHitPos);
+                const Vec3 worldHitPos = transformPoint(toWorld, localHitPos);
 
                 // Convert to world-space t (ray.direction is expected to be normalized in the renderer).
                 const float tWorld = glm::dot(worldHitPos - ray.origin, ray.direction);

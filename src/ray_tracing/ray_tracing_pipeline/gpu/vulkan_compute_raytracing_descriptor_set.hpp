@@ -22,6 +22,6 @@ namespace tracey
         VkDescriptorSetLayout m_descriptorSetLayout;
         VkDescriptorSet m_descriptorSet;
 
-        constexpr static uint32_t AccelerationStructureDescriptorCount = 4;
+        constexpr static uint32_t AccelerationStructureDescriptorCount = 6;
     };
 }

@@ -123,8 +123,12 @@ int main()
         }
     };
 
+    std::chrono::high_resolution_clock::time_point startTime = std::chrono::high_resolution_clock::now();
     // Trace rays
     trace(imageWidth, imageHeight, tlas, shader);
+    std::chrono::high_resolution_clock::time_point endTime = std::chrono::high_resolution_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(endTime - startTime).count();
+    std::cout << "Ray tracing completed in " << duration << " ms." << std::endl;
 
     // Save framebuffer to PPM image
     std::ofstream ofs("ray_tracer.ppm", std::ios::out | std::ios::binary);

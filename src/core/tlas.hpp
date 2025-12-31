@@ -38,13 +38,6 @@ namespace tracey
                 transform[2][3] = 0.0f;
             }
 
-            void setTransformRowMajor3x4(const float mat[3][4])
-            {
-                for (int r = 0; r < 3; ++r)
-                    for (int c = 0; c < 4; ++c)
-                        transform[r][c] = mat[r][c];
-            }
-
             void setTransform(const Mat4 &mat)
             {
                 // GLM Mat4 is column-major: mat[col][row]
@@ -135,6 +128,11 @@ namespace tracey
         const Transforms &getInstanceTransforms(uint32_t index) const
         {
             return instanceTransforms[index];
+        }
+
+        const auto allInstanceTransforms() const
+        {
+            return instanceTransforms;
         }
 
     private:

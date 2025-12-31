@@ -62,7 +62,7 @@ namespace tracey
     }
     void VulkanComputeRayTracingDescriptorSet::setAccelerationStructure(uint32_t binding, const TopLevelAccelerationStructure *tlas)
     {
-        VkWriteDescriptorSet writeDesc[5]{
+        VkWriteDescriptorSet writeDesc[6]{
             {
                 .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                 .dstSet = m_descriptorSet,
@@ -103,6 +103,15 @@ namespace tracey
                 .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                 .descriptorCount = 1,
             },
+            {
+                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                .dstSet = m_descriptorSet,
+                .dstBinding = binding + 5,
+                .dstArrayElement = 0,
+                .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                .descriptorCount = 1,
+            },
+
         };
 
         VkDescriptorBufferInfo bufferInfo{};
@@ -135,6 +144,12 @@ namespace tracey
         primitiveIndicesBufferInfo.range = VK_WHOLE_SIZE;
         writeDesc[4].pBufferInfo = &primitiveIndicesBufferInfo;
 
-        vkUpdateDescriptorSets(m_device.vkDevice(), 5, writeDesc, 0, nullptr);
+        VkDescriptorBufferInfo instanceInverseTransformsBufferInfo{};
+        instanceInverseTransformsBufferInfo.buffer = static_cast<const VulkanComputeTopLevelAccelerationStructure *>(tlas)->instanceInverseTransformsBuffer()->vkBuffer();
+        instanceInverseTransformsBufferInfo.offset = 0;
+        instanceInverseTransformsBufferInfo.range = VK_WHOLE_SIZE;
+        writeDesc[5].pBufferInfo = &instanceInverseTransformsBufferInfo;
+
+        vkUpdateDescriptorSets(m_device.vkDevice(), 6, writeDesc, 0, nullptr);
     }
 }
