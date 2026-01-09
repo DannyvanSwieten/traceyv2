@@ -11,8 +11,16 @@ namespace tracey
         {
             // Precompute inverse transforms for each instance
             Transforms transforms;
-            std::memcpy(transforms.toWorld, instance.transform, sizeof(instance.transform));
-            invert3x4(instance.transform, transforms.toObject);
+            // first turn the 3x4 row-major into a 4x4 matrix
+            Mat4 toWorldMat(
+                instance.transform[0][0], instance.transform[1][0], instance.transform[2][0], 0.0f,
+                instance.transform[0][1], instance.transform[1][1], instance.transform[2][1], 0.0f,
+                instance.transform[0][2], instance.transform[1][2], instance.transform[2][2], 0.0f,
+                instance.transform[0][3], instance.transform[1][3], instance.transform[2][3], 1.0f);
+            transforms.toWorld = toWorldMat;
+            // Invert the toWorldMat to get toObject
+            transforms.toObject = glm::inverse(toWorldMat);
+            transforms.toWorld = toWorldMat;
             instanceTransforms.push_back(transforms);
         }
     }
@@ -35,12 +43,12 @@ namespace tracey
 
             // Transform the ray into the instance's local space (use precomputed inverse)
             const auto &xf = instanceTransforms[instanceIndex];
-            const float (*toObject)[4] = xf.toObject;
-            const float (*toWorld)[4] = xf.toWorld;
+            // const float (*toObject)[4] = xf.toObject;
+            // const float (*toWorld)[4] = xf.toWorld;
 
-            Vec3 localRayDirection = transformVector(toObject, ray.direction);
+            Vec3 localRayDirection = transformVector(xf.toObject, ray.direction);
             Vec3 localRayInvDirection = 1.0f / localRayDirection;
-            Vec3 localRayOrigin = transformPoint(toObject, ray.origin);
+            Vec3 localRayOrigin = transformPoint(xf.toObject, ray.origin);
 
             Ray localRay{localRayOrigin, localRayDirection, localRayInvDirection};
 
@@ -49,7 +57,7 @@ namespace tracey
             {
                 // Compute hit position in local space and transform back to world space.
                 const Vec3 localHitPos = localRay.origin + localRay.direction * hitOpt->t;
-                const Vec3 worldHitPos = transformPoint(toWorld, localHitPos);
+                const Vec3 worldHitPos = transformPoint(xf.toWorld, localHitPos);
 
                 // Convert to world-space t (ray.direction is expected to be normalized in the renderer).
                 const float tWorld = glm::dot(worldHitPos - ray.origin, ray.direction);

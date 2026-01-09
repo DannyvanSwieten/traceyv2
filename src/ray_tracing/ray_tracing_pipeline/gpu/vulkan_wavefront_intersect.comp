@@ -1,8 +1,118 @@
+#version 460
+
+layout (local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+struct BvhNode{
+    float minx, miny, minz;
+    uint firstChildOrPrim; // For inner nodes: left child index. For leaf nodes: first triangle index.
+    float maxx, maxy, maxz;
+    uint primCountAndType; // For inner nodes: right child index. For leaf nodes: number of triangles.
+};
+
+struct PathHeader{
+    float originX;
+    float originY;
+    float originZ;
+    float tMin;
+
+    float directionX;
+    float directionY;
+    float directionZ;
+    float tMax;
+};
+
+struct Ray{
+    vec3 origin;
+    vec3 direction;
+    vec3 invDirection;
+};
+
+struct Instance{
+    // Column-major 3x4 transform rows
+    vec4 row0;
+    vec4 row1;
+    vec4 row2;
+    uint customIndexAndMask;
+    uint sbtOffsetAndFlags;
+    uint blasAddress;
+    uint padding;
+};
+
+struct BlasInfo{
+    uint rootNodeIndex;
+    uint triangleCount;
+    uint triangleOffset;
+    uint padding;
+};
+
+struct HitInfo{
+    float t;
+    uint triangleIndex;
+    uint instanceIndex;
+    float barycentricU;
+    float barycentricV;
+};
+
+struct TriangleInfo{
+    float v0x, v0y, v0z;
+    float e0x, e0y, e0z;
+    float e1x, e1y, e1z;
+    float nx, ny, nz;
+};
+
+struct InverseTransforms{
+    mat4x3 objToWorld;
+    mat4x3 worldToObj;
+};
+
+layout(std430, set = 0, binding = 0) buffer PathHeaders {
+    PathHeader headers[];
+};
+
+layout(std430, set = 0, binding = 1) buffer RayQueue{
+    uint count;        // number of valid entries in rayIndices
+    uint rayIndices[]; // compact list of path/ray indices
+};
+
+
+
+PathHeader getPathHeader(uint rayIndex) {
+    return headers[rayIndex];
+}
+
+layout(std430, set = 0, binding = 2) writeonly buffer HitInfos {
+    HitInfo hits[];
+};
+
+layout(std430, set = 0, binding = 3) buffer TLASInstances {
+    uint instanceCount;
+    uint padding[3];
+    Instance instances[];
+} tlasInstances;
+
+layout(std430, set = 0, binding = 4) buffer BvhNodes {
+    BvhNode nodes[];
+} blasNodes;
+
+layout(std430, set = 0, binding = 5) buffer BlasInfos {
+    BlasInfo blases[];
+} blasInfos;
+
+layout(std430, set = 0, binding = 6) buffer Triangles {
+    TriangleInfo triangles[];
+} blasTriangles;
+
+layout(std430, set = 0, binding = 7) buffer PrimitiveIndices {
+    uint primitiveIndices[];
+} blasPrimitiveIndices;
+
+layout(std430, set = 0, binding = 8) buffer TLASInstanceTransforms {
+    InverseTransforms inv[];
+} tlasInstanceTransforms;
+
 void traceRaysEXT(uint tlas, uint sbtRecordOffset, uint sbtRecordStride, uint missIndex, uint rayFlags, uint cullFlags, vec3 rayOrigin, float rayTmin, vec3 rayDirection, float rayTmax, uint payloadIndex);
 
 const uint INVALID_INDEX = 0xFFFFFFFFu;
-
-// [USER_SHADER_CODE]
 
 bool intersectAABB(Ray r, vec3 bmin, vec3 bmax, float tMin, float tMax, inout float tEnter, inout float tExit)
 {
@@ -122,7 +232,7 @@ HitInfo traverseBVH(uint bvhBase, uint triangleOffset, Ray ray, float tMin, floa
     best.barycentricU = 0.0;
     best.barycentricV = 0.0;
 
-    const int MAX_STACK = 64;
+    const int MAX_STACK = 32;
     // small fixed stack
     uint stack[MAX_STACK];
     int sp = 0;
@@ -221,9 +331,28 @@ bool intersectTlas(Ray ray, inout HitInfo hitInfo)
         Instance instance = tlasInstances.instances[i];
         InverseTransforms instanceInverseTransform = tlasInstanceTransforms.inv[i];
 
-        vec3 localO = (instanceInverseTransform.worldToObj * vec4(ray.origin, 1.0)).xyz;
-        vec3 localD = (instanceInverseTransform.worldToObj * vec4(ray.direction, 0.0)).xyz;
+        vec4 inverseRow0, inverseRow1, inverseRow2;
+        invertRowMajor3x4(
+            instance.row0,
+            instance.row1,
+            instance.row2,
+            inverseRow0,
+            inverseRow1,
+            inverseRow2
+        );
 
+        vec3 localO = transformPointRowMajor(
+            inverseRow0,
+            inverseRow1,
+            inverseRow2,
+            ray.origin
+        );
+        vec3 localD = transformVectorRowMajor(
+            inverseRow0,
+            inverseRow1,
+            inverseRow2,
+            ray.direction
+        );
         // Avoid inf/nan invDirection if localD has zeros
         Ray localRay;
         localRay.origin = localO;
@@ -242,7 +371,12 @@ bool intersectTlas(Ray ray, inout HitInfo hitInfo)
         {
             // Convert local hit to world-space t along the original ray.
             vec3 hitPosLocal = localRay.origin + localRay.direction * hit.t;
-            vec3 hitPosWorld = (instanceInverseTransform.objToWorld * vec4(hitPosLocal, 1.0)).xyz;
+            vec3 hitPosWorld = transformPointRowMajor(
+                instance.row0,
+                instance.row1,
+                instance.row2,
+                hitPosLocal
+            );
 
             float tWorld = dot(hitPosWorld - ray.origin, ray.direction);
 
@@ -254,67 +388,32 @@ bool intersectTlas(Ray ray, inout HitInfo hitInfo)
             hit.t = tWorld;
             hit.instanceIndex = i;
             hitInfo = hit;
-
-            // Populate built-ins for shading (matches ray tracing built-ins convention).
-            builtIn.hitT = tWorld;
-            builtIn.primitiveID = hitInfo.triangleIndex;
-            builtIn.instanceID = i;
-            builtIn.instanceCustomIndex = instance.customIndexAndMask;
-            builtIn.objectToWorld = mat4x3(instanceInverseTransform.objToWorld);
-            builtIn.worldToObject = mat4x3(instanceInverseTransform.worldToObj);
-
-            TriangleInfo triangleInfo = blasTriangles.triangles[triangleOffset + hitInfo.triangleIndex];
-            builtIn.hitNormal = vec3(triangleInfo.nx, triangleInfo.ny, triangleInfo.nz);
-            // Transform normal to world space (inverse-transpose): invTrans(objToWorld) == transpose(worldToObj)
-            builtIn.hitNormal = normalize((transpose(instanceInverseTransform.worldToObj) * vec4(builtIn.hitNormal, 0.0)).xyz);
         }
     }
 
     return (hitInfo.triangleIndex != INVALID_INDEX);
 }
 
-void traceRaysEXT(uint tlas, uint sbtRecordOffset, uint sbtRecordStride, uint missIndex, uint rayFlags, uint foo, vec3 rayOrigin, float rayTmin, vec3 rayDirection, float rayTmax, uint payloadIndex)
+void main()
 {
+    uint tid = gl_GlobalInvocationID.x;
+    if (tid >= count) {
+        return;
+    }
+    uint rayIndex = rayIndices[tid];
+    PathHeader header = getPathHeader(rayIndex);
     Ray ray;
-    ray.origin = rayOrigin;
-    ray.direction = rayDirection;
-    ray.invDirection = 1.0 / rayDirection;
+    ray.origin = vec3(header.originX, header.originY, header.originZ);
+    ray.direction = vec3(header.directionX, header.directionY, header.directionZ);
+    ray.invDirection = 1.0 / ray.direction; // NOTE: ensure direction components are non-zero or handle safely
 
     HitInfo hitInfo;
-    hitInfo.t = rayTmax;
+    hitInfo.t = header.tMax;
     hitInfo.triangleIndex = INVALID_INDEX;
     hitInfo.instanceIndex = INVALID_INDEX;
     hitInfo.barycentricU = 0.0;
     hitInfo.barycentricV = 0.0;
 
     bool hit = intersectTlas(ray, hitInfo);
-
-    // Ensure these are valid for user hit shaders even if intersectTlas didn't set them (miss path).
-    if (!hit) {
-        builtIn.hitT = rayTmax;
-        builtIn.primitiveID = INVALID_INDEX;
-        builtIn.instanceID = INVALID_INDEX;
-    }
-
-    uint hitIndex = 0u;
-
-    if (hit)
-    {
-        // [HIT_SHADER_CALLS]
-    }
-    else
-    {
-        // [MISS_SHADER_CALLS]
-    }
-
-}
-
-void main()
-{
-    // Populate built-in variables
-    builtIn.hitT = 1000000;
-    builtIn.launchID = gl_GlobalInvocationID.xyz;
-    builtIn.launchSize = gl_NumWorkGroups.xyz * gl_WorkGroupSize.xyz;
-
-    rayGenMain();
+    hits[rayIndex] = hitInfo;
 }

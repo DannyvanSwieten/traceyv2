@@ -85,8 +85,8 @@ int main()
 
         const auto tMin = 0.001f;
         const auto tMax = 100.0f;
-        const auto maxDepth = 2;
-        const auto numSamples = 1;
+        const auto maxDepth = 4;
+        const auto numSamples = 4;
 
         tracey::PCG32 rng(static_cast<uint32_t>(pixelCoord.x + pixelCoord.y * imageWidth + iteration * imageWidth * imageHeight));
 

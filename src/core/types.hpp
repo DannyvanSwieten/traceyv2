@@ -145,11 +145,25 @@ namespace tracey
             mat[2][0] * point.x + mat[2][1] * point.y + mat[2][2] * point.z + mat[2][3]);
     }
 
+    inline Vec3 transformPoint(const Mat4 &mat, Vec3 const &point)
+    {
+        Vec4 homogenousPoint(point, 1.0f);
+        Vec4 transformed = mat * homogenousPoint;
+        return Vec3(transformed);
+    }
+
     inline Vec3 transformVector(const float mat[3][4], Vec3 const &vec)
     {
         return Vec3(
             mat[0][0] * vec.x + mat[0][1] * vec.y + mat[0][2] * vec.z,
             mat[1][0] * vec.x + mat[1][1] * vec.y + mat[1][2] * vec.z,
             mat[2][0] * vec.x + mat[2][1] * vec.y + mat[2][2] * vec.z);
+    }
+
+    inline Vec3 transformVector(const Mat4 &mat, Vec3 const &vec)
+    {
+        Vec4 homogenousVec(vec, 0.0f);
+        Vec4 transformed = mat * homogenousVec;
+        return Vec3(transformed);
     }
 } // namespace tracey

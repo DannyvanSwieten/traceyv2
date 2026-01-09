@@ -119,11 +119,13 @@ namespace tracey
             return instances[index];
         }
 
-        struct Transforms
+        struct alignas(16) Transforms
         {
-            float toWorld[3][4];
-            float toObject[3][4];
+            Mat4 toWorld;
+            Mat4 toObject;
         };
+
+        static_assert(sizeof(Transforms) == 128, "Tlas::Transforms alignment must be 16 bytes");
 
         const Transforms &getInstanceTransforms(uint32_t index) const
         {

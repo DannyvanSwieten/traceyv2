@@ -43,29 +43,16 @@ namespace tracey
 
         for (size_t i = 0; i < instances.size(); ++i)
         {
-            const Tlas::Instance &inst = instances[i];
+            const Tlas::Instance &instance = instances[i];
 
-            Mat4 mat(1.0f); // important: initialize
-            // row-major 3x4 -> column-major 4x4
-            for (int r = 0; r < 3; ++r)
-                for (int c = 0; c < 4; ++c)
-                    mat[c][r] = inst.transform[r][c];
+            Mat4 toWorldMat(
+                instance.transform[0][0], instance.transform[1][0], instance.transform[2][0], 0.0f,
+                instance.transform[0][1], instance.transform[1][1], instance.transform[2][1], 0.0f,
+                instance.transform[0][2], instance.transform[1][2], instance.transform[2][2], 0.0f,
+                instance.transform[0][3], instance.transform[1][3], instance.transform[2][3], 1.0f);
 
-            // bottom row = (0,0,0,1)
-            mat[0][3] = 0.0f;
-            mat[1][3] = 0.0f;
-            mat[2][3] = 0.0f;
-            mat[3][3] = 1.0f;
-
-            Mat4 invMat = glm::inverse(mat);
-
-            // Store toWorld + toObject as row-major 3x4
-            for (int r = 0; r < 3; ++r)
-                for (int c = 0; c < 4; ++c)
-                {
-                    instanceTransformsData[i].toWorld[r][c] = mat[c][r];
-                    instanceTransformsData[i].toObject[r][c] = invMat[c][r];
-                }
+            instanceTransformsData[i].toWorld = toWorldMat;
+            instanceTransformsData[i].toObject = glm::inverse(toWorldMat);
         }
 
         m_instanceInverseTransformsBuffer->flush();

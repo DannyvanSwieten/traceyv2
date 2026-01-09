@@ -75,4 +75,29 @@ namespace tracey
 
         return {worldCenter - worldHalf, worldCenter + worldHalf};
     }
+
+    inline std::tuple<tracey::Vec3, tracey::Vec3> transformAABB(const Mat4 &M,
+                                                                const tracey::Vec3 &localMin,
+                                                                const tracey::Vec3 &localMax)
+    {
+        // Center-extents form of the local AABB
+        tracey::Vec3 center = 0.5f * (localMin + localMax);
+        tracey::Vec3 half = 0.5f * (localMax - localMin);
+
+        // Transform the center (M is Vk-style row-major 3x4)
+        tracey::Vec3 worldCenter = transformPoint(M, center);
+
+        // M is a glsl style mat4 (column-major), so we extract rows like this
+        tracey::Vec3 r0(M[0][0], M[1][0], M[2][0]);
+        tracey::Vec3 r1(M[0][1], M[1][1], M[2][1]);
+        tracey::Vec3 r2(M[0][2], M[1][2], M[2][2]);
+
+        // New conservative half-extents: |R| * half, but using row-major rows
+        tracey::Vec3 worldHalf(
+            std::abs(r0.x) * half.x + std::abs(r0.y) * half.y + std::abs(r0.z) * half.z,
+            std::abs(r1.x) * half.x + std::abs(r1.y) * half.y + std::abs(r1.z) * half.z,
+            std::abs(r2.x) * half.x + std::abs(r2.y) * half.y + std::abs(r2.z) * half.z);
+
+        return {worldCenter - worldHalf, worldCenter + worldHalf};
+    }
 }

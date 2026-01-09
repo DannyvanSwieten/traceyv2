@@ -59,7 +59,7 @@ namespace tracey
     }
     void VulkanComputeRayTracingCommandBuffer::traceRays(const ShaderBindingTable &sbt, uint32_t width, uint32_t height)
     {
-        vkCmdDispatch(m_vkCommandBuffer, width / 16, height / 16, 1);
+        vkCmdDispatch(m_vkCommandBuffer, width / 32, height / 32, 1);
     }
     void VulkanComputeRayTracingCommandBuffer::copyImageToBuffer(const Image2D *image, Buffer *buffer)
     {
