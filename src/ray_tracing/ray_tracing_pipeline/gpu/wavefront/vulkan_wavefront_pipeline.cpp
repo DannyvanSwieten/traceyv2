@@ -6,5 +6,6 @@ namespace tracey
     VulkanWaveFrontPipeline::VulkanWaveFrontPipeline(VulkanComputeDevice &device, const RayTracingPipelineLayoutDescriptor &layout, const CpuShaderBindingTable &sbt)
     {
         const auto rayGenSpirV = compileRayGenShader(layout, sbt);
+        const auto hitShaderSpirV = compileVulkanComputeRayTracingPipeline
     }
 }

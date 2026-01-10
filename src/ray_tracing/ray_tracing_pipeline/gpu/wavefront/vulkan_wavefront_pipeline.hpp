@@ -10,7 +10,6 @@ namespace tracey
     {
     public:
         VulkanWaveFrontPipeline(VulkanComputeDevice &device, const RayTracingPipelineLayoutDescriptor &layout, const CpuShaderBindingTable &sbt);
-        ~VulkanWaveFrontPipeline() override;
     };
 
 }

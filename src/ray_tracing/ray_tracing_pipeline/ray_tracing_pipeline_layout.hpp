@@ -47,4 +47,10 @@ namespace tracey
         std::vector<DescriptorBinding> m_bindings;
         std::vector<PayloadBinding> m_payloads;
     };
+
+    class WavefrontPipelineLayoutDescriptor : public RayTracingPipelineLayoutDescriptor
+    {
+    public:
+        // Additional wavefront-specific layout methods can be added here
+    };
 }

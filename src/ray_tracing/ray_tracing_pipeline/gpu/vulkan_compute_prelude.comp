@@ -84,29 +84,29 @@ BuiltIn builtIn;
 #define gl_HitTEXT builtIn.hitT
 #define gl_RayFlagsEXT 0u
 
-layout(std430, set = 0, binding = 0) buffer TLASInstances {
+layout(std430, set = 0, binding = 0) readonly buffer TLASInstances {
     uint instanceCount;
     uint padding[3];
     Instance instances[];
 } tlasInstances;
 
-layout(std430, set = 0, binding = 1) buffer BvhNodes {
+layout(std430, set = 0, binding = 1) readonly buffer BvhNodes {
     BvhNode nodes[];
 } blasNodes;
 
-layout(std430, set = 0, binding = 2) buffer BlasInfos {
+layout(std430, set = 0, binding = 2) readonly buffer BlasInfos {
     BlasInfo blases[];
 } blasInfos;
 
-layout(std430, set = 0, binding = 3) buffer Triangles {
+layout(std430, set = 0, binding = 3) readonly buffer Triangles {
     TriangleInfo triangles[];
 } blasTriangles;
 
-layout(std430, set = 0, binding = 4) buffer PrimitiveIndices {
+layout(std430, set = 0, binding = 4) readonly buffer PrimitiveIndices {
     uint primitiveIndices[];
 } blasPrimitiveIndices;
 
-layout(std430, set = 0, binding = 5) buffer TLASInstanceTransforms {
+layout(std430, set = 0, binding = 5) readonly buffer TLASInstanceTransforms {
     InverseTransforms inv[];
 } tlasInstanceTransforms;
 

@@ -1,0 +1,21 @@
+#version 460 core
+
+struct HitInfo{
+    float t;
+    uint triangleIndex;
+    uint instanceIndex;
+    float barycentricU;
+    float barycentricV;
+};
+
+void setNewRay(vec3 origin, vec3 direction, float tmin, float tmax);
+
+void hit_shader_main();
+
+//___USER_PARAMS___
+//___HIT_SHADER_FUNCTION___
+
+void main()
+{
+    hit_shader_main();
+}

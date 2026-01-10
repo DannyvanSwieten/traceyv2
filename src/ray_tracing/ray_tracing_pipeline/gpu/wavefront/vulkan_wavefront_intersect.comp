@@ -2,13 +2,6 @@
 
 layout (local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
 
-struct BvhNode{
-    float minx, miny, minz;
-    uint firstChildOrPrim; // For inner nodes: left child index. For leaf nodes: first triangle index.
-    float maxx, maxy, maxz;
-    uint primCountAndType; // For inner nodes: right child index. For leaf nodes: number of triangles.
-};
-
 struct PathHeader{
     float originX;
     float originY;
@@ -45,6 +38,13 @@ struct BlasInfo{
     uint padding;
 };
 
+struct BvhNode{
+    float minx, miny, minz;
+    uint firstChildOrPrim; // For inner nodes: left child index. For leaf nodes: first triangle index.
+    float maxx, maxy, maxz;
+    uint primCountAndType; // For inner nodes: right child index. For leaf nodes: number of triangles.
+};
+
 struct HitInfo{
     float t;
     uint triangleIndex;
@@ -57,12 +57,11 @@ struct TriangleInfo{
     float v0x, v0y, v0z;
     float e0x, e0y, e0z;
     float e1x, e1y, e1z;
-    float nx, ny, nz;
 };
 
 struct InverseTransforms{
-    mat4x3 objToWorld;
-    mat4x3 worldToObj;
+    mat4 objToWorld;
+    mat4 worldToObj;
 };
 
 layout(std430, set = 0, binding = 0) buffer PathHeaders {
@@ -74,39 +73,37 @@ layout(std430, set = 0, binding = 1) buffer RayQueue{
     uint rayIndices[]; // compact list of path/ray indices
 };
 
-
-
 PathHeader getPathHeader(uint rayIndex) {
     return headers[rayIndex];
 }
 
-layout(std430, set = 0, binding = 2) writeonly buffer HitInfos {
+layout(std430, set = 0, binding = 2) buffer HitInfos {
     HitInfo hits[];
 };
 
-layout(std430, set = 0, binding = 3) buffer TLASInstances {
+layout(std430, set = 0, binding = 3) readonly buffer TLASInstances {
     uint instanceCount;
     uint padding[3];
     Instance instances[];
 } tlasInstances;
 
-layout(std430, set = 0, binding = 4) buffer BvhNodes {
+layout(std430, set = 0, binding = 4) readonly buffer BvhNodes {
     BvhNode nodes[];
 } blasNodes;
 
-layout(std430, set = 0, binding = 5) buffer BlasInfos {
+layout(std430, set = 0, binding = 5) readonly buffer BlasInfos {
     BlasInfo blases[];
 } blasInfos;
 
-layout(std430, set = 0, binding = 6) buffer Triangles {
+layout(std430, set = 0, binding = 6) readonly buffer Triangles {
     TriangleInfo triangles[];
 } blasTriangles;
 
-layout(std430, set = 0, binding = 7) buffer PrimitiveIndices {
+layout(std430, set = 0, binding = 7) readonly buffer PrimitiveIndices {
     uint primitiveIndices[];
 } blasPrimitiveIndices;
 
-layout(std430, set = 0, binding = 8) buffer TLASInstanceTransforms {
+layout(std430, set = 0, binding = 8) readonly buffer TLASInstanceTransforms {
     InverseTransforms inv[];
 } tlasInstanceTransforms;
 
@@ -160,7 +157,6 @@ void loadTriangleInfo(uint triangleIndex, inout vec3 v0, inout vec3 e0, inout ve
     v0 = vec3(tri.v0x, tri.v0y, tri.v0z);
     e0 = vec3(tri.e0x, tri.e0y, tri.e0z);
     e1 = vec3(tri.e1x, tri.e1y, tri.e1z);
-    normal = vec3(tri.nx, tri.ny, tri.nz);
 }
 
 // --- Instance transform helpers (VkAccelerationStructureInstanceKHR-style, 3x4 row-major) ---

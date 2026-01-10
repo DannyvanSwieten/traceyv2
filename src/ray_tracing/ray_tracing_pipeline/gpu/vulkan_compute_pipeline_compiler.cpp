@@ -261,4 +261,33 @@ namespace tracey
         std::vector<uint32_t> spirvCode(module.cbegin(), module.cend());
         return spirvCode;
     }
+
+    std::vector<uint32_t> compileHitShader(const RayTracingPipelineLayoutDescriptor &layout, const CpuShaderBindingTable &sbt, size_t hitShaderIndex)
+    {
+        std::stringstream ss;
+        const auto hitShader = sbt.hitModules()[hitShaderIndex];
+        const auto cpuModule = dynamic_cast<const CpuShaderModule *>(hitShader);
+        std::string userSource(cpuModule->source());
+        // replace user entry point with hitShaderX
+        size_t entryPointPos = userSource.find(cpuModule->entryPoint());
+        if (entryPointPos != std::string_view::npos)
+        {
+            userSource.replace(entryPointPos, cpuModule->entryPoint().size(), "hit_shader_" + std::to_string(hitShaderIndex));
+        }
+        ss << userSource;
+
+        printf("Vulkan Compute Ray Tracing Hit Shader Source:\n%s\n", ss.str().c_str());
+        // Compile finalShader using shaderc
+        shaderc::Compiler compiler;
+        shaderc::CompileOptions options;
+        shaderc::SpvCompilationResult module =
+            compiler.CompileGlslToSpv(ss.str().c_str(), ss.str().size(), shaderc_compute_shader, "HitShader", options);
+        if (module.GetCompilationStatus() != shaderc_compilation_status_success)
+        {
+            throw std::runtime_error("Vulkan Compute Ray Tracing Hit Shader compilation failed: " + module.GetErrorMessage());
+        }
+
+        std::vector<uint32_t> spirvCode(module.cbegin(), module.cend());
+        return spirvCode;
+    }
 }
