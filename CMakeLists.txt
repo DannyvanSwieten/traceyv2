@@ -113,6 +113,8 @@ add_library(tracey
     src/ray_tracing/ray_tracing_pipeline/gpu/vulkan_compute_raytracing_descriptor_set.cpp
     src/ray_tracing/ray_tracing_pipeline/gpu/vulkan_compute_pipeline_compiler.hpp
     src/ray_tracing/ray_tracing_pipeline/gpu/vulkan_compute_pipeline_compiler.cpp
+    src/ray_tracing/ray_tracing_pipeline/gpu/wavefront/vulkan_wavefront_pipeline.hpp
+    src/ray_tracing/ray_tracing_pipeline/gpu/wavefront/vulkan_wavefront_pipeline.cpp
 
     src/ray_tracing/ray_tracing_command_buffer/ray_tracing_command_buffer.hpp
     src/ray_tracing/ray_tracing_command_buffer/cpu/cpu_ray_tracing_command_buffer.hpp

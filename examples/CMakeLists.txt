@@ -14,13 +14,13 @@ add_executable(path_tracer
     ray_tracing/path_tracer.cpp
 )
 
-add_executable(scene_graph
-    graph/scene_graph.cpp
-)
-
 add_executable(device_api
     device_api/device_setup.cpp
 )
+
+add_executable(wavefront
+    wavefront/wavefront.cpp
+)   
 
 target_link_libraries(blas
     PRIVATE
@@ -47,6 +47,14 @@ target_link_libraries(path_tracer
 )
 
 target_link_libraries(device_api
+    PRIVATE
+    tracey
+    glm
+    Vulkan::Vulkan
+    shaderc
+)
+
+target_link_libraries(wavefront
     PRIVATE
     tracey
     glm

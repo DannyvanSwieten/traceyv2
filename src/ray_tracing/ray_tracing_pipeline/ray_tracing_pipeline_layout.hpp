@@ -11,20 +11,21 @@ namespace tracey
         enum class DescriptorType
         {
             Image2D,
-            Buffer,
+            StorageBuffer,
             RayPayload,
             AccelerationStructure
         };
 
-        void addImage2D(std::string name, uint32_t index, ShaderStage stage);
-        void addBuffer(std::string name, uint32_t index, ShaderStage stage, const StructureLayout &structure);
-        void addAccelerationStructure(std::string name, uint32_t index, ShaderStage stage);
-        void addPayload(std::string name, uint32_t index, ShaderStage stage, const StructureLayout &structure);
+        void addImage2D(std::string name, ShaderStage stage);
+        void addStorageBuffer(std::string name, ShaderStage stage, const StructureLayout &structure);
+        void addAccelerationStructure(std::string name, ShaderStage stage);
+        void addPayload(std::string name, ShaderStage stage, const StructureLayout &structure);
+
+        size_t indexForBinding(const std::string_view name) const;
 
         struct DescriptorBinding
         {
             std::string name;
-            uint32_t index;
             DescriptorType type;
             ShaderStage stage;
             std::optional<StructureLayout> structure = std::nullopt;
@@ -33,7 +34,6 @@ namespace tracey
         struct PayloadBinding
         {
             std::string name;
-            uint32_t index;
             ShaderStage stage;
             StructureLayout structure;
         };
@@ -46,11 +46,5 @@ namespace tracey
     private:
         std::vector<DescriptorBinding> m_bindings;
         std::vector<PayloadBinding> m_payloads;
-    };
-
-    class WavefrontPipelineLayoutDescriptor : public RayTracingPipelineLayoutDescriptor
-    {
-    public:
-        // Additional wavefront-specific layout methods can be added here
     };
 }

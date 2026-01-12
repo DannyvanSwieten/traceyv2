@@ -3,6 +3,7 @@
 #include "../descriptor_set.hpp"
 #include <vector>
 #include <variant>
+#include <map>
 
 namespace tracey
 {
@@ -18,10 +19,9 @@ namespace tracey
     public:
         CpuDescriptorSet(const RayTracingPipelineLayoutDescriptor &layout);
 
-        void setImage2D(uint32_t binding, Image2D *image) override;
-        void setBuffer(uint32_t binding, Buffer *buffer) override;
-        void setAccelerationStructure(uint32_t binding, const TopLevelAccelerationStructure *tlas) override;
-
+        void setImage2D(const std::string_view binding, Image2D *image) override;
+        void setBuffer(const std::string_view binding, Buffer *buffer) override;
+        void setAccelerationStructure(const std::string_view binding, const TopLevelAccelerationStructure *tlas) override;
         template <typename Visitor>
         auto visit(Visitor &&visitor, uint32_t binding) const
         {
@@ -37,5 +37,6 @@ namespace tracey
     private:
         using DescriptorValue = std::variant<std::monostate, Image2D *, Buffer *, DispatchedTlas, void *>;
         std::vector<DescriptorValue> m_descriptors;
+        std::map<std::string_view, uint32_t> m_bindingIndices;
     };
 } // namespace tracey

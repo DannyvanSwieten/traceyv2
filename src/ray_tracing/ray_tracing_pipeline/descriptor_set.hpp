@@ -1,5 +1,5 @@
 #pragma once
-#include <cstdint>
+#include <string_view>
 namespace tracey
 {
     class Image2D;
@@ -9,8 +9,8 @@ namespace tracey
     {
     public:
         virtual ~DescriptorSet() = default;
-        virtual void setImage2D(uint32_t binding, Image2D *image) = 0;
-        virtual void setBuffer(uint32_t binding, Buffer *buffer) = 0;
-        virtual void setAccelerationStructure(uint32_t binding, const TopLevelAccelerationStructure *tlas) = 0;
+        virtual void setImage2D(const std::string_view name, Image2D *image) = 0;
+        virtual void setBuffer(const std::string_view name, Buffer *buffer) = 0;
+        virtual void setAccelerationStructure(const std::string_view name, const TopLevelAccelerationStructure *tlas) = 0;
     };
 } // namespace tracey

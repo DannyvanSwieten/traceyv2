@@ -8,6 +8,7 @@
 #include "../../ray_tracing/shader_module/cpu/cpu_shader_module.hpp"
 #include "../../ray_tracing/ray_tracing_pipeline/cpu/cpu_shader_binding_table.hpp"
 #include "../../ray_tracing/ray_tracing_pipeline/gpu/vulkan_compute_raytracing_pipeline.hpp"
+#include "../../ray_tracing/ray_tracing_pipeline/gpu/wavefront/vulkan_wavefront_pipeline.hpp"
 #include "../../ray_tracing/ray_tracing_command_buffer/gpu/vulkan_compute_ray_tracing_command_buffer.hpp"
 #include <sstream>
 namespace tracey
@@ -54,6 +55,11 @@ namespace tracey
     RayTracingPipeline *VulkanComputeDevice::createRayTracingPipeline(const RayTracingPipelineLayoutDescriptor &layout, const ShaderBindingTable *sbt)
     {
         return new VulkanComputeRaytracingPipeline(*this, layout, *dynamic_cast<const CpuShaderBindingTable *>(sbt));
+    }
+
+    RayTracingPipeline *VulkanComputeDevice::createWaveFrontRayTracingPipeline(const RayTracingPipelineLayoutDescriptor &layout, const ShaderBindingTable *sbt)
+    {
+        return new VulkanWaveFrontPipeline(*this, layout, *dynamic_cast<const CpuShaderBindingTable *>(sbt));
     }
 
     ShaderModule *VulkanComputeDevice::createShaderModule(ShaderStage stage, const std::string_view source, const std::string_view entryPoint)

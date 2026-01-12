@@ -89,7 +89,6 @@ int main()
     bufferStructure.addMember({"positions", "vec3", 0, true, 0});
     layout.addStorageBuffer("vertexBuffer", tracey::ShaderStage::ClosestHit, bufferStructure);
     layout.addAccelerationStructure("tlas", tracey::ShaderStage::RayGeneration);
-
     tracey::StructureLayout payloadLayout("RayPayload");
     payloadLayout.addMember({"color", "vec3", false, false});
     payloadLayout.addMember({"direction", "vec3", false, false});
@@ -98,41 +97,9 @@ int main()
 
     std::unique_ptr<tracey::ShaderModule> rayGenModule = std::unique_ptr<tracey::ShaderModule>(computeDevice->createShaderModule(tracey::ShaderStage::RayGeneration,
                                                                                                                                  R"(
-void shader() {
-    // Ray generation shader code
-
-    ivec2 size = imageSize(outputImage);
-    if(gl_LaunchIDEXT.x >= size.x || gl_LaunchIDEXT.y >= size.y) {
-        return;
-    }
-
-    // Generate a pinhole camera ray
-    uvec2 launchID = gl_LaunchIDEXT.xy;
-    vec2 pixelCoord = vec2(launchID.x, launchID.y);
-    uvec2 launchSize = gl_LaunchSizeEXT.xy;
-    float width = float(launchSize.x);
-    float height = float(launchSize.y);
-    float fov = 45.0;
-    float aspectRatio = width / height;
-    float px = (2.0 * ((pixelCoord.x + 0.5) / width) - 1.0) * tan(radians(fov) / 2.0) * aspectRatio; 
-    float py = (1.0 - 2.0 * ((pixelCoord.y + 0.5) / height)) * tan(radians(fov) / 2.0);
-
-    vec3 origin = vec3(0.0, 0.0, 0.0);
-    vec3 direction = normalize(vec3(px, py, 1.0));
-    rayPayload.color = vec3(0.0);
-    rayPayload.direction = direction;
-    rayPayload.hit = false;
-
-    vec3 color = vec3(0.0);
-
-    traceRaysEXT(0, 0, 0xFF, 0, 0, 0,
-                  origin, 0.01,
-                  direction, 100.0,
-                  0);
-
-    color = rayPayload.color;
-
-    imageStore(outputImage, ivec2(launchID.xy), vec4(color, 1.0));
+Ray shader(uvec2 pixelCoord) {
+    Ray ray;
+    return ray;
 }
     )",
                                                                                                                                  "shader"));
@@ -140,13 +107,7 @@ void shader() {
     std::unique_ptr<tracey::ShaderModule> closestHitModule = std::unique_ptr<tracey::ShaderModule>(computeDevice->createShaderModule(tracey::ShaderStage::ClosestHit,
                                                                                                                                      R"(
 void shader() {
-    // Closest hit shader code
-    // Some fake lighting
-    vec3 L = normalize(vec3(0.0, 1.0, -1.0));
-    vec3 N = gl_ObjectToWorldEXT * vec4(gl_HitNormalEXT, 0.0);
-    float I = max(dot(L, N), 0.0);
-    rayPayload.color = vec3(I * 0.5);
-    rayPayload.hit = true;
+    // Shading goes here + generating a new ray
 }
     )",
                                                                                                                                      "shader"));
@@ -168,7 +129,7 @@ void shader() {
     std::array<const tracey::ShaderModule *, 1> missModules = {primaryMissModule.get()};
     std::unique_ptr<tracey::ShaderBindingTable> sbt = std::unique_ptr<tracey::ShaderBindingTable>(computeDevice->createShaderBindingTable(rayGenModule.get(), hitModules, missModules));
     // This is where the shaders are compiled
-    std::unique_ptr<tracey::RayTracingPipeline> pipeline = std::unique_ptr<tracey::RayTracingPipeline>(computeDevice->createRayTracingPipeline(layout, sbt.get()));
+    std::unique_ptr<tracey::RayTracingPipeline> pipeline = std::unique_ptr<tracey::RayTracingPipeline>(computeDevice->createWaveFrontRayTracingPipeline(layout, sbt.get()));
 
     std::array<tracey::DescriptorSet *, 1> descriptorSets;
     pipeline->allocateDescriptorSets(descriptorSets);

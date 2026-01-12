@@ -8,7 +8,7 @@
 
 namespace tracey
 {
-    VulkanComputeRayTracingDescriptorSet::VulkanComputeRayTracingDescriptorSet(VulkanComputeDevice &device, VkDescriptorSetLayout descriptorSetLayout) : m_device(device), m_descriptorSetLayout(descriptorSetLayout)
+    VulkanComputeRayTracingDescriptorSet::VulkanComputeRayTracingDescriptorSet(VulkanComputeDevice &device, const RayTracingPipelineLayoutDescriptor &layout, VkDescriptorSetLayout descriptorSetLayout) : m_device(device), m_descriptorSetLayout(descriptorSetLayout), m_descriptorSet(VK_NULL_HANDLE), m_layout(layout)
     {
         // Allocate descriptor set
         VkDescriptorSetAllocateInfo allocInfo{};
@@ -25,12 +25,13 @@ namespace tracey
     VulkanComputeRayTracingDescriptorSet::~VulkanComputeRayTracingDescriptorSet()
     {
     }
-    void VulkanComputeRayTracingDescriptorSet::setImage2D(uint32_t binding, Image2D *image)
+    void VulkanComputeRayTracingDescriptorSet::setImage2D(const std::string_view binding, Image2D *image)
     {
+        const auto index = m_layout.indexForBinding(binding) + AccelerationStructureDescriptorCount;
         VkWriteDescriptorSet writeDesc{};
         writeDesc.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writeDesc.dstSet = m_descriptorSet;
-        writeDesc.dstBinding = binding + AccelerationStructureDescriptorCount;
+        writeDesc.dstBinding = index;
         writeDesc.dstArrayElement = 0;
         writeDesc.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
         writeDesc.descriptorCount = 1;
@@ -42,12 +43,13 @@ namespace tracey
 
         vkUpdateDescriptorSets(m_device.vkDevice(), 1, &writeDesc, 0, nullptr);
     }
-    void VulkanComputeRayTracingDescriptorSet::setBuffer(uint32_t binding, Buffer *buffer)
+    void VulkanComputeRayTracingDescriptorSet::setBuffer(const std::string_view binding, Buffer *buffer)
     {
+        const auto index = m_layout.indexForBinding(binding) + AccelerationStructureDescriptorCount;
         VkWriteDescriptorSet writeDesc{};
         writeDesc.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writeDesc.dstSet = m_descriptorSet;
-        writeDesc.dstBinding = binding + AccelerationStructureDescriptorCount;
+        writeDesc.dstBinding = index;
         writeDesc.dstArrayElement = 0;
         writeDesc.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         writeDesc.descriptorCount = 1;
@@ -60,13 +62,14 @@ namespace tracey
 
         vkUpdateDescriptorSets(m_device.vkDevice(), 1, &writeDesc, 0, nullptr);
     }
-    void VulkanComputeRayTracingDescriptorSet::setAccelerationStructure(uint32_t binding, const TopLevelAccelerationStructure *tlas)
+    void VulkanComputeRayTracingDescriptorSet::setAccelerationStructure(const std::string_view binding, const TopLevelAccelerationStructure *tlas)
     {
+        const auto index = static_cast<uint32_t>(m_layout.indexForBinding(binding));
         VkWriteDescriptorSet writeDesc[6]{
             {
                 .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                 .dstSet = m_descriptorSet,
-                .dstBinding = binding + 0,
+                .dstBinding = index + 0,
                 .dstArrayElement = 0,
                 .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                 .descriptorCount = 1,
@@ -74,7 +77,7 @@ namespace tracey
             {
                 .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                 .dstSet = m_descriptorSet,
-                .dstBinding = binding + 1,
+                .dstBinding = index + 1,
                 .dstArrayElement = 0,
                 .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                 .descriptorCount = 1,
@@ -82,7 +85,7 @@ namespace tracey
             {
                 .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                 .dstSet = m_descriptorSet,
-                .dstBinding = binding + 2,
+                .dstBinding = index + 2,
                 .dstArrayElement = 0,
                 .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                 .descriptorCount = 1,
@@ -90,7 +93,7 @@ namespace tracey
             {
                 .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                 .dstSet = m_descriptorSet,
-                .dstBinding = binding + 3,
+                .dstBinding = index + 3,
                 .dstArrayElement = 0,
                 .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                 .descriptorCount = 1,
@@ -98,7 +101,7 @@ namespace tracey
             {
                 .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                 .dstSet = m_descriptorSet,
-                .dstBinding = binding + 4,
+                .dstBinding = index + 4,
                 .dstArrayElement = 0,
                 .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                 .descriptorCount = 1,
@@ -106,7 +109,7 @@ namespace tracey
             {
                 .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                 .dstSet = m_descriptorSet,
-                .dstBinding = binding + 5,
+                .dstBinding = index + 5,
                 .dstArrayElement = 0,
                 .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                 .descriptorCount = 1,

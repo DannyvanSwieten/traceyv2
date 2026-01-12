@@ -100,6 +100,7 @@ namespace tracey
         shader << "extern \"C\" void setPayload(payload *p, unsigned int index) { payloads[index] = *p; }\n";
 
         const auto bindings = layout.bindingsForStage(stage);
+        size_t index = 0;
         for (const auto &binding : bindings)
         {
             switch (binding.type)
@@ -107,7 +108,7 @@ namespace tracey
             case RayTracingPipelineLayoutDescriptor::DescriptorType::Image2D:
                 shader << "extern \"C\" " << IMAGE2D_TYPE_NAME << " " << binding.name << " = nullptr;\n";
                 break;
-            case RayTracingPipelineLayoutDescriptor::DescriptorType::Buffer:
+            case RayTracingPipelineLayoutDescriptor::DescriptorType::StorageBuffer:
             {
                 if (binding.structure.has_value())
                 {
@@ -127,9 +128,9 @@ namespace tracey
                         shader << ";\n";
                     }
                     shader << "};\n";
-                    shader << "extern \"C\" " << BUFFER_TYPE_NAME << " " << "buffer" << binding.index << " = nullptr;\n";
+                    shader << "extern \"C\" " << BUFFER_TYPE_NAME << " " << "buffer" << index << " = nullptr;\n";
                     // Define a macro to access elements
-                    shader << "#define " << binding.name << " reinterpret_cast<" << binding.structure->name() << "*>(" << "buffer" << binding.index << ")\n";
+                    shader << "#define " << binding.name << " reinterpret_cast<" << binding.structure->name() << "*>(" << "buffer" << index << ")\n";
                 }
 
                 break;
@@ -166,6 +167,8 @@ namespace tracey
             }
         }
 
+        index = 0;
+
         for (auto &payload : layout.payloads())
         {
             shader << "struct " << payload.structure.name() << " {\n";
@@ -184,7 +187,8 @@ namespace tracey
                 shader << ";\n";
             }
             shader << "};\n";
-            shader << "#define " << payload.name << " (*reinterpret_cast<" << payload.structure.name() << "*>(payloads[" << payload.index << "]))\n";
+            shader << "#define " << payload.name << " (*reinterpret_cast<" << payload.structure.name() << "*>(payloads[" << index << "]))\n";
+            ++index;
         }
 
         std::string toReplace = "void " + std::string(entryPoint) + "()";
@@ -244,6 +248,8 @@ namespace tracey
         compiledShader.func = entryPointFunc;
         compiledShader.bindingSlots.resize(layout.bindings().size());
         // load all global bindingslots
+
+        index = 0;
         for (const auto &binding : layout.bindingsForStage(stage))
         {
             void **slotPtr;
@@ -252,8 +258,8 @@ namespace tracey
             case RayTracingPipelineLayoutDescriptor::DescriptorType::Image2D:
                 slotPtr = reinterpret_cast<void **>(loadSymbol(dylib, binding.name.c_str()));
                 break;
-            case RayTracingPipelineLayoutDescriptor::DescriptorType::Buffer:
-                slotPtr = reinterpret_cast<void **>(loadSymbol(dylib, ("buffer" + std::to_string(binding.index)).c_str()));
+            case RayTracingPipelineLayoutDescriptor::DescriptorType::StorageBuffer:
+                slotPtr = reinterpret_cast<void **>(loadSymbol(dylib, ("buffer" + std::to_string(index)).c_str()));
                 break;
             case RayTracingPipelineLayoutDescriptor::DescriptorType::RayPayload:
                 slotPtr = reinterpret_cast<void **>(loadSymbol(dylib, binding.name.c_str()));
@@ -266,12 +272,14 @@ namespace tracey
                 break;
             }
             // Store the slot pointer somewhere to be set later during execution
-            compiledShader.bindingSlots[binding.index] = BindingSlot{slotPtr};
+            compiledShader.bindingSlots[index] = BindingSlot{slotPtr};
+            ++index;
         }
 
         const auto getPayload = reinterpret_cast<getPayloadFunc>(loadSymbol(dylib, "getPayload"));
         const auto setPayload = reinterpret_cast<setPayloadFunc>(loadSymbol(dylib, "setPayload"));
 
+        index = 0;
         for (const auto &payload : layout.payloads())
         {
             compiledShader.payloadSlots.emplace_back(std::make_shared<PayloadSlot>());
@@ -279,9 +287,10 @@ namespace tracey
 
             slot->payloadPtr = std::malloc(payload.structure.size());
             slot->setPayload = setPayload;
-            slot->setPayload(&slot->payloadPtr, payload.index);
+            slot->setPayload(&slot->payloadPtr, index);
             slot->getPayload = getPayload;
             slot->payloadSize = payload.structure.size();
+            ++index;
         }
 
         compiledShader.dylib = dylib;

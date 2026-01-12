@@ -37,22 +37,18 @@ namespace tracey
         int tlasCount = 0;
         bool sawTlas = false;
 
-        const auto bindingStartOffset = 6;
+        const auto bindingStartOffset = 5;
 
         for (const auto &binding : layout.bindings())
         {
-            if (sawTlas)
-            {
-                throw std::runtime_error("Layout limitation: TLAS must be the last descriptor binding (no bindings allowed after AccelerationStructure).");
-            }
-
+            const auto bindingIndex = layout.indexForBinding(binding.name) + bindingStartOffset;
             switch (binding.type)
             {
             case RayTracingPipelineLayoutDescriptor::DescriptorType::Image2D:
-                ss << "layout(set = 0, binding = " << binding.index + bindingStartOffset << ", rgba8) uniform writeonly image2D " << binding.name << ";\n";
+                ss << "layout(set = 0, binding = " << bindingIndex << ", rgba8) uniform writeonly image2D " << binding.name << ";\n";
                 break;
-            case RayTracingPipelineLayoutDescriptor::DescriptorType::Buffer:
-                ss << "layout(std430, set = 0, binding = " << binding.index + bindingStartOffset << ") buffer " << "Buffer" << binding.index + bindingStartOffset << " {\n";
+            case RayTracingPipelineLayoutDescriptor::DescriptorType::StorageBuffer:
+                ss << "layout(std430, set = 0, binding = " << bindingIndex << ") buffer " << "Buffer" << bindingIndex << " {\n";
                 for (const auto &field : binding.structure->fields())
                 {
                     ss << "    " << field.type << " " << field.name;
@@ -223,6 +219,7 @@ namespace tracey
         // Compile finalShader using shaderc
         shaderc::Compiler compiler;
         shaderc::CompileOptions options;
+        options.SetOptimizationLevel(shaderc_optimization_level_performance);
         shaderc::SpvCompilationResult module =
             compiler.CompileGlslToSpv(finalShader.c_str(), finalShader.size(), shaderc_compute_shader, "RayGenShader", options);
         if (module.GetCompilationStatus() != shaderc_compilation_status_success)
@@ -233,9 +230,34 @@ namespace tracey
         std::vector<uint32_t> spirvCode(module.cbegin(), module.cend());
         return spirvCode;
     }
+    WaveFrontPipelineCompileResult compileVulkanWaveFrontRayTracingPipeline(const RayTracingPipelineLayoutDescriptor &layout, const CpuShaderBindingTable &sbt)
+    {
+        const auto rayGenSpirV = compileRayGenShader(layout, sbt);
+        std::vector<std::vector<uint32_t>> hitShadersSpirV;
+        for (size_t i = 0; i < sbt.hitModules().size(); ++i)
+        {
+            hitShadersSpirV.push_back(compileHitShader(layout, sbt, i));
+        }
+
+        // std::vector<std::vector<uint32_t>> missShadersSpirV;
+        // for (size_t i = 0; i < sbt.missModules().size(); ++i)
+        // {
+        //     missShadersSpirV.push_back(compileMissShader(layout, sbt, i));
+        // }
+        return WaveFrontPipelineCompileResult{std::move(rayGenSpirV), std::move(hitShadersSpirV)};
+    }
     std::vector<uint32_t> compileRayGenShader(const RayTracingPipelineLayoutDescriptor &layout, const CpuShaderBindingTable &sbt)
     {
-        std::stringstream ss;
+        std::filesystem::path rayGenShaderPath = std::filesystem::path(__FILE__).parent_path() / "wavefront" / "vulkan_wavefront_ray_gen.comp";
+        std::ifstream rayGenShaderFile(rayGenShaderPath);
+        if (!rayGenShaderFile.is_open())
+        {
+            throw std::runtime_error("Failed to open Vulkan WaveFront ray generation shader file: " + rayGenShaderPath.string());
+        }
+        std::stringstream rayGenShaderTemplateStream;
+        rayGenShaderTemplateStream << rayGenShaderFile.rdbuf() << "\n";
+        std::string rayGenShaderTemplate = rayGenShaderTemplateStream.str();
+
         const auto rayGenShader = sbt.rayGen();
         const auto cpuModule = dynamic_cast<const CpuShaderModule *>(rayGenShader);
         std::string userSource(cpuModule->source());
@@ -245,14 +267,19 @@ namespace tracey
         {
             userSource.replace(entryPointPos, cpuModule->entryPoint().size(), "ray_gen_main");
         }
-        ss << userSource;
 
-        printf("Vulkan Compute Ray Tracing Shader Source:\n%s\n", ss.str().c_str());
+        const auto userSourcePosition = rayGenShaderTemplate.find("//___RAY_GENERATION_FUNCTION___");
+        if (userSourcePosition != std::string::npos)
+        {
+            rayGenShaderTemplate.replace(userSourcePosition, std::string("//___RAY_GENERATION_FUNCTION___").length(), userSource);
+        }
+
+        printf("Vulkan Compute Ray Tracing Shader Source:\n%s\n", rayGenShaderTemplate.c_str());
         // Compile finalShader using shaderc
         shaderc::Compiler compiler;
         shaderc::CompileOptions options;
         shaderc::SpvCompilationResult module =
-            compiler.CompileGlslToSpv(ss.str().c_str(), ss.str().size(), shaderc_compute_shader, "RayGenShader", options);
+            compiler.CompileGlslToSpv(rayGenShaderTemplate.c_str(), rayGenShaderTemplate.size(), shaderc_compute_shader, "RayGenShader", options);
         if (module.GetCompilationStatus() != shaderc_compilation_status_success)
         {
             throw std::runtime_error("Vulkan Compute Ray Tracing Pipeline compilation failed: " + module.GetErrorMessage());
@@ -264,7 +291,16 @@ namespace tracey
 
     std::vector<uint32_t> compileHitShader(const RayTracingPipelineLayoutDescriptor &layout, const CpuShaderBindingTable &sbt, size_t hitShaderIndex)
     {
-        std::stringstream ss;
+        std::filesystem::path hitShaderPath = std::filesystem::path(__FILE__).parent_path() / "wavefront" / "vulkan_wavefront_hit_shader.comp";
+        std::ifstream hitShaderFile(hitShaderPath);
+        if (!hitShaderFile.is_open())
+        {
+            throw std::runtime_error("Failed to open Vulkan WaveFront hit shader file: " + hitShaderPath.string());
+        }
+        std::stringstream hitShaderTemplateStream;
+        hitShaderTemplateStream << hitShaderFile.rdbuf() << "\n";
+        std::string hitShaderTemplate = hitShaderTemplateStream.str();
+
         const auto hitShader = sbt.hitModules()[hitShaderIndex];
         const auto cpuModule = dynamic_cast<const CpuShaderModule *>(hitShader);
         std::string userSource(cpuModule->source());
@@ -272,19 +308,53 @@ namespace tracey
         size_t entryPointPos = userSource.find(cpuModule->entryPoint());
         if (entryPointPos != std::string_view::npos)
         {
-            userSource.replace(entryPointPos, cpuModule->entryPoint().size(), "hit_shader_" + std::to_string(hitShaderIndex));
+            userSource.replace(entryPointPos, cpuModule->entryPoint().size(), "hit_shader_main");
         }
-        ss << userSource;
 
-        printf("Vulkan Compute Ray Tracing Hit Shader Source:\n%s\n", ss.str().c_str());
+        const auto userSourcePosition = hitShaderTemplate.find("//___HIT_SHADER_FUNCTION___");
+        if (userSourcePosition != std::string::npos)
+        {
+            hitShaderTemplate.replace(userSourcePosition, std::string("//___HIT_SHADER_FUNCTION___").length(), userSource);
+        }
+
+        printf("Vulkan Compute Ray Tracing Hit Shader Source:\n%s\n", hitShaderTemplate.c_str());
         // Compile finalShader using shaderc
         shaderc::Compiler compiler;
         shaderc::CompileOptions options;
         shaderc::SpvCompilationResult module =
-            compiler.CompileGlslToSpv(ss.str().c_str(), ss.str().size(), shaderc_compute_shader, "HitShader", options);
+            compiler.CompileGlslToSpv(hitShaderTemplate.c_str(), hitShaderTemplate.size(), shaderc_compute_shader, "HitShader", options);
         if (module.GetCompilationStatus() != shaderc_compilation_status_success)
         {
             throw std::runtime_error("Vulkan Compute Ray Tracing Hit Shader compilation failed: " + module.GetErrorMessage());
+        }
+
+        std::vector<uint32_t> spirvCode(module.cbegin(), module.cend());
+        return spirvCode;
+    }
+    std::vector<uint32_t> compileMissShader(const RayTracingPipelineLayoutDescriptor &layout, const CpuShaderBindingTable &sbt, size_t missShaderIndex)
+    {
+        std::stringstream ss;
+        const auto missShader = sbt.missModules()[missShaderIndex];
+        const auto cpuModule = dynamic_cast<const CpuShaderModule *>(missShader);
+        std::string userSource(cpuModule->source());
+        // replace user entry point with missShaderX
+        size_t entryPointPos = userSource.find(cpuModule->entryPoint());
+        if (entryPointPos != std::string_view::npos)
+        {
+            userSource.replace(entryPointPos, cpuModule->entryPoint().size(), "miss_shader_" + std::to_string(missShaderIndex));
+        }
+        ss << userSource;
+
+        printf("Vulkan Compute Ray Tracing Miss Shader Source:\n%s\n", ss.str().c_str());
+        // Compile finalShader using shaderc
+        shaderc::Compiler compiler;
+        shaderc::CompileOptions options;
+        options.SetOptimizationLevel(shaderc_optimization_level_performance);
+        shaderc::SpvCompilationResult module =
+            compiler.CompileGlslToSpv(ss.str().c_str(), ss.str().size(), shaderc_compute_shader, "MissShader", options);
+        if (module.GetCompilationStatus() != shaderc_compilation_status_success)
+        {
+            throw std::runtime_error("Vulkan Compute Ray Tracing Miss Shader compilation failed: " + module.GetErrorMessage());
         }
 
         std::vector<uint32_t> spirvCode(module.cbegin(), module.cend());

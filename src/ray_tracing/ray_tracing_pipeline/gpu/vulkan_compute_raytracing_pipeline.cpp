@@ -10,43 +10,44 @@ namespace tracey
     {
         const auto spirvCode = compileVulkanComputeRayTracingPipeline(layout, sbt);
         std::vector<VkDescriptorSetLayoutBinding> bindings;
-        VkDescriptorSetLayoutCreateInfo layoutInfo{};
-        layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        m_descriptorSetLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
         // Fill layoutInfo based on pipeline layout
+        const size_t bindingStartOffset = 5; // Reserve first 5 bindings for AccelerationStructure
         for (const auto &binding : layout.bindings())
         {
+            const size_t bindingIndex = layout.indexForBinding(binding.name);
             VkDescriptorSetLayoutBinding vkBinding{};
-            vkBinding.binding = binding.index;
-            vkBinding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT; // Adjust based on ShaderStage
+            vkBinding.binding = bindingIndex;
+            vkBinding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
             switch (binding.type)
             {
             case RayTracingPipelineLayoutDescriptor::DescriptorType::Image2D:
                 vkBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
                 vkBinding.descriptorCount = 1;
-                vkBinding.binding += 6;
+                vkBinding.binding += bindingStartOffset;
                 bindings.push_back(vkBinding);
                 break;
-            case RayTracingPipelineLayoutDescriptor::DescriptorType::Buffer:
+            case RayTracingPipelineLayoutDescriptor::DescriptorType::StorageBuffer:
                 vkBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
                 vkBinding.descriptorCount = 1;
-                vkBinding.binding += 6;
+                vkBinding.binding += bindingStartOffset;
                 bindings.push_back(vkBinding);
                 break;
             case RayTracingPipelineLayoutDescriptor::DescriptorType::AccelerationStructure:
-                assert(binding.index == 0 && "AccelerationStructure binding index must be 0");
+                assert(bindingIndex == 0 && "AccelerationStructure binding index must be 0");
                 vkBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
                 vkBinding.descriptorCount = 1;
-                vkBinding.binding = binding.index;
+                vkBinding.binding = bindingIndex;
                 bindings.push_back(vkBinding);
-                vkBinding.binding = binding.index + 1;
+                vkBinding.binding = bindingIndex + 1;
                 bindings.push_back(vkBinding);
-                vkBinding.binding = binding.index + 2;
+                vkBinding.binding = bindingIndex + 2;
                 bindings.push_back(vkBinding);
-                vkBinding.binding = binding.index + 3;
+                vkBinding.binding = bindingIndex + 3;
                 bindings.push_back(vkBinding);
-                vkBinding.binding = binding.index + 4;
+                vkBinding.binding = bindingIndex + 4;
                 bindings.push_back(vkBinding);
-                vkBinding.binding = binding.index + 5;
+                vkBinding.binding = bindingIndex + 5;
                 bindings.push_back(vkBinding);
 
                 break;
@@ -54,10 +55,10 @@ namespace tracey
                 throw std::runtime_error("Unsupported descriptor type");
             }
         }
-        layoutInfo.pBindings = bindings.data();
-        layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
+        m_descriptorSetLayoutInfo.pBindings = bindings.data();
+        m_descriptorSetLayoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
 
-        if (vkCreateDescriptorSetLayout(m_device.vkDevice(), &layoutInfo, nullptr, &m_descriptorSetLayout) != VK_SUCCESS)
+        if (vkCreateDescriptorSetLayout(m_device.vkDevice(), &m_descriptorSetLayoutInfo, nullptr, &m_descriptorSetLayout) != VK_SUCCESS)
         {
             throw std::runtime_error("Failed to create descriptor set layout");
         }
@@ -81,7 +82,6 @@ namespace tracey
             throw std::runtime_error("Failed to create shader module");
         }
 
-        m_shaderModule = m_shaderModule;
         // Create compute pipeline
         VkComputePipelineCreateInfo pipelineInfo{};
         pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
@@ -120,7 +120,7 @@ namespace tracey
     {
         for (auto &set : sets)
         {
-            auto vkSet = new VulkanComputeRayTracingDescriptorSet(m_device, m_descriptorSetLayout);
+            auto vkSet = new VulkanComputeRayTracingDescriptorSet(m_device, m_layout, m_descriptorSetLayout);
             set = vkSet;
         }
     }

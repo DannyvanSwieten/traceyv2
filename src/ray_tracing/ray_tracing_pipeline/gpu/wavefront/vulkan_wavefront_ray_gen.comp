@@ -1,10 +1,5 @@
 #version 460 core
 
-const int FLAG_ACTIVE = 1 << 0;
-const int FLAG_TERMINATED = 1 << 1;
-const int FLAG_NEEDS_INTERSECT = 1 << 2;
-const int FLAG_NEEDS_SHADE = 1 << 3;
-const int FLAG_MISS = 1 << 4;
 
 struct PathHeader {
     float originX;
@@ -25,7 +20,12 @@ struct Ray{
     float tMax;
 };
 
-layout (local_size_x = 16, local_size_y = 1, local_size_z = 1) in;
+layout(push_constant) uniform PushConstants {
+    uint width;
+    uint height;
+} pc;
+
+layout (local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
 layout (std430, binding = 0, set = 0) writeonly buffer RayGenOutput {
     PathHeader header[];
 } PathInfos;
@@ -36,20 +36,44 @@ layout(std430, binding = 1, set = 0) writeonly buffer IntersectionQueue {
 };
 
 void enqueue_intersection(uint rayIndex) {
+    // Dense (bounce-0 style) initialization: rayIndices[i] = i
     rayIndices[rayIndex] = rayIndex;
 }
 
-Ray ray_gen_main(vec2 pixel);
+uvec2 getResolution() {
+    return uvec2(pc.width, pc.height);
+}
+
+Ray ray_gen_main(uvec2 pixel);
 
 //___USER_PARAMS___
 //___RAY_GENERATION_FUNCTION___
 
 void main() {
-    uvec2 launchID = gl_GlobalInvocationID.xy;
+    if (pc.width == 0u || pc.height == 0u) {
+        return;
+    }
 
-    Ray ray = ray_gen_main(vec2(launchID));
+    uint rayCount = pc.width * pc.height;
 
-    uint index = launchID.x;
+    uint index = gl_GlobalInvocationID.x;
+    if (index >= rayCount) {
+        return;
+    }
+
+    uvec2 pixelCoord = uvec2(index % pc.width, index / pc.width);
+    if (pixelCoord.y >= pc.height) {
+        return;
+    }
+
+    // Provide pixel coordinates to user raygen code.
+    Ray ray = ray_gen_main(pixelCoord);
+
+    // Set queue count once for a dense initial queue.
+    if (index == 0u) {
+        count = rayCount;
+    }
+
     enqueue_intersection(index);
     PathHeader header;
     header.originX = ray.origin.x;

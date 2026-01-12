@@ -53,61 +53,6 @@ void loadTriangleInfo(uint triangleIndex, inout vec3 v0, inout vec3 e0, inout ve
     normal = vec3(tri.nx, tri.ny, tri.nz);
 }
 
-// --- Instance transform helpers (VkAccelerationStructureInstanceKHR-style, 3x4 row-major) ---
-
-// Row-major point transform: p' = A*p + t
-vec3 transformPointRowMajor(vec4 r0, vec4 r1, vec4 r2, vec3 p)
-{
-    return vec3(
-        r0.x * p.x + r0.y * p.y + r0.z * p.z + r0.w,
-        r1.x * p.x + r1.y * p.y + r1.z * p.z + r1.w,
-        r2.x * p.x + r2.y * p.y + r2.z * p.z + r2.w
-    );
-}
-
-// Row-major vector transform: v' = A*v
-vec3 transformVectorRowMajor(vec4 r0, vec4 r1, vec4 r2, vec3 v)
-{
-    return vec3(
-        r0.x * v.x + r0.y * v.y + r0.z * v.z,
-        r1.x * v.x + r1.y * v.y + r1.z * v.z,
-        r2.x * v.x + r2.y * v.y + r2.z * v.z
-    );
-}
-
-// Invert a 3x4 row-major affine transform (works for uniform/non-uniform scale as long as A is invertible).
-void invertRowMajor3x4(vec4 r0, vec4 r1, vec4 r2, out vec4 ir0, out vec4 ir1, out vec4 ir2)
-{
-    // Build A using COLUMNS (GLSL matrices are column-major)
-    mat3 A = mat3(
-        vec3(r0.x, r1.x, r2.x),
-        vec3(r0.y, r1.y, r2.y),
-        vec3(r0.z, r1.z, r2.z)
-    );
-
-    vec3 t = vec3(r0.w, r1.w, r2.w);
-
-    mat3 Ainv = inverse(A);
-    vec3 tinv = -(Ainv * t);
-
-    // We want to output ROWS of Ainv in ir0/ir1/ir2
-    mat3 AinvT = transpose(Ainv);
-
-    ir0 = vec4(AinvT[0][0], AinvT[0][1], AinvT[0][2], tinv.x);
-    ir1 = vec4(AinvT[1][0], AinvT[1][1], AinvT[1][2], tinv.y);
-    ir2 = vec4(AinvT[2][0], AinvT[2][1], AinvT[2][2], tinv.z);
-}
-
-// Convert row-major 3x4 rows into a column-major mat4x3 (as used by gl_ObjectToWorldEXT/gl_WorldToObjectEXT).
-mat4x3 rowMajor3x4ToMat4x3(vec4 r0, vec4 r1, vec4 r2)
-{
-    vec3 c0 = vec3(r0.x, r1.x, r2.x);
-    vec3 c1 = vec3(r0.y, r1.y, r2.y);
-    vec3 c2 = vec3(r0.z, r1.z, r2.z);
-    vec3 c3 = vec3(r0.w, r1.w, r2.w);
-    return mat4x3(c0, c1, c2, c3);
-}
-
 // BvhNode encoding (CPU-identical):
 // - firstChildOrPrim: inner = left child offset relative to bvhBase (right is implicit left+1),
 //                    leaf  = first index into BLAS primIndices stream
@@ -135,17 +80,17 @@ HitInfo traverseBVH(uint bvhBase, uint triangleOffset, Ray ray, float tMin, floa
     {
         uint nodeIndex = stack[--sp];
         BvhNode node = blasNodes.nodes[nodeIndex];
-        vec3 aabbMin = vec3(node.minx, node.miny, node.minz);
-        vec3 aabbMax = vec3(node.maxx, node.maxy, node.maxz);
-
-        float tE, tX;
-        if (!intersectAABB(ray, aabbMin, aabbMax, tMin, best.t, tE, tX))
-            continue;
 
         uint primCount = (node.primCountAndType & 0x00FFFFFFu);
         bool isLeaf = (primCount > 0u);
         if (isLeaf)
         {
+            vec3 aabbMin = vec3(node.minx, node.miny, node.minz);
+            vec3 aabbMax = vec3(node.maxx, node.maxy, node.maxz);
+
+            float tE, tX;
+            if (!intersectAABB(ray, aabbMin, aabbMax, tMin, best.t, tE, tX))
+                continue;
             // Leaf: indices are a contiguous range in the BLAS primIndices stream.
             // NOTE: This shader assumes the primIndices stream is also concatenated per-BLAS using the same base offset as triangles.
             uint firstPrimIndex = triangleOffset + node.firstChildOrPrim;

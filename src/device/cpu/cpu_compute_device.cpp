@@ -29,6 +29,12 @@ namespace tracey
         return new CpuRayTracingPipeline(layout, *cpuSbt);
     }
 
+    RayTracingPipeline *CpuComputeDevice::createWaveFrontRayTracingPipeline(const RayTracingPipelineLayoutDescriptor &layout, const ShaderBindingTable *sbt)
+    {
+        // WaveFront pipelines are not supported on CPU devices
+        return nullptr;
+    }
+
     ShaderModule *CpuComputeDevice::createShaderModule(ShaderStage stage, const std::string_view source, const std::string_view entryPoint)
     {
         return new CpuShaderModule(stage, source, entryPoint);

@@ -24,6 +24,7 @@ namespace tracey
         RayTracingPipelineLayoutDescriptor m_layout;
         VkPipeline m_pipeline = VK_NULL_HANDLE;
         VkPipelineLayout m_pipelineLayout = VK_NULL_HANDLE;
+        VkDescriptorSetLayoutCreateInfo m_descriptorSetLayoutInfo{};
         VkDescriptorSetLayout m_descriptorSetLayout = VK_NULL_HANDLE;
         VkShaderModule m_shaderModule = VK_NULL_HANDLE;
     };

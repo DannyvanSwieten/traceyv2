@@ -26,9 +26,11 @@ namespace tracey
     void CpuRayTracingCommandBuffer::setDescriptorSet(DescriptorSet *set)
     {
         m_descriptorSet = dynamic_cast<CpuDescriptorSet *>(set);
-        for (size_t i = 0; i < m_pipeline->layout().bindings().size(); ++i)
+        const auto &layout = m_pipeline->layout();
+        for (size_t i = 0; i < layout.bindings().size(); ++i)
         {
-            const auto &binding = m_pipeline->layout().bindings()[i];
+            const auto &binding = layout.bindings()[i];
+            const auto index = layout.indexForBinding(binding.name);
             if (binding.type == RayTracingPipelineLayoutDescriptor::DescriptorType::AccelerationStructure)
             {
                 // Set the pipeline pointer in the DispatchedTlas
@@ -39,7 +41,7 @@ namespace tracey
                     {
                         arg.pipeline = m_pipeline;
                     } },
-                                          binding.index);
+                                          index);
             }
         }
     }
@@ -54,8 +56,10 @@ namespace tracey
         std::chrono::high_resolution_clock::time_point startTime = std::chrono::high_resolution_clock::now();
 
         auto compiledSbt = m_pipeline->compiledSbt();
-        for (const auto &binding : m_pipeline->layout().bindings())
+        const auto &layout = m_pipeline->layout();
+        for (const auto &binding : layout.bindings())
         {
+            size_t index = layout.indexForBinding(binding.name);
             // Binding setup logic would go here
             if (binding.stage == ShaderStage::RayGeneration)
             {
@@ -65,18 +69,18 @@ namespace tracey
                     using T = std::decay_t<decltype(arg)>;
                     if constexpr (std::is_same_v<T, Image2D *>)
                     {
-                        *m_pipeline->compiledSbt().rayGen.shader.bindingSlots[binding.index].slotPtr = arg;
+                        *m_pipeline->compiledSbt().rayGen.shader.bindingSlots[index].slotPtr = arg;
                     }
                     else if constexpr (std::is_same_v<T, Buffer *>)
                     {
                         // Setup buffer
-                        *m_pipeline->compiledSbt().rayGen.shader.bindingSlots[binding.index].slotPtr = arg;
+                        *m_pipeline->compiledSbt().rayGen.shader.bindingSlots[index].slotPtr = arg;
                     }
                     else if constexpr (std::is_same_v<T,  DispatchedTlas>)
                     {
-                        *m_pipeline->compiledSbt().rayGen.shader.bindingSlots[binding.index].slotPtr = &arg;
+                        *m_pipeline->compiledSbt().rayGen.shader.bindingSlots[index].slotPtr = &arg;
                     } },
-                                          binding.index);
+                                          index);
             }
             else if (binding.stage == ShaderStage::ClosestHit)
             {
@@ -86,18 +90,18 @@ namespace tracey
                     using T = std::decay_t<decltype(arg)>;
                     if constexpr (std::is_same_v<T, Image2D *>)
                     {
-                        *m_pipeline->compiledSbt().hits[0].shader.bindingSlots[binding.index].slotPtr = arg;
+                        *m_pipeline->compiledSbt().hits[0].shader.bindingSlots[index].slotPtr = arg;
                     }
                     else if constexpr (std::is_same_v<T, Buffer *>)
                     {
                         // Setup buffer
-                        *m_pipeline->compiledSbt().hits[0].shader.bindingSlots[binding.index].slotPtr = arg->mapForWriting();
+                        *m_pipeline->compiledSbt().hits[0].shader.bindingSlots[index].slotPtr = arg->mapForWriting();
                     }
                     else if constexpr (std::is_same_v<T,  DispatchedTlas>)
                     {
-                        *m_pipeline->compiledSbt().hits[0].shader.bindingSlots[binding.index].slotPtr = &arg;
+                        *m_pipeline->compiledSbt().hits[0].shader.bindingSlots[index].slotPtr = &arg;
                     } },
-                                          binding.index);
+                                          index);
             }
         }
 
