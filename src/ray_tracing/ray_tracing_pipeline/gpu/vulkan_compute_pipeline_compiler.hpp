@@ -9,6 +9,7 @@ namespace tracey
     struct WaveFrontPipelineCompileResult
     {
         std::vector<uint32_t> rayGenShaderSpirV;
+        std::vector<uint32_t> intersectShaderSpirV;
         std::vector<std::vector<uint32_t>> hitShadersSpirV;
         std::vector<std::vector<uint32_t>> missShadersSpirV;
     };

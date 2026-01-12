@@ -233,18 +233,48 @@ namespace tracey
     WaveFrontPipelineCompileResult compileVulkanWaveFrontRayTracingPipeline(const RayTracingPipelineLayoutDescriptor &layout, const CpuShaderBindingTable &sbt)
     {
         const auto rayGenSpirV = compileRayGenShader(layout, sbt);
+
+        // Compile intersection shader (standalone, no user code injection)
+        std::filesystem::path intersectShaderPath = std::filesystem::path(__FILE__).parent_path() / "wavefront" / "vulkan_wavefront_intersect.comp";
+        std::ifstream intersectShaderFile(intersectShaderPath);
+        if (!intersectShaderFile.is_open())
+        {
+            throw std::runtime_error("Failed to open Vulkan WaveFront intersection shader file: " + intersectShaderPath.string());
+        }
+        std::stringstream intersectShaderStream;
+        intersectShaderStream << intersectShaderFile.rdbuf();
+        std::string intersectShaderSource = intersectShaderStream.str();
+
+        shaderc::Compiler compiler;
+        shaderc::CompileOptions options;
+        options.SetOptimizationLevel(shaderc_optimization_level_performance);
+        options.SetTargetEnvironment(shaderc_target_env_vulkan, shaderc_env_version_vulkan_1_2);
+
+        shaderc::SpvCompilationResult intersectModule = compiler.CompileGlslToSpv(
+            intersectShaderSource, shaderc_glsl_compute_shader, "vulkan_wavefront_intersect.comp", options);
+
+        if (intersectModule.GetCompilationStatus() != shaderc_compilation_status_success)
+        {
+            throw std::runtime_error("Failed to compile intersection shader: " + std::string(intersectModule.GetErrorMessage()));
+        }
+        std::vector<uint32_t> intersectSpirV(intersectModule.cbegin(), intersectModule.cend());
+
         std::vector<std::vector<uint32_t>> hitShadersSpirV;
         for (size_t i = 0; i < sbt.hitModules().size(); ++i)
         {
             hitShadersSpirV.push_back(compileHitShader(layout, sbt, i));
         }
 
-        // std::vector<std::vector<uint32_t>> missShadersSpirV;
-        // for (size_t i = 0; i < sbt.missModules().size(); ++i)
-        // {
-        //     missShadersSpirV.push_back(compileMissShader(layout, sbt, i));
-        // }
-        return WaveFrontPipelineCompileResult{std::move(rayGenSpirV), std::move(hitShadersSpirV)};
+        std::vector<std::vector<uint32_t>> missShadersSpirV;
+        for (size_t i = 0; i < sbt.missModules().size(); ++i)
+        {
+            missShadersSpirV.push_back(compileMissShader(layout, sbt, i));
+        }
+        return WaveFrontPipelineCompileResult{
+            .rayGenShaderSpirV = std::move(rayGenSpirV),
+            .intersectShaderSpirV = std::move(intersectSpirV),
+            .hitShadersSpirV = std::move(hitShadersSpirV),
+            .missShadersSpirV = std::move(missShadersSpirV)};
     }
     std::vector<uint32_t> compileRayGenShader(const RayTracingPipelineLayoutDescriptor &layout, const CpuShaderBindingTable &sbt)
     {
@@ -301,10 +331,79 @@ namespace tracey
         hitShaderTemplateStream << hitShaderFile.rdbuf() << "\n";
         std::string hitShaderTemplate = hitShaderTemplateStream.str();
 
+        // Generate user parameters (bindings and payloads)
+        std::stringstream userParams;
+
+        const auto bindingStartOffset = 2;
+        for (const auto &binding : layout.bindings())
+        {
+            const auto bindingIndex = layout.indexForBinding(binding.name) + bindingStartOffset;
+            switch (binding.type)
+            {
+            case RayTracingPipelineLayoutDescriptor::DescriptorType::Image2D:
+                userParams << "layout(set = 0, binding = " << bindingIndex << ", rgba8) uniform writeonly image2D " << binding.name << ";\n";
+                break;
+            case RayTracingPipelineLayoutDescriptor::DescriptorType::StorageBuffer:
+                userParams << "layout(std430, set = 0, binding = " << bindingIndex << ") buffer " << "Buffer" << bindingIndex << " {\n";
+                for (const auto &field : binding.structure->fields())
+                {
+                    userParams << "    " << field.type << " " << field.name;
+                    if (field.isArray)
+                    {
+                        userParams << "[";
+                        if (field.elementCount > 0)
+                        {
+                            userParams << field.elementCount;
+                        }
+                        userParams << "]";
+                    }
+                    userParams << ";\n";
+                }
+                userParams << "} " << binding.name << ";\n";
+                break;
+            case RayTracingPipelineLayoutDescriptor::DescriptorType::AccelerationStructure:
+                // TLAS bindings already defined in template
+                break;
+            default:
+                break;
+            }
+        }
+
+        // Generate payload structures
+        for (const auto &payload : layout.payloads())
+        {
+            userParams << "struct " << payload.structure.name() << " {\n";
+            for (const auto &field : payload.structure.fields())
+            {
+                userParams << "    " << field.type << " " << field.name << ";\n";
+            }
+            userParams << "};\n";
+        }
+
+        // Create payload container and defines
+        userParams << "struct RayPayloads {\n";
+        for (const auto &payload : layout.payloads())
+        {
+            userParams << "    " << payload.structure.name() << " " << payload.name << ";\n";
+        }
+        userParams << "};\n";
+        userParams << "RayPayloads payloads;\n";
+        for (const auto &payload : layout.payloads())
+        {
+            userParams << "#define " << payload.name << " payloads." << payload.name << "\n";
+        }
+
+        // Inject user parameters
+        const auto userParamsPosition = hitShaderTemplate.find("//___USER_PARAMS___");
+        if (userParamsPosition != std::string::npos)
+        {
+            hitShaderTemplate.replace(userParamsPosition, std::string("//___USER_PARAMS___").length(), userParams.str());
+        }
+
         const auto hitShader = sbt.hitModules()[hitShaderIndex];
         const auto cpuModule = dynamic_cast<const CpuShaderModule *>(hitShader);
         std::string userSource(cpuModule->source());
-        // replace user entry point with hitShaderX
+        // replace user entry point with hit_shader_main
         size_t entryPointPos = userSource.find(cpuModule->entryPoint());
         if (entryPointPos != std::string_view::npos)
         {
@@ -321,6 +420,7 @@ namespace tracey
         // Compile finalShader using shaderc
         shaderc::Compiler compiler;
         shaderc::CompileOptions options;
+        options.SetOptimizationLevel(shaderc_optimization_level_performance);
         shaderc::SpvCompilationResult module =
             compiler.CompileGlslToSpv(hitShaderTemplate.c_str(), hitShaderTemplate.size(), shaderc_compute_shader, "HitShader", options);
         if (module.GetCompilationStatus() != shaderc_compilation_status_success)
@@ -333,25 +433,108 @@ namespace tracey
     }
     std::vector<uint32_t> compileMissShader(const RayTracingPipelineLayoutDescriptor &layout, const CpuShaderBindingTable &sbt, size_t missShaderIndex)
     {
-        std::stringstream ss;
+        std::filesystem::path missShaderPath = std::filesystem::path(__FILE__).parent_path() / "wavefront" / "vulkan_wavefront_miss_shader.comp";
+        std::ifstream missShaderFile(missShaderPath);
+        if (!missShaderFile.is_open())
+        {
+            throw std::runtime_error("Failed to open Vulkan WaveFront miss shader file: " + missShaderPath.string());
+        }
+        std::stringstream missShaderTemplateStream;
+        missShaderTemplateStream << missShaderFile.rdbuf() << "\n";
+        std::string missShaderTemplate = missShaderTemplateStream.str();
+
+        // Generate user parameters (bindings and payloads)
+        std::stringstream userParams;
+
+        const auto bindingStartOffset = 2;
+        for (const auto &binding : layout.bindings())
+        {
+            const auto bindingIndex = layout.indexForBinding(binding.name) + bindingStartOffset;
+            switch (binding.type)
+            {
+            case RayTracingPipelineLayoutDescriptor::DescriptorType::Image2D:
+                userParams << "layout(set = 0, binding = " << bindingIndex << ", rgba8) uniform writeonly image2D " << binding.name << ";\n";
+                break;
+            case RayTracingPipelineLayoutDescriptor::DescriptorType::StorageBuffer:
+                userParams << "layout(std430, set = 0, binding = " << bindingIndex << ") buffer " << "Buffer" << bindingIndex << " {\n";
+                for (const auto &field : binding.structure->fields())
+                {
+                    userParams << "    " << field.type << " " << field.name;
+                    if (field.isArray)
+                    {
+                        userParams << "[";
+                        if (field.elementCount > 0)
+                        {
+                            userParams << field.elementCount;
+                        }
+                        userParams << "]";
+                    }
+                    userParams << ";\n";
+                }
+                userParams << "} " << binding.name << ";\n";
+                break;
+            case RayTracingPipelineLayoutDescriptor::DescriptorType::AccelerationStructure:
+                // TLAS bindings already defined in template
+                break;
+            default:
+                break;
+            }
+        }
+
+        // Generate payload structures
+        for (const auto &payload : layout.payloads())
+        {
+            userParams << "struct " << payload.structure.name() << " {\n";
+            for (const auto &field : payload.structure.fields())
+            {
+                userParams << "    " << field.type << " " << field.name << ";\n";
+            }
+            userParams << "};\n";
+        }
+
+        // Create payload container and defines
+        userParams << "struct RayPayloads {\n";
+        for (const auto &payload : layout.payloads())
+        {
+            userParams << "    " << payload.structure.name() << " " << payload.name << ";\n";
+        }
+        userParams << "};\n";
+        userParams << "RayPayloads payloads;\n";
+        for (const auto &payload : layout.payloads())
+        {
+            userParams << "#define " << payload.name << " payloads." << payload.name << "\n";
+        }
+
+        // Inject user parameters
+        const auto userParamsPosition = missShaderTemplate.find("//___USER_PARAMS___");
+        if (userParamsPosition != std::string::npos)
+        {
+            missShaderTemplate.replace(userParamsPosition, std::string("//___USER_PARAMS___").length(), userParams.str());
+        }
+
         const auto missShader = sbt.missModules()[missShaderIndex];
         const auto cpuModule = dynamic_cast<const CpuShaderModule *>(missShader);
         std::string userSource(cpuModule->source());
-        // replace user entry point with missShaderX
+        // replace user entry point with miss_shader_main
         size_t entryPointPos = userSource.find(cpuModule->entryPoint());
         if (entryPointPos != std::string_view::npos)
         {
-            userSource.replace(entryPointPos, cpuModule->entryPoint().size(), "miss_shader_" + std::to_string(missShaderIndex));
+            userSource.replace(entryPointPos, cpuModule->entryPoint().size(), "miss_shader_main");
         }
-        ss << userSource;
 
-        printf("Vulkan Compute Ray Tracing Miss Shader Source:\n%s\n", ss.str().c_str());
+        const auto userSourcePosition = missShaderTemplate.find("//___MISS_SHADER_FUNCTION___");
+        if (userSourcePosition != std::string::npos)
+        {
+            missShaderTemplate.replace(userSourcePosition, std::string("//___MISS_SHADER_FUNCTION___").length(), userSource);
+        }
+
+        printf("Vulkan Compute Ray Tracing Miss Shader Source:\n%s\n", missShaderTemplate.c_str());
         // Compile finalShader using shaderc
         shaderc::Compiler compiler;
         shaderc::CompileOptions options;
         options.SetOptimizationLevel(shaderc_optimization_level_performance);
         shaderc::SpvCompilationResult module =
-            compiler.CompileGlslToSpv(ss.str().c_str(), ss.str().size(), shaderc_compute_shader, "MissShader", options);
+            compiler.CompileGlslToSpv(missShaderTemplate.c_str(), missShaderTemplate.size(), shaderc_compute_shader, "MissShader", options);
         if (module.GetCompilationStatus() != shaderc_compilation_status_success)
         {
             throw std::runtime_error("Vulkan Compute Ray Tracing Miss Shader compilation failed: " + module.GetErrorMessage());

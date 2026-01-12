@@ -37,14 +37,9 @@ layout(std430, binding = 2, set = 0) readonly buffer HitInfos {
 // User-defined bindings
 //___USER_PARAMS___
 
-// Helper: set new ray for secondary bounces (stub for now - not used in phase 1)
-void setNewRay(vec3 origin, vec3 direction, float tmin, float tmax) {
-    // Will be implemented when adding bounce support
-}
-
 // User shader function
-void hit_shader_main();
-//___HIT_SHADER_FUNCTION___
+void miss_shader_main();
+//___MISS_SHADER_FUNCTION___
 
 void main() {
     uint workItemId = gl_GlobalInvocationID.x;
@@ -52,9 +47,9 @@ void main() {
 
     uint rayIndex = rayQueue.rayIndices[workItemId];
 
-    // Check if this ray hit geometry (triangleIndex != 0xFFFFFFFF)
-    if (hitInfos.hits[rayIndex].triangleIndex == 0xFFFFFFFF) return;
+    // Check if this ray missed (triangleIndex == 0xFFFFFFFF)
+    if (hitInfos.hits[rayIndex].triangleIndex != 0xFFFFFFFF) return;
 
-    // Call user hit shader
-    hit_shader_main();
+    // Call user miss shader
+    miss_shader_main();
 }

@@ -1,6 +1,7 @@
 #include "vulkan_compute_ray_tracing_command_buffer.hpp"
 #include "../../../device/gpu/vulkan_compute_device.hpp"
 #include "../../../ray_tracing/ray_tracing_pipeline/gpu/vulkan_compute_raytracing_pipeline.hpp"
+#include "../../../ray_tracing/ray_tracing_pipeline/gpu/wavefront/vulkan_wavefront_pipeline.hpp"
 #include "../../../ray_tracing/ray_tracing_pipeline/gpu/vulkan_compute_raytracing_descriptor_set.hpp"
 #include "../../../device/gpu/vulkan_buffer.hpp"
 #include "../../../device/gpu/vulkan_image_2d.hpp"
@@ -49,17 +50,102 @@ namespace tracey
     void VulkanComputeRayTracingCommandBuffer::setPipeline(RayTracingPipeline *pipeline)
     {
         m_pipeline = pipeline;
-        vkCmdBindPipeline(m_vkCommandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, dynamic_cast<VulkanComputeRaytracingPipeline *>(pipeline)->vkPipeline());
+
+        // Only bind pipeline now if it's monolithic
+        // Wavefront pipelines bind in traceRays() since we need multiple pipelines
+        if (auto *monolithic = dynamic_cast<VulkanComputeRaytracingPipeline *>(pipeline))
+        {
+            vkCmdBindPipeline(m_vkCommandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, monolithic->vkPipeline());
+        }
     }
     void VulkanComputeRayTracingCommandBuffer::setDescriptorSet(DescriptorSet *set)
     {
-        const auto layout = static_cast<VulkanComputeRaytracingPipeline *>(m_pipeline)->vkPipelineLayout();
+        VkPipelineLayout layout;
+
+        // Get pipeline layout from either monolithic or wavefront pipeline
+        if (auto *monolithic = dynamic_cast<VulkanComputeRaytracingPipeline *>(m_pipeline))
+        {
+            layout = monolithic->vkPipelineLayout();
+        }
+        else if (auto *wavefront = dynamic_cast<VulkanWaveFrontPipeline *>(m_pipeline))
+        {
+            layout = wavefront->pipelineLayout();
+        }
+        else
+        {
+            throw std::runtime_error("Unknown pipeline type");
+        }
+
         const auto vkDescriptorSet = dynamic_cast<VulkanComputeRayTracingDescriptorSet *>(set)->vkDescriptorSet();
         vkCmdBindDescriptorSets(m_vkCommandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &vkDescriptorSet, 0, nullptr);
     }
     void VulkanComputeRayTracingCommandBuffer::traceRays(const ShaderBindingTable &sbt, uint32_t width, uint32_t height)
     {
-        vkCmdDispatch(m_vkCommandBuffer, width / 32, height / 32, 1);
+        // Check if wavefront pipeline
+        if (auto *wavefront = dynamic_cast<VulkanWaveFrontPipeline *>(m_pipeline))
+        {
+            // === WAVEFRONT MULTI-STAGE EXECUTION ===
+
+            uint32_t rayCount = width * height;
+            uint32_t workGroups = (rayCount + 255) / 256; // 256 threads per work group
+
+            // Push constants (resolution)
+            struct PushConstants
+            {
+                uint32_t width;
+                uint32_t height;
+            } pushConstants{width, height};
+
+            // Stage 1: Ray Generation
+            vkCmdBindPipeline(m_vkCommandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+                              wavefront->rayGenPipeline());
+            vkCmdPushConstants(m_vkCommandBuffer, wavefront->pipelineLayout(),
+                               VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pushConstants),
+                               &pushConstants);
+            vkCmdDispatch(m_vkCommandBuffer, workGroups, 1, 1);
+
+            // Barrier: Wait for ray gen to complete before intersection
+            VkMemoryBarrier barrier{};
+            barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+            barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+            barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            vkCmdPipelineBarrier(m_vkCommandBuffer,
+                                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                 0, 1, &barrier, 0, nullptr, 0, nullptr);
+
+            // Stage 2: Intersection (BVH traversal)
+            vkCmdBindPipeline(m_vkCommandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+                              wavefront->intersectPipeline());
+            vkCmdDispatch(m_vkCommandBuffer, workGroups, 1, 1);
+
+            // Barrier: Wait for intersection before hit/miss shaders
+            vkCmdPipelineBarrier(m_vkCommandBuffer,
+                                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                 0, 1, &barrier, 0, nullptr, 0, nullptr);
+
+            // Stage 3: Hit shader (simplified - just use first hit shader for all hits)
+            vkCmdBindPipeline(m_vkCommandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+                              wavefront->hitPipeline(0));
+            vkCmdDispatch(m_vkCommandBuffer, workGroups, 1, 1);
+
+            // Barrier after hit shader
+            vkCmdPipelineBarrier(m_vkCommandBuffer,
+                                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                 0, 1, &barrier, 0, nullptr, 0, nullptr);
+
+            // Stage 4: Miss shader (simplified - just use first miss shader)
+            vkCmdBindPipeline(m_vkCommandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+                              wavefront->missPipeline(0));
+            vkCmdDispatch(m_vkCommandBuffer, workGroups, 1, 1);
+        }
+        else
+        {
+            // === MONOLITHIC PIPELINE (existing code) ===
+            vkCmdDispatch(m_vkCommandBuffer, width / 32, height / 32, 1);
+        }
     }
     void VulkanComputeRayTracingCommandBuffer::copyImageToBuffer(const Image2D *image, Buffer *buffer)
     {

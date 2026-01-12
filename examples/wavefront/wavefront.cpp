@@ -161,7 +161,7 @@ void shader() {
 
     const auto imageData = static_cast<const char *>(imageReadbackBuffer->mapForReading());
     // Save imageData to a ppm file
-    std::ofstream outFile("output.ppm", std::ios::binary);
+    std::ofstream outFile("wavefront_output.ppm", std::ios::binary);
     // write only rgb channels
     outFile << "P6\n"
             << 512 << " " << 512 << "\n255\n";
