@@ -1,4 +1,4 @@
-#version 460
+#version 450
 
 layout (local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
 
@@ -64,11 +64,12 @@ struct InverseTransforms{
     mat4 worldToObj;
 };
 
-layout(std430, set = 0, binding = 0) buffer PathHeaders {
+// Wavefront internal buffers at bindings 50-52
+layout(std430, set = 0, binding = 50) buffer PathHeaders {
     PathHeader headers[];
 };
 
-layout(std430, set = 0, binding = 1) buffer RayQueue{
+layout(std430, set = 0, binding = 51) buffer RayQueue{
     uint count;        // number of valid entries in rayIndices
     uint rayIndices[]; // compact list of path/ray indices
 };
@@ -77,33 +78,34 @@ PathHeader getPathHeader(uint rayIndex) {
     return headers[rayIndex];
 }
 
-layout(std430, set = 0, binding = 2) buffer HitInfos {
+layout(std430, set = 0, binding = 52) buffer HitInfos {
     HitInfo hits[];
 };
 
-layout(std430, set = 0, binding = 3) readonly buffer TLASInstances {
+// TLAS buffers at bindings 0-5
+layout(std430, set = 0, binding = 0) readonly buffer TLASInstances {
     uint instanceCount;
     uint padding[3];
     Instance instances[];
 } tlasInstances;
 
-layout(std430, set = 0, binding = 4) readonly buffer BvhNodes {
+layout(std430, set = 0, binding = 1) readonly buffer BvhNodes {
     BvhNode nodes[];
 } blasNodes;
 
-layout(std430, set = 0, binding = 5) readonly buffer BlasInfos {
+layout(std430, set = 0, binding = 2) readonly buffer BlasInfos {
     BlasInfo blases[];
 } blasInfos;
 
-layout(std430, set = 0, binding = 6) readonly buffer Triangles {
+layout(std430, set = 0, binding = 3) readonly buffer Triangles {
     TriangleInfo triangles[];
 } blasTriangles;
 
-layout(std430, set = 0, binding = 7) readonly buffer PrimitiveIndices {
+layout(std430, set = 0, binding = 4) readonly buffer PrimitiveIndices {
     uint primitiveIndices[];
 } blasPrimitiveIndices;
 
-layout(std430, set = 0, binding = 8) readonly buffer TLASInstanceTransforms {
+layout(std430, set = 0, binding = 5) readonly buffer TLASInstanceTransforms {
     InverseTransforms inv[];
 } tlasInstanceTransforms;
 

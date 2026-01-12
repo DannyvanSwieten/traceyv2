@@ -8,7 +8,7 @@ namespace tracey
     class VulkanComputeRayTracingDescriptorSet : public DescriptorSet
     {
     public:
-        VulkanComputeRayTracingDescriptorSet(VulkanComputeDevice &device, const RayTracingPipelineLayoutDescriptor &layout, VkDescriptorSetLayout descriptorSetLayout);
+        VulkanComputeRayTracingDescriptorSet(VulkanComputeDevice &device, const RayTracingPipelineLayoutDescriptor &layout, VkDescriptorSetLayout descriptorSetLayout, uint32_t userBindingOffset = 5);
         ~VulkanComputeRayTracingDescriptorSet() override;
 
         void setImage2D(const std::string_view binding, Image2D *image) override;
@@ -22,7 +22,6 @@ namespace tracey
         VkDescriptorSetLayout m_descriptorSetLayout;
         VkDescriptorSet m_descriptorSet;
         const RayTracingPipelineLayoutDescriptor &m_layout;
-
-        constexpr static uint32_t AccelerationStructureDescriptorCount = 5;
+        uint32_t m_userBindingOffset;
     };
 }

@@ -98,6 +98,12 @@ int main()
     std::unique_ptr<tracey::ShaderModule> rayGenModule = std::unique_ptr<tracey::ShaderModule>(computeDevice->createShaderModule(tracey::ShaderStage::RayGeneration,
                                                                                                                                  R"(
 Ray shader(uvec2 pixelCoord) {
+    // Write UV gradient to output image
+    uvec2 resolution = getResolution();
+    vec2 uv = vec2(pixelCoord) / vec2(resolution);
+    vec4 color = vec4(uv.x, uv.y, 0.0, 1.0);
+    imageStore(outputImage, ivec2(pixelCoord), color);
+
     Ray ray;
     return ray;
 }
@@ -107,7 +113,17 @@ Ray shader(uvec2 pixelCoord) {
     std::unique_ptr<tracey::ShaderModule> closestHitModule = std::unique_ptr<tracey::ShaderModule>(computeDevice->createShaderModule(tracey::ShaderStage::ClosestHit,
                                                                                                                                      R"(
 void shader() {
-    // Shading goes here + generating a new ray
+    // Get pixel coordinates from ray index
+    uvec2 resolution = getResolution();
+    uint rayIndex = gl_GlobalInvocationID.x;
+    if (rayIndex >= rayQueue.count) return;
+
+    uint actualRayIndex = rayQueue.rayIndices[rayIndex];
+    uvec2 pixelCoord = uvec2(actualRayIndex % resolution.x, actualRayIndex / resolution.x);
+
+    // Write green color for hits
+    vec4 color = vec4(0.0, 1.0, 0.0, 1.0);
+    imageStore(outputImage, ivec2(pixelCoord), color);
 }
     )",
                                                                                                                                      "shader"));
@@ -115,12 +131,19 @@ void shader() {
     std::unique_ptr<tracey::ShaderModule> primaryMissModule = std::unique_ptr<tracey::ShaderModule>(computeDevice->createShaderModule(tracey::ShaderStage::Miss,
                                                                                                                                       R"(
 void shader() {
-    // Miss shader code
-    // set up sky color based on ray direction
-    float t = 0.5 * (rayPayload.direction.y + 1.0);
-    vec3 sky = (1.0 - t) * vec3(1.0) + t * vec3(0.5, 0.7, 1.0);
-    rayPayload.color = sky;
-    rayPayload.hit = false;
+    // Get pixel coordinates from ray index
+    uvec2 resolution = getResolution();
+    uint rayIndex = gl_GlobalInvocationID.x;
+    if (rayIndex >= rayQueue.count) return;
+
+    uint actualRayIndex = rayQueue.rayIndices[rayIndex];
+    uvec2 pixelCoord = uvec2(actualRayIndex % resolution.x, actualRayIndex / resolution.x);
+
+    // Create a simple gradient: red-to-blue horizontally, dark-to-bright vertically
+    vec2 uv = vec2(pixelCoord) / vec2(resolution);
+    vec4 color = vec4(uv.x, uv.y * 0.5, 1.0 - uv.x, 1.0);
+
+    imageStore(outputImage, ivec2(pixelCoord), color);
 }
     )",
                                                                                                                                       "shader"));

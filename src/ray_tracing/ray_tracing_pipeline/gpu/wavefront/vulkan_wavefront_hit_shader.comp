@@ -1,6 +1,15 @@
 #version 450
 layout (local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
 
+layout(push_constant) uniform PushConstants {
+    uint width;
+    uint height;
+} pc;
+
+uvec2 getResolution() {
+    return uvec2(pc.width, pc.height);
+}
+
 struct PathHeader {
     float originX;
     float originY;
@@ -21,16 +30,18 @@ struct HitInfo {
     float barycentricV;
 };
 
-layout (std430, binding = 0, set = 0) readonly buffer PathHeaders {
+// Note: TLAS uses bindings 0-5, user bindings start at 6+
+// Wavefront internal buffers use bindings 50-52 to avoid conflicts
+layout (std430, binding = 50, set = 0) readonly buffer PathHeaders {
     PathHeader headers[];
 } pathHeaders;
 
-layout(std430, binding = 1, set = 0) readonly buffer RayQueue {
+layout(std430, binding = 51, set = 0) readonly buffer RayQueue {
     uint count;
     uint rayIndices[];
 } rayQueue;
 
-layout(std430, binding = 2, set = 0) readonly buffer HitInfos {
+layout(std430, binding = 52, set = 0) readonly buffer HitInfos {
     HitInfo hits[];
 } hitInfos;
 

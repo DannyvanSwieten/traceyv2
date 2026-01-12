@@ -8,7 +8,7 @@
 
 namespace tracey
 {
-    VulkanComputeRayTracingDescriptorSet::VulkanComputeRayTracingDescriptorSet(VulkanComputeDevice &device, const RayTracingPipelineLayoutDescriptor &layout, VkDescriptorSetLayout descriptorSetLayout) : m_device(device), m_descriptorSetLayout(descriptorSetLayout), m_descriptorSet(VK_NULL_HANDLE), m_layout(layout)
+    VulkanComputeRayTracingDescriptorSet::VulkanComputeRayTracingDescriptorSet(VulkanComputeDevice &device, const RayTracingPipelineLayoutDescriptor &layout, VkDescriptorSetLayout descriptorSetLayout, uint32_t userBindingOffset) : m_device(device), m_descriptorSetLayout(descriptorSetLayout), m_descriptorSet(VK_NULL_HANDLE), m_layout(layout), m_userBindingOffset(userBindingOffset)
     {
         // Allocate descriptor set
         VkDescriptorSetAllocateInfo allocInfo{};
@@ -27,7 +27,7 @@ namespace tracey
     }
     void VulkanComputeRayTracingDescriptorSet::setImage2D(const std::string_view binding, Image2D *image)
     {
-        const auto index = m_layout.indexForBinding(binding) + AccelerationStructureDescriptorCount;
+        const auto index = m_layout.indexForBinding(binding) + m_userBindingOffset;
         VkWriteDescriptorSet writeDesc{};
         writeDesc.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writeDesc.dstSet = m_descriptorSet;
@@ -45,7 +45,7 @@ namespace tracey
     }
     void VulkanComputeRayTracingDescriptorSet::setBuffer(const std::string_view binding, Buffer *buffer)
     {
-        const auto index = m_layout.indexForBinding(binding) + AccelerationStructureDescriptorCount;
+        const auto index = m_layout.indexForBinding(binding) + m_userBindingOffset;
         VkWriteDescriptorSet writeDesc{};
         writeDesc.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writeDesc.dstSet = m_descriptorSet;

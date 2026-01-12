@@ -3,6 +3,7 @@
 #include "../../ray_tracing_pipeline.hpp"
 namespace tracey
 {
+    enum class ShaderStage;
     class RayTracingPipelineLayoutDescriptor;
     class CpuShaderBindingTable;
     class VulkanComputeDevice;
@@ -30,6 +31,8 @@ namespace tracey
 
     private:
         size_t bindingStartOffset(ShaderStage stage) const;
+        void allocateInternalBuffers(uint32_t maxRayCount);
+        void bindInternalBuffers(VkDescriptorSet descriptorSet);
 
     private:
         VulkanComputeDevice &m_device;
@@ -38,6 +41,15 @@ namespace tracey
         PipelineInfo m_intersectPipelineInfo;
         std::vector<PipelineInfo> m_hitPipelines;
         std::vector<PipelineInfo> m_missPipelines;
+
+        // Wavefront internal buffers
+        VkBuffer m_pathHeaderBuffer = VK_NULL_HANDLE;
+        VkDeviceMemory m_pathHeaderMemory = VK_NULL_HANDLE;
+        VkBuffer m_rayQueueBuffer = VK_NULL_HANDLE;
+        VkDeviceMemory m_rayQueueMemory = VK_NULL_HANDLE;
+        VkBuffer m_hitInfoBuffer = VK_NULL_HANDLE;
+        VkDeviceMemory m_hitInfoMemory = VK_NULL_HANDLE;
+        uint32_t m_maxRayCount = 0;
     };
 
 }

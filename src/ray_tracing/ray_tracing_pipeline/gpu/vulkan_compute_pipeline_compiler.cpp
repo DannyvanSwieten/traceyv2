@@ -288,6 +288,76 @@ namespace tracey
         rayGenShaderTemplateStream << rayGenShaderFile.rdbuf() << "\n";
         std::string rayGenShaderTemplate = rayGenShaderTemplateStream.str();
 
+        // Generate user parameters (bindings and payloads)
+        std::stringstream userParams;
+
+        // User bindings start after TLAS (0-5) at binding 6
+        const auto bindingStartOffset = 6;
+        for (const auto &binding : layout.bindings())
+        {
+            const auto bindingIndex = layout.indexForBinding(binding.name) + bindingStartOffset;
+            switch (binding.type)
+            {
+            case RayTracingPipelineLayoutDescriptor::DescriptorType::Image2D:
+                userParams << "layout(set = 0, binding = " << bindingIndex << ", rgba8) uniform writeonly image2D " << binding.name << ";\n";
+                break;
+            case RayTracingPipelineLayoutDescriptor::DescriptorType::StorageBuffer:
+                userParams << "layout(std430, set = 0, binding = " << bindingIndex << ") buffer " << "Buffer" << bindingIndex << " {\n";
+                for (const auto &field : binding.structure->fields())
+                {
+                    userParams << "    " << field.type << " " << field.name;
+                    if (field.isArray)
+                    {
+                        userParams << "[";
+                        if (field.elementCount > 0)
+                        {
+                            userParams << field.elementCount;
+                        }
+                        userParams << "]";
+                    }
+                    userParams << ";\n";
+                }
+                userParams << "} " << binding.name << ";\n";
+                break;
+            case RayTracingPipelineLayoutDescriptor::DescriptorType::AccelerationStructure:
+                // TLAS bindings already defined in template
+                break;
+            default:
+                break;
+            }
+        }
+
+        // Generate payload structures
+        for (const auto &payload : layout.payloads())
+        {
+            userParams << "struct " << payload.structure.name() << " {\n";
+            for (const auto &field : payload.structure.fields())
+            {
+                userParams << "    " << field.type << " " << field.name << ";\n";
+            }
+            userParams << "};\n";
+        }
+
+        // Create payload container and defines
+        userParams << "struct RayPayloads {\n";
+        for (const auto &payload : layout.payloads())
+        {
+            userParams << "    " << payload.structure.name() << " " << payload.name << ";\n";
+        }
+        userParams << "};\n";
+        userParams << "RayPayloads payloads;\n";
+        for (const auto &payload : layout.payloads())
+        {
+            userParams << "#define " << payload.name << " payloads." << payload.name << "\n";
+        }
+
+        // Inject user parameters
+        const auto userParamsPosition = rayGenShaderTemplate.find("//___USER_PARAMS___");
+        if (userParamsPosition != std::string::npos)
+        {
+            rayGenShaderTemplate.replace(userParamsPosition, std::string("//___USER_PARAMS___").length(), userParams.str());
+        }
+
         const auto rayGenShader = sbt.rayGen();
         const auto cpuModule = dynamic_cast<const CpuShaderModule *>(rayGenShader);
         std::string userSource(cpuModule->source());
@@ -334,7 +404,8 @@ namespace tracey
         // Generate user parameters (bindings and payloads)
         std::stringstream userParams;
 
-        const auto bindingStartOffset = 2;
+        // User bindings start after TLAS (0-5) at binding 6
+        const auto bindingStartOffset = 6;
         for (const auto &binding : layout.bindings())
         {
             const auto bindingIndex = layout.indexForBinding(binding.name) + bindingStartOffset;
@@ -446,7 +517,8 @@ namespace tracey
         // Generate user parameters (bindings and payloads)
         std::stringstream userParams;
 
-        const auto bindingStartOffset = 2;
+        // User bindings start after TLAS (0-5) at binding 6
+        const auto bindingStartOffset = 6;
         for (const auto &binding : layout.bindings())
         {
             const auto bindingIndex = layout.indexForBinding(binding.name) + bindingStartOffset;
