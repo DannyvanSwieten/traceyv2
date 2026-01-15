@@ -8,6 +8,136 @@
 #include <shaderc/shaderc.hpp>
 namespace tracey
 {
+    // Helper: Get alignment requirement for GLSL type in std430 layout
+    static size_t getStd430Alignment(const std::string &glslType)
+    {
+        if (glslType == "float" || glslType == "int" || glslType == "uint")
+            return 4;
+        if (glslType == "vec2" || glslType == "ivec2" || glslType == "uvec2")
+            return 8;
+        if (glslType == "vec3" || glslType == "ivec3" || glslType == "uvec3")
+            return 16; // std430: vec3 is 16-byte aligned
+        if (glslType == "vec4" || glslType == "ivec4" || glslType == "uvec4")
+            return 16;
+        if (glslType == "mat3")
+            return 16; // mat3 is array of 3 vec3, each aligned to 16
+        if (glslType == "mat4")
+            return 16;
+        return 16; // Default for unknown types
+    }
+
+    // Helper: Get size for GLSL type in std430 layout
+    static size_t getStd430Size(const std::string &glslType)
+    {
+        if (glslType == "float" || glslType == "int" || glslType == "uint")
+            return 4;
+        if (glslType == "vec2" || glslType == "ivec2" || glslType == "uvec2")
+            return 8;
+        if (glslType == "vec3" || glslType == "ivec3" || glslType == "uvec3")
+            return 12; // std430: vec3 is 12 bytes (but 16-byte aligned)
+        if (glslType == "vec4" || glslType == "ivec4" || glslType == "uvec4")
+            return 16;
+        if (glslType == "mat3")
+            return 48; // 3 * 16 (each column is vec3, 16-byte aligned)
+        if (glslType == "mat4")
+            return 64; // 4 * 16
+        return 16;     // Default for unknown types
+    }
+
+    // Helper: Generate struct with proper std430 padding
+    static void generateStd430Struct(std::stringstream &ss, const std::string &structName, const std::vector<StructField> &fields)
+    {
+        ss << "struct " << structName << " {\n";
+
+        size_t currentOffset = 0;
+        int paddingCounter = 0;
+
+        for (const auto &field : fields)
+        {
+            size_t alignment = getStd430Alignment(field.type);
+            size_t fieldSize = getStd430Size(field.type);
+
+            // Calculate aligned offset
+            size_t alignedOffset = (currentOffset + alignment - 1) & ~(alignment - 1);
+
+            // Insert padding if needed
+            if (alignedOffset > currentOffset)
+            {
+                size_t paddingSize = alignedOffset - currentOffset;
+                // Determine padding type based on size
+                if (paddingSize == 4)
+                {
+                    ss << "    float _pad" << paddingCounter++ << ";\n";
+                }
+                else if (paddingSize == 8)
+                {
+                    ss << "    vec2 _pad" << paddingCounter++ << ";\n";
+                }
+                else if (paddingSize == 12)
+                {
+                    ss << "    vec3 _pad" << paddingCounter++ << ";\n";
+                }
+                else if (paddingSize >= 16)
+                {
+                    // Use multiple vec4s for large padding
+                    while (paddingSize >= 16)
+                    {
+                        ss << "    vec4 _pad" << paddingCounter++ << ";\n";
+                        paddingSize -= 16;
+                    }
+                    if (paddingSize == 12)
+                    {
+                        ss << "    vec3 _pad" << paddingCounter++ << ";\n";
+                    }
+                    else if (paddingSize == 8)
+                    {
+                        ss << "    vec2 _pad" << paddingCounter++ << ";\n";
+                    }
+                    else if (paddingSize == 4)
+                    {
+                        ss << "    float _pad" << paddingCounter++ << ";\n";
+                    }
+                }
+            }
+
+            // Write the actual field
+            ss << "    " << field.type << " " << field.name;
+            if (field.isArray)
+            {
+                ss << "[";
+                if (field.elementCount > 0)
+                {
+                    ss << field.elementCount;
+                }
+                ss << "]";
+                fieldSize *= field.elementCount > 0 ? field.elementCount : 1;
+            }
+            ss << ";\n";
+
+            currentOffset = alignedOffset + fieldSize;
+        }
+
+        // Align struct size to 16 bytes (std430 requirement for structs in arrays)
+        size_t alignedSize = (currentOffset + 15) & ~15;
+        if (alignedSize > currentOffset)
+        {
+            size_t finalPadding = alignedSize - currentOffset;
+            if (finalPadding == 4)
+            {
+                ss << "    float _pad" << paddingCounter++ << ";\n";
+            }
+            else if (finalPadding == 8)
+            {
+                ss << "    vec2 _pad" << paddingCounter++ << ";\n";
+            }
+            else if (finalPadding == 12)
+            {
+                ss << "    vec3 _pad" << paddingCounter++ << ";\n";
+            }
+        }
+
+        ss << "};\n";
+    }
     std::vector<uint32_t> compileVulkanComputeRayTracingPipeline(const RayTracingPipelineLayoutDescriptor &layout, const CpuShaderBindingTable &sbt)
     {
         const auto rayGenShader = sbt.rayGen();
@@ -270,11 +400,15 @@ namespace tracey
         {
             missShadersSpirV.push_back(compileMissShader(layout, sbt, i));
         }
+
+        const auto resolveSpirV = compileResolveShader(layout, sbt);
+
         return WaveFrontPipelineCompileResult{
             .rayGenShaderSpirV = std::move(rayGenSpirV),
             .intersectShaderSpirV = std::move(intersectSpirV),
             .hitShadersSpirV = std::move(hitShadersSpirV),
-            .missShadersSpirV = std::move(missShadersSpirV)};
+            .missShadersSpirV = std::move(missShadersSpirV),
+            .resolveShaderSpirV = std::move(resolveSpirV)};
     }
     std::vector<uint32_t> compileRayGenShader(const RayTracingPipelineLayoutDescriptor &layout, const CpuShaderBindingTable &sbt)
     {
@@ -327,29 +461,26 @@ namespace tracey
             }
         }
 
-        // Generate payload structures
+        // Generate payload structures with proper std430 padding
         for (const auto &payload : layout.payloads())
         {
-            userParams << "struct " << payload.structure.name() << " {\n";
-            for (const auto &field : payload.structure.fields())
-            {
-                userParams << "    " << field.type << " " << field.name << ";\n";
-            }
-            userParams << "};\n";
+            generateStd430Struct(userParams, payload.structure.name(), payload.structure.fields());
         }
 
-        // Create payload container and defines
+        // Create payload container struct
+        // Note: Individual payload structs are already properly aligned,
+        // and struct members in std430 are naturally aligned to their size
         userParams << "struct RayPayloads {\n";
         for (const auto &payload : layout.payloads())
         {
             userParams << "    " << payload.structure.name() << " " << payload.name << ";\n";
         }
         userParams << "};\n";
-        userParams << "RayPayloads payloads;\n";
-        for (const auto &payload : layout.payloads())
-        {
-            userParams << "#define " << payload.name << " payloads." << payload.name << "\n";
-        }
+
+        // Create a buffer for ray payloads at binding 20
+        userParams << "layout(std430, set = 0, binding = " << 20 << ") buffer RayPayloadBuffer {\n";
+        userParams << "    RayPayloads payloads[];\n";
+        userParams << "} rayPayloadBuffer;\n";
 
         // Inject user parameters
         const auto userParamsPosition = rayGenShaderTemplate.find("//___USER_PARAMS___");
@@ -358,10 +489,30 @@ namespace tracey
             rayGenShaderTemplate.replace(userParamsPosition, std::string("//___USER_PARAMS___").length(), userParams.str());
         }
 
+        // Generate function signature with payload parameter
+        std::stringstream rayGenSignature;
+        rayGenSignature << "void ray_gen_main(uvec2 pixel, inout RayPayloads payload);\n";
+
+        const auto signaturePosition = rayGenShaderTemplate.find("//___RAY_GEN_SIGNATURE___");
+        if (signaturePosition != std::string::npos)
+        {
+            rayGenShaderTemplate.replace(signaturePosition, std::string("//___RAY_GEN_SIGNATURE___").length(), rayGenSignature.str());
+        }
+
+        // Generate function call with payload reference
+        std::stringstream rayGenCall;
+        rayGenCall << "ray_gen_main(pixelCoord, rayPayloadBuffer.payloads[index]);\n";
+
+        const auto callPosition = rayGenShaderTemplate.find("//___RAY_GEN_CALL___");
+        if (callPosition != std::string::npos)
+        {
+            rayGenShaderTemplate.replace(callPosition, std::string("//___RAY_GEN_CALL___").length(), rayGenCall.str());
+        }
+
         const auto rayGenShader = sbt.rayGen();
         const auto cpuModule = dynamic_cast<const CpuShaderModule *>(rayGenShader);
         std::string userSource(cpuModule->source());
-        // replace user entry point with rayGenMain
+        // replace user entry point with ray_gen_main
         size_t entryPointPos = userSource.find(cpuModule->entryPoint());
         if (entryPointPos != std::string_view::npos)
         {
@@ -440,35 +591,52 @@ namespace tracey
             }
         }
 
-        // Generate payload structures
+        // Generate payload structures with proper std430 padding
         for (const auto &payload : layout.payloads())
         {
-            userParams << "struct " << payload.structure.name() << " {\n";
-            for (const auto &field : payload.structure.fields())
-            {
-                userParams << "    " << field.type << " " << field.name << ";\n";
-            }
-            userParams << "};\n";
+            generateStd430Struct(userParams, payload.structure.name(), payload.structure.fields());
         }
 
-        // Create payload container and defines
+        // Create payload container struct
+        // Note: Individual payload structs are already properly aligned,
+        // and struct members in std430 are naturally aligned to their size
         userParams << "struct RayPayloads {\n";
         for (const auto &payload : layout.payloads())
         {
             userParams << "    " << payload.structure.name() << " " << payload.name << ";\n";
         }
         userParams << "};\n";
-        userParams << "RayPayloads payloads;\n";
-        for (const auto &payload : layout.payloads())
-        {
-            userParams << "#define " << payload.name << " payloads." << payload.name << "\n";
-        }
+
+        // Create a buffer for ray payloads at binding 20
+        userParams << "layout(std430, set = 0, binding = " << 20 << ") buffer RayPayloadBuffer {\n";
+        userParams << "    RayPayloads payloads[];\n";
+        userParams << "} rayPayloadBuffer;\n";
 
         // Inject user parameters
         const auto userParamsPosition = hitShaderTemplate.find("//___USER_PARAMS___");
         if (userParamsPosition != std::string::npos)
         {
             hitShaderTemplate.replace(userParamsPosition, std::string("//___USER_PARAMS___").length(), userParams.str());
+        }
+
+        // Generate function signature with HitInfo and payload parameters
+        std::stringstream hitShaderSignature;
+        hitShaderSignature << "void hit_shader_main(HitInfo hitInfo, inout RayPayloads payload);\n";
+
+        const auto signaturePosition = hitShaderTemplate.find("//___HIT_SHADER_SIGNATURE___");
+        if (signaturePosition != std::string::npos)
+        {
+            hitShaderTemplate.replace(signaturePosition, std::string("//___HIT_SHADER_SIGNATURE___").length(), hitShaderSignature.str());
+        }
+
+        // Generate function call with HitInfo and payload reference
+        std::stringstream hitShaderCall;
+        hitShaderCall << "hit_shader_main(hitInfos.hits[rayIndex], rayPayloadBuffer.payloads[rayIndex]);\n";
+
+        const auto callPosition = hitShaderTemplate.find("//___HIT_SHADER_CALL___");
+        if (callPosition != std::string::npos)
+        {
+            hitShaderTemplate.replace(callPosition, std::string("//___HIT_SHADER_CALL___").length(), hitShaderCall.str());
         }
 
         const auto hitShader = sbt.hitModules()[hitShaderIndex];
@@ -553,35 +721,52 @@ namespace tracey
             }
         }
 
-        // Generate payload structures
+        // Generate payload structures with proper std430 padding
         for (const auto &payload : layout.payloads())
         {
-            userParams << "struct " << payload.structure.name() << " {\n";
-            for (const auto &field : payload.structure.fields())
-            {
-                userParams << "    " << field.type << " " << field.name << ";\n";
-            }
-            userParams << "};\n";
+            generateStd430Struct(userParams, payload.structure.name(), payload.structure.fields());
         }
 
-        // Create payload container and defines
+        // Create payload container struct
+        // Note: Individual payload structs are already properly aligned,
+        // and struct members in std430 are naturally aligned to their size
         userParams << "struct RayPayloads {\n";
         for (const auto &payload : layout.payloads())
         {
             userParams << "    " << payload.structure.name() << " " << payload.name << ";\n";
         }
         userParams << "};\n";
-        userParams << "RayPayloads payloads;\n";
-        for (const auto &payload : layout.payloads())
-        {
-            userParams << "#define " << payload.name << " payloads." << payload.name << "\n";
-        }
+
+        // Create a buffer for ray payloads at binding 20
+        userParams << "layout(std430, set = 0, binding = " << 20 << ") buffer RayPayloadBuffer {\n";
+        userParams << "    RayPayloads payloads[];\n";
+        userParams << "} rayPayloadBuffer;\n";
 
         // Inject user parameters
         const auto userParamsPosition = missShaderTemplate.find("//___USER_PARAMS___");
         if (userParamsPosition != std::string::npos)
         {
             missShaderTemplate.replace(userParamsPosition, std::string("//___USER_PARAMS___").length(), userParams.str());
+        }
+
+        // Generate function signature with payload parameter
+        std::stringstream missShaderSignature;
+        missShaderSignature << "void miss_shader_main(inout RayPayloads payload);\n";
+
+        const auto signaturePosition = missShaderTemplate.find("//___MISS_SHADER_SIGNATURE___");
+        if (signaturePosition != std::string::npos)
+        {
+            missShaderTemplate.replace(signaturePosition, std::string("//___MISS_SHADER_SIGNATURE___").length(), missShaderSignature.str());
+        }
+
+        // Generate function call with payload reference
+        std::stringstream missShaderCall;
+        missShaderCall << "miss_shader_main(rayPayloadBuffer.payloads[rayIndex]);\n";
+
+        const auto callPosition = missShaderTemplate.find("//___MISS_SHADER_CALL___");
+        if (callPosition != std::string::npos)
+        {
+            missShaderTemplate.replace(callPosition, std::string("//___MISS_SHADER_CALL___").length(), missShaderCall.str());
         }
 
         const auto missShader = sbt.missModules()[missShaderIndex];
@@ -610,6 +795,157 @@ namespace tracey
         if (module.GetCompilationStatus() != shaderc_compilation_status_success)
         {
             throw std::runtime_error("Vulkan Compute Ray Tracing Miss Shader compilation failed: " + module.GetErrorMessage());
+        }
+
+        std::vector<uint32_t> spirvCode(module.cbegin(), module.cend());
+        return spirvCode;
+    }
+
+    std::vector<uint32_t> compileResolveShader(const RayTracingPipelineLayoutDescriptor &layout, const CpuShaderBindingTable &sbt)
+    {
+        std::filesystem::path resolveShaderPath = std::filesystem::path(__FILE__).parent_path() / "wavefront" / "vulkan_wavefront_resolve_shader.comp";
+        std::ifstream resolveShaderFile(resolveShaderPath);
+        if (!resolveShaderFile.is_open())
+        {
+            throw std::runtime_error("Failed to open Vulkan WaveFront resolve shader file: " + resolveShaderPath.string());
+        }
+        std::stringstream resolveShaderStream;
+        resolveShaderStream << resolveShaderFile.rdbuf();
+        std::string resolveShaderTemplate = resolveShaderStream.str();
+
+        // Check if user provided a resolve shader
+        const auto resolveShader = sbt.resolveShader();
+
+        if (resolveShader != nullptr)
+        {
+            // User provided a custom resolve shader - inject it
+            const auto cpuModule = dynamic_cast<const CpuShaderModule *>(resolveShader);
+
+            // Inject user parameters (payload buffer + user bindings)
+            std::stringstream userParams;
+
+            // Generate payload structures with proper std430 padding
+            for (const auto &payload : layout.payloads())
+            {
+                generateStd430Struct(userParams, payload.structure.name(), payload.structure.fields());
+            }
+
+            // Create payload container struct
+            userParams << "struct RayPayloads {\n";
+            for (const auto &payload : layout.payloads())
+            {
+                userParams << "    " << payload.structure.name() << " " << payload.name << ";\n";
+            }
+            userParams << "};\n";
+
+            // Create a buffer for ray payloads at binding 20
+            userParams << "layout(std430, set = 0, binding = " << 20 << ") readonly buffer RayPayloadBuffer {\n";
+            userParams << "    RayPayloads payloads[];\n";
+            userParams << "} rayPayloadBuffer;\n";
+
+            // Add user-defined image/buffer bindings (starting at offset 6)
+            const size_t bindingStartOffset = 6;
+            for (const auto &binding : layout.bindings())
+            {
+                const size_t bindingIndex = layout.indexForBinding(binding.name);
+                switch (binding.type)
+                {
+                case RayTracingPipelineLayoutDescriptor::DescriptorType::Image2D:
+                    userParams << "layout(set = 0, binding = " << (bindingIndex + bindingStartOffset) << ", rgba8) uniform image2D " << binding.name << ";\n";
+                    break;
+                case RayTracingPipelineLayoutDescriptor::DescriptorType::StorageBuffer:
+                    userParams << "layout(std430, set = 0, binding = " << (bindingIndex + bindingStartOffset) << ") buffer " << binding.name << "_buffer {\n";
+                    userParams << "    float data[];\n";
+                    userParams << "} " << binding.name << ";\n";
+                    break;
+                case RayTracingPipelineLayoutDescriptor::DescriptorType::AccelerationStructure:
+                    // TLAS not needed in resolve shader
+                    break;
+                case RayTracingPipelineLayoutDescriptor::DescriptorType::RayPayload:
+                    // Payload is already handled above
+                    break;
+                }
+            }
+
+            // Inject user parameters
+            const auto userParamsPosition = resolveShaderTemplate.find("//___USER_PARAMS___");
+            if (userParamsPosition != std::string::npos)
+            {
+                resolveShaderTemplate.replace(userParamsPosition, std::string("//___USER_PARAMS___").length(), userParams.str());
+            }
+
+            // Generate function signature with pixel coord and payload parameters
+            std::stringstream resolveShaderSignature;
+            resolveShaderSignature << "void resolve_shader_main(uvec2 pixel, in RayPayloads payload);\n";
+
+            const auto signaturePosition = resolveShaderTemplate.find("//___RESOLVE_SHADER_SIGNATURE___");
+            if (signaturePosition != std::string::npos)
+            {
+                resolveShaderTemplate.replace(signaturePosition, std::string("//___RESOLVE_SHADER_SIGNATURE___").length(), resolveShaderSignature.str());
+            }
+
+            // Get user resolve shader code
+            std::string userSource(cpuModule->source());
+
+            // Replace user entry point with resolve_shader_main
+            size_t entryPointPos = userSource.find(cpuModule->entryPoint());
+            if (entryPointPos != std::string_view::npos)
+            {
+                userSource.replace(entryPointPos, cpuModule->entryPoint().size(), "resolve_shader_main");
+            }
+
+            const auto userSourcePosition = resolveShaderTemplate.find("//___RESOLVE_SHADER_FUNCTION___");
+            if (userSourcePosition != std::string::npos)
+            {
+                resolveShaderTemplate.replace(userSourcePosition, std::string("//___RESOLVE_SHADER_FUNCTION___").length(), userSource);
+            }
+
+            // Generate function call with pixel coord and payload reference
+            std::stringstream resolveShaderCall;
+            resolveShaderCall << "resolve_shader_main(pixelCoord, rayPayloadBuffer.payloads[rayIndex]);\n";
+
+            const auto callPosition = resolveShaderTemplate.find("//___RESOLVE_SHADER_CALL___");
+            if (callPosition != std::string::npos)
+            {
+                resolveShaderTemplate.replace(callPosition, std::string("//___RESOLVE_SHADER_CALL___").length(), resolveShaderCall.str());
+            }
+        }
+        else
+        {
+            // No user resolve shader - use no-op passthrough
+            // Remove placeholder comments
+            size_t pos;
+            while ((pos = resolveShaderTemplate.find("//___USER_PARAMS___")) != std::string::npos)
+            {
+                resolveShaderTemplate.replace(pos, std::string("//___USER_PARAMS___").length(), "// No user parameters - using no-op passthrough");
+            }
+            while ((pos = resolveShaderTemplate.find("//___RESOLVE_SHADER_SIGNATURE___")) != std::string::npos)
+            {
+                resolveShaderTemplate.replace(pos, std::string("//___RESOLVE_SHADER_SIGNATURE___").length(), "");
+            }
+            while ((pos = resolveShaderTemplate.find("//___RESOLVE_SHADER_FUNCTION___")) != std::string::npos)
+            {
+                resolveShaderTemplate.replace(pos, std::string("//___RESOLVE_SHADER_FUNCTION___").length(), "");
+            }
+            while ((pos = resolveShaderTemplate.find("//___RESOLVE_SHADER_CALL___")) != std::string::npos)
+            {
+                resolveShaderTemplate.replace(pos, std::string("//___RESOLVE_SHADER_CALL___").length(), "");
+            }
+        }
+
+        printf("Vulkan Compute Ray Tracing Resolve Shader Source:\n%s\n", resolveShaderTemplate.c_str());
+
+        // Compile finalShader using shaderc
+        shaderc::Compiler compiler;
+        shaderc::CompileOptions options;
+        options.SetOptimizationLevel(shaderc_optimization_level_performance);
+        options.SetTargetEnvironment(shaderc_target_env_vulkan, shaderc_env_version_vulkan_1_2);
+
+        shaderc::SpvCompilationResult module =
+            compiler.CompileGlslToSpv(resolveShaderTemplate.c_str(), resolveShaderTemplate.size(), shaderc_compute_shader, "ResolveShader", options);
+        if (module.GetCompilationStatus() != shaderc_compilation_status_success)
+        {
+            throw std::runtime_error("Vulkan Compute Ray Tracing Resolve Shader compilation failed: " + module.GetErrorMessage());
         }
 
         std::vector<uint32_t> spirvCode(module.cbegin(), module.cend());

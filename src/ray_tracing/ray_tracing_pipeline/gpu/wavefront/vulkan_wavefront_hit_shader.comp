@@ -28,16 +28,20 @@ struct HitInfo {
     uint instanceIndex;
     float barycentricU;
     float barycentricV;
+    float normalX;
+    float normalY;
+    float normalZ;
 };
 
 // Note: TLAS uses bindings 0-5, user bindings start at 6+
-// Wavefront internal buffers use bindings 50-52 to avoid conflicts
-layout (std430, binding = 50, set = 0) readonly buffer PathHeaders {
+// Wavefront internal buffers use bindings 50-53 to avoid conflicts
+layout (std430, binding = 50, set = 0) buffer PathHeaders {
     PathHeader headers[];
 } pathHeaders;
 
 layout(std430, binding = 51, set = 0) readonly buffer RayQueue {
     uint count;
+    uint padding[3];
     uint rayIndices[];
 } rayQueue;
 
@@ -45,16 +49,87 @@ layout(std430, binding = 52, set = 0) readonly buffer HitInfos {
     HitInfo hits[];
 } hitInfos;
 
+// Next-bounce ray queue (written by hit/miss shaders, consumed by the next intersection pass)
+layout(std430, binding = 53, set = 0) buffer NextRayQueue {
+    uint count;
+    uint padding[3];
+    uint rayIndices[];
+} nextRayQueue;
+
+
+// TLAS transform buffer (binding 5)
+struct InverseTransforms {
+    mat4 objToWorld;
+    mat4 worldToObj;
+};
+
+layout(std430, set = 0, binding = 5) readonly buffer TLASInstanceTransforms {
+    InverseTransforms inv[];
+} tlasInstanceTransforms;
+
 // User-defined bindings
+
 //___USER_PARAMS___
 
-// Helper: set new ray for secondary bounces (stub for now - not used in phase 1)
-void setNewRay(vec3 origin, vec3 direction, float tmin, float tmax) {
-    // Will be implemented when adding bounce support
+// Current path/ray index for this invocation (set in main before calling the user hit shader)
+uint g_CurrentRayIndex = 0u;
+
+// Helper: Get object-to-world transform matrix for current hit instance
+mat4 getObjectToWorld(HitInfo hitInfo) {
+    return tlasInstanceTransforms.inv[hitInfo.instanceIndex].objToWorld;
 }
 
-// User shader function
-void hit_shader_main();
+// Helper: Get world-to-object transform matrix for current hit instance
+mat4 getWorldToObject(HitInfo hitInfo) {
+    return tlasInstanceTransforms.inv[hitInfo.instanceIndex].worldToObj;
+}
+
+// Helper: Get ray origin for current ray
+vec3 getRayOrigin(uint rayIndex) {
+    PathHeader header = pathHeaders.headers[rayIndex];
+    return vec3(header.originX, header.originY, header.originZ);
+}
+
+// Helper: Get ray direction for current ray
+vec3 getRayDirection(uint rayIndex) {
+    PathHeader header = pathHeaders.headers[rayIndex];
+    return vec3(header.directionX, header.directionY, header.directionZ);
+}
+
+// Helper: Get world-space hit position
+vec3 getWorldHitPosition(uint rayIndex, HitInfo hitInfo) {
+    return getRayOrigin(rayIndex) + getRayDirection(rayIndex) * hitInfo.t;
+}
+
+// Helper: schedule a new ray for the NEXT intersection pass.
+// This overwrites the current path header (same path index) and appends the path index into nextRayQueue.
+void traceRay(vec3 origin, float tMin, vec3 direction, float tMax) {
+    // Write new ray state for this path
+    PathHeader h;
+    h.originX = origin.x;
+    h.originY = origin.y;
+    h.originZ = origin.z;
+    h.tMin = tMin;
+    h.directionX = direction.x;
+    h.directionY = direction.y;
+    h.directionZ = direction.z;
+    h.tMax = tMax;
+
+    pathHeaders.headers[g_CurrentRayIndex] = h;
+
+    // Append this path to the next queue
+    uint dst = atomicAdd(nextRayQueue.count, 1u);
+
+    // Optional safety: avoid OOB if the queue capacity is rayCount (common case)
+    uint rayCount = pc.width * pc.height;
+    if (dst < rayCount) {
+        nextRayQueue.rayIndices[dst] = g_CurrentRayIndex;
+    }
+}
+
+// User shader function signature - will receive HitInfo and payload reference
+//___HIT_SHADER_SIGNATURE___
+
 //___HIT_SHADER_FUNCTION___
 
 void main() {
@@ -62,10 +137,11 @@ void main() {
     if (workItemId >= rayQueue.count) return;
 
     uint rayIndex = rayQueue.rayIndices[workItemId];
+    g_CurrentRayIndex = rayIndex;
 
     // Check if this ray hit geometry (triangleIndex != 0xFFFFFFFF)
     if (hitInfos.hits[rayIndex].triangleIndex == 0xFFFFFFFF) return;
 
-    // Call user hit shader
-    hit_shader_main();
+    // Call user hit shader with HitInfo and payload reference
+    //___HIT_SHADER_CALL___
 }

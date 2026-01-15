@@ -60,32 +60,33 @@ namespace tracey
     }
     void VulkanComputeRayTracingCommandBuffer::setDescriptorSet(DescriptorSet *set)
     {
-        VkPipelineLayout layout;
+        const auto vkDescriptorSet = dynamic_cast<VulkanComputeRayTracingDescriptorSet *>(set)->vkDescriptorSet();
 
-        // Get pipeline layout from either monolithic or wavefront pipeline
-        if (auto *monolithic = dynamic_cast<VulkanComputeRaytracingPipeline *>(m_pipeline))
+        // For wavefront pipelines, store descriptor sets instead of binding immediately
+        // They will be bound during traceRays() for multi-bounce support
+        if (auto *wavefront = dynamic_cast<VulkanWaveFrontPipeline *>(m_pipeline))
         {
-            layout = monolithic->vkPipelineLayout();
+            m_descriptorSets.push_back(vkDescriptorSet);
         }
-        else if (auto *wavefront = dynamic_cast<VulkanWaveFrontPipeline *>(m_pipeline))
+        else if (auto *monolithic = dynamic_cast<VulkanComputeRaytracingPipeline *>(m_pipeline))
         {
-            layout = wavefront->pipelineLayout();
+            // For monolithic pipeline, bind immediately
+            VkPipelineLayout layout = monolithic->vkPipelineLayout();
+            vkCmdBindDescriptorSets(m_vkCommandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &vkDescriptorSet, 0, nullptr);
         }
         else
         {
             throw std::runtime_error("Unknown pipeline type");
         }
-
-        const auto vkDescriptorSet = dynamic_cast<VulkanComputeRayTracingDescriptorSet *>(set)->vkDescriptorSet();
-        vkCmdBindDescriptorSets(m_vkCommandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &vkDescriptorSet, 0, nullptr);
     }
     void VulkanComputeRayTracingCommandBuffer::traceRays(const ShaderBindingTable &sbt, uint32_t width, uint32_t height)
     {
         // Check if wavefront pipeline
         if (auto *wavefront = dynamic_cast<VulkanWaveFrontPipeline *>(m_pipeline))
         {
-            // === WAVEFRONT MULTI-STAGE EXECUTION ===
+            // === WAVEFRONT MULTI-BOUNCE EXECUTION ===
 
+            const uint32_t maxBounces = 3; // TODO: Make configurable
             uint32_t rayCount = width * height;
             uint32_t workGroups = (rayCount + 255) / 256; // 256 threads per work group
 
@@ -96,50 +97,139 @@ namespace tracey
                 uint32_t height;
             } pushConstants{width, height};
 
-            // Stage 1: Ray Generation
-            vkCmdBindPipeline(m_vkCommandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
-                              wavefront->rayGenPipeline());
-            vkCmdPushConstants(m_vkCommandBuffer, wavefront->pipelineLayout(),
-                               VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pushConstants),
-                               &pushConstants);
-            vkCmdDispatch(m_vkCommandBuffer, workGroups, 1, 1);
-
-            // Barrier: Wait for ray gen to complete before intersection
             VkMemoryBarrier barrier{};
             barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
             barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-            barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-            vkCmdPipelineBarrier(m_vkCommandBuffer,
-                                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                                 0, 1, &barrier, 0, nullptr, 0, nullptr);
+            barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
 
-            // Stage 2: Intersection (BVH traversal)
-            vkCmdBindPipeline(m_vkCommandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
-                              wavefront->intersectPipeline());
-            vkCmdDispatch(m_vkCommandBuffer, workGroups, 1, 1);
+            // Initialize HitInfo buffer with invalid triangle indices
+            VkBuffer hitInfoBuf = wavefront->hitInfoBuffer();
+            if (hitInfoBuf != VK_NULL_HANDLE)
+            {
+                vkCmdFillBuffer(m_vkCommandBuffer, hitInfoBuf, 0, VK_WHOLE_SIZE, 0xFFFFFFFF);
 
-            // Barrier: Wait for intersection before hit/miss shaders
-            vkCmdPipelineBarrier(m_vkCommandBuffer,
-                                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                                 0, 1, &barrier, 0, nullptr, 0, nullptr);
+                VkMemoryBarrier fillBarrier{};
+                fillBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+                fillBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+                fillBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+                vkCmdPipelineBarrier(m_vkCommandBuffer,
+                                     VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                     VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                     0, 1, &fillBarrier, 0, nullptr, 0, nullptr);
+            }
+            for (size_t sample = 0; sample < 4; ++sample) // Single sample for now
+            {
 
-            // Stage 3: Hit shader (simplified - just use first hit shader for all hits)
-            vkCmdBindPipeline(m_vkCommandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
-                              wavefront->hitPipeline(0));
-            vkCmdDispatch(m_vkCommandBuffer, workGroups, 1, 1);
+                // Bounce 0: Ray Generation (only happens once)
+                uint32_t currentSetIndex = 0;
+                if (!m_descriptorSets.empty())
+                {
+                    vkCmdBindDescriptorSets(m_vkCommandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                            wavefront->pipelineLayout(), 0, 1,
+                                            &m_descriptorSets[currentSetIndex], 0, nullptr);
+                }
 
-            // Barrier after hit shader
-            vkCmdPipelineBarrier(m_vkCommandBuffer,
-                                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                                 0, 1, &barrier, 0, nullptr, 0, nullptr);
+                vkCmdBindPipeline(m_vkCommandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                  wavefront->rayGenPipeline());
+                vkCmdPushConstants(m_vkCommandBuffer, wavefront->pipelineLayout(),
+                                   VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pushConstants),
+                                   &pushConstants);
+                vkCmdDispatch(m_vkCommandBuffer, workGroups, 1, 1);
+                vkCmdPipelineBarrier(m_vkCommandBuffer,
+                                     VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                     VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                     0, 1, &barrier, 0, nullptr, 0, nullptr);
 
-            // Stage 4: Miss shader (simplified - just use first miss shader)
-            vkCmdBindPipeline(m_vkCommandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
-                              wavefront->missPipeline(0));
-            vkCmdDispatch(m_vkCommandBuffer, workGroups, 1, 1);
+                // Dynamic bounce loop - continue until all rays are terminated
+                // For simplicity, we'll use a fixed max iteration count to prevent infinite loops
+                const uint32_t MAX_ITERATIONS = 5;
+
+                for (uint32_t bounce = 0; bounce < MAX_ITERATIONS; bounce++)
+                {
+                    currentSetIndex = bounce % 2;
+
+                    // Bind current descriptor set (reads from binding 51, writes to binding 53)
+                    if (!m_descriptorSets.empty() && m_descriptorSets.size() > currentSetIndex)
+                    {
+                        vkCmdBindDescriptorSets(m_vkCommandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                                wavefront->pipelineLayout(), 0, 1,
+                                                &m_descriptorSets[currentSetIndex], 0, nullptr);
+                    }
+
+                    // Clear next queue count (binding 53) to 0
+                    VkBuffer nextQueueBuffer = (bounce % 2 == 0) ? wavefront->rayQueueBuffer2() : wavefront->rayQueueBuffer();
+                    vkCmdFillBuffer(m_vkCommandBuffer, nextQueueBuffer, 0, sizeof(uint32_t), 0);
+
+                    VkMemoryBarrier fillBarrier{};
+                    fillBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+                    fillBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+                    fillBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+                    vkCmdPipelineBarrier(m_vkCommandBuffer,
+                                         VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                         0, 1, &fillBarrier, 0, nullptr, 0, nullptr);
+
+                    // Clear HitInfo buffer for this bounce
+                    vkCmdFillBuffer(m_vkCommandBuffer, hitInfoBuf, 0, VK_WHOLE_SIZE, 0xFFFFFFFF);
+                    vkCmdPipelineBarrier(m_vkCommandBuffer,
+                                         VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                         0, 1, &fillBarrier, 0, nullptr, 0, nullptr);
+
+                    // Intersection
+                    vkCmdBindPipeline(m_vkCommandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                      wavefront->intersectPipeline());
+                    vkCmdPushConstants(m_vkCommandBuffer, wavefront->pipelineLayout(),
+                                       VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pushConstants),
+                                       &pushConstants);
+                    vkCmdDispatch(m_vkCommandBuffer, workGroups, 1, 1);
+                    vkCmdPipelineBarrier(m_vkCommandBuffer,
+                                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                         0, 1, &barrier, 0, nullptr, 0, nullptr);
+
+                    // Hit shader (writes new rays to binding 53 via traceRay() if active)
+                    vkCmdBindPipeline(m_vkCommandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                      wavefront->hitPipeline(0));
+                    vkCmdPushConstants(m_vkCommandBuffer, wavefront->pipelineLayout(),
+                                       VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pushConstants),
+                                       &pushConstants);
+                    vkCmdDispatch(m_vkCommandBuffer, workGroups, 1, 1);
+                    vkCmdPipelineBarrier(m_vkCommandBuffer,
+                                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                         0, 1, &barrier, 0, nullptr, 0, nullptr);
+
+                    // Miss shader (terminates rays that miss)
+                    vkCmdBindPipeline(m_vkCommandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                      wavefront->missPipeline(0));
+                    vkCmdPushConstants(m_vkCommandBuffer, wavefront->pipelineLayout(),
+                                       VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pushConstants),
+                                       &pushConstants);
+                    vkCmdDispatch(m_vkCommandBuffer, workGroups, 1, 1);
+                    vkCmdPipelineBarrier(m_vkCommandBuffer,
+                                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                         0, 1, &barrier, 0, nullptr, 0, nullptr);
+
+                    // Note: In a production implementation, we would:
+                    // 1. Read the next queue count from nextQueueBuffer
+                    // 2. Use conditional rendering or early exit if count == 0
+                    // 3. Use indirect dispatch with actual ray count for efficiency
+                    // For now, we rely on MAX_ITERATIONS and per-ray depth checks in shaders
+                }
+
+                // Resolve shader (final pass)
+                vkCmdBindPipeline(m_vkCommandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                  wavefront->resolvePipeline());
+                vkCmdPushConstants(m_vkCommandBuffer, wavefront->pipelineLayout(),
+                                   VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pushConstants),
+                                   &pushConstants);
+
+                uint32_t resolveWorkGroupsX = (width + 15) / 16;
+                uint32_t resolveWorkGroupsY = (height + 15) / 16;
+                vkCmdDispatch(m_vkCommandBuffer, resolveWorkGroupsX, resolveWorkGroupsY, 1);
+            }
         }
         else
         {

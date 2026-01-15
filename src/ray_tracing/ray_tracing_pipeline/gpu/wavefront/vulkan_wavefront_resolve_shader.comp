@@ -1,0 +1,47 @@
+#version 450
+layout (local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(push_constant) uniform PushConstants {
+    uint width;
+    uint height;
+} pc;
+
+uvec2 getResolution() {
+    return uvec2(pc.width, pc.height);
+}
+
+// User-provided payload buffer and bindings will be injected here if resolve shader is provided
+//___USER_PARAMS___
+
+// User resolve function signature (if provided)
+//___RESOLVE_SHADER_SIGNATURE___
+
+// User resolve function implementation (if provided)
+//___RESOLVE_SHADER_FUNCTION___
+
+void main() {
+    uvec2 pixelCoord = gl_GlobalInvocationID.xy;
+
+    if (pixelCoord.x >= pc.width || pixelCoord.y >= pc.height) {
+        return;
+    }
+
+    // Calculate ray index from pixel coordinate
+    uint rayIndex = pixelCoord.y * pc.width + pixelCoord.x;
+
+    // Call user resolve shader if provided, otherwise this is a no-op
+    //___RESOLVE_SHADER_CALL___
+
+    // Note: If no resolve shader is provided, this is a no-op passthrough.
+    // Hit/miss shaders can write directly to the output image.
+    //
+    // When a resolve shader is provided, it receives:
+    // - uvec2 pixel: The pixel coordinate
+    // - inout RayPayloads payload: The ray's payload data
+    //
+    // The resolve shader can:
+    // - Read final ray results from the payload
+    // - Write to the output image
+    // - Perform accumulation for multi-frame rendering
+    // - Apply tone mapping or post-processing
+}

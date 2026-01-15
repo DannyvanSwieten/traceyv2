@@ -29,6 +29,10 @@ namespace tracey
         {
             m_size += 4;
         }
+        else if (field.type == "uint")
+        {
+            m_size += 4;
+        }
         else if (field.type == "ivec2")
         {
             m_size += 8;

@@ -28,6 +28,7 @@ struct HitInfo {
     uint instanceIndex;
     float barycentricU;
     float barycentricV;
+    uint padding[3];
 };
 
 // Note: TLAS uses bindings 0-5, user bindings start at 6+
@@ -38,6 +39,7 @@ layout (std430, binding = 50, set = 0) readonly buffer PathHeaders {
 
 layout(std430, binding = 51, set = 0) readonly buffer RayQueue {
     uint count;
+    uint padding[3];
     uint rayIndices[];
 } rayQueue;
 
@@ -48,8 +50,9 @@ layout(std430, binding = 52, set = 0) readonly buffer HitInfos {
 // User-defined bindings
 //___USER_PARAMS___
 
-// User shader function
-void miss_shader_main();
+// User shader function signature - will receive payload reference
+//___MISS_SHADER_SIGNATURE___
+
 //___MISS_SHADER_FUNCTION___
 
 void main() {
@@ -61,6 +64,6 @@ void main() {
     // Check if this ray missed (triangleIndex == 0xFFFFFFFF)
     if (hitInfos.hits[rayIndex].triangleIndex != 0xFFFFFFFF) return;
 
-    // Call user miss shader
-    miss_shader_main();
+    // Call user miss shader with payload reference
+    //___MISS_SHADER_CALL___
 }

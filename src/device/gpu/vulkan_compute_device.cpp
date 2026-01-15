@@ -59,16 +59,21 @@ namespace tracey
 
     RayTracingPipeline *VulkanComputeDevice::createWaveFrontRayTracingPipeline(const RayTracingPipelineLayoutDescriptor &layout, const ShaderBindingTable *sbt)
     {
-        return new VulkanWaveFrontPipeline(*this, layout, *dynamic_cast<const CpuShaderBindingTable *>(sbt));
+        fprintf(stderr, "\n=== createWaveFrontRayTracingPipeline called ===\n");
+        fflush(stderr);
+        auto* pipeline = new VulkanWaveFrontPipeline(*this, layout, *dynamic_cast<const CpuShaderBindingTable *>(sbt));
+        fprintf(stderr, "=== VulkanWaveFrontPipeline created successfully ===\n");
+        fflush(stderr);
+        return pipeline;
     }
 
     ShaderModule *VulkanComputeDevice::createShaderModule(ShaderStage stage, const std::string_view source, const std::string_view entryPoint)
     {
         return new CpuShaderModule(stage, source, entryPoint);
     }
-    ShaderBindingTable *VulkanComputeDevice::createShaderBindingTable(const ShaderModule *rayGen, const std::span<const ShaderModule *> hitShaders, const std::span<const ShaderModule *> missShaders)
+    ShaderBindingTable *VulkanComputeDevice::createShaderBindingTable(const ShaderModule *rayGen, const std::span<const ShaderModule *> hitShaders, const std::span<const ShaderModule *> missShaders, const ShaderModule *resolveShader)
     {
-        return new CpuShaderBindingTable(rayGen, hitShaders, missShaders);
+        return new CpuShaderBindingTable(rayGen, hitShaders, missShaders, resolveShader);
     }
     RayTracingCommandBuffer *VulkanComputeDevice::createRayTracingCommandBuffer()
     {

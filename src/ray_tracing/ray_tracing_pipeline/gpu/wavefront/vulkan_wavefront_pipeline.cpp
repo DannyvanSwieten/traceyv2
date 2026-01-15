@@ -3,12 +3,17 @@
 #include "../vulkan_compute_raytracing_descriptor_set.hpp"
 #include "../../ray_tracing_pipeline_layout.hpp"
 #include "../../../../device/gpu/vulkan_compute_device.hpp"
+#include <iostream>
 
 namespace tracey
 {
     VulkanWaveFrontPipeline::VulkanWaveFrontPipeline(VulkanComputeDevice &device, const RayTracingPipelineLayoutDescriptor &layout, const CpuShaderBindingTable &sbt) : m_device(device), m_layout(layout)
     {
+        fprintf(stderr, "\n*** VulkanWaveFrontPipeline constructor called ***\n");
+        fflush(stderr);
         const auto wavefrontCompilerResult = compileVulkanWaveFrontRayTracingPipeline(layout, sbt);
+        fprintf(stderr, "*** Shader compilation complete ***\n");
+        fflush(stderr);
 
         // Create descriptor set layout (shared by all pipelines)
         std::vector<VkDescriptorSetLayoutBinding> bindings;
@@ -17,7 +22,13 @@ namespace tracey
         // User bindings start at 6
         const size_t bindingStartOffset = 6;
 
-        // Add wavefront internal buffers at bindings 50-52
+        // Add wavefront internal buffers at bindings 20 (payload), 50-52 (internal)
+        // Payload buffer at binding 20
+        bindings.push_back({.binding = 20,
+                            .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                            .descriptorCount = 1,
+                            .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT});
+
         // PathHeader buffer
         bindings.push_back({.binding = 50,
                             .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
@@ -36,36 +47,45 @@ namespace tracey
                             .descriptorCount = 1,
                             .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT});
 
+        // NextRayQueue buffer (for ping-pong multi-bounce)
+        bindings.push_back({.binding = 53,
+                            .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                            .descriptorCount = 1,
+                            .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT});
+
+        // TLAS buffers (bindings 0-5) - always added for acceleration structure access
+        for (size_t i = 0; i < 6; ++i)
+        {
+            bindings.push_back({.binding = static_cast<uint32_t>(i),
+                                .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                .descriptorCount = 1,
+                                .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT});
+        }
+
+        // Add user-defined bindings (images, buffers, etc.)
+        // User bindings start at offset 6 (after TLAS bindings 0-5)
         for (const auto &binding : layout.bindings())
         {
             const size_t bindingIndex = layout.indexForBinding(binding.name);
+            fprintf(stderr, "*** User binding: %s, index=%zu, final binding=%zu\n", binding.name.c_str(), bindingIndex, bindingIndex + bindingStartOffset);
+            fflush(stderr);
             VkDescriptorSetLayoutBinding vkBinding{};
-            vkBinding.binding = bindingIndex;
+            vkBinding.binding = bindingIndex + bindingStartOffset; // Apply offset to ALL user bindings
             vkBinding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+            vkBinding.descriptorCount = 1;
 
             switch (binding.type)
             {
             case RayTracingPipelineLayoutDescriptor::DescriptorType::Image2D:
                 vkBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-                vkBinding.descriptorCount = 1;
-                vkBinding.binding += bindingStartOffset;
                 bindings.push_back(vkBinding);
                 break;
             case RayTracingPipelineLayoutDescriptor::DescriptorType::StorageBuffer:
                 vkBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-                vkBinding.descriptorCount = 1;
-                vkBinding.binding += bindingStartOffset;
                 bindings.push_back(vkBinding);
                 break;
             case RayTracingPipelineLayoutDescriptor::DescriptorType::AccelerationStructure:
-                // TLAS requires 6 storage buffers at fixed bindings 0-5 (ignore bindingIndex from layout)
-                vkBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-                vkBinding.descriptorCount = 1;
-                for (size_t i = 0; i < 6; ++i)
-                {
-                    vkBinding.binding = i; // Always use 0-5 for TLAS
-                    bindings.push_back(vkBinding);
-                }
+                // TLAS bindings already added above (0-5), skip here
                 break;
             default:
                 throw std::runtime_error("Unsupported descriptor type");
@@ -76,6 +96,16 @@ namespace tracey
         descriptorSetLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
         descriptorSetLayoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
         descriptorSetLayoutInfo.pBindings = bindings.data();
+
+        // Debug: print all bindings
+        fprintf(stderr, "\n=== WAVEFRONT DESCRIPTOR SET LAYOUT DEBUG ===\n");
+        fprintf(stderr, "Creating descriptor set layout with %zu bindings:\n", bindings.size());
+        for (const auto &b : bindings)
+        {
+            fprintf(stderr, "  Binding %u: type=%u count=%u\n", b.binding, b.descriptorType, b.descriptorCount);
+        }
+        fprintf(stderr, "=============================================\n\n");
+        fflush(stderr);
 
         VkDescriptorSetLayout descriptorSetLayout;
         if (vkCreateDescriptorSetLayout(m_device.vkDevice(), &descriptorSetLayoutInfo, nullptr, &descriptorSetLayout) != VK_SUCCESS)
@@ -218,6 +248,41 @@ namespace tracey
             }
         }
 
+        // Create resolve shader pipeline
+        VkShaderModuleCreateInfo resolveModuleInfo{};
+        resolveModuleInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+        resolveModuleInfo.codeSize = wavefrontCompilerResult.resolveShaderSpirV.size() * sizeof(uint32_t);
+        resolveModuleInfo.pCode = wavefrontCompilerResult.resolveShaderSpirV.data();
+        if (vkCreateShaderModule(m_device.vkDevice(), &resolveModuleInfo, nullptr, &m_resolvePipelineInfo.shaderModule) != VK_SUCCESS)
+        {
+            throw std::runtime_error("Failed to create resolve shader module");
+        }
+
+        m_resolvePipelineInfo.pipelineLayout = pipelineLayout;
+        m_resolvePipelineInfo.descriptorSetLayout = descriptorSetLayout;
+
+        VkComputePipelineCreateInfo resolvePipelineInfo{};
+        resolvePipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+        resolvePipelineInfo.layout = pipelineLayout;
+        resolvePipelineInfo.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        resolvePipelineInfo.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+        resolvePipelineInfo.stage.module = m_resolvePipelineInfo.shaderModule;
+        resolvePipelineInfo.stage.pName = "main";
+
+        if (vkCreateComputePipelines(m_device.vkDevice(), VK_NULL_HANDLE, 1, &resolvePipelineInfo, nullptr, &m_resolvePipelineInfo.pipeline) != VK_SUCCESS)
+        {
+            throw std::runtime_error("Failed to create resolve shader pipeline");
+        }
+
+        // Calculate payload size from layout
+        m_payloadSize = 0;
+        for (const auto &payload : layout.payloads())
+        {
+            m_payloadSize += payload.structure.size();
+        }
+        // Align to 16 bytes for std430 layout
+        m_payloadSize = (m_payloadSize + 15) & ~15;
+
         // Allocate internal buffers with a default size (2048x2048 = 4194304 rays)
         // This will be reallocated if a larger resolution is needed
         allocateInternalBuffers(4194304);
@@ -228,6 +293,10 @@ namespace tracey
         auto device = m_device.vkDevice();
 
         // Destroy internal buffers
+        if (m_payloadBuffer != VK_NULL_HANDLE)
+            vkDestroyBuffer(device, m_payloadBuffer, nullptr);
+        if (m_payloadMemory != VK_NULL_HANDLE)
+            vkFreeMemory(device, m_payloadMemory, nullptr);
         if (m_pathHeaderBuffer != VK_NULL_HANDLE)
             vkDestroyBuffer(device, m_pathHeaderBuffer, nullptr);
         if (m_pathHeaderMemory != VK_NULL_HANDLE)
@@ -236,6 +305,10 @@ namespace tracey
             vkDestroyBuffer(device, m_rayQueueBuffer, nullptr);
         if (m_rayQueueMemory != VK_NULL_HANDLE)
             vkFreeMemory(device, m_rayQueueMemory, nullptr);
+        if (m_rayQueueBuffer2 != VK_NULL_HANDLE)
+            vkDestroyBuffer(device, m_rayQueueBuffer2, nullptr);
+        if (m_rayQueueMemory2 != VK_NULL_HANDLE)
+            vkFreeMemory(device, m_rayQueueMemory2, nullptr);
         if (m_hitInfoBuffer != VK_NULL_HANDLE)
             vkDestroyBuffer(device, m_hitInfoBuffer, nullptr);
         if (m_hitInfoMemory != VK_NULL_HANDLE)
@@ -259,6 +332,9 @@ namespace tracey
                 vkDestroyPipeline(device, missPipeline.pipeline, nullptr);
         }
 
+        if (m_resolvePipelineInfo.pipeline)
+            vkDestroyPipeline(device, m_resolvePipelineInfo.pipeline, nullptr);
+
         // Destroy shader modules
         if (m_rayGenPipelineInfo.shaderModule)
             vkDestroyShaderModule(device, m_rayGenPipelineInfo.shaderModule, nullptr);
@@ -277,6 +353,9 @@ namespace tracey
                 vkDestroyShaderModule(device, missPipeline.shaderModule, nullptr);
         }
 
+        if (m_resolvePipelineInfo.shaderModule)
+            vkDestroyShaderModule(device, m_resolvePipelineInfo.shaderModule, nullptr);
+
         // Destroy pipeline layout (shared, so only destroy once)
         if (m_rayGenPipelineInfo.pipelineLayout)
         {
@@ -291,17 +370,24 @@ namespace tracey
     }
     void VulkanWaveFrontPipeline::allocateDescriptorSets(std::span<DescriptorSet *> sets)
     {
-        for (auto &set : sets)
+        // For multi-bounce support, we need two descriptor sets with swapped ray queue bindings
+        // Set 0: rayQueueBuffer at 51, rayQueueBuffer2 at 53
+        // Set 1: rayQueueBuffer2 at 51, rayQueueBuffer at 53 (swapped for ping-pong)
+
+        for (size_t i = 0; i < sets.size(); ++i)
         {
             // Reuse existing VulkanComputeRayTracingDescriptorSet with user binding offset of 6
             // (TLAS uses bindings 0-5, user bindings start at 6)
             auto vkSet = new VulkanComputeRayTracingDescriptorSet(m_device, m_layout, m_rayGenPipelineInfo.descriptorSetLayout, 6);
-            set = vkSet;
+            sets[i] = vkSet;
 
             // Bind internal buffers if they're allocated
             if (m_pathHeaderBuffer != VK_NULL_HANDLE)
             {
-                bindInternalBuffers(vkSet->vkDescriptorSet());
+                // For set 0: normal binding (rayQueueBuffer at 51, rayQueueBuffer2 at 53)
+                // For set 1: swapped binding (rayQueueBuffer2 at 51, rayQueueBuffer at 53)
+                bool swapQueues = (i % 2 == 1);
+                bindInternalBuffers(vkSet->vkDescriptorSet(), swapQueues);
             }
         }
     }
@@ -333,15 +419,48 @@ namespace tracey
         auto device = m_device.vkDevice();
         if (m_pathHeaderBuffer != VK_NULL_HANDLE)
         {
+            vkDestroyBuffer(device, m_payloadBuffer, nullptr);
+            vkFreeMemory(device, m_payloadMemory, nullptr);
             vkDestroyBuffer(device, m_pathHeaderBuffer, nullptr);
             vkFreeMemory(device, m_pathHeaderMemory, nullptr);
             vkDestroyBuffer(device, m_rayQueueBuffer, nullptr);
             vkFreeMemory(device, m_rayQueueMemory, nullptr);
+            vkDestroyBuffer(device, m_rayQueueBuffer2, nullptr);
+            vkFreeMemory(device, m_rayQueueMemory2, nullptr);
             vkDestroyBuffer(device, m_hitInfoBuffer, nullptr);
             vkFreeMemory(device, m_hitInfoMemory, nullptr);
         }
 
         m_maxRayCount = maxRayCount;
+
+        // Payload buffer: RayPayloads struct per ray
+        VkDeviceSize payloadBufferSize = maxRayCount * m_payloadSize;
+
+        VkBufferCreateInfo payloadBufferInfo{};
+        payloadBufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        payloadBufferInfo.size = payloadBufferSize;
+        payloadBufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+        payloadBufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+        if (vkCreateBuffer(device, &payloadBufferInfo, nullptr, &m_payloadBuffer) != VK_SUCCESS)
+        {
+            throw std::runtime_error("Failed to create Payload buffer");
+        }
+
+        VkMemoryRequirements payloadMemReqs;
+        vkGetBufferMemoryRequirements(device, m_payloadBuffer, &payloadMemReqs);
+
+        VkMemoryAllocateInfo payloadAllocInfo{};
+        payloadAllocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        payloadAllocInfo.allocationSize = payloadMemReqs.size;
+        payloadAllocInfo.memoryTypeIndex = m_device.findMemoryType(payloadMemReqs.memoryTypeBits,
+                                                                   VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+        if (vkAllocateMemory(device, &payloadAllocInfo, nullptr, &m_payloadMemory) != VK_SUCCESS)
+        {
+            throw std::runtime_error("Failed to allocate Payload memory");
+        }
+        vkBindBufferMemory(device, m_payloadBuffer, m_payloadMemory, 0);
 
         // PathHeader buffer: 2 vec4s per ray (origin + direction with tMin/tMax)
         VkDeviceSize pathHeaderSize = maxRayCount * sizeof(float) * 8;
@@ -378,7 +497,7 @@ namespace tracey
         VkBufferCreateInfo rayQueueBufferInfo{};
         rayQueueBufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
         rayQueueBufferInfo.size = rayQueueSize;
-        rayQueueBufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+        rayQueueBufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
         rayQueueBufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
         if (vkCreateBuffer(device, &rayQueueBufferInfo, nullptr, &m_rayQueueBuffer) != VK_SUCCESS)
@@ -401,13 +520,40 @@ namespace tracey
         }
         vkBindBufferMemory(device, m_rayQueueBuffer, m_rayQueueMemory, 0);
 
-        // HitInfo buffer: t + triangleIndex + instanceIndex + barycentrics (5 floats + 2 uints per ray)
-        VkDeviceSize hitInfoSize = maxRayCount * (sizeof(float) + sizeof(uint32_t) * 2 + sizeof(float) * 2);
+        // RayQueue2 buffer (for ping-pong): count (uint32) + indices (uint32 per ray)
+        VkBufferCreateInfo rayQueue2BufferInfo{};
+        rayQueue2BufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        rayQueue2BufferInfo.size = rayQueueSize;
+        rayQueue2BufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        rayQueue2BufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+        if (vkCreateBuffer(device, &rayQueue2BufferInfo, nullptr, &m_rayQueueBuffer2) != VK_SUCCESS)
+        {
+            throw std::runtime_error("Failed to create RayQueue2 buffer");
+        }
+
+        VkMemoryRequirements rayQueue2MemReqs;
+        vkGetBufferMemoryRequirements(device, m_rayQueueBuffer2, &rayQueue2MemReqs);
+
+        VkMemoryAllocateInfo rayQueue2AllocInfo{};
+        rayQueue2AllocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        rayQueue2AllocInfo.allocationSize = rayQueue2MemReqs.size;
+        rayQueue2AllocInfo.memoryTypeIndex = m_device.findMemoryType(rayQueue2MemReqs.memoryTypeBits,
+                                                                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+        if (vkAllocateMemory(device, &rayQueue2AllocInfo, nullptr, &m_rayQueueMemory2) != VK_SUCCESS)
+        {
+            throw std::runtime_error("Failed to allocate RayQueue2 memory");
+        }
+        vkBindBufferMemory(device, m_rayQueueBuffer2, m_rayQueueMemory2, 0);
+
+        // HitInfo buffer: t + triangleIndex + instanceIndex + barycentrics (3 floats + 2 uints per ray + padding)
+        VkDeviceSize hitInfoSize = maxRayCount * (sizeof(float) * 8);
 
         VkBufferCreateInfo hitInfoBufferInfo{};
         hitInfoBufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
         hitInfoBufferInfo.size = hitInfoSize;
-        hitInfoBufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+        hitInfoBufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
         hitInfoBufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
         if (vkCreateBuffer(device, &hitInfoBufferInfo, nullptr, &m_hitInfoBuffer) != VK_SUCCESS)
@@ -431,9 +577,23 @@ namespace tracey
         vkBindBufferMemory(device, m_hitInfoBuffer, m_hitInfoMemory, 0);
     }
 
-    void VulkanWaveFrontPipeline::bindInternalBuffers(VkDescriptorSet descriptorSet)
+    void VulkanWaveFrontPipeline::bindInternalBuffers(VkDescriptorSet descriptorSet, bool swapQueues)
     {
-        VkWriteDescriptorSet writes[3]{};
+        VkWriteDescriptorSet writes[5]{};
+
+        // Binding 20: Payload buffer
+        VkDescriptorBufferInfo payloadInfo{};
+        payloadInfo.buffer = m_payloadBuffer;
+        payloadInfo.offset = 0;
+        payloadInfo.range = VK_WHOLE_SIZE;
+
+        writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[0].dstSet = descriptorSet;
+        writes[0].dstBinding = 20;
+        writes[0].dstArrayElement = 0;
+        writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        writes[0].descriptorCount = 1;
+        writes[0].pBufferInfo = &payloadInfo;
 
         // Binding 50: PathHeader buffer
         VkDescriptorBufferInfo pathHeaderInfo{};
@@ -441,27 +601,27 @@ namespace tracey
         pathHeaderInfo.offset = 0;
         pathHeaderInfo.range = VK_WHOLE_SIZE;
 
-        writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[0].dstSet = descriptorSet;
-        writes[0].dstBinding = 50;
-        writes[0].dstArrayElement = 0;
-        writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        writes[0].descriptorCount = 1;
-        writes[0].pBufferInfo = &pathHeaderInfo;
-
-        // Binding 51: RayQueue buffer
-        VkDescriptorBufferInfo rayQueueInfo{};
-        rayQueueInfo.buffer = m_rayQueueBuffer;
-        rayQueueInfo.offset = 0;
-        rayQueueInfo.range = VK_WHOLE_SIZE;
-
         writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[1].dstSet = descriptorSet;
-        writes[1].dstBinding = 51;
+        writes[1].dstBinding = 50;
         writes[1].dstArrayElement = 0;
         writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         writes[1].descriptorCount = 1;
-        writes[1].pBufferInfo = &rayQueueInfo;
+        writes[1].pBufferInfo = &pathHeaderInfo;
+
+        // Binding 51: RayQueue buffer (current queue)
+        VkDescriptorBufferInfo rayQueue1Info{};
+        rayQueue1Info.buffer = swapQueues ? m_rayQueueBuffer2 : m_rayQueueBuffer;
+        rayQueue1Info.offset = 0;
+        rayQueue1Info.range = VK_WHOLE_SIZE;
+
+        writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[2].dstSet = descriptorSet;
+        writes[2].dstBinding = 51;
+        writes[2].dstArrayElement = 0;
+        writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        writes[2].descriptorCount = 1;
+        writes[2].pBufferInfo = &rayQueue1Info;
 
         // Binding 52: HitInfo buffer
         VkDescriptorBufferInfo hitInfoInfo{};
@@ -469,14 +629,28 @@ namespace tracey
         hitInfoInfo.offset = 0;
         hitInfoInfo.range = VK_WHOLE_SIZE;
 
-        writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[2].dstSet = descriptorSet;
-        writes[2].dstBinding = 52;
-        writes[2].dstArrayElement = 0;
-        writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        writes[2].descriptorCount = 1;
-        writes[2].pBufferInfo = &hitInfoInfo;
+        writes[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[3].dstSet = descriptorSet;
+        writes[3].dstBinding = 52;
+        writes[3].dstArrayElement = 0;
+        writes[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        writes[3].descriptorCount = 1;
+        writes[3].pBufferInfo = &hitInfoInfo;
 
-        vkUpdateDescriptorSets(m_device.vkDevice(), 3, writes, 0, nullptr);
+        // Binding 53: RayQueue2 buffer (next queue)
+        VkDescriptorBufferInfo rayQueue2Info{};
+        rayQueue2Info.buffer = swapQueues ? m_rayQueueBuffer : m_rayQueueBuffer2;
+        rayQueue2Info.offset = 0;
+        rayQueue2Info.range = VK_WHOLE_SIZE;
+
+        writes[4].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[4].dstSet = descriptorSet;
+        writes[4].dstBinding = 53;
+        writes[4].dstArrayElement = 0;
+        writes[4].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        writes[4].descriptorCount = 1;
+        writes[4].pBufferInfo = &rayQueue2Info;
+
+        vkUpdateDescriptorSets(m_device.vkDevice(), 5, writes, 0, nullptr);
     }
 }

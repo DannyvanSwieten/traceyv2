@@ -45,9 +45,28 @@ uvec2 getResolution() {
     return uvec2(pc.width, pc.height);
 }
 
-Ray ray_gen_main(uvec2 pixel);
+void traceRay(vec3 origin, float tMin, vec3 direction, float tMax)
+{
+    PathHeader header;
+    header.originX = origin.x;
+    header.originY = origin.y;
+    header.originZ = origin.z;
+    header.directionX = direction.x;
+    header.directionY = direction.y;
+    header.directionZ = direction.z;
+    header.tMin = tMin;
+    header.tMax = tMax;
+
+    uint index = gl_GlobalInvocationID.x;
+    PathInfos.header[index] = header;
+    enqueue_intersection(index);
+}
 
 //___USER_PARAMS___
+
+// User shader function signature - will receive payload reference
+//___RAY_GEN_SIGNATURE___
+
 //___RAY_GENERATION_FUNCTION___
 
 void main() {
@@ -67,24 +86,11 @@ void main() {
         return;
     }
 
-    // Provide pixel coordinates to user raygen code.
-    Ray ray = ray_gen_main(pixelCoord);
+    // Call user raygen code with payload reference
+    //___RAY_GEN_CALL___
 
     // Set queue count once for a dense initial queue.
     if (index == 0u) {
         count = rayCount;
     }
-    
-    enqueue_intersection(index);
-
-    PathHeader header;
-    header.originX = ray.origin.x;
-    header.originY = ray.origin.y;
-    header.originZ = ray.origin.z;
-    header.directionX = ray.direction.x;
-    header.directionY = ray.direction.y;
-    header.directionZ = ray.direction.z;
-    header.tMin = ray.tMin;
-    header.tMax = ray.tMax;
-    PathInfos.header[index] = header;
 }

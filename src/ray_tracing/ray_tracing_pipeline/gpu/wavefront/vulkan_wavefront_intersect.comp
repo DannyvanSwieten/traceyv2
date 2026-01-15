@@ -2,6 +2,11 @@
 
 layout (local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
 
+layout(push_constant) uniform PushConstants {
+    uint width;
+    uint height;
+} pc;
+
 struct PathHeader{
     float originX;
     float originY;
@@ -47,16 +52,23 @@ struct BvhNode{
 
 struct HitInfo{
     float t;
+
     uint triangleIndex;
     uint instanceIndex;
+
     float barycentricU;
     float barycentricV;
+    
+    float normalX;
+    float normalY;
+    float normalZ;
 };
 
 struct TriangleInfo{
     float v0x, v0y, v0z;
     float e0x, e0y, e0z;
     float e1x, e1y, e1z;
+    float nx, ny, nz;
 };
 
 struct InverseTransforms{
@@ -65,22 +77,26 @@ struct InverseTransforms{
 };
 
 // Wavefront internal buffers at bindings 50-52
-layout(std430, set = 0, binding = 50) buffer PathHeaders {
+layout(std430, set = 0, binding = 50) readonly buffer PathHeaders {
     PathHeader headers[];
-};
+} pathHeaders;
 
-layout(std430, set = 0, binding = 51) buffer RayQueue{
+layout(std430, set = 0, binding = 51) readonly buffer RayQueue{
     uint count;        // number of valid entries in rayIndices
+    uint padding[3];
     uint rayIndices[]; // compact list of path/ray indices
-};
+} rayQueue;
 
 PathHeader getPathHeader(uint rayIndex) {
-    return headers[rayIndex];
+    return pathHeaders.headers[rayIndex];
 }
 
 layout(std430, set = 0, binding = 52) buffer HitInfos {
     HitInfo hits[];
-};
+} hitInfos;
+
+// Debug output image removed - debug visualization should be done in hit/miss shaders
+// layout(set = 0, binding = 7, rgba8) uniform writeonly image2D debugOutputImage;
 
 // TLAS buffers at bindings 0-5
 layout(std430, set = 0, binding = 0) readonly buffer TLASInstances {
@@ -159,6 +175,7 @@ void loadTriangleInfo(uint triangleIndex, inout vec3 v0, inout vec3 e0, inout ve
     v0 = vec3(tri.v0x, tri.v0y, tri.v0z);
     e0 = vec3(tri.e0x, tri.e0y, tri.e0z);
     e1 = vec3(tri.e1x, tri.e1y, tri.e1z);
+    normal = vec3(tri.nx, tri.ny, tri.nz);
 }
 
 // BvhNode encoding (CPU-identical):
@@ -222,6 +239,9 @@ HitInfo traverseBVH(uint bvhBase, uint triangleOffset, Ray ray, float tMin, floa
                     best.triangleIndex = originalPrimId;
                     best.barycentricU = uv.x;
                     best.barycentricV = uv.y;
+                    best.normalX = normal.x;
+                    best.normalY = normal.y;
+                    best.normalZ = normal.z;
                 }
             }
         }
@@ -276,8 +296,8 @@ bool intersectTlas(Ray ray, inout HitInfo hitInfo)
         InverseTransforms instanceInverseTransform = tlasInstanceTransforms.inv[i];
 
         // Transform ray to object space.
-        vec3 localO = vec3(instanceInverseTransform.worldToObj * vec4(ray.origin, 1.0));
-        vec3 localD = vec3(instanceInverseTransform.worldToObj * vec4(ray.direction, 0.0));
+        vec3 localO = (instanceInverseTransform.worldToObj * vec4(ray.origin, 1.0)).xyz;
+        vec3 localD = (instanceInverseTransform.worldToObj * vec4(ray.direction, 0.0)).xyz;
 
         // Avoid inf/nan invDirection if localD has zeros
         Ray localRay;
@@ -295,20 +315,26 @@ bool intersectTlas(Ray ray, inout HitInfo hitInfo)
 
         if (hit.triangleIndex != INVALID_INDEX)
         {
-            // Convert local hit to world-space t along the original ray.
+            // Convert local hit position to world space
             vec3 hitPosLocal = localRay.origin + localRay.direction * hit.t;
-            vec3 hitPosWorld = vec3(instanceInverseTransform.objToWorld * vec4(hitPosLocal, 1.0));
+            vec3 hitPosWorld = (instanceInverseTransform.objToWorld * vec4(hitPosLocal, 1.0)).xyz;
 
-            float tWorld = dot(hitPosWorld - ray.origin, ray.direction);
+            // Calculate world-space t using distance since transforms may include scaling
+            float tWorld = length(hitPosWorld - ray.origin);
 
-            // Reject behind/too-far hits.
-            if (tWorld <= 0.0 || tWorld >= hitInfo.t)
-                continue;
-
-            // Accept best hit.
-            hit.t = tWorld;
-            hit.instanceIndex = i;
-            hitInfo = hit;
+            // Reject if behind ray or farther than current best
+            if (tWorld > 0.0 && tWorld < hitInfo.t)
+            {
+                hit.t = tWorld;
+                hit.instanceIndex = i;
+                vec3 n = vec3(hit.normalX, hit.normalY, hit.normalZ);
+                // Transform normal to world space
+                n = normalize((transpose(instanceInverseTransform.worldToObj) * vec4(n, 0.0)).xyz);
+                hit.normalX = n.x;
+                hit.normalY = n.y;
+                hit.normalZ = n.z;
+                hitInfo = hit;
+            }
         }
     }
 
@@ -318,15 +344,15 @@ bool intersectTlas(Ray ray, inout HitInfo hitInfo)
 void main()
 {
     uint tid = gl_GlobalInvocationID.x;
-    if (tid >= count) {
+    if (tid >= rayQueue.count) {
         return;
     }
-    uint rayIndex = rayIndices[tid];
+    uint rayIndex = rayQueue.rayIndices[tid];
     PathHeader header = getPathHeader(rayIndex);
     Ray ray;
     ray.origin = vec3(header.originX, header.originY, header.originZ);
     ray.direction = vec3(header.directionX, header.directionY, header.directionZ);
-    ray.invDirection = 1.0 / ray.direction; // NOTE: ensure direction components are non-zero or handle safely
+    ray.invDirection = 1.0 / ray.direction;
 
     HitInfo hitInfo;
     hitInfo.t = header.tMax;
@@ -335,6 +361,9 @@ void main()
     hitInfo.barycentricU = 0.0;
     hitInfo.barycentricV = 0.0;
 
+    // Perform TLAS intersection
     bool hit = intersectTlas(ray, hitInfo);
-    hits[rayIndex] = hitInfo;
+
+    // Write hit info to buffer
+    hitInfos.hits[rayIndex] = hitInfo;
 }

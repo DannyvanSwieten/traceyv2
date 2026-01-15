@@ -1,5 +1,6 @@
 #pragma once
 #include <volk.h>
+#include <vector>
 #include "../ray_tracing_command_buffer.hpp"
 
 namespace tracey
@@ -26,5 +27,6 @@ namespace tracey
         VulkanComputeDevice &m_device;
         VkCommandBuffer m_vkCommandBuffer;
         RayTracingPipeline *m_pipeline = nullptr;
+        std::vector<VkDescriptorSet> m_descriptorSets;
     };
 } // namespace tracey
