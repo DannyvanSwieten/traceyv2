@@ -81,7 +81,8 @@ layout(std430, set = 0, binding = 50) readonly buffer PathHeaders {
     PathHeader headers[];
 } pathHeaders;
 
-layout(std430, set = 0, binding = 51) readonly buffer RayQueue{
+// NOTE: Must match ray_gen access qualifier (not readonly) for coherent access
+layout(std430, set = 0, binding = 51) buffer RayQueue{
     uint count;        // number of valid entries in rayIndices
     uint padding[3];
     uint rayIndices[]; // compact list of path/ray indices
@@ -95,8 +96,22 @@ layout(std430, set = 0, binding = 52) buffer HitInfos {
     HitInfo hits[];
 } hitInfos;
 
-// Debug output image removed - debug visualization should be done in hit/miss shaders
-// layout(set = 0, binding = 7, rgba8) uniform writeonly image2D debugOutputImage;
+// Hit queue buffer - rays that hit geometry
+layout(std430, set = 0, binding = 55) buffer HitQueue {
+    uint count;
+    uint padding[3];
+    uint rayIndices[];
+} hitQueue;
+
+// Miss queue buffer - rays that missed geometry
+layout(std430, set = 0, binding = 56) buffer MissQueue {
+    uint count;
+    uint padding[3];
+    uint rayIndices[];
+} missQueue;
+
+// DEBUG: Output image to visualize rayQueue.count
+layout(set = 0, binding = 7, rgba8) uniform writeonly image2D debugOutputImage;
 
 // TLAS buffers at bindings 0-5
 layout(std430, set = 0, binding = 0) readonly buffer TLASInstances {
@@ -364,6 +379,19 @@ void main()
     // Perform TLAS intersection
     bool hit = intersectTlas(ray, hitInfo);
 
-    // Write hit info to buffer
+    // Write hit info to buffer (still needed for hit shader to access)
     hitInfos.hits[rayIndex] = hitInfo;
+
+    // Queue into hit or miss queue based on intersection result
+    if (hitInfo.triangleIndex != INVALID_INDEX) {
+        uint dst = atomicAdd(hitQueue.count, 1u);
+        if (dst < rayQueue.count) {
+            hitQueue.rayIndices[dst] = rayIndex;
+        }
+    } else {
+        uint dst = atomicAdd(missQueue.count, 1u);
+        if (dst < rayQueue.count) {
+            missQueue.rayIndices[dst] = rayIndex;
+        }
+    }
 }

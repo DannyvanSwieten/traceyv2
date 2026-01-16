@@ -37,11 +37,11 @@ layout (std430, binding = 50, set = 0) readonly buffer PathHeaders {
     PathHeader headers[];
 } pathHeaders;
 
-layout(std430, binding = 51, set = 0) readonly buffer RayQueue {
+layout(std430, binding = 56, set = 0) readonly buffer MissQueue {
     uint count;
     uint padding[3];
     uint rayIndices[];
-} rayQueue;
+} missQueue;
 
 layout(std430, binding = 52, set = 0) readonly buffer HitInfos {
     HitInfo hits[];
@@ -57,12 +57,12 @@ layout(std430, binding = 52, set = 0) readonly buffer HitInfos {
 
 void main() {
     uint workItemId = gl_GlobalInvocationID.x;
-    if (workItemId >= rayQueue.count) return;
+    if (workItemId >= missQueue.count) return;
 
-    uint rayIndex = rayQueue.rayIndices[workItemId];
+    uint rayIndex = missQueue.rayIndices[workItemId];
 
-    // Check if this ray missed (triangleIndex == 0xFFFFFFFF)
-    if (hitInfos.hits[rayIndex].triangleIndex != 0xFFFFFFFF) return;
+    // All rays in missQueue are guaranteed to be misses - no need to check
+    // OLD: if (hitInfos.hits[rayIndex].triangleIndex != 0xFFFFFFFF) return;
 
     // Call user miss shader with payload reference
     //___MISS_SHADER_CALL___

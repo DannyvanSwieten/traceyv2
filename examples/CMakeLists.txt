@@ -73,3 +73,10 @@ target_link_libraries(wavefront_isf
     Vulkan::Vulkan
     shaderc
 )
+
+# Set rpath for all executables that link against Vulkan and shaderc
+set_target_properties(device_api wavefront wavefront_isf PROPERTIES
+    MACOSX_RPATH ON
+    BUILD_RPATH "/usr/local/lib"
+    INSTALL_RPATH "/usr/local/lib"
+)

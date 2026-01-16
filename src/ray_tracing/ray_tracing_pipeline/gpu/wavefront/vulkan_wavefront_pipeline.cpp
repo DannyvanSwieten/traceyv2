@@ -63,6 +63,30 @@ namespace tracey
                             .descriptorCount = 1,
                             .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT});
 
+        // Hit queue buffer
+        bindings.push_back({.binding = 55,
+                            .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                            .descriptorCount = 1,
+                            .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT});
+
+        // Miss queue buffer
+        bindings.push_back({.binding = 56,
+                            .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                            .descriptorCount = 1,
+                            .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT});
+
+        // Hit indirect dispatch buffer
+        bindings.push_back({.binding = 57,
+                            .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                            .descriptorCount = 1,
+                            .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT});
+
+        // Miss indirect dispatch buffer
+        bindings.push_back({.binding = 58,
+                            .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                            .descriptorCount = 1,
+                            .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT});
+
         // TLAS buffers (bindings 0-5) - always added for acceleration structure access
         for (size_t i = 0; i < 6; ++i)
         {
@@ -380,10 +404,26 @@ namespace tracey
             vkDestroyBuffer(device, m_hitInfoBuffer, nullptr);
         if (m_hitInfoMemory != VK_NULL_HANDLE)
             vkFreeMemory(device, m_hitInfoMemory, nullptr);
+        if (m_hitQueueBuffer != VK_NULL_HANDLE)
+            vkDestroyBuffer(device, m_hitQueueBuffer, nullptr);
+        if (m_hitQueueMemory != VK_NULL_HANDLE)
+            vkFreeMemory(device, m_hitQueueMemory, nullptr);
+        if (m_missQueueBuffer != VK_NULL_HANDLE)
+            vkDestroyBuffer(device, m_missQueueBuffer, nullptr);
+        if (m_missQueueMemory != VK_NULL_HANDLE)
+            vkFreeMemory(device, m_missQueueMemory, nullptr);
         if (m_indirectDispatchBuffer != VK_NULL_HANDLE)
             vkDestroyBuffer(device, m_indirectDispatchBuffer, nullptr);
         if (m_indirectDispatchMemory != VK_NULL_HANDLE)
             vkFreeMemory(device, m_indirectDispatchMemory, nullptr);
+        if (m_hitIndirectBuffer != VK_NULL_HANDLE)
+            vkDestroyBuffer(device, m_hitIndirectBuffer, nullptr);
+        if (m_hitIndirectMemory != VK_NULL_HANDLE)
+            vkFreeMemory(device, m_hitIndirectMemory, nullptr);
+        if (m_missIndirectBuffer != VK_NULL_HANDLE)
+            vkDestroyBuffer(device, m_missIndirectBuffer, nullptr);
+        if (m_missIndirectMemory != VK_NULL_HANDLE)
+            vkFreeMemory(device, m_missIndirectMemory, nullptr);
 
         // Destroy pipelines
         if (m_rayGenPipelineInfo.pipeline)
@@ -504,8 +544,16 @@ namespace tracey
             vkFreeMemory(device, m_rayQueueMemory2, nullptr);
             vkDestroyBuffer(device, m_hitInfoBuffer, nullptr);
             vkFreeMemory(device, m_hitInfoMemory, nullptr);
+            vkDestroyBuffer(device, m_hitQueueBuffer, nullptr);
+            vkFreeMemory(device, m_hitQueueMemory, nullptr);
+            vkDestroyBuffer(device, m_missQueueBuffer, nullptr);
+            vkFreeMemory(device, m_missQueueMemory, nullptr);
             vkDestroyBuffer(device, m_indirectDispatchBuffer, nullptr);
             vkFreeMemory(device, m_indirectDispatchMemory, nullptr);
+            vkDestroyBuffer(device, m_hitIndirectBuffer, nullptr);
+            vkFreeMemory(device, m_hitIndirectMemory, nullptr);
+            vkDestroyBuffer(device, m_missIndirectBuffer, nullptr);
+            vkFreeMemory(device, m_missIndirectMemory, nullptr);
         }
 
         m_maxRayCount = maxRayCount;
@@ -681,11 +729,119 @@ namespace tracey
             throw std::runtime_error("Failed to allocate IndirectDispatch memory");
         }
         vkBindBufferMemory(device, m_indirectDispatchBuffer, m_indirectDispatchMemory, 0);
+
+        // Hit queue buffer: count (uint32) + indices (uint32 per ray)
+        VkBufferCreateInfo hitQueueBufferInfo{};
+        hitQueueBufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        hitQueueBufferInfo.size = rayQueueSize;
+        hitQueueBufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        hitQueueBufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+        if (vkCreateBuffer(device, &hitQueueBufferInfo, nullptr, &m_hitQueueBuffer) != VK_SUCCESS)
+        {
+            throw std::runtime_error("Failed to create HitQueue buffer");
+        }
+
+        VkMemoryRequirements hitQueueMemReqs;
+        vkGetBufferMemoryRequirements(device, m_hitQueueBuffer, &hitQueueMemReqs);
+
+        VkMemoryAllocateInfo hitQueueAllocInfo{};
+        hitQueueAllocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        hitQueueAllocInfo.allocationSize = hitQueueMemReqs.size;
+        hitQueueAllocInfo.memoryTypeIndex = m_device.findMemoryType(hitQueueMemReqs.memoryTypeBits,
+                                                                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+        if (vkAllocateMemory(device, &hitQueueAllocInfo, nullptr, &m_hitQueueMemory) != VK_SUCCESS)
+        {
+            throw std::runtime_error("Failed to allocate HitQueue memory");
+        }
+        vkBindBufferMemory(device, m_hitQueueBuffer, m_hitQueueMemory, 0);
+
+        // Miss queue buffer: count (uint32) + indices (uint32 per ray)
+        VkBufferCreateInfo missQueueBufferInfo{};
+        missQueueBufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        missQueueBufferInfo.size = rayQueueSize;
+        missQueueBufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        missQueueBufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+        if (vkCreateBuffer(device, &missQueueBufferInfo, nullptr, &m_missQueueBuffer) != VK_SUCCESS)
+        {
+            throw std::runtime_error("Failed to create MissQueue buffer");
+        }
+
+        VkMemoryRequirements missQueueMemReqs;
+        vkGetBufferMemoryRequirements(device, m_missQueueBuffer, &missQueueMemReqs);
+
+        VkMemoryAllocateInfo missQueueAllocInfo{};
+        missQueueAllocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        missQueueAllocInfo.allocationSize = missQueueMemReqs.size;
+        missQueueAllocInfo.memoryTypeIndex = m_device.findMemoryType(missQueueMemReqs.memoryTypeBits,
+                                                                      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+        if (vkAllocateMemory(device, &missQueueAllocInfo, nullptr, &m_missQueueMemory) != VK_SUCCESS)
+        {
+            throw std::runtime_error("Failed to allocate MissQueue memory");
+        }
+        vkBindBufferMemory(device, m_missQueueBuffer, m_missQueueMemory, 0);
+
+        // Hit indirect dispatch buffer
+        VkBufferCreateInfo hitIndirectBufferInfo{};
+        hitIndirectBufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        hitIndirectBufferInfo.size = indirectDispatchSize;
+        hitIndirectBufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
+        hitIndirectBufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+        if (vkCreateBuffer(device, &hitIndirectBufferInfo, nullptr, &m_hitIndirectBuffer) != VK_SUCCESS)
+        {
+            throw std::runtime_error("Failed to create HitIndirect buffer");
+        }
+
+        VkMemoryRequirements hitIndirectMemReqs;
+        vkGetBufferMemoryRequirements(device, m_hitIndirectBuffer, &hitIndirectMemReqs);
+
+        VkMemoryAllocateInfo hitIndirectAllocInfo{};
+        hitIndirectAllocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        hitIndirectAllocInfo.allocationSize = hitIndirectMemReqs.size;
+        hitIndirectAllocInfo.memoryTypeIndex = m_device.findMemoryType(hitIndirectMemReqs.memoryTypeBits,
+                                                                        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+        if (vkAllocateMemory(device, &hitIndirectAllocInfo, nullptr, &m_hitIndirectMemory) != VK_SUCCESS)
+        {
+            throw std::runtime_error("Failed to allocate HitIndirect memory");
+        }
+        vkBindBufferMemory(device, m_hitIndirectBuffer, m_hitIndirectMemory, 0);
+
+        // Miss indirect dispatch buffer
+        VkBufferCreateInfo missIndirectBufferInfo{};
+        missIndirectBufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        missIndirectBufferInfo.size = indirectDispatchSize;
+        missIndirectBufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
+        missIndirectBufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+        if (vkCreateBuffer(device, &missIndirectBufferInfo, nullptr, &m_missIndirectBuffer) != VK_SUCCESS)
+        {
+            throw std::runtime_error("Failed to create MissIndirect buffer");
+        }
+
+        VkMemoryRequirements missIndirectMemReqs;
+        vkGetBufferMemoryRequirements(device, m_missIndirectBuffer, &missIndirectMemReqs);
+
+        VkMemoryAllocateInfo missIndirectAllocInfo{};
+        missIndirectAllocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        missIndirectAllocInfo.allocationSize = missIndirectMemReqs.size;
+        missIndirectAllocInfo.memoryTypeIndex = m_device.findMemoryType(missIndirectMemReqs.memoryTypeBits,
+                                                                         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+        if (vkAllocateMemory(device, &missIndirectAllocInfo, nullptr, &m_missIndirectMemory) != VK_SUCCESS)
+        {
+            throw std::runtime_error("Failed to allocate MissIndirect memory");
+        }
+        vkBindBufferMemory(device, m_missIndirectBuffer, m_missIndirectMemory, 0);
     }
 
     void VulkanWaveFrontPipeline::bindInternalBuffers(VkDescriptorSet descriptorSet, bool swapQueues)
     {
-        VkWriteDescriptorSet writes[6]{};
+        VkWriteDescriptorSet writes[10]{};
 
         // Binding 20: Payload buffer
         VkDescriptorBufferInfo payloadInfo{};
@@ -771,6 +927,62 @@ namespace tracey
         writes[5].descriptorCount = 1;
         writes[5].pBufferInfo = &indirectDispatchInfo;
 
-        vkUpdateDescriptorSets(m_device.vkDevice(), 6, writes, 0, nullptr);
+        // Binding 55: Hit queue buffer
+        VkDescriptorBufferInfo hitQueueInfo{};
+        hitQueueInfo.buffer = m_hitQueueBuffer;
+        hitQueueInfo.offset = 0;
+        hitQueueInfo.range = VK_WHOLE_SIZE;
+
+        writes[6].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[6].dstSet = descriptorSet;
+        writes[6].dstBinding = 55;
+        writes[6].dstArrayElement = 0;
+        writes[6].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        writes[6].descriptorCount = 1;
+        writes[6].pBufferInfo = &hitQueueInfo;
+
+        // Binding 56: Miss queue buffer
+        VkDescriptorBufferInfo missQueueInfo{};
+        missQueueInfo.buffer = m_missQueueBuffer;
+        missQueueInfo.offset = 0;
+        missQueueInfo.range = VK_WHOLE_SIZE;
+
+        writes[7].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[7].dstSet = descriptorSet;
+        writes[7].dstBinding = 56;
+        writes[7].dstArrayElement = 0;
+        writes[7].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        writes[7].descriptorCount = 1;
+        writes[7].pBufferInfo = &missQueueInfo;
+
+        // Binding 57: Hit indirect dispatch buffer
+        VkDescriptorBufferInfo hitIndirectInfo{};
+        hitIndirectInfo.buffer = m_hitIndirectBuffer;
+        hitIndirectInfo.offset = 0;
+        hitIndirectInfo.range = VK_WHOLE_SIZE;
+
+        writes[8].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[8].dstSet = descriptorSet;
+        writes[8].dstBinding = 57;
+        writes[8].dstArrayElement = 0;
+        writes[8].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        writes[8].descriptorCount = 1;
+        writes[8].pBufferInfo = &hitIndirectInfo;
+
+        // Binding 58: Miss indirect dispatch buffer
+        VkDescriptorBufferInfo missIndirectInfo{};
+        missIndirectInfo.buffer = m_missIndirectBuffer;
+        missIndirectInfo.offset = 0;
+        missIndirectInfo.range = VK_WHOLE_SIZE;
+
+        writes[9].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[9].dstSet = descriptorSet;
+        writes[9].dstBinding = 58;
+        writes[9].dstArrayElement = 0;
+        writes[9].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        writes[9].descriptorCount = 1;
+        writes[9].pBufferInfo = &missIndirectInfo;
+
+        vkUpdateDescriptorSets(m_device.vkDevice(), 10, writes, 0, nullptr);
     }
 }

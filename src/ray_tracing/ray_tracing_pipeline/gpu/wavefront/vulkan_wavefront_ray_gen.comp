@@ -30,20 +30,24 @@ layout (std430, binding = 50, set = 0) writeonly buffer RayGenOutput {
     PathHeader header[];
 } PathInfos;
 
-layout(std430, binding = 51, set = 0) writeonly buffer IntersectionQueue {
+// NOTE: Can't use writeonly because count is initialized from CPU
+layout(std430, binding = 51, set = 0) buffer IntersectionQueue {
     uint count;
     uint padding[3];
     uint rayIndices[];
-};
+} rayQueue;
 
 void enqueue_intersection(uint rayIndex) {
     // Dense (bounce-0 style) initialization: rayIndices[i] = i
-    rayIndices[rayIndex] = rayIndex;
+    rayQueue.rayIndices[rayIndex] = rayIndex;
 }
 
 uvec2 getResolution() {
     return uvec2(pc.width, pc.height);
 }
+
+// Global ray index for this invocation (used by traceRay to know which payload slot to use)
+uint g_RayIndex = 0u;
 
 void traceRay(vec3 origin, float tMin, vec3 direction, float tMax)
 {
@@ -57,9 +61,14 @@ void traceRay(vec3 origin, float tMin, vec3 direction, float tMax)
     header.tMin = tMin;
     header.tMax = tMax;
 
-    uint index = gl_GlobalInvocationID.x;
-    PathInfos.header[index] = header;
-    enqueue_intersection(index);
+    // Use the global ray index (set in main) - this corresponds to the payload index
+    uint rayIndex = g_RayIndex;
+
+    PathInfos.header[rayIndex] = header;
+    enqueue_intersection(rayIndex);
+
+    // Atomically increment count to track total rays queued
+    atomicAdd(rayQueue.count, 1);
 }
 
 //___USER_PARAMS___
@@ -86,11 +95,9 @@ void main() {
         return;
     }
 
+    // Set global ray index for traceRay to use
+    g_RayIndex = index;
+
     // Call user raygen code with payload reference
     //___RAY_GEN_CALL___
-
-    // Set queue count once for a dense initial queue.
-    if (index == 0u) {
-        count = rayCount;
-    }
 }

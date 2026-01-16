@@ -22,10 +22,15 @@ namespace tracey
         VkPipeline resolvePipeline() const { return m_resolvePipelineInfo.pipeline; }
         VkPipelineLayout pipelineLayout() const { return m_rayGenPipelineInfo.pipelineLayout; }
 
+        VkBuffer payloadBuffer() const { return m_payloadBuffer; }
         VkBuffer hitInfoBuffer() const { return m_hitInfoBuffer; }
         VkBuffer rayQueueBuffer() const { return m_rayQueueBuffer; }
         VkBuffer rayQueueBuffer2() const { return m_rayQueueBuffer2; }
+        VkBuffer hitQueueBuffer() const { return m_hitQueueBuffer; }
+        VkBuffer missQueueBuffer() const { return m_missQueueBuffer; }
         VkBuffer indirectDispatchBuffer() const { return m_indirectDispatchBuffer; }
+        VkBuffer hitIndirectBuffer() const { return m_hitIndirectBuffer; }
+        VkBuffer missIndirectBuffer() const { return m_missIndirectBuffer; }
         VkPipeline prepareIndirectPipeline() const { return m_prepareIndirectPipelineInfo.pipeline; }
         uint32_t maxRayCount() const { return m_maxRayCount; }
 
@@ -63,8 +68,16 @@ namespace tracey
         VkDeviceMemory m_rayQueueMemory2 = VK_NULL_HANDLE;
         VkBuffer m_hitInfoBuffer = VK_NULL_HANDLE;
         VkDeviceMemory m_hitInfoMemory = VK_NULL_HANDLE;
+        VkBuffer m_hitQueueBuffer = VK_NULL_HANDLE;
+        VkDeviceMemory m_hitQueueMemory = VK_NULL_HANDLE;
+        VkBuffer m_missQueueBuffer = VK_NULL_HANDLE;
+        VkDeviceMemory m_missQueueMemory = VK_NULL_HANDLE;
         VkBuffer m_indirectDispatchBuffer = VK_NULL_HANDLE;
         VkDeviceMemory m_indirectDispatchMemory = VK_NULL_HANDLE;
+        VkBuffer m_hitIndirectBuffer = VK_NULL_HANDLE;
+        VkDeviceMemory m_hitIndirectMemory = VK_NULL_HANDLE;
+        VkBuffer m_missIndirectBuffer = VK_NULL_HANDLE;
+        VkDeviceMemory m_missIndirectMemory = VK_NULL_HANDLE;
         uint32_t m_maxRayCount = 0;
         size_t m_payloadSize = 0;
     };

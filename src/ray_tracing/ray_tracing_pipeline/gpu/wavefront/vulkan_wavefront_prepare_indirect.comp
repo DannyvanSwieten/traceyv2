@@ -1,27 +1,67 @@
 #version 450
 layout (local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
 
-// Ray queue buffer - we read the count from here
+// Ray queue buffer - we read the count from here (for intersection pass)
 layout(std430, binding = 51, set = 0) readonly buffer RayQueue {
     uint count;
     uint padding[3];
     uint rayIndices[];
 } rayQueue;
 
-// Indirect dispatch buffer - VkDispatchIndirectCommand structure
+// Hit queue buffer - read count for hit shader dispatch
+layout(std430, binding = 55, set = 0) readonly buffer HitQueue {
+    uint count;
+    uint padding[3];
+    uint rayIndices[];
+} hitQueue;
+
+// Miss queue buffer - read count for miss shader dispatch
+layout(std430, binding = 56, set = 0) readonly buffer MissQueue {
+    uint count;
+    uint padding[3];
+    uint rayIndices[];
+} missQueue;
+
+// Indirect dispatch buffer for intersection pass - VkDispatchIndirectCommand structure
 layout(std430, binding = 54, set = 0) writeonly buffer IndirectDispatch {
     uint groupCountX;
     uint groupCountY;
     uint groupCountZ;
 } indirectDispatch;
 
-void main() {
-    // Calculate workgroups needed: ceil(count / 256)
-    uint count = rayQueue.count;
-    uint workGroups = (count + 255u) / 256u;
+// Indirect dispatch buffer for hit shader pass
+layout(std430, binding = 57, set = 0) writeonly buffer HitIndirectDispatch {
+    uint groupCountX;
+    uint groupCountY;
+    uint groupCountZ;
+} hitIndirectDispatch;
 
-    // Ensure at least 0 workgroups (avoid dispatch of 0 which is valid but wasteful)
-    indirectDispatch.groupCountX = workGroups;
+// Indirect dispatch buffer for miss shader pass
+layout(std430, binding = 58, set = 0) writeonly buffer MissIndirectDispatch {
+    uint groupCountX;
+    uint groupCountY;
+    uint groupCountZ;
+} missIndirectDispatch;
+
+void main() {
+    // Prepare intersection pass dispatch (based on rayQueue.count)
+    uint intersectCount = rayQueue.count;
+    uint intersectWorkGroups = (intersectCount + 255u) / 256u;
+    indirectDispatch.groupCountX = intersectWorkGroups;
     indirectDispatch.groupCountY = 1u;
     indirectDispatch.groupCountZ = 1u;
+
+    // Prepare hit shader pass dispatch (based on hitQueue.count)
+    uint hitCount = hitQueue.count;
+    uint hitWorkGroups = (hitCount + 255u) / 256u;
+    hitIndirectDispatch.groupCountX = hitWorkGroups;
+    hitIndirectDispatch.groupCountY = 1u;
+    hitIndirectDispatch.groupCountZ = 1u;
+
+    // Prepare miss shader pass dispatch (based on missQueue.count)
+    uint missCount = missQueue.count;
+    uint missWorkGroups = (missCount + 255u) / 256u;
+    missIndirectDispatch.groupCountX = missWorkGroups;
+    missIndirectDispatch.groupCountY = 1u;
+    missIndirectDispatch.groupCountZ = 1u;
 }

@@ -5,12 +5,15 @@
 
 void shader(uvec2 pixel, in RayPayloads payloads) {
     // Read the final color from the payload (set by hit/miss shaders)
-    // accumulate color over multiple samples if needed
+    vec3 color = payloads.rayPayload.color * 0.25;
     uint sampleIndex = payloads.rayPayload.sampleIndex;
-    vec3 color = payloads.rayPayload.color * 0.25; // Simple averaging for 4 samples
 
-    // Write to output image
+    // Accumulate color from this sample
     vec4 currentOutput = imageLoad(outputImage, ivec2(pixel));
     color += currentOutput.rgb;
+
+    // Average by dividing by sample count (sampleIndex goes from 1 to N)
+
     imageStore(outputImage, ivec2(pixel), vec4(color, 1.0));
 }
+    

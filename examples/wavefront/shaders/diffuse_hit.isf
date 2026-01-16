@@ -52,9 +52,9 @@ void shader(HitInfo hitInfo, inout RayPayloads payloads) {
     // Get hit position
     vec3 hitPos = getWorldHitPosition(g_CurrentRayIndex, hitInfo);
 
-    // Check max depth
+    // Check max depth - terminate with black if max depth reached
     if (payloads.rayPayload.depth >= MAX_DEPTH) {
-        
+        payloads.rayPayload.color = vec3(0.0);
         payloads.rayPayload.alive = false;
         return;
     }

@@ -177,10 +177,4 @@ target_link_libraries(tracey PRIVATE
     SPIRV-Tools
     SPIRV-Tools-opt
 )
-add_subdirectory(./examples) 
-# After you define your executable target
-set_target_properties(device_api PROPERTIES
-    MACOSX_RPATH ON
-    BUILD_RPATH "/usr/local/lib"
-    INSTALL_RPATH "/usr/local/lib"
-)
+add_subdirectory(./examples)

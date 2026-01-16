@@ -39,11 +39,11 @@ layout (std430, binding = 50, set = 0) buffer PathHeaders {
     PathHeader headers[];
 } pathHeaders;
 
-layout(std430, binding = 51, set = 0) readonly buffer RayQueue {
+layout(std430, binding = 55, set = 0) readonly buffer HitQueue {
     uint count;
     uint padding[3];
     uint rayIndices[];
-} rayQueue;
+} hitQueue;
 
 layout(std430, binding = 52, set = 0) readonly buffer HitInfos {
     HitInfo hits[];
@@ -134,13 +134,13 @@ void traceRay(vec3 origin, float tMin, vec3 direction, float tMax) {
 
 void main() {
     uint workItemId = gl_GlobalInvocationID.x;
-    if (workItemId >= rayQueue.count) return;
+    if (workItemId >= hitQueue.count) return;
 
-    uint rayIndex = rayQueue.rayIndices[workItemId];
+    uint rayIndex = hitQueue.rayIndices[workItemId];
     g_CurrentRayIndex = rayIndex;
 
-    // Check if this ray hit geometry (triangleIndex != 0xFFFFFFFF)
-    if (hitInfos.hits[rayIndex].triangleIndex == 0xFFFFFFFF) return;
+    // All rays in hitQueue are guaranteed to be hits - no need to check
+    // OLD: if (hitInfos.hits[rayIndex].triangleIndex == 0xFFFFFFFF) return;
 
     // Call user hit shader with HitInfo and payload reference
     //___HIT_SHADER_CALL___
