@@ -12,12 +12,14 @@ namespace tracey
         {
             Image2D,
             StorageBuffer,
+            UniformBuffer,
             RayPayload,
             AccelerationStructure
         };
 
         void addImage2D(std::string name, ShaderStage stage);
         void addStorageBuffer(std::string name, ShaderStage stage, const StructureLayout &structure);
+        void addUniformBuffer(std::string name, ShaderStage stage, const StructureLayout &structure);
         void addAccelerationStructure(std::string name, ShaderStage stage);
         void addPayload(std::string name, ShaderStage stage, const StructureLayout &structure);
 

@@ -8,7 +8,22 @@ namespace tracey
         VkBufferCreateInfo bufferInfo{};
         bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
         bufferInfo.size = size;
-        bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+
+        // Build Vulkan usage flags from tracey BufferUsage flags
+        VkBufferUsageFlags vkUsage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        if ((static_cast<uint32_t>(usageFlags) & static_cast<uint32_t>(BufferUsage::StorageBuffer)) != 0)
+            vkUsage |= VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+        if ((static_cast<uint32_t>(usageFlags) & static_cast<uint32_t>(BufferUsage::UniformBuffer)) != 0)
+            vkUsage |= VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+        if ((static_cast<uint32_t>(usageFlags) & static_cast<uint32_t>(BufferUsage::VertexBuffer)) != 0)
+            vkUsage |= VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+        if ((static_cast<uint32_t>(usageFlags) & static_cast<uint32_t>(BufferUsage::IndexBuffer)) != 0)
+            vkUsage |= VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+        // If no specific usage was set, default to storage buffer for backwards compatibility
+        if (vkUsage == (VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT))
+            vkUsage |= VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+
+        bufferInfo.usage = vkUsage;
         bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         bufferInfo.queueFamilyIndexCount = 1;
         std::array<uint32_t, 1> queueFamilyIndices = {device.queueFamilyIndex()};

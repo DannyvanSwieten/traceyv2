@@ -125,6 +125,13 @@ add_library(tracey
     src/ray_tracing/shader_module/shader_module.hpp
     src/ray_tracing/shader_module/cpu/cpu_shader_module.hpp
     src/ray_tracing/shader_module/cpu/cpu_shader_module.cpp
+
+    src/ray_tracing/isf/isf_parser.hpp
+    src/ray_tracing/isf/isf_parser.cpp
+    src/ray_tracing/isf/isf_pipeline_builder.hpp
+    src/ray_tracing/isf/isf_pipeline_builder.cpp
+    src/ray_tracing/isf/shader_inputs_buffer.hpp
+    src/ray_tracing/isf/shader_inputs_buffer.cpp
 )
 
 # Define DEBUG for Debug builds, NDEBUG for non-Debug

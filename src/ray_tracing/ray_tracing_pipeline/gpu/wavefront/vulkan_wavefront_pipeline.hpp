@@ -25,6 +25,8 @@ namespace tracey
         VkBuffer hitInfoBuffer() const { return m_hitInfoBuffer; }
         VkBuffer rayQueueBuffer() const { return m_rayQueueBuffer; }
         VkBuffer rayQueueBuffer2() const { return m_rayQueueBuffer2; }
+        VkBuffer indirectDispatchBuffer() const { return m_indirectDispatchBuffer; }
+        VkPipeline prepareIndirectPipeline() const { return m_prepareIndirectPipelineInfo.pipeline; }
         uint32_t maxRayCount() const { return m_maxRayCount; }
 
         struct PipelineInfo
@@ -48,6 +50,7 @@ namespace tracey
         std::vector<PipelineInfo> m_hitPipelines;
         std::vector<PipelineInfo> m_missPipelines;
         PipelineInfo m_resolvePipelineInfo;
+        PipelineInfo m_prepareIndirectPipelineInfo;
 
         // Wavefront internal buffers
         VkBuffer m_payloadBuffer = VK_NULL_HANDLE;
@@ -60,6 +63,8 @@ namespace tracey
         VkDeviceMemory m_rayQueueMemory2 = VK_NULL_HANDLE;
         VkBuffer m_hitInfoBuffer = VK_NULL_HANDLE;
         VkDeviceMemory m_hitInfoMemory = VK_NULL_HANDLE;
+        VkBuffer m_indirectDispatchBuffer = VK_NULL_HANDLE;
+        VkDeviceMemory m_indirectDispatchMemory = VK_NULL_HANDLE;
         uint32_t m_maxRayCount = 0;
         size_t m_payloadSize = 0;
     };

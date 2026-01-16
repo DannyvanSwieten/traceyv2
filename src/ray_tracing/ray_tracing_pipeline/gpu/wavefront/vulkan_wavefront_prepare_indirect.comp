@@ -1,0 +1,27 @@
+#version 450
+layout (local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+
+// Ray queue buffer - we read the count from here
+layout(std430, binding = 51, set = 0) readonly buffer RayQueue {
+    uint count;
+    uint padding[3];
+    uint rayIndices[];
+} rayQueue;
+
+// Indirect dispatch buffer - VkDispatchIndirectCommand structure
+layout(std430, binding = 54, set = 0) writeonly buffer IndirectDispatch {
+    uint groupCountX;
+    uint groupCountY;
+    uint groupCountZ;
+} indirectDispatch;
+
+void main() {
+    // Calculate workgroups needed: ceil(count / 256)
+    uint count = rayQueue.count;
+    uint workGroups = (count + 255u) / 256u;
+
+    // Ensure at least 0 workgroups (avoid dispatch of 0 which is valid but wasteful)
+    indirectDispatch.groupCountX = workGroups;
+    indirectDispatch.groupCountY = 1u;
+    indirectDispatch.groupCountZ = 1u;
+}

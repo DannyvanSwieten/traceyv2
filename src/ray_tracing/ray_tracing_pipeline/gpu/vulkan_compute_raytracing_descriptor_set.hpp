@@ -13,6 +13,7 @@ namespace tracey
 
         void setImage2D(const std::string_view binding, Image2D *image) override;
         void setBuffer(const std::string_view binding, Buffer *buffer) override;
+        void setUniformBuffer(const std::string_view binding, Buffer *buffer) override;
         void setAccelerationStructure(const std::string_view binding, const TopLevelAccelerationStructure *tlas) override;
 
         VkDescriptorSet vkDescriptorSet() const { return m_descriptorSet; }

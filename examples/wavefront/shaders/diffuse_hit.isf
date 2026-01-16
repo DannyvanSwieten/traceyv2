@@ -1,0 +1,85 @@
+/*{
+    "STAGE": "ClosestHit",
+    "DESCRIPTION": "Cosine-weighted hemisphere sampling for diffuse materials",
+    "INPUTS": [
+        { "NAME": "albedo", "TYPE": "color", "DEFAULT": [0.5, 0.5, 0.5, 1.0] }
+    ],
+    "RESOURCES": [
+        { "NAME": "vertexBuffer", "TYPE": "storage_buffer", "STRUCTURE": "Vertex" }
+    ]
+}*/
+
+#define PI 3.14159265359
+
+// Persistent random number generator (evolves the seed)
+float nextRandom(inout uint seed) {
+    seed = (seed ^ 61u) ^ (seed >> 16u);
+    seed *= 9u;
+    seed = seed ^ (seed >> 4u);
+    seed *= 0x27d4eb2du;
+    seed = seed ^ (seed >> 15u);
+    return float(seed) / 4294967296.0;
+}
+
+// Sample cosine-weighted hemisphere
+vec3 sampleCosineHemisphere(float r1, float r2) {
+    float phi = 2.0 * PI * r1;
+    float cosTheta = sqrt(r2);
+    float sinTheta = sqrt(1.0 - r2);
+    return vec3(cos(phi) * sinTheta, sin(phi) * sinTheta, cosTheta);
+}
+
+// Build tangent frame
+void buildTangentFrame(vec3 N, out vec3 T, out vec3 B) {
+    vec3 up = abs(N.y) < 0.999 ? vec3(0, 1, 0) : vec3(1, 0, 0);
+    T = normalize(cross(up, N));
+    B = cross(N, T);
+}
+
+vec3 tangentToWorld(vec3 v, vec3 N, vec3 T, vec3 B) {
+    return v.x * T + v.y * B + v.z * N;
+}
+
+void shader(HitInfo hitInfo, inout RayPayloads payloads) {
+    const uint MAX_DEPTH = 5u;
+
+    // Only process if ray is still alive
+    if (!payloads.rayPayload.alive) return;
+
+    // Normal is already in world space
+    vec3 N = normalize(vec3(hitInfo.normalX, hitInfo.normalY, hitInfo.normalZ));
+
+    // Get hit position
+    vec3 hitPos = getWorldHitPosition(g_CurrentRayIndex, hitInfo);
+
+    // Check max depth
+    if (payloads.rayPayload.depth >= MAX_DEPTH) {
+        
+        payloads.rayPayload.alive = false;
+        return;
+    }
+
+    // Multiply accumulated color by albedo
+    payloads.rayPayload.color *= shaderInputs.albedo.rgb;
+
+    // Increment depth
+    payloads.rayPayload.depth += 1u;
+
+    // Build tangent frame
+    vec3 T, B;
+    buildTangentFrame(N, T, B);
+
+    // Generate random numbers using persistent seed
+    float r1 = nextRandom(payloads.rayPayload.rngSeed);
+    float r2 = nextRandom(payloads.rayPayload.rngSeed);
+
+    // Sample cosine-weighted hemisphere
+    vec3 localDir = sampleCosineHemisphere(r1, r2);
+    vec3 L = tangentToWorld(localDir, N, T, B);
+
+    // Store new direction for miss shader to use
+    payloads.rayPayload.direction = L;
+
+    // Spawn secondary ray
+    traceRay(hitPos + N * 0.001, 0.01, L, 1000.0);
+}

@@ -1,0 +1,15 @@
+/*{
+    "STAGE": "Miss",
+    "DESCRIPTION": "Sky gradient background"
+}*/
+
+void shader(inout RayPayloads payloads) {
+    // Only process if ray is still alive
+    if (!payloads.rayPayload.alive) return;
+
+    // Miss shader code - ray escaped to sky, terminate it
+    float t = 0.5 * (payloads.rayPayload.direction.y + 1.0);
+    vec3 sky = (1.0 - t) * vec3(1.0) + t * vec3(0.5, 0.7, 1.0);
+    payloads.rayPayload.color *= sky;  // Multiply by sky color
+    payloads.rayPayload.alive = false; // Terminate ray
+}

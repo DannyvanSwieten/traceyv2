@@ -141,8 +141,14 @@ namespace tracey
                                      0, 1, &barrier, 0, nullptr, 0, nullptr);
 
                 // Dynamic bounce loop - continue until all rays are terminated
-                // For simplicity, we'll use a fixed max iteration count to prevent infinite loops
                 const uint32_t MAX_ITERATIONS = 5;
+                VkBuffer indirectDispatchBuffer = wavefront->indirectDispatchBuffer();
+
+                // Barrier for indirect buffer reads
+                VkMemoryBarrier indirectBarrier{};
+                indirectBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+                indirectBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+                indirectBarrier.dstAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
 
                 for (uint32_t bounce = 0; bounce < MAX_ITERATIONS; bounce++)
                 {
@@ -176,47 +182,50 @@ namespace tracey
                                          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                                          0, 1, &fillBarrier, 0, nullptr, 0, nullptr);
 
-                    // Intersection
+                    // Prepare indirect dispatch arguments from current ray queue count
+                    vkCmdBindPipeline(m_vkCommandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                      wavefront->prepareIndirectPipeline());
+                    vkCmdDispatch(m_vkCommandBuffer, 1, 1, 1);
+                    vkCmdPipelineBarrier(m_vkCommandBuffer,
+                                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                         VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
+                                         0, 1, &indirectBarrier, 0, nullptr, 0, nullptr);
+
+                    // Intersection - use indirect dispatch
                     vkCmdBindPipeline(m_vkCommandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
                                       wavefront->intersectPipeline());
                     vkCmdPushConstants(m_vkCommandBuffer, wavefront->pipelineLayout(),
                                        VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pushConstants),
                                        &pushConstants);
-                    vkCmdDispatch(m_vkCommandBuffer, workGroups, 1, 1);
+                    vkCmdDispatchIndirect(m_vkCommandBuffer, indirectDispatchBuffer, 0);
                     vkCmdPipelineBarrier(m_vkCommandBuffer,
                                          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                                          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                                          0, 1, &barrier, 0, nullptr, 0, nullptr);
 
-                    // Hit shader (writes new rays to binding 53 via traceRay() if active)
+                    // Hit shader - use indirect dispatch
                     vkCmdBindPipeline(m_vkCommandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
                                       wavefront->hitPipeline(0));
                     vkCmdPushConstants(m_vkCommandBuffer, wavefront->pipelineLayout(),
                                        VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pushConstants),
                                        &pushConstants);
-                    vkCmdDispatch(m_vkCommandBuffer, workGroups, 1, 1);
+                    vkCmdDispatchIndirect(m_vkCommandBuffer, indirectDispatchBuffer, 0);
                     vkCmdPipelineBarrier(m_vkCommandBuffer,
                                          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                                          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                                          0, 1, &barrier, 0, nullptr, 0, nullptr);
 
-                    // Miss shader (terminates rays that miss)
+                    // Miss shader - use indirect dispatch
                     vkCmdBindPipeline(m_vkCommandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
                                       wavefront->missPipeline(0));
                     vkCmdPushConstants(m_vkCommandBuffer, wavefront->pipelineLayout(),
                                        VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pushConstants),
                                        &pushConstants);
-                    vkCmdDispatch(m_vkCommandBuffer, workGroups, 1, 1);
+                    vkCmdDispatchIndirect(m_vkCommandBuffer, indirectDispatchBuffer, 0);
                     vkCmdPipelineBarrier(m_vkCommandBuffer,
                                          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                                          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                                          0, 1, &barrier, 0, nullptr, 0, nullptr);
-
-                    // Note: In a production implementation, we would:
-                    // 1. Read the next queue count from nextQueueBuffer
-                    // 2. Use conditional rendering or early exit if count == 0
-                    // 3. Use indirect dispatch with actual ray count for efficiency
-                    // For now, we rely on MAX_ITERATIONS and per-ray depth checks in shaders
                 }
 
                 // Resolve shader (final pass)

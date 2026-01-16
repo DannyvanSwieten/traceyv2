@@ -4,6 +4,10 @@
 #include "../../ray_tracing_pipeline_layout.hpp"
 #include "../../../../device/gpu/vulkan_compute_device.hpp"
 #include <iostream>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
+#include <shaderc/shaderc.hpp>
 
 namespace tracey
 {
@@ -53,6 +57,12 @@ namespace tracey
                             .descriptorCount = 1,
                             .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT});
 
+        // Indirect dispatch buffer
+        bindings.push_back({.binding = 54,
+                            .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                            .descriptorCount = 1,
+                            .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT});
+
         // TLAS buffers (bindings 0-5) - always added for acceleration structure access
         for (size_t i = 0; i < 6; ++i)
         {
@@ -82,6 +92,10 @@ namespace tracey
                 break;
             case RayTracingPipelineLayoutDescriptor::DescriptorType::StorageBuffer:
                 vkBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+                bindings.push_back(vkBinding);
+                break;
+            case RayTracingPipelineLayoutDescriptor::DescriptorType::UniformBuffer:
+                vkBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
                 bindings.push_back(vkBinding);
                 break;
             case RayTracingPipelineLayoutDescriptor::DescriptorType::AccelerationStructure:
@@ -274,6 +288,59 @@ namespace tracey
             throw std::runtime_error("Failed to create resolve shader pipeline");
         }
 
+        // Create prepare indirect dispatch pipeline
+        {
+            // Load and compile the prepare indirect shader
+            std::filesystem::path prepareIndirectPath = std::filesystem::path(__FILE__).parent_path() / "vulkan_wavefront_prepare_indirect.comp";
+            std::ifstream prepareIndirectFile(prepareIndirectPath);
+            if (!prepareIndirectFile.is_open())
+            {
+                throw std::runtime_error("Failed to open prepare indirect shader file: " + prepareIndirectPath.string());
+            }
+            std::stringstream prepareIndirectStream;
+            prepareIndirectStream << prepareIndirectFile.rdbuf();
+            std::string prepareIndirectSource = prepareIndirectStream.str();
+
+            shaderc::Compiler compiler;
+            shaderc::CompileOptions options;
+            options.SetOptimizationLevel(shaderc_optimization_level_performance);
+            options.SetTargetEnvironment(shaderc_target_env_vulkan, shaderc_env_version_vulkan_1_2);
+
+            shaderc::SpvCompilationResult prepareIndirectModule = compiler.CompileGlslToSpv(
+                prepareIndirectSource, shaderc_glsl_compute_shader, "vulkan_wavefront_prepare_indirect.comp", options);
+
+            if (prepareIndirectModule.GetCompilationStatus() != shaderc_compilation_status_success)
+            {
+                throw std::runtime_error("Failed to compile prepare indirect shader: " + std::string(prepareIndirectModule.GetErrorMessage()));
+            }
+            std::vector<uint32_t> prepareIndirectSpirV(prepareIndirectModule.cbegin(), prepareIndirectModule.cend());
+
+            VkShaderModuleCreateInfo prepareIndirectModuleInfo{};
+            prepareIndirectModuleInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+            prepareIndirectModuleInfo.codeSize = prepareIndirectSpirV.size() * sizeof(uint32_t);
+            prepareIndirectModuleInfo.pCode = prepareIndirectSpirV.data();
+            if (vkCreateShaderModule(m_device.vkDevice(), &prepareIndirectModuleInfo, nullptr, &m_prepareIndirectPipelineInfo.shaderModule) != VK_SUCCESS)
+            {
+                throw std::runtime_error("Failed to create prepare indirect shader module");
+            }
+
+            m_prepareIndirectPipelineInfo.pipelineLayout = pipelineLayout;
+            m_prepareIndirectPipelineInfo.descriptorSetLayout = descriptorSetLayout;
+
+            VkComputePipelineCreateInfo prepareIndirectPipelineInfo{};
+            prepareIndirectPipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+            prepareIndirectPipelineInfo.layout = pipelineLayout;
+            prepareIndirectPipelineInfo.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+            prepareIndirectPipelineInfo.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+            prepareIndirectPipelineInfo.stage.module = m_prepareIndirectPipelineInfo.shaderModule;
+            prepareIndirectPipelineInfo.stage.pName = "main";
+
+            if (vkCreateComputePipelines(m_device.vkDevice(), VK_NULL_HANDLE, 1, &prepareIndirectPipelineInfo, nullptr, &m_prepareIndirectPipelineInfo.pipeline) != VK_SUCCESS)
+            {
+                throw std::runtime_error("Failed to create prepare indirect pipeline");
+            }
+        }
+
         // Calculate payload size from layout
         m_payloadSize = 0;
         for (const auto &payload : layout.payloads())
@@ -313,6 +380,10 @@ namespace tracey
             vkDestroyBuffer(device, m_hitInfoBuffer, nullptr);
         if (m_hitInfoMemory != VK_NULL_HANDLE)
             vkFreeMemory(device, m_hitInfoMemory, nullptr);
+        if (m_indirectDispatchBuffer != VK_NULL_HANDLE)
+            vkDestroyBuffer(device, m_indirectDispatchBuffer, nullptr);
+        if (m_indirectDispatchMemory != VK_NULL_HANDLE)
+            vkFreeMemory(device, m_indirectDispatchMemory, nullptr);
 
         // Destroy pipelines
         if (m_rayGenPipelineInfo.pipeline)
@@ -334,6 +405,8 @@ namespace tracey
 
         if (m_resolvePipelineInfo.pipeline)
             vkDestroyPipeline(device, m_resolvePipelineInfo.pipeline, nullptr);
+        if (m_prepareIndirectPipelineInfo.pipeline)
+            vkDestroyPipeline(device, m_prepareIndirectPipelineInfo.pipeline, nullptr);
 
         // Destroy shader modules
         if (m_rayGenPipelineInfo.shaderModule)
@@ -355,6 +428,8 @@ namespace tracey
 
         if (m_resolvePipelineInfo.shaderModule)
             vkDestroyShaderModule(device, m_resolvePipelineInfo.shaderModule, nullptr);
+        if (m_prepareIndirectPipelineInfo.shaderModule)
+            vkDestroyShaderModule(device, m_prepareIndirectPipelineInfo.shaderModule, nullptr);
 
         // Destroy pipeline layout (shared, so only destroy once)
         if (m_rayGenPipelineInfo.pipelineLayout)
@@ -429,6 +504,8 @@ namespace tracey
             vkFreeMemory(device, m_rayQueueMemory2, nullptr);
             vkDestroyBuffer(device, m_hitInfoBuffer, nullptr);
             vkFreeMemory(device, m_hitInfoMemory, nullptr);
+            vkDestroyBuffer(device, m_indirectDispatchBuffer, nullptr);
+            vkFreeMemory(device, m_indirectDispatchMemory, nullptr);
         }
 
         m_maxRayCount = maxRayCount;
@@ -575,11 +652,40 @@ namespace tracey
             throw std::runtime_error("Failed to allocate HitInfo memory");
         }
         vkBindBufferMemory(device, m_hitInfoBuffer, m_hitInfoMemory, 0);
+
+        // Indirect dispatch buffer: VkDispatchIndirectCommand (3 uint32s)
+        VkDeviceSize indirectDispatchSize = sizeof(uint32_t) * 3;
+
+        VkBufferCreateInfo indirectDispatchBufferInfo{};
+        indirectDispatchBufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        indirectDispatchBufferInfo.size = indirectDispatchSize;
+        indirectDispatchBufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
+        indirectDispatchBufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+        if (vkCreateBuffer(device, &indirectDispatchBufferInfo, nullptr, &m_indirectDispatchBuffer) != VK_SUCCESS)
+        {
+            throw std::runtime_error("Failed to create IndirectDispatch buffer");
+        }
+
+        VkMemoryRequirements indirectDispatchMemReqs;
+        vkGetBufferMemoryRequirements(device, m_indirectDispatchBuffer, &indirectDispatchMemReqs);
+
+        VkMemoryAllocateInfo indirectDispatchAllocInfo{};
+        indirectDispatchAllocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        indirectDispatchAllocInfo.allocationSize = indirectDispatchMemReqs.size;
+        indirectDispatchAllocInfo.memoryTypeIndex = m_device.findMemoryType(indirectDispatchMemReqs.memoryTypeBits,
+                                                                             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+        if (vkAllocateMemory(device, &indirectDispatchAllocInfo, nullptr, &m_indirectDispatchMemory) != VK_SUCCESS)
+        {
+            throw std::runtime_error("Failed to allocate IndirectDispatch memory");
+        }
+        vkBindBufferMemory(device, m_indirectDispatchBuffer, m_indirectDispatchMemory, 0);
     }
 
     void VulkanWaveFrontPipeline::bindInternalBuffers(VkDescriptorSet descriptorSet, bool swapQueues)
     {
-        VkWriteDescriptorSet writes[5]{};
+        VkWriteDescriptorSet writes[6]{};
 
         // Binding 20: Payload buffer
         VkDescriptorBufferInfo payloadInfo{};
@@ -651,6 +757,20 @@ namespace tracey
         writes[4].descriptorCount = 1;
         writes[4].pBufferInfo = &rayQueue2Info;
 
-        vkUpdateDescriptorSets(m_device.vkDevice(), 5, writes, 0, nullptr);
+        // Binding 54: Indirect dispatch buffer
+        VkDescriptorBufferInfo indirectDispatchInfo{};
+        indirectDispatchInfo.buffer = m_indirectDispatchBuffer;
+        indirectDispatchInfo.offset = 0;
+        indirectDispatchInfo.range = VK_WHOLE_SIZE;
+
+        writes[5].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[5].dstSet = descriptorSet;
+        writes[5].dstBinding = 54;
+        writes[5].dstArrayElement = 0;
+        writes[5].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        writes[5].descriptorCount = 1;
+        writes[5].pBufferInfo = &indirectDispatchInfo;
+
+        vkUpdateDescriptorSets(m_device.vkDevice(), 6, writes, 0, nullptr);
     }
 }

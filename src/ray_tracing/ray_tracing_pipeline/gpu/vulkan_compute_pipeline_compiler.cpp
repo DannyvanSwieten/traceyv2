@@ -8,6 +8,91 @@
 #include <shaderc/shaderc.hpp>
 namespace tracey
 {
+    // Helper: Get alignment requirement for GLSL type in std140 layout (uniform buffers)
+    static size_t getStd140Alignment(const std::string &glslType)
+    {
+        if (glslType == "float" || glslType == "int" || glslType == "uint" || glslType == "bool")
+            return 4;
+        if (glslType == "vec2" || glslType == "ivec2" || glslType == "uvec2")
+            return 8;
+        if (glslType == "vec3" || glslType == "ivec3" || glslType == "uvec3")
+            return 16; // std140: vec3 is 16-byte aligned
+        if (glslType == "vec4" || glslType == "ivec4" || glslType == "uvec4")
+            return 16;
+        if (glslType == "mat3")
+            return 16;
+        if (glslType == "mat4")
+            return 16;
+        return 16; // Default for unknown types
+    }
+
+    // Helper: Get size for GLSL type in std140 layout
+    static size_t getStd140Size(const std::string &glslType)
+    {
+        if (glslType == "float" || glslType == "int" || glslType == "uint" || glslType == "bool")
+            return 4;
+        if (glslType == "vec2" || glslType == "ivec2" || glslType == "uvec2")
+            return 8;
+        if (glslType == "vec3" || glslType == "ivec3" || glslType == "uvec3")
+            return 16; // std140: vec3 takes 16 bytes
+        if (glslType == "vec4" || glslType == "ivec4" || glslType == "uvec4")
+            return 16;
+        if (glslType == "mat3")
+            return 48; // 3 columns * 16 bytes each
+        if (glslType == "mat4")
+            return 64; // 4 columns * 16 bytes each
+        return 16;
+    }
+
+    // Helper: Generate struct with proper std140 padding for uniform buffers
+    static void generateStd140Struct(std::stringstream &ss, const std::string &structName, const std::vector<StructField> &fields)
+    {
+        ss << "struct " << structName << " {\n";
+
+        size_t currentOffset = 0;
+        int paddingCounter = 0;
+
+        for (const auto &field : fields)
+        {
+            size_t alignment = getStd140Alignment(field.type);
+            size_t fieldSize = getStd140Size(field.type);
+
+            // Calculate aligned offset
+            size_t alignedOffset = (currentOffset + alignment - 1) & ~(alignment - 1);
+
+            // Insert padding if needed
+            // IMPORTANT: In std140, arrays of scalars are aligned to vec4 (16 bytes) per element!
+            // So we use individual float fields for padding, NOT float arrays.
+            if (alignedOffset > currentOffset)
+            {
+                size_t paddingSize = alignedOffset - currentOffset;
+                size_t numFloats = paddingSize / 4;
+                for (size_t i = 0; i < numFloats; ++i)
+                {
+                    ss << "    float _pad" << paddingCounter++ << ";\n";
+                }
+            }
+
+            // Write the actual field
+            ss << "    " << field.type << " " << field.name;
+            if (field.isArray)
+            {
+                ss << "[";
+                if (field.elementCount > 0)
+                {
+                    ss << field.elementCount;
+                }
+                ss << "]";
+                fieldSize *= field.elementCount > 0 ? field.elementCount : 1;
+            }
+            ss << ";\n";
+
+            currentOffset = alignedOffset + fieldSize;
+        }
+
+        ss << "};\n";
+    }
+
     // Helper: Get alignment requirement for GLSL type in std430 layout
     static size_t getStd430Alignment(const std::string &glslType)
     {
@@ -410,23 +495,9 @@ namespace tracey
             .missShadersSpirV = std::move(missShadersSpirV),
             .resolveShaderSpirV = std::move(resolveSpirV)};
     }
-    std::vector<uint32_t> compileRayGenShader(const RayTracingPipelineLayoutDescriptor &layout, const CpuShaderBindingTable &sbt)
+    // Helper to generate user bindings code (shared by all shader compilation functions)
+    static void generateUserBindings(std::stringstream &userParams, const RayTracingPipelineLayoutDescriptor &layout, size_t bindingStartOffset)
     {
-        std::filesystem::path rayGenShaderPath = std::filesystem::path(__FILE__).parent_path() / "wavefront" / "vulkan_wavefront_ray_gen.comp";
-        std::ifstream rayGenShaderFile(rayGenShaderPath);
-        if (!rayGenShaderFile.is_open())
-        {
-            throw std::runtime_error("Failed to open Vulkan WaveFront ray generation shader file: " + rayGenShaderPath.string());
-        }
-        std::stringstream rayGenShaderTemplateStream;
-        rayGenShaderTemplateStream << rayGenShaderFile.rdbuf() << "\n";
-        std::string rayGenShaderTemplate = rayGenShaderTemplateStream.str();
-
-        // Generate user parameters (bindings and payloads)
-        std::stringstream userParams;
-
-        // User bindings start after TLAS (0-5) at binding 6
-        const auto bindingStartOffset = 6;
         for (const auto &binding : layout.bindings())
         {
             const auto bindingIndex = layout.indexForBinding(binding.name) + bindingStartOffset;
@@ -453,6 +524,13 @@ namespace tracey
                 }
                 userParams << "} " << binding.name << ";\n";
                 break;
+            case RayTracingPipelineLayoutDescriptor::DescriptorType::UniformBuffer:
+                // Generate struct with std140 padding
+                generateStd140Struct(userParams, binding.structure->name(), binding.structure->fields());
+                userParams << "layout(std140, set = 0, binding = " << bindingIndex << ") uniform " << binding.structure->name() << "Block {\n";
+                userParams << "    " << binding.structure->name() << " " << binding.name << ";\n";
+                userParams << "};\n";
+                break;
             case RayTracingPipelineLayoutDescriptor::DescriptorType::AccelerationStructure:
                 // TLAS bindings already defined in template
                 break;
@@ -460,6 +538,26 @@ namespace tracey
                 break;
             }
         }
+    }
+
+    std::vector<uint32_t> compileRayGenShader(const RayTracingPipelineLayoutDescriptor &layout, const CpuShaderBindingTable &sbt)
+    {
+        std::filesystem::path rayGenShaderPath = std::filesystem::path(__FILE__).parent_path() / "wavefront" / "vulkan_wavefront_ray_gen.comp";
+        std::ifstream rayGenShaderFile(rayGenShaderPath);
+        if (!rayGenShaderFile.is_open())
+        {
+            throw std::runtime_error("Failed to open Vulkan WaveFront ray generation shader file: " + rayGenShaderPath.string());
+        }
+        std::stringstream rayGenShaderTemplateStream;
+        rayGenShaderTemplateStream << rayGenShaderFile.rdbuf() << "\n";
+        std::string rayGenShaderTemplate = rayGenShaderTemplateStream.str();
+
+        // Generate user parameters (bindings and payloads)
+        std::stringstream userParams;
+
+        // User bindings start after TLAS (0-5) at binding 6
+        const auto bindingStartOffset = 6;
+        generateUserBindings(userParams, layout, bindingStartOffset);
 
         // Generate payload structures with proper std430 padding
         for (const auto &payload : layout.payloads())
@@ -557,39 +655,7 @@ namespace tracey
 
         // User bindings start after TLAS (0-5) at binding 6
         const auto bindingStartOffset = 6;
-        for (const auto &binding : layout.bindings())
-        {
-            const auto bindingIndex = layout.indexForBinding(binding.name) + bindingStartOffset;
-            switch (binding.type)
-            {
-            case RayTracingPipelineLayoutDescriptor::DescriptorType::Image2D:
-                userParams << "layout(set = 0, binding = " << bindingIndex << ", rgba8) uniform writeonly image2D " << binding.name << ";\n";
-                break;
-            case RayTracingPipelineLayoutDescriptor::DescriptorType::StorageBuffer:
-                userParams << "layout(std430, set = 0, binding = " << bindingIndex << ") buffer " << "Buffer" << bindingIndex << " {\n";
-                for (const auto &field : binding.structure->fields())
-                {
-                    userParams << "    " << field.type << " " << field.name;
-                    if (field.isArray)
-                    {
-                        userParams << "[";
-                        if (field.elementCount > 0)
-                        {
-                            userParams << field.elementCount;
-                        }
-                        userParams << "]";
-                    }
-                    userParams << ";\n";
-                }
-                userParams << "} " << binding.name << ";\n";
-                break;
-            case RayTracingPipelineLayoutDescriptor::DescriptorType::AccelerationStructure:
-                // TLAS bindings already defined in template
-                break;
-            default:
-                break;
-            }
-        }
+        generateUserBindings(userParams, layout, bindingStartOffset);
 
         // Generate payload structures with proper std430 padding
         for (const auto &payload : layout.payloads())
@@ -687,39 +753,7 @@ namespace tracey
 
         // User bindings start after TLAS (0-5) at binding 6
         const auto bindingStartOffset = 6;
-        for (const auto &binding : layout.bindings())
-        {
-            const auto bindingIndex = layout.indexForBinding(binding.name) + bindingStartOffset;
-            switch (binding.type)
-            {
-            case RayTracingPipelineLayoutDescriptor::DescriptorType::Image2D:
-                userParams << "layout(set = 0, binding = " << bindingIndex << ", rgba8) uniform writeonly image2D " << binding.name << ";\n";
-                break;
-            case RayTracingPipelineLayoutDescriptor::DescriptorType::StorageBuffer:
-                userParams << "layout(std430, set = 0, binding = " << bindingIndex << ") buffer " << "Buffer" << bindingIndex << " {\n";
-                for (const auto &field : binding.structure->fields())
-                {
-                    userParams << "    " << field.type << " " << field.name;
-                    if (field.isArray)
-                    {
-                        userParams << "[";
-                        if (field.elementCount > 0)
-                        {
-                            userParams << field.elementCount;
-                        }
-                        userParams << "]";
-                    }
-                    userParams << ";\n";
-                }
-                userParams << "} " << binding.name << ";\n";
-                break;
-            case RayTracingPipelineLayoutDescriptor::DescriptorType::AccelerationStructure:
-                // TLAS bindings already defined in template
-                break;
-            default:
-                break;
-            }
-        }
+        generateUserBindings(userParams, layout, bindingStartOffset);
 
         // Generate payload structures with proper std430 padding
         for (const auto &payload : layout.payloads())
@@ -857,6 +891,13 @@ namespace tracey
                     userParams << "layout(std430, set = 0, binding = " << (bindingIndex + bindingStartOffset) << ") buffer " << binding.name << "_buffer {\n";
                     userParams << "    float data[];\n";
                     userParams << "} " << binding.name << ";\n";
+                    break;
+                case RayTracingPipelineLayoutDescriptor::DescriptorType::UniformBuffer:
+                    // Generate struct with std140 padding
+                    generateStd140Struct(userParams, binding.structure->name(), binding.structure->fields());
+                    userParams << "layout(std140, set = 0, binding = " << (bindingIndex + bindingStartOffset) << ") uniform " << binding.structure->name() << "Block {\n";
+                    userParams << "    " << binding.structure->name() << " " << binding.name << ";\n";
+                    userParams << "};\n";
                     break;
                 case RayTracingPipelineLayoutDescriptor::DescriptorType::AccelerationStructure:
                     // TLAS not needed in resolve shader

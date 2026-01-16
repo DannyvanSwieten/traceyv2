@@ -20,7 +20,11 @@ add_executable(device_api
 
 add_executable(wavefront
     wavefront/wavefront.cpp
-)   
+)
+
+add_executable(wavefront_isf
+    wavefront/wavefront_isf.cpp
+)
 
 target_link_libraries(blas
     PRIVATE
@@ -55,6 +59,14 @@ target_link_libraries(device_api
 )
 
 target_link_libraries(wavefront
+    PRIVATE
+    tracey
+    glm
+    Vulkan::Vulkan
+    shaderc
+)
+
+target_link_libraries(wavefront_isf
     PRIVATE
     tracey
     glm

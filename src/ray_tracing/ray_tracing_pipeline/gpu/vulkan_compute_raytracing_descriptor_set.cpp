@@ -62,6 +62,29 @@ namespace tracey
 
         vkUpdateDescriptorSets(m_device.vkDevice(), 1, &writeDesc, 0, nullptr);
     }
+    void VulkanComputeRayTracingDescriptorSet::setUniformBuffer(const std::string_view binding, Buffer *buffer)
+    {
+        const auto layoutIndex = m_layout.indexForBinding(binding);
+        const auto index = layoutIndex + m_userBindingOffset;
+        fprintf(stderr, "setUniformBuffer('%.*s'): layoutIndex=%zu, offset=%u, final binding=%zu\n",
+                static_cast<int>(binding.size()), binding.data(), layoutIndex, m_userBindingOffset, index);
+
+        VkWriteDescriptorSet writeDesc{};
+        writeDesc.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writeDesc.dstSet = m_descriptorSet;
+        writeDesc.dstBinding = index;
+        writeDesc.dstArrayElement = 0;
+        writeDesc.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        writeDesc.descriptorCount = 1;
+
+        VkDescriptorBufferInfo bufferInfo{};
+        bufferInfo.buffer = static_cast<VulkanBuffer *>(buffer)->vkBuffer();
+        bufferInfo.offset = 0;
+        bufferInfo.range = VK_WHOLE_SIZE;
+        writeDesc.pBufferInfo = &bufferInfo;
+
+        vkUpdateDescriptorSets(m_device.vkDevice(), 1, &writeDesc, 0, nullptr);
+    }
     void VulkanComputeRayTracingDescriptorSet::setAccelerationStructure(const std::string_view binding, const TopLevelAccelerationStructure *tlas)
     {
         const auto index = static_cast<uint32_t>(m_layout.indexForBinding(binding));

@@ -10,6 +10,10 @@ namespace tracey
     {
         m_bindings.emplace_back(DescriptorBinding{name, DescriptorType::StorageBuffer, stage, structure});
     }
+    void RayTracingPipelineLayoutDescriptor::addUniformBuffer(std::string name, ShaderStage stage, const StructureLayout &structure)
+    {
+        m_bindings.emplace_back(DescriptorBinding{name, DescriptorType::UniformBuffer, stage, structure});
+    }
     void RayTracingPipelineLayoutDescriptor::addAccelerationStructure(std::string name, ShaderStage stage)
     {
         m_bindings.insert(m_bindings.begin(), DescriptorBinding{name, DescriptorType::AccelerationStructure, stage});
