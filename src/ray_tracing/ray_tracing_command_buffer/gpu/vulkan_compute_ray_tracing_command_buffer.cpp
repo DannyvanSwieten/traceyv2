@@ -86,7 +86,7 @@ namespace tracey
         {
             // === WAVEFRONT MULTI-BOUNCE EXECUTION ===
 
-            const uint32_t maxBounces = 3; // TODO: Make configurable
+            const uint32_t maxBounces = 8; // TODO: Make configurable
             uint32_t rayCount = width * height;
             uint32_t workGroups = (rayCount + 255) / 256; // 256 threads per work group
 
@@ -102,31 +102,25 @@ namespace tracey
             barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
             barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
 
-            // Clear output image to black before rendering
-            // Note: This requires accessing the output image from descriptor sets
-            // For now, we'll rely on the application to clear the image before rendering
-            // TODO: Add proper image clear command here if needed
-
             VkBuffer payloadBuf = wavefront->payloadBuffer();
             VkBuffer hitInfoBuf = wavefront->hitInfoBuffer();
 
-            for (size_t sample = 0; sample < 4; ++sample) // Single sample for now
+            if (payloadBuf != VK_NULL_HANDLE)
             {
-                // Initialize payload buffer to zero for each sample (sets alive=false initially, ray_gen will set it to true)
-                if (payloadBuf != VK_NULL_HANDLE)
-                {
-                    vkCmdFillBuffer(m_vkCommandBuffer, payloadBuf, 0, VK_WHOLE_SIZE, 0);
+                vkCmdFillBuffer(m_vkCommandBuffer, payloadBuf, 0, VK_WHOLE_SIZE, 0);
 
-                    VkMemoryBarrier fillBarrier{};
-                    fillBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-                    fillBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-                    fillBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
-                    vkCmdPipelineBarrier(m_vkCommandBuffer,
-                                         VK_PIPELINE_STAGE_TRANSFER_BIT,
-                                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                                         0, 1, &fillBarrier, 0, nullptr, 0, nullptr);
-                }
+                VkMemoryBarrier fillBarrier{};
+                fillBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+                fillBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+                fillBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+                vkCmdPipelineBarrier(m_vkCommandBuffer,
+                                     VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                     VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                     0, 1, &fillBarrier, 0, nullptr, 0, nullptr);
+            }
 
+            for (size_t sample = 0; sample < 16; ++sample) // Single sample for now
+            {
                 // Initialize HitInfo buffer with invalid triangle indices for each sample
                 if (hitInfoBuf != VK_NULL_HANDLE)
                 {

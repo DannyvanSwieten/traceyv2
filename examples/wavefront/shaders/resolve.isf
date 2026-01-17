@@ -5,7 +5,8 @@
 
 void shader(uvec2 pixel, in RayPayloads payloads) {
     // Read the final color from the payload (set by hit/miss shaders)
-    vec3 color = payloads.rayPayload.color * 0.25;
+    float f = 1.0 / 16.0; // Assuming 16 samples for now; ideally pass sample count via uniform
+    vec3 color = payloads.rayPayload.color * f;
     uint sampleIndex = payloads.rayPayload.sampleIndex;
 
     // Accumulate color from this sample

@@ -564,7 +564,7 @@ namespace tracey
         VkBufferCreateInfo payloadBufferInfo{};
         payloadBufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
         payloadBufferInfo.size = payloadBufferSize;
-        payloadBufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+        payloadBufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
         payloadBufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
         if (vkCreateBuffer(device, &payloadBufferInfo, nullptr, &m_payloadBuffer) != VK_SUCCESS)
@@ -593,7 +593,7 @@ namespace tracey
         VkBufferCreateInfo pathHeaderBufferInfo{};
         pathHeaderBufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
         pathHeaderBufferInfo.size = pathHeaderSize;
-        pathHeaderBufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+        pathHeaderBufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
         pathHeaderBufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
         if (vkCreateBuffer(device, &pathHeaderBufferInfo, nullptr, &m_pathHeaderBuffer) != VK_SUCCESS)
@@ -722,7 +722,7 @@ namespace tracey
         indirectDispatchAllocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
         indirectDispatchAllocInfo.allocationSize = indirectDispatchMemReqs.size;
         indirectDispatchAllocInfo.memoryTypeIndex = m_device.findMemoryType(indirectDispatchMemReqs.memoryTypeBits,
-                                                                             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+                                                                            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
         if (vkAllocateMemory(device, &indirectDispatchAllocInfo, nullptr, &m_indirectDispatchMemory) != VK_SUCCESS)
         {
@@ -749,7 +749,7 @@ namespace tracey
         hitQueueAllocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
         hitQueueAllocInfo.allocationSize = hitQueueMemReqs.size;
         hitQueueAllocInfo.memoryTypeIndex = m_device.findMemoryType(hitQueueMemReqs.memoryTypeBits,
-                                                                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+                                                                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
         if (vkAllocateMemory(device, &hitQueueAllocInfo, nullptr, &m_hitQueueMemory) != VK_SUCCESS)
         {
@@ -776,7 +776,7 @@ namespace tracey
         missQueueAllocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
         missQueueAllocInfo.allocationSize = missQueueMemReqs.size;
         missQueueAllocInfo.memoryTypeIndex = m_device.findMemoryType(missQueueMemReqs.memoryTypeBits,
-                                                                      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+                                                                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
         if (vkAllocateMemory(device, &missQueueAllocInfo, nullptr, &m_missQueueMemory) != VK_SUCCESS)
         {
@@ -803,7 +803,7 @@ namespace tracey
         hitIndirectAllocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
         hitIndirectAllocInfo.allocationSize = hitIndirectMemReqs.size;
         hitIndirectAllocInfo.memoryTypeIndex = m_device.findMemoryType(hitIndirectMemReqs.memoryTypeBits,
-                                                                        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+                                                                       VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
         if (vkAllocateMemory(device, &hitIndirectAllocInfo, nullptr, &m_hitIndirectMemory) != VK_SUCCESS)
         {
@@ -830,7 +830,7 @@ namespace tracey
         missIndirectAllocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
         missIndirectAllocInfo.allocationSize = missIndirectMemReqs.size;
         missIndirectAllocInfo.memoryTypeIndex = m_device.findMemoryType(missIndirectMemReqs.memoryTypeBits,
-                                                                         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+                                                                        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
         if (vkAllocateMemory(device, &missIndirectAllocInfo, nullptr, &m_missIndirectMemory) != VK_SUCCESS)
         {
