@@ -6,6 +6,8 @@
 namespace tracey
 {
     class VulkanComputeDevice;
+    class VulkanWaveFrontPipeline;
+
     class VulkanComputeRayTracingCommandBuffer : public RayTracingCommandBuffer
     {
     public:
@@ -24,6 +26,78 @@ namespace tracey
         void waitUntilCompleted() override;
 
     private:
+        // ============================================================================
+        // Wavefront Pipeline Execution Helpers
+        // ============================================================================
+
+        /// Push constants passed to all wavefront shader stages
+        struct WavefrontPushConstants
+        {
+            uint32_t width;
+            uint32_t height;
+        };
+
+        /// Initializes payload and hit info buffers to their default values.
+        /// Payloads are zeroed, hit info is set to 0xFFFFFFFF (invalid triangle).
+        void initializeWavefrontBuffers(VulkanWaveFrontPipeline *wavefront);
+
+        /// Clears hit info buffer to invalid triangle indices (0xFFFFFFFF).
+        /// Called at the start of each sample to reset intersection state.
+        void clearHitInfoBuffer(VulkanWaveFrontPipeline *wavefront);
+
+        /// Clears the primary ray queue counter before ray generation.
+        /// Must be called before dispatchRayGeneration since ray gen uses atomicAdd.
+        void clearRayQueueForRayGen(VulkanWaveFrontPipeline *wavefront);
+
+        /// Executes the ray generation shader to spawn primary rays.
+        /// Populates the path header buffer and ray queue with initial rays.
+        void dispatchRayGeneration(VulkanWaveFrontPipeline *wavefront,
+                                   const WavefrontPushConstants &pushConstants,
+                                   uint32_t workGroups);
+
+        /// Clears queue counters and hit info buffer at the start of each bounce.
+        /// Resets: next ray queue, hit queue, miss queue, and hit info buffer.
+        void clearBounceBuffers(VulkanWaveFrontPipeline *wavefront, uint32_t bounce);
+
+        /// Computes indirect dispatch arguments from queue counts.
+        /// Reads ray/hit/miss queue counts and writes workgroup counts to indirect buffers.
+        void dispatchPrepareIndirect(VulkanWaveFrontPipeline *wavefront);
+
+        /// Executes the intersection shader to test rays against the scene.
+        /// Populates hit info buffer and sorts rays into hit/miss queues.
+        void dispatchIntersection(VulkanWaveFrontPipeline *wavefront,
+                                  const WavefrontPushConstants &pushConstants,
+                                  uint32_t workGroups);
+
+        /// Executes the closest hit shader for rays that hit geometry.
+        /// Processes material shading and may spawn secondary rays.
+        void dispatchHitShader(VulkanWaveFrontPipeline *wavefront,
+                               const WavefrontPushConstants &pushConstants);
+
+        /// Executes the miss shader for rays that missed all geometry.
+        /// Typically samples environment/sky color.
+        void dispatchMissShader(VulkanWaveFrontPipeline *wavefront,
+                                const WavefrontPushConstants &pushConstants);
+
+        /// Executes the resolve shader to write final pixel colors.
+        /// Accumulates sample contributions to the output image.
+        void dispatchResolve(VulkanWaveFrontPipeline *wavefront,
+                             const WavefrontPushConstants &pushConstants,
+                             uint32_t width, uint32_t height);
+
+        /// Inserts a memory barrier for shader read/write synchronization.
+        void insertComputeBarrier();
+
+        /// Inserts a memory barrier after transfer operations (e.g., vkCmdFillBuffer).
+        void insertTransferToComputeBarrier();
+
+        /// Inserts a memory barrier for indirect dispatch buffer reads.
+        void insertIndirectDispatchBarrier();
+
+        // ============================================================================
+        // Member Variables
+        // ============================================================================
+
         VulkanComputeDevice &m_device;
         VkCommandBuffer m_vkCommandBuffer;
         RayTracingPipeline *m_pipeline = nullptr;

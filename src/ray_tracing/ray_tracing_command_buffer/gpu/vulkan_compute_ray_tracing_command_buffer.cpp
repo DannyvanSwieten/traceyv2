@@ -5,9 +5,15 @@
 #include "../../../ray_tracing/ray_tracing_pipeline/gpu/vulkan_compute_raytracing_descriptor_set.hpp"
 #include "../../../device/gpu/vulkan_buffer.hpp"
 #include "../../../device/gpu/vulkan_image_2d.hpp"
+
 namespace tracey
 {
-    VulkanComputeRayTracingCommandBuffer::VulkanComputeRayTracingCommandBuffer(VulkanComputeDevice &device) : m_device(device)
+    // ============================================================================
+    // Constructor / Destructor
+    // ============================================================================
+
+    VulkanComputeRayTracingCommandBuffer::VulkanComputeRayTracingCommandBuffer(VulkanComputeDevice &device)
+        : m_device(device)
     {
         m_vkCommandBuffer = VK_NULL_HANDLE;
         VkCommandBufferAllocateInfo allocInfo{};
@@ -28,16 +34,23 @@ namespace tracey
             vkFreeCommandBuffers(m_device.vkDevice(), m_device.commandPool(), 1, &m_vkCommandBuffer);
         }
     }
+
+    // ============================================================================
+    // Public Interface
+    // ============================================================================
+
     void VulkanComputeRayTracingCommandBuffer::begin()
     {
         VkCommandBufferBeginInfo beginInfo{};
         beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
         vkBeginCommandBuffer(m_vkCommandBuffer, &beginInfo);
     }
+
     void VulkanComputeRayTracingCommandBuffer::end()
     {
         vkEndCommandBuffer(m_vkCommandBuffer);
-        // Commit command buffer to the queue
+
+        // Submit command buffer to the compute queue
         VkSubmitInfo submitInfo{};
         submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
         submitInfo.commandBufferCount = 1;
@@ -47,23 +60,24 @@ namespace tracey
             throw std::runtime_error("Failed to submit command buffer");
         }
     }
+
     void VulkanComputeRayTracingCommandBuffer::setPipeline(RayTracingPipeline *pipeline)
     {
         m_pipeline = pipeline;
 
         // Only bind pipeline now if it's monolithic
-        // Wavefront pipelines bind in traceRays() since we need multiple pipelines
+        // Wavefront pipelines bind individual stages in traceRays()
         if (auto *monolithic = dynamic_cast<VulkanComputeRaytracingPipeline *>(pipeline))
         {
             vkCmdBindPipeline(m_vkCommandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, monolithic->vkPipeline());
         }
     }
+
     void VulkanComputeRayTracingCommandBuffer::setDescriptorSet(DescriptorSet *set)
     {
         const auto vkDescriptorSet = dynamic_cast<VulkanComputeRayTracingDescriptorSet *>(set)->vkDescriptorSet();
 
-        // For wavefront pipelines, store descriptor sets instead of binding immediately
-        // They will be bound during traceRays() for multi-bounce support
+        // For wavefront pipelines, store descriptor sets for later binding during bounce loop
         if (auto *wavefront = dynamic_cast<VulkanWaveFrontPipeline *>(m_pipeline))
         {
             m_descriptorSets.push_back(vkDescriptorSet);
@@ -72,112 +86,68 @@ namespace tracey
         {
             // For monolithic pipeline, bind immediately
             VkPipelineLayout layout = monolithic->vkPipelineLayout();
-            vkCmdBindDescriptorSets(m_vkCommandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &vkDescriptorSet, 0, nullptr);
+            vkCmdBindDescriptorSets(m_vkCommandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                    layout, 0, 1, &vkDescriptorSet, 0, nullptr);
         }
         else
         {
             throw std::runtime_error("Unknown pipeline type");
         }
     }
-    void VulkanComputeRayTracingCommandBuffer::traceRays(const ShaderBindingTable &sbt, uint32_t width, uint32_t height)
+
+    void VulkanComputeRayTracingCommandBuffer::traceRays(const ShaderBindingTable &sbt,
+                                                         uint32_t width, uint32_t height)
     {
-        // Check if wavefront pipeline
         if (auto *wavefront = dynamic_cast<VulkanWaveFrontPipeline *>(m_pipeline))
         {
-            // === WAVEFRONT MULTI-BOUNCE EXECUTION ===
+            // ================================================================
+            // WAVEFRONT PATH TRACING EXECUTION
+            // ================================================================
+            // The wavefront algorithm processes rays in stages:
+            // 1. Ray Generation: spawn primary rays from camera
+            // 2. For each bounce:
+            //    a. Intersection: test rays against scene geometry
+            //    b. Hit Shader: process hits, spawn secondary rays
+            //    c. Miss Shader: process misses (sky/environment)
+            // 3. Resolve: accumulate final colors to output image
+            // ================================================================
 
-            const uint32_t maxBounces = 8; // TODO: Make configurable
+            const uint32_t sampleCount = 16;
+            const uint32_t maxBounces = 5;
             uint32_t rayCount = width * height;
-            uint32_t workGroups = (rayCount + 255) / 256; // 256 threads per work group
+            uint32_t workGroups = (rayCount + 255) / 256;
 
-            // Push constants (resolution)
-            struct PushConstants
+            WavefrontPushConstants pushConstants{width, height};
+
+            // Initialize buffers once at the start
+            initializeWavefrontBuffers(wavefront);
+
+            // Multi-sample loop for anti-aliasing / Monte Carlo integration
+            for (size_t sample = 0; sample < 4; ++sample)
             {
-                uint32_t width;
-                uint32_t height;
-            } pushConstants{width, height};
+                // Reset hit info for this sample
+                clearHitInfoBuffer(wavefront);
 
-            VkMemoryBarrier barrier{};
-            barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-            barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-            barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+                // Clear ray queue counter before ray generation (ray gen uses atomicAdd)
+                clearRayQueueForRayGen(wavefront);
 
-            VkBuffer payloadBuf = wavefront->payloadBuffer();
-            VkBuffer hitInfoBuf = wavefront->hitInfoBuffer();
-
-            if (payloadBuf != VK_NULL_HANDLE)
-            {
-                vkCmdFillBuffer(m_vkCommandBuffer, payloadBuf, 0, VK_WHOLE_SIZE, 0);
-
-                VkMemoryBarrier fillBarrier{};
-                fillBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-                fillBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-                fillBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
-                vkCmdPipelineBarrier(m_vkCommandBuffer,
-                                     VK_PIPELINE_STAGE_TRANSFER_BIT,
-                                     VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                                     0, 1, &fillBarrier, 0, nullptr, 0, nullptr);
-            }
-
-            for (size_t sample = 0; sample < 16; ++sample) // Single sample for now
-            {
-                // Initialize HitInfo buffer with invalid triangle indices for each sample
-                if (hitInfoBuf != VK_NULL_HANDLE)
-                {
-                    vkCmdFillBuffer(m_vkCommandBuffer, hitInfoBuf, 0, VK_WHOLE_SIZE, 0xFFFFFFFF);
-
-                    VkMemoryBarrier fillBarrier{};
-                    fillBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-                    fillBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-                    fillBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
-                    vkCmdPipelineBarrier(m_vkCommandBuffer,
-                                         VK_PIPELINE_STAGE_TRANSFER_BIT,
-                                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                                         0, 1, &fillBarrier, 0, nullptr, 0, nullptr);
-                }
-
-                // Bounce 0: Ray Generation (only happens once)
-                uint32_t currentSetIndex = 0;
-
+                // Bind descriptor set 0 for ray generation
                 if (!m_descriptorSets.empty())
                 {
                     vkCmdBindDescriptorSets(m_vkCommandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
                                             wavefront->pipelineLayout(), 0, 1,
-                                            &m_descriptorSets[currentSetIndex], 0, nullptr);
+                                            &m_descriptorSets[0], 0, nullptr);
                 }
 
-                vkCmdBindPipeline(m_vkCommandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
-                                  wavefront->rayGenPipeline());
-                vkCmdPushConstants(m_vkCommandBuffer, wavefront->pipelineLayout(),
-                                   VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pushConstants),
-                                   &pushConstants);
-                vkCmdDispatch(m_vkCommandBuffer, workGroups, 1, 1);
+                // Spawn primary rays
+                dispatchRayGeneration(wavefront, pushConstants, workGroups);
+                insertComputeBarrier();
 
-                // Barrier to ensure ray_gen completes before intersection reads buffers
-                VkMemoryBarrier raygenBarrier{};
-                raygenBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-                raygenBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-                raygenBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-                vkCmdPipelineBarrier(m_vkCommandBuffer,
-                                     VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                                     VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                                     0, 1, &raygenBarrier, 0, nullptr, 0, nullptr);
-
-                // Dynamic bounce loop - continue until all rays are terminated
-                const uint32_t MAX_ITERATIONS = 5;
-                VkBuffer indirectDispatchBuffer = wavefront->indirectDispatchBuffer();
-
-                // Barrier for indirect buffer reads
-                VkMemoryBarrier indirectBarrier{};
-                indirectBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-                indirectBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-                indirectBarrier.dstAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
-
-                for (uint32_t bounce = 0; bounce < MAX_ITERATIONS; bounce++)
+                // Bounce loop: trace rays through the scene
+                for (uint32_t bounce = 0; bounce < maxBounces; bounce++)
                 {
-                    currentSetIndex = bounce % 2;
-
-                    // Bind current descriptor set (reads from binding 51, writes to binding 53)
+                    // Ping-pong between descriptor sets for double-buffered ray queues
+                    uint32_t currentSetIndex = bounce % 2;
                     if (!m_descriptorSets.empty() && m_descriptorSets.size() > currentSetIndex)
                     {
                         vkCmdBindDescriptorSets(m_vkCommandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
@@ -185,114 +155,50 @@ namespace tracey
                                                 &m_descriptorSets[currentSetIndex], 0, nullptr);
                     }
 
-                    // Clear next queue count (binding 53) to 0
-                    VkBuffer nextQueueBuffer = (bounce % 2 == 0) ? wavefront->rayQueueBuffer2() : wavefront->rayQueueBuffer();
-                    vkCmdFillBuffer(m_vkCommandBuffer, nextQueueBuffer, 0, sizeof(uint32_t), 0);
+                    // Clear queues for this bounce iteration
+                    clearBounceBuffers(wavefront, bounce);
 
-                    // Clear hit queue count (binding 55) to 0
-                    vkCmdFillBuffer(m_vkCommandBuffer, wavefront->hitQueueBuffer(), 0, sizeof(uint32_t), 0);
+                    // Compute workgroup counts for indirect dispatch
+                    dispatchPrepareIndirect(wavefront);
+                    insertIndirectDispatchBarrier();
 
-                    // Clear miss queue count (binding 56) to 0
-                    vkCmdFillBuffer(m_vkCommandBuffer, wavefront->missQueueBuffer(), 0, sizeof(uint32_t), 0);
+                    // Test rays against scene geometry
+                    dispatchIntersection(wavefront, pushConstants, workGroups);
+                    insertComputeBarrier();
 
-                    VkMemoryBarrier fillBarrier{};
-                    fillBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-                    fillBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-                    fillBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
-                    vkCmdPipelineBarrier(m_vkCommandBuffer,
-                                         VK_PIPELINE_STAGE_TRANSFER_BIT,
-                                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                                         0, 1, &fillBarrier, 0, nullptr, 0, nullptr);
+                    // Recompute indirect args now that hit/miss queues are populated
+                    dispatchPrepareIndirect(wavefront);
 
-                    // Clear HitInfo buffer for this bounce
-                    vkCmdFillBuffer(m_vkCommandBuffer, hitInfoBuf, 0, VK_WHOLE_SIZE, 0xFFFFFFFF);
-                    vkCmdPipelineBarrier(m_vkCommandBuffer,
-                                         VK_PIPELINE_STAGE_TRANSFER_BIT,
-                                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                                         0, 1, &fillBarrier, 0, nullptr, 0, nullptr);
+                    // Need BOTH indirect dispatch barrier AND compute barrier
+                    // - Indirect barrier: for vkCmdDispatchIndirect to read the workgroup counts
+                    // - Compute barrier: for hit/miss shaders to read queue counts and indices
+                    insertIndirectDispatchBarrier();
+                    insertComputeBarrier();
 
-                    // Prepare indirect dispatch arguments from current ray queue count
-                    vkCmdBindPipeline(m_vkCommandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
-                                      wavefront->prepareIndirectPipeline());
-                    vkCmdDispatch(m_vkCommandBuffer, 1, 1, 1);
-                    vkCmdPipelineBarrier(m_vkCommandBuffer,
-                                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                                         VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
-                                         0, 1, &indirectBarrier, 0, nullptr, 0, nullptr);
+                    // Process hits and misses
+                    dispatchHitShader(wavefront, pushConstants);
+                    insertComputeBarrier();
 
-                    // Intersection - DEBUG: use direct dispatch to ensure it runs
-                    vkCmdBindPipeline(m_vkCommandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
-                                      wavefront->intersectPipeline());
-                    vkCmdPushConstants(m_vkCommandBuffer, wavefront->pipelineLayout(),
-                                       VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pushConstants),
-                                       &pushConstants);
-                    vkCmdDispatch(m_vkCommandBuffer, workGroups, 1, 1); // DEBUG: direct dispatch
-
-                    // Stronger barrier to ensure hitQueue writes are visible
-                    VkMemoryBarrier strongBarrier{};
-                    strongBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-                    strongBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-                    strongBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
-                    vkCmdPipelineBarrier(m_vkCommandBuffer,
-                                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                                         VK_DEPENDENCY_BY_REGION_BIT, 1, &strongBarrier, 0, nullptr, 0, nullptr);
-
-                    // Prepare hit/miss indirect dispatch arguments now that queues are populated
-                    vkCmdBindPipeline(m_vkCommandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
-                                      wavefront->prepareIndirectPipeline());
-                    vkCmdDispatch(m_vkCommandBuffer, 1, 1, 1);
-                    vkCmdPipelineBarrier(m_vkCommandBuffer,
-                                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                                         VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
-                                         0, 1, &indirectBarrier, 0, nullptr, 0, nullptr);
-
-                    // Hit shader - use indirect dispatch with hitIndirectBuffer
-                    vkCmdBindPipeline(m_vkCommandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
-                                      wavefront->hitPipeline(0));
-                    vkCmdPushConstants(m_vkCommandBuffer, wavefront->pipelineLayout(),
-                                       VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pushConstants),
-                                       &pushConstants);
-                    vkCmdDispatchIndirect(m_vkCommandBuffer, wavefront->hitIndirectBuffer(), 0);
-                    vkCmdPipelineBarrier(m_vkCommandBuffer,
-                                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                                         0, 1, &barrier, 0, nullptr, 0, nullptr);
-
-                    // Miss shader - use indirect dispatch with missIndirectBuffer
-                    vkCmdBindPipeline(m_vkCommandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
-                                      wavefront->missPipeline(0));
-                    vkCmdPushConstants(m_vkCommandBuffer, wavefront->pipelineLayout(),
-                                       VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pushConstants),
-                                       &pushConstants);
-                    vkCmdDispatchIndirect(m_vkCommandBuffer, wavefront->missIndirectBuffer(), 0);
-                    vkCmdPipelineBarrier(m_vkCommandBuffer,
-                                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                                         0, 1, &barrier, 0, nullptr, 0, nullptr);
+                    dispatchMissShader(wavefront, pushConstants);
+                    insertComputeBarrier();
                 }
 
-                // Resolve shader (final pass)
-                vkCmdBindPipeline(m_vkCommandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
-                                  wavefront->resolvePipeline());
-                vkCmdPushConstants(m_vkCommandBuffer, wavefront->pipelineLayout(),
-                                   VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pushConstants),
-                                   &pushConstants);
-
-                uint32_t resolveWorkGroupsX = (width + 15) / 16;
-                uint32_t resolveWorkGroupsY = (height + 15) / 16;
-                vkCmdDispatch(m_vkCommandBuffer, resolveWorkGroupsX, resolveWorkGroupsY, 1);
+                // Write accumulated color to output image
+                dispatchResolve(wavefront, pushConstants, width, height);
             }
         }
         else
         {
-            // === MONOLITHIC PIPELINE (existing code) ===
+            // ================================================================
+            // MONOLITHIC PIPELINE (legacy single-dispatch approach)
+            // ================================================================
             vkCmdDispatch(m_vkCommandBuffer, width / 32, height / 32, 1);
         }
     }
+
     void VulkanComputeRayTracingCommandBuffer::copyImageToBuffer(const Image2D *image, Buffer *buffer)
     {
-        // First transition image layout to TRANSFER_SRC_OPTIMAL
+        // Transition image layout from GENERAL to TRANSFER_SRC_OPTIMAL
         VkImageMemoryBarrier barrier{};
         barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
         barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
@@ -317,6 +223,7 @@ namespace tracey
             0, nullptr,
             1, &barrier);
 
+        // Copy image contents to staging buffer
         VkBufferImageCopy copyRegion{};
         const VulkanImage2D *vulkanImage = dynamic_cast<const VulkanImage2D *>(image);
         copyRegion.imageExtent.width = vulkanImage->width();
@@ -338,8 +245,194 @@ namespace tracey
             1,
             &copyRegion);
     }
+
     void VulkanComputeRayTracingCommandBuffer::waitUntilCompleted()
     {
         vkQueueWaitIdle(m_device.computeQueue());
     }
+
+    // ============================================================================
+    // Wavefront Pipeline Helpers - Buffer Initialization
+    // ============================================================================
+
+    void VulkanComputeRayTracingCommandBuffer::initializeWavefrontBuffers(VulkanWaveFrontPipeline *wavefront)
+    {
+        // Zero-initialize payload buffer (ray payloads start with default values)
+        VkBuffer payloadBuf = wavefront->payloadBuffer();
+        if (payloadBuf != VK_NULL_HANDLE)
+        {
+            vkCmdFillBuffer(m_vkCommandBuffer, payloadBuf, 0, VK_WHOLE_SIZE, 0);
+            insertTransferToComputeBarrier();
+        }
+    }
+
+    void VulkanComputeRayTracingCommandBuffer::clearHitInfoBuffer(VulkanWaveFrontPipeline *wavefront)
+    {
+        // Set all triangle indices to 0xFFFFFFFF (invalid/no hit)
+        VkBuffer hitInfoBuf = wavefront->hitInfoBuffer();
+        if (hitInfoBuf != VK_NULL_HANDLE)
+        {
+            vkCmdFillBuffer(m_vkCommandBuffer, hitInfoBuf, 0, VK_WHOLE_SIZE, 0xFFFFFFFF);
+            insertTransferToComputeBarrier();
+        }
+    }
+
+    void VulkanComputeRayTracingCommandBuffer::clearRayQueueForRayGen(VulkanWaveFrontPipeline *wavefront)
+    {
+        // Clear BOTH ray queue counters to 0 before ray generation.
+        // Ray gen uses atomicAdd to increment count, so it must start at 0.
+        // We clear both to ensure clean state for the new sample.
+        vkCmdFillBuffer(m_vkCommandBuffer, wavefront->rayQueueBuffer(), 0, sizeof(uint32_t), 0);
+        vkCmdFillBuffer(m_vkCommandBuffer, wavefront->rayQueueBuffer2(), 0, sizeof(uint32_t), 0);
+
+        // Also clear hit and miss queue counters to ensure clean state
+        vkCmdFillBuffer(m_vkCommandBuffer, wavefront->hitQueueBuffer(), 0, sizeof(uint32_t), 0);
+        vkCmdFillBuffer(m_vkCommandBuffer, wavefront->missQueueBuffer(), 0, sizeof(uint32_t), 0);
+
+        insertTransferToComputeBarrier();
+    }
+
+    void VulkanComputeRayTracingCommandBuffer::clearBounceBuffers(VulkanWaveFrontPipeline *wavefront,
+                                                                  uint32_t bounce)
+    {
+        // Clear the "next" ray queue counter (ping-pong based on bounce index)
+        VkBuffer nextQueueBuffer = (bounce % 2 == 0)
+                                       ? wavefront->rayQueueBuffer2()
+                                       : wavefront->rayQueueBuffer();
+        vkCmdFillBuffer(m_vkCommandBuffer, nextQueueBuffer, 0, sizeof(uint32_t), 0);
+
+        // Clear hit and miss queue counters
+        vkCmdFillBuffer(m_vkCommandBuffer, wavefront->hitQueueBuffer(), 0, sizeof(uint32_t), 0);
+        vkCmdFillBuffer(m_vkCommandBuffer, wavefront->missQueueBuffer(), 0, sizeof(uint32_t), 0);
+
+        insertTransferToComputeBarrier();
+
+        // Clear hit info buffer for fresh intersection results
+        vkCmdFillBuffer(m_vkCommandBuffer, wavefront->hitInfoBuffer(), 0, VK_WHOLE_SIZE, 0xFFFFFFFF);
+        insertTransferToComputeBarrier();
+    }
+
+    // ============================================================================
+    // Wavefront Pipeline Helpers - Shader Dispatch
+    // ============================================================================
+
+    void VulkanComputeRayTracingCommandBuffer::dispatchRayGeneration(VulkanWaveFrontPipeline *wavefront,
+                                                                     const WavefrontPushConstants &pushConstants,
+                                                                     uint32_t workGroups)
+    {
+        vkCmdBindPipeline(m_vkCommandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+                          wavefront->rayGenPipeline());
+        vkCmdPushConstants(m_vkCommandBuffer, wavefront->pipelineLayout(),
+                           VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pushConstants),
+                           &pushConstants);
+        vkCmdDispatch(m_vkCommandBuffer, workGroups, 1, 1);
+    }
+
+    void VulkanComputeRayTracingCommandBuffer::dispatchPrepareIndirect(VulkanWaveFrontPipeline *wavefront)
+    {
+        // Single-threaded shader that reads queue counts and computes workgroup sizes
+        vkCmdBindPipeline(m_vkCommandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+                          wavefront->prepareIndirectPipeline());
+        vkCmdDispatch(m_vkCommandBuffer, 1, 1, 1);
+    }
+
+    void VulkanComputeRayTracingCommandBuffer::dispatchIntersection(VulkanWaveFrontPipeline *wavefront,
+                                                                    const WavefrontPushConstants &pushConstants,
+                                                                    uint32_t workGroups)
+    {
+        vkCmdBindPipeline(m_vkCommandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+                          wavefront->intersectPipeline());
+        vkCmdPushConstants(m_vkCommandBuffer, wavefront->pipelineLayout(),
+                           VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pushConstants),
+                           &pushConstants);
+        // Using direct dispatch for now (indirect dispatch can be enabled later)
+        vkCmdDispatch(m_vkCommandBuffer, workGroups, 1, 1);
+    }
+
+    void VulkanComputeRayTracingCommandBuffer::dispatchHitShader(VulkanWaveFrontPipeline *wavefront,
+                                                                 const WavefrontPushConstants &pushConstants)
+    {
+        vkCmdBindPipeline(m_vkCommandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+                          wavefront->hitPipeline(0));
+        vkCmdPushConstants(m_vkCommandBuffer, wavefront->pipelineLayout(),
+                           VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pushConstants),
+                           &pushConstants);
+        // Indirect dispatch based on hit queue count
+        vkCmdDispatchIndirect(m_vkCommandBuffer, wavefront->hitIndirectBuffer(), 0);
+    }
+
+    void VulkanComputeRayTracingCommandBuffer::dispatchMissShader(VulkanWaveFrontPipeline *wavefront,
+                                                                  const WavefrontPushConstants &pushConstants)
+    {
+        vkCmdBindPipeline(m_vkCommandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+                          wavefront->missPipeline(0));
+        vkCmdPushConstants(m_vkCommandBuffer, wavefront->pipelineLayout(),
+                           VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pushConstants),
+                           &pushConstants);
+        // Indirect dispatch based on miss queue count
+        vkCmdDispatchIndirect(m_vkCommandBuffer, wavefront->missIndirectBuffer(), 0);
+    }
+
+    void VulkanComputeRayTracingCommandBuffer::dispatchResolve(VulkanWaveFrontPipeline *wavefront,
+                                                               const WavefrontPushConstants &pushConstants,
+                                                               uint32_t width, uint32_t height)
+    {
+        vkCmdBindPipeline(m_vkCommandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+                          wavefront->resolvePipeline());
+        vkCmdPushConstants(m_vkCommandBuffer, wavefront->pipelineLayout(),
+                           VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pushConstants),
+                           &pushConstants);
+
+        // Resolve uses 16x16 workgroups for 2D dispatch
+        uint32_t resolveWorkGroupsX = (width + 15) / 16;
+        uint32_t resolveWorkGroupsY = (height + 15) / 16;
+        vkCmdDispatch(m_vkCommandBuffer, resolveWorkGroupsX, resolveWorkGroupsY, 1);
+    }
+
+    // ============================================================================
+    // Wavefront Pipeline Helpers - Synchronization Barriers
+    // ============================================================================
+
+    void VulkanComputeRayTracingCommandBuffer::insertComputeBarrier()
+    {
+        // Ensure shader writes are visible to subsequent shader reads
+        VkMemoryBarrier barrier{};
+        barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+        barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+
+        vkCmdPipelineBarrier(m_vkCommandBuffer,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             0, 1, &barrier, 0, nullptr, 0, nullptr);
+    }
+
+    void VulkanComputeRayTracingCommandBuffer::insertTransferToComputeBarrier()
+    {
+        // Ensure transfer writes (vkCmdFillBuffer) complete before shader access
+        VkMemoryBarrier barrier{};
+        barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+        barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+
+        vkCmdPipelineBarrier(m_vkCommandBuffer,
+                             VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             0, 1, &barrier, 0, nullptr, 0, nullptr);
+    }
+
+    void VulkanComputeRayTracingCommandBuffer::insertIndirectDispatchBarrier()
+    {
+        // Ensure indirect buffer writes are visible for vkCmdDispatchIndirect
+        VkMemoryBarrier barrier{};
+        barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+        barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        barrier.dstAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+
+        vkCmdPipelineBarrier(m_vkCommandBuffer,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
+                             0, 1, &barrier, 0, nullptr, 0, nullptr);
+    }
+
 } // namespace tracey

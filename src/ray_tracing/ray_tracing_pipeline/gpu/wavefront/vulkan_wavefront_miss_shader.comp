@@ -28,7 +28,9 @@ struct HitInfo {
     uint instanceIndex;
     float barycentricU;
     float barycentricV;
-    uint padding[3];
+    float normalX;
+    float normalY;
+    float normalZ;
 };
 
 // Note: TLAS uses bindings 0-5, user bindings start at 6+
