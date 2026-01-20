@@ -3,15 +3,16 @@
 #include <cassert>
 namespace tracey
 {
-    Blas::Blas(std::span<const Vec3> positions) : Blas(std::span<const float>(reinterpret_cast<const float *>(positions.data()), positions.size() * 3), 3)
+    Blas::Blas(std::span<const Vec3> positions, const BVHConfig &config) : Blas(std::span<const float>(reinterpret_cast<const float *>(positions.data()), positions.size() * 3), 3, std::nullopt, config)
     {
     }
 
-    Blas::Blas(std::span<const float> data, std::uint32_t stride, std::optional<std::span<const uint32_t>> indices)
+    Blas::Blas(std::span<const float> data, std::uint32_t stride, std::optional<std::span<const uint32_t>> indices, const BVHConfig &config)
         : m_vertexBuffer(data),
           m_vertexIndices(indices ? *indices : std::span<const uint32_t>{}),
           m_vertexStride(stride),
-          fetchVertexFunc(indices.has_value() ? &Blas::fetchVertexWithIndices : &Blas::fetchVertex)
+          fetchVertexFunc(indices.has_value() ? &Blas::fetchVertexWithIndices : &Blas::fetchVertex),
+          m_config(config)
     {
         const auto primCount = (indices.has_value() ? indices->size() / 3 : (data.size() / stride) / 3);
         std::vector<PrimitiveRef> primRefs(primCount);
@@ -49,7 +50,7 @@ namespace tracey
         buildRecursive(primRefs, 0, 0, static_cast<uint32_t>(primCount), 0);
     }
 
-    Blas::Blas(std::span<const Vec3> positions, std::span<const uint32_t> indices) : Blas(std::span<const float>(reinterpret_cast<const float *>(positions.data()), positions.size() * 3), 3, indices)
+    Blas::Blas(std::span<const Vec3> positions, std::span<const uint32_t> indices, const BVHConfig &config) : Blas(std::span<const float>(reinterpret_cast<const float *>(positions.data()), positions.size() * 3), 3, indices, config)
     {
     }
 
@@ -215,8 +216,7 @@ namespace tracey
         node.boundsMax = bMax;
 
         int count = static_cast<int>(end - start);
-        const int leafThreshold = 4;
-        if (count <= leafThreshold)
+        if (count <= m_config.leafThreshold)
         { // create leaf
             node.primCountAndType = count;
             node.firstChildOrPrim = static_cast<uint32_t>(m_primIndices.size());
@@ -234,10 +234,10 @@ namespace tracey
         };
 
         const float parentArea = surfaceArea(bMin, bMax);
-        const float Ci = 1.0f; // approximate triangle test cost
-        const float Ct = 1.0f; // approximate traversal cost
+        const float Ci = m_config.intersectionCost;
+        const float Ct = m_config.traversalCost;
 
-        constexpr int BIN_COUNT = 16;
+        const int BIN_COUNT = m_config.binCount;
 
         struct Bin
         {

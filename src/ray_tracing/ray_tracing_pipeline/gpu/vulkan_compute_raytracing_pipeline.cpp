@@ -12,7 +12,7 @@ namespace tracey
         std::vector<VkDescriptorSetLayoutBinding> bindings;
         m_descriptorSetLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
         // Fill layoutInfo based on pipeline layout
-        const size_t bindingStartOffset = 5; // Reserve first 5 bindings for AccelerationStructure
+        const size_t bindingStartOffset = 8; // Reserve first 8 bindings for AccelerationStructure (0-7)
         for (const auto &binding : layout.bindings())
         {
             const size_t bindingIndex = layout.indexForBinding(binding.name);
@@ -37,6 +37,7 @@ namespace tracey
                 assert(bindingIndex == 0 && "AccelerationStructure binding index must be 0");
                 vkBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
                 vkBinding.descriptorCount = 1;
+                // Bindings 0-5: existing TLAS data
                 vkBinding.binding = bindingIndex;
                 bindings.push_back(vkBinding);
                 vkBinding.binding = bindingIndex + 1;
@@ -48,6 +49,11 @@ namespace tracey
                 vkBinding.binding = bindingIndex + 4;
                 bindings.push_back(vkBinding);
                 vkBinding.binding = bindingIndex + 5;
+                bindings.push_back(vkBinding);
+                // Bindings 6-7: TLAS BVH nodes and instance indices
+                vkBinding.binding = bindingIndex + 6;
+                bindings.push_back(vkBinding);
+                vkBinding.binding = bindingIndex + 7;
                 bindings.push_back(vkBinding);
 
                 break;

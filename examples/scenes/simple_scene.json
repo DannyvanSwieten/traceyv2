@@ -1,0 +1,63 @@
+{
+  "objects": {
+    "cube": {
+      "type": "primitive",
+      "primitive": "cube",
+      "size": [2.0]
+    },
+    "ground_plane": {
+      "type": "primitive",
+      "primitive": "plane",
+      "size": [20.0, 20.0]
+    }
+  },
+  "actors": [
+    {
+      "name": "rotating_cube",
+      "transform": {
+        "position": [0.0, 0.0, 5.0],
+        "rotation": [0.0, 0.0, 0.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "instances": [
+        {
+          "object": "cube",
+          "transform": {
+            "position": [0.0, 0.0, 0.0],
+            "rotation": [45.0, 45.0, 0.0],
+            "scale": [1.0, 1.0, 1.0]
+          },
+          "material_shader": "pbr",
+          "material_properties": {
+            "albedo": [0.5, 0.5, 0.5],
+            "metallic": 0.0,
+            "roughness": 0.5
+          }
+        }
+      ]
+    },
+    {
+      "name": "ground",
+      "transform": {
+        "position": [0.0, -3.0, 5.0],
+        "rotation": [0.0, 0.0, 0.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "instances": [
+        {
+          "object": "ground_plane",
+          "transform": {
+            "position": [0.0, 0.0, 0.0],
+            "rotation": [0.0, 0.0, 0.0],
+            "scale": [1.0, 1.0, 1.0]
+          },
+          "material_shader": "pbr",
+          "material_properties": {
+            "albedo": [0.5, 0.5, 0.5],
+            "roughness": 0.9
+          }
+        }
+      ]
+    }
+  ]
+}

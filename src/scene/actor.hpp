@@ -1,7 +1,9 @@
 #pragma once
 #include <span>
+#include <string>
 #include <vector>
 #include "transform.hpp"
+#include "scene_instance.hpp"
 
 namespace tracey
 {
@@ -14,6 +16,11 @@ namespace tracey
         Actor(const Actor &) = delete;
         Actor &operator=(const Actor &) = delete;
 
+        const std::string &name() const { return m_name; }
+        void setName(const std::string &name) { m_name = name; }
+
+        size_t getUid() const { return uid; }
+
         void setTransform(const Transform &transform);
         void applyTransform(const Transform &deltaTransform);
         const Transform &transform() const;
@@ -24,12 +31,21 @@ namespace tracey
         }
         void removeChild(size_t childUid);
 
+        // Instance management
+        void addInstance(const SceneInstance &instance) { m_instances.push_back(instance); }
+        void addInstance(SceneInstance &&instance) { m_instances.push_back(std::move(instance)); }
+        const std::vector<SceneInstance> &instances() const { return m_instances; }
+        std::vector<SceneInstance> &instances() { return m_instances; }
+        void clearInstances() { m_instances.clear(); }
+
         Actor(Scene *scene, size_t uid) : m_scene(scene), uid(uid) {}
 
     private:
         [[maybe_unused]] Scene *m_scene = nullptr;
         size_t uid = 0;
+        std::string m_name;
         Transform m_transform;
         std::vector<size_t> m_children;
+        std::vector<SceneInstance> m_instances;
     };
 }

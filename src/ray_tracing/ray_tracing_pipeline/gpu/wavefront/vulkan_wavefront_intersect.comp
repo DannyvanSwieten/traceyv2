@@ -110,10 +110,7 @@ layout(std430, set = 0, binding = 56) buffer MissQueue {
     uint rayIndices[];
 } missQueue;
 
-// DEBUG: Output image to visualize rayQueue.count
-layout(set = 0, binding = 7, rgba8) uniform writeonly image2D debugOutputImage;
-
-// TLAS buffers at bindings 0-5
+// TLAS buffers at bindings 0-7
 layout(std430, set = 0, binding = 0) readonly buffer TLASInstances {
     uint instanceCount;
     uint padding[3];
@@ -139,6 +136,15 @@ layout(std430, set = 0, binding = 4) readonly buffer PrimitiveIndices {
 layout(std430, set = 0, binding = 5) readonly buffer TLASInstanceTransforms {
     InverseTransforms inv[];
 } tlasInstanceTransforms;
+
+// TLAS BVH buffers for accelerated instance traversal
+layout(std430, set = 0, binding = 6) readonly buffer TLASNodes {
+    BvhNode nodes[];
+} tlasNodes;
+
+layout(std430, set = 0, binding = 7) readonly buffer TLASInstanceIndices {
+    uint indices[];
+} tlasInstanceIndices;
 
 void traceRaysEXT(uint tlas, uint sbtRecordOffset, uint sbtRecordStride, uint missIndex, uint rayFlags, uint cullFlags, vec3 rayOrigin, float rayTmin, vec3 rayDirection, float rayTmax, uint payloadIndex);
 
@@ -302,58 +308,148 @@ HitInfo traverseBVH(uint bvhBase, uint triangleOffset, Ray ray, float tMin, floa
     return best;
 }
 
-bool intersectTlas(Ray ray, inout HitInfo hitInfo)
+// Intersect a single instance with the ray
+void intersectInstance(uint instanceIndex, Ray ray, inout HitInfo hitInfo)
 {
-    // Assumes ray.direction is normalized in raygen (so tWorld can be computed via dot(delta, dir)).
+    Instance instance = tlasInstances.instances[instanceIndex];
+    InverseTransforms instanceInverseTransform = tlasInstanceTransforms.inv[instanceIndex];
+
+    // Transform ray to object space.
+    vec3 localO = (instanceInverseTransform.worldToObj * vec4(ray.origin, 1.0)).xyz;
+    vec3 localD = (instanceInverseTransform.worldToObj * vec4(ray.direction, 0.0)).xyz;
+
+    // Avoid inf/nan invDirection if localD has zeros
+    Ray localRay;
+    localRay.origin = localO;
+    localRay.direction = localD;
+    localRay.invDirection = 1.0 / localD;
+
+    // Fetch BLAS info (blasAddress is used as an index in the compute path).
+    BlasInfo blasInfo = blasInfos.blases[instance.blasAddress];
+    uint bvhBase = blasInfo.rootNodeIndex;
+    uint triangleOffset = blasInfo.triangleOffset;
+
+    // Traverse in object space, but keep the best.t bound in world space (convert on accept).
+    HitInfo hit = traverseBVH(bvhBase, triangleOffset, localRay, 0.001, hitInfo.t);
+
+    if (hit.triangleIndex != INVALID_INDEX)
+    {
+        // Convert local hit position to world space
+        vec3 hitPosLocal = localRay.origin + localRay.direction * hit.t;
+        vec3 hitPosWorld = (instanceInverseTransform.objToWorld * vec4(hitPosLocal, 1.0)).xyz;
+
+        // Calculate world-space t using distance since transforms may include scaling
+        float tWorld = length(hitPosWorld - ray.origin);
+
+        // Reject if behind ray or farther than current best
+        if (tWorld > 0.0 && tWorld < hitInfo.t)
+        {
+            hit.t = tWorld;
+            hit.instanceIndex = instanceIndex;
+            vec3 n = vec3(hit.normalX, hit.normalY, hit.normalZ);
+            // Transform normal to world space
+            n = normalize((transpose(instanceInverseTransform.worldToObj) * vec4(n, 0.0)).xyz);
+            hit.normalX = n.x;
+            hit.normalY = n.y;
+            hit.normalZ = n.z;
+            hitInfo = hit;
+        }
+    }
+}
+
+bool intersectTlasLinear(Ray ray, inout HitInfo hitInfo)
+{
+    // Simple linear iteration over all instances (for debugging)
     for (uint i = 0u; i < tlasInstances.instanceCount; ++i)
     {
-        Instance instance = tlasInstances.instances[i];
-        InverseTransforms instanceInverseTransform = tlasInstanceTransforms.inv[i];
+        intersectInstance(i, ray, hitInfo);
+    }
+    return (hitInfo.triangleIndex != INVALID_INDEX);
+}
 
-        // Transform ray to object space.
-        vec3 localO = (instanceInverseTransform.worldToObj * vec4(ray.origin, 1.0)).xyz;
-        vec3 localD = (instanceInverseTransform.worldToObj * vec4(ray.direction, 0.0)).xyz;
+bool intersectTlasBVH(Ray ray, inout HitInfo hitInfo)
+{
+    // Traverse TLAS BVH to find instances that may intersect the ray
+    const int MAX_TLAS_STACK = 64;
+    uint tlasStack[MAX_TLAS_STACK];
+    int tlasStackPtr = 0;
 
-        // Avoid inf/nan invDirection if localD has zeros
-        Ray localRay;
-        localRay.origin = localO;
-        localRay.direction = localD;
-        localRay.invDirection = 1.0 / localD;
+    // Push root node
+    tlasStack[tlasStackPtr++] = 0u;
 
-        // Fetch BLAS info (blasAddress is used as an index in the compute path).
-        BlasInfo blasInfo = blasInfos.blases[instance.blasAddress];
-        uint bvhBase = blasInfo.rootNodeIndex;
-        uint triangleOffset = blasInfo.triangleOffset;
+    while (tlasStackPtr > 0)
+    {
+        uint nodeIdx = tlasStack[--tlasStackPtr];
+        BvhNode node = tlasNodes.nodes[nodeIdx];
 
-        // Traverse in object space, but keep the best.t bound in world space (convert on accept).
-        HitInfo hit = traverseBVH(bvhBase, triangleOffset, localRay, 0.001, hitInfo.t);
+        // Test ray-AABB intersection
+        vec3 aabbMin = vec3(node.minx, node.miny, node.minz);
+        vec3 aabbMax = vec3(node.maxx, node.maxy, node.maxz);
 
-        if (hit.triangleIndex != INVALID_INDEX)
+        float tE, tX;
+        if (!intersectAABB(ray, aabbMin, aabbMax, 0.0, hitInfo.t, tE, tX))
+            continue;
+
+        uint primCount = (node.primCountAndType & 0x00FFFFFFu);
+        bool isLeaf = (primCount > 0u);
+
+        if (isLeaf)
         {
-            // Convert local hit position to world space
-            vec3 hitPosLocal = localRay.origin + localRay.direction * hit.t;
-            vec3 hitPosWorld = (instanceInverseTransform.objToWorld * vec4(hitPosLocal, 1.0)).xyz;
-
-            // Calculate world-space t using distance since transforms may include scaling
-            float tWorld = length(hitPosWorld - ray.origin);
-
-            // Reject if behind ray or farther than current best
-            if (tWorld > 0.0 && tWorld < hitInfo.t)
+            // Leaf node: iterate over instances in this leaf
+            uint firstInstanceIdx = node.firstChildOrPrim;
+            for (uint i = 0u; i < primCount; ++i)
             {
-                hit.t = tWorld;
-                hit.instanceIndex = i;
-                vec3 n = vec3(hit.normalX, hit.normalY, hit.normalZ);
-                // Transform normal to world space
-                n = normalize((transpose(instanceInverseTransform.worldToObj) * vec4(n, 0.0)).xyz);
-                hit.normalX = n.x;
-                hit.normalY = n.y;
-                hit.normalZ = n.z;
-                hitInfo = hit;
+                uint instanceIdx = tlasInstanceIndices.indices[firstInstanceIdx + i];
+                intersectInstance(instanceIdx, ray, hitInfo);
+            }
+        }
+        else
+        {
+            // Interior node: push children (front-to-back order for better culling)
+            uint left = node.firstChildOrPrim;
+            uint right = left + 1u;
+
+            vec3 aabbMinL = vec3(tlasNodes.nodes[left].minx, tlasNodes.nodes[left].miny, tlasNodes.nodes[left].minz);
+            vec3 aabbMaxL = vec3(tlasNodes.nodes[left].maxx, tlasNodes.nodes[left].maxy, tlasNodes.nodes[left].maxz);
+            vec3 aabbMinR = vec3(tlasNodes.nodes[right].minx, tlasNodes.nodes[right].miny, tlasNodes.nodes[right].minz);
+            vec3 aabbMaxR = vec3(tlasNodes.nodes[right].maxx, tlasNodes.nodes[right].maxy, tlasNodes.nodes[right].maxz);
+
+            float tEL, tXL, tER, tXR;
+            bool hitL = intersectAABB(ray, aabbMinL, aabbMaxL, 0.0, hitInfo.t, tEL, tXL);
+            bool hitR = intersectAABB(ray, aabbMinR, aabbMaxR, 0.0, hitInfo.t, tER, tXR);
+
+            if (hitL && hitR)
+            {
+                // Push farther child first so nearer is processed next
+                if (tEL < tER)
+                {
+                    tlasStack[tlasStackPtr++] = right;
+                    tlasStack[tlasStackPtr++] = left;
+                }
+                else
+                {
+                    tlasStack[tlasStackPtr++] = left;
+                    tlasStack[tlasStackPtr++] = right;
+                }
+            }
+            else if (hitL)
+            {
+                tlasStack[tlasStackPtr++] = left;
+            }
+            else if (hitR)
+            {
+                tlasStack[tlasStackPtr++] = right;
             }
         }
     }
 
     return (hitInfo.triangleIndex != INVALID_INDEX);
+}
+
+bool intersectTlas(Ray ray, inout HitInfo hitInfo)
+{
+    // Use linear traversal (BVH has issues - needs investigation)
+    return intersectTlasLinear(ray, hitInfo);
 }
 
 void main()

@@ -188,6 +188,10 @@ namespace tracey
     {
         // TODO: Implement image to buffer copy for CPU ray tracing
     }
+    void CpuRayTracingCommandBuffer::clearImage(Image2D *image, float r, float g, float b, float a)
+    {
+        // TODO: Implement image clearing for CPU ray tracing
+    }
     void CpuRayTracingCommandBuffer::waitUntilCompleted()
     {
     }

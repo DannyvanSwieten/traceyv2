@@ -109,9 +109,6 @@ int main()
     // The ISF builder will add the payload extracted from ISF files
     tracey::RayTracingPipelineLayoutDescriptor layout;
     layout.addImage2D("outputImage", tracey::ShaderStage::RayGeneration);
-    tracey::StructureLayout vertexStructure("Vertex");
-    vertexStructure.addMember({"positions", "vec3", 0, true, 0});
-    layout.addStorageBuffer("vertexBuffer", tracey::ShaderStage::ClosestHit, vertexStructure);
     layout.addAccelerationStructure("tlas", tracey::ShaderStage::RayGeneration);
 
     tracey::ISFPipelineBuilder builder(*computeDevice);

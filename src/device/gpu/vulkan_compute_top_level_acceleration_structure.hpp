@@ -20,6 +20,10 @@ namespace tracey
 
         VulkanBuffer *instanceInverseTransformsBuffer() const { return m_instanceInverseTransformsBuffer.get(); }
 
+        // TLAS BVH buffers
+        VulkanBuffer *tlasNodesBuffer() const { return m_tlasNodesBuffer.get(); }
+        VulkanBuffer *tlasInstanceIndicesBuffer() const { return m_tlasInstanceIndicesBuffer.get(); }
+
     private:
         VulkanComputeDevice &m_device;
         std::unique_ptr<VulkanBuffer> m_instancesBuffer;
@@ -28,6 +32,10 @@ namespace tracey
         std::unique_ptr<VulkanBuffer> m_triangleInfoBuffer;
         std::unique_ptr<VulkanBuffer> m_primitiveIndicesBuffer;
         std::unique_ptr<VulkanBuffer> m_instanceInverseTransformsBuffer;
+
+        // TLAS BVH buffers
+        std::unique_ptr<VulkanBuffer> m_tlasNodesBuffer;
+        std::unique_ptr<VulkanBuffer> m_tlasInstanceIndicesBuffer;
 
         struct BlasInfo
         {

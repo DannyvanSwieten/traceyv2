@@ -1,30 +1,44 @@
 #include "cpu_image_2d.hpp"
 #include <stdexcept>
+#include <cstring>
 namespace tracey
 {
-    CpuImage2D::CpuImage2D(uint32_t width, uint32_t height, ImageFormat format) : m_width(width), m_height(height), m_format(format)
+    static uint32_t getBytesPerPixel(ImageFormat format)
     {
-        // Allocate memory for the image data based on width, height, and format
         switch (format)
         {
         case ImageFormat::R8G8B8A8Unorm:
-            bytesPerPixel = 4; // 4 bytes per pixel
-            break;
+        case ImageFormat::R8G8B8A8Srgb:
+            return 4;
         case ImageFormat::R32G32B32A32Sfloat:
-            bytesPerPixel = 16; // 16 bytes per pixel
-            break;
+            return 16;
         case ImageFormat::R32Sfloat:
-            bytesPerPixel = 4; // 4 bytes per pixel
-            break;
+            return 4;
         default:
             throw std::runtime_error("Unsupported image format");
         }
+    }
 
+    CpuImage2D::CpuImage2D(uint32_t width, uint32_t height, ImageFormat format) : m_width(width), m_height(height), m_format(format)
+    {
+        bytesPerPixel = getBytesPerPixel(format);
         m_data = static_cast<char *>(std::malloc(width * height * bytesPerPixel));
         if (!m_data)
         {
             throw std::bad_alloc();
         }
+    }
+
+    CpuImage2D::CpuImage2D(uint32_t width, uint32_t height, ImageFormat format, const void *data, size_t dataSize)
+        : m_width(width), m_height(height), m_format(format)
+    {
+        bytesPerPixel = getBytesPerPixel(format);
+        m_data = static_cast<char *>(std::malloc(width * height * bytesPerPixel));
+        if (!m_data)
+        {
+            throw std::bad_alloc();
+        }
+        std::memcpy(m_data, data, dataSize);
     }
 
     CpuImage2D::~CpuImage2D()

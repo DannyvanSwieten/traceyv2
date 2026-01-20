@@ -11,6 +11,10 @@ namespace tracey
     {
     public:
         VulkanImage2D(VulkanComputeDevice &device, uint32_t width, uint32_t height, ImageFormat format);
+        VulkanImage2D(VulkanComputeDevice &device, uint32_t width, uint32_t height, ImageFormat format,
+                      const void *data, size_t dataSize,
+                      SamplerFilter filter = SamplerFilter::Linear,
+                      SamplerAddressMode addressMode = SamplerAddressMode::Repeat);
         ~VulkanImage2D();
 
         VulkanImage2D(const VulkanImage2D &) = delete;
@@ -21,15 +25,23 @@ namespace tracey
         VkImage vkImage() const { return m_image; }
         VkDeviceMemory vkDeviceMemory() const { return m_memory; }
         VkImageView vkImageView() const { return m_imageView; }
+        VkSampler vkSampler() const { return m_sampler; }
+        bool hasSampler() const { return m_sampler != VK_NULL_HANDLE; }
 
-        uint32_t width() const { return m_width; }
-        uint32_t height() const { return m_height; }
+        uint32_t width() const override { return m_width; }
+        uint32_t height() const override { return m_height; }
 
     private:
+        void createImage(VulkanComputeDevice &device, ImageFormat format, bool forTexture);
+        void createSampler(VulkanComputeDevice &device, SamplerFilter filter, SamplerAddressMode addressMode);
+        void uploadData(VulkanComputeDevice &device, const void *data, size_t dataSize);
+
         VkDevice m_device;
-        VkImage m_image;
-        VkDeviceMemory m_memory;
-        VkImageView m_imageView;
+        VkImage m_image = VK_NULL_HANDLE;
+        VkDeviceMemory m_memory = VK_NULL_HANDLE;
+        VkImageView m_imageView = VK_NULL_HANDLE;
+        VkSampler m_sampler = VK_NULL_HANDLE;
+        VkFormat m_vkFormat = VK_FORMAT_UNDEFINED;
 
         uint32_t m_width;
         uint32_t m_height;

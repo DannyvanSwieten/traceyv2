@@ -8,12 +8,31 @@
 #include "bvh_node.hpp"
 namespace tracey
 {
+    /// Configuration for BVH construction
+    struct BVHConfig
+    {
+        /// Maximum triangles per leaf node. Higher values = shallower tree, more triangle tests per leaf.
+        /// Lower values = deeper tree, fewer triangle tests but more memory fetches.
+        /// Try values like 4, 8, 16, 32 to find optimal for your GPU.
+        int leafThreshold = 4;
+
+        /// Cost of a single triangle intersection test (for SAH)
+        float intersectionCost = 1.0f;
+
+        /// Cost of traversing one BVH node (for SAH)
+        /// Increase relative to intersectionCost to favor shallower trees
+        float traversalCost = 1.0f;
+
+        /// Number of bins for SAH evaluation (more bins = better splits, slower build)
+        int binCount = 16;
+    };
+
     class Blas
     {
     public:
-        Blas(std::span<const Vec3> positions);
-        Blas(std::span<const float> data, std::uint32_t stride, std::optional<std::span<const uint32_t>> indices = std::nullopt);
-        Blas(std::span<const Vec3> positions, std::span<const uint32_t> indices);
+        Blas(std::span<const Vec3> positions, const BVHConfig &config = {});
+        Blas(std::span<const float> data, std::uint32_t stride, std::optional<std::span<const uint32_t>> indices = std::nullopt, const BVHConfig &config = {});
+        Blas(std::span<const Vec3> positions, std::span<const uint32_t> indices, const BVHConfig &config = {});
 
         std::optional<Hit> intersect(const Ray &ray, float tMin, float tMax, RayFlags flags) const;
         std::tuple<Vec3, Vec3> getBounds() const;
@@ -27,6 +46,7 @@ namespace tracey
             Vec3 bMax;
         };
 
+        // Triangle data for intersection testing (48 bytes)
         struct TriangleData
         {
             Vec3 v0;
@@ -77,5 +97,6 @@ namespace tracey
         std::span<const uint32_t> m_vertexIndices;
         const uint32_t m_vertexStride; // x, y, z
         const FetchFunction fetchVertexFunc;
+        BVHConfig m_config;
     };
 }

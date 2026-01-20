@@ -1,0 +1,20 @@
+/*{
+    "STAGE": "Resolve",
+    "DESCRIPTION": "Average samples and write to output image"
+}*/
+
+void shader(uvec2 pixel, in RayPayloads payloads) {
+    // Read the final color from the payload (set by hit/miss shaders)
+    const uint NUM_SAMPLES = 16u;
+    float invSamples = 1.0 / float(NUM_SAMPLES);
+
+    vec3 color = payloads.rayPayload.color * invSamples;
+    uint sampleIndex = payloads.rayPayload.sampleIndex;
+
+    // Accumulate color from this sample
+    vec4 currentOutput = imageLoad(outputImage, ivec2(pixel));
+    color += currentOutput.rgb;
+
+    imageStore(outputImage, ivec2(pixel), vec4(color, 1.0));
+}
+    

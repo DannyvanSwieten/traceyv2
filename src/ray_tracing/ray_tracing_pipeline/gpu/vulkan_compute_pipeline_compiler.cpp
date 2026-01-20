@@ -5,9 +5,24 @@
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <regex>
 #include <shaderc/shaderc.hpp>
 namespace tracey
 {
+    // Helper: Convert ImageLayoutFormat to GLSL image format qualifier string
+    static const char *imageFormatToGlsl(ImageLayoutFormat format)
+    {
+        switch (format)
+        {
+        case ImageLayoutFormat::RGBA8:
+            return "rgba8";
+        case ImageLayoutFormat::RGBA32F:
+            return "rgba32f";
+        default:
+            return "rgba8";
+        }
+    }
+
     // Helper: Get alignment requirement for GLSL type in std140 layout (uniform buffers)
     static size_t getStd140Alignment(const std::string &glslType)
     {
@@ -260,7 +275,7 @@ namespace tracey
             switch (binding.type)
             {
             case RayTracingPipelineLayoutDescriptor::DescriptorType::Image2D:
-                ss << "layout(set = 0, binding = " << bindingIndex << ", rgba8) uniform writeonly image2D " << binding.name << ";\n";
+                ss << "layout(set = 0, binding = " << bindingIndex << ", " << imageFormatToGlsl(binding.imageFormat) << ") uniform writeonly image2D " << binding.name << ";\n";
                 break;
             case RayTracingPipelineLayoutDescriptor::DescriptorType::StorageBuffer:
                 ss << "layout(std430, set = 0, binding = " << bindingIndex << ") buffer " << "Buffer" << bindingIndex << " {\n";
@@ -504,7 +519,7 @@ namespace tracey
             switch (binding.type)
             {
             case RayTracingPipelineLayoutDescriptor::DescriptorType::Image2D:
-                userParams << "layout(set = 0, binding = " << bindingIndex << ", rgba8) uniform writeonly image2D " << binding.name << ";\n";
+                userParams << "layout(set = 0, binding = " << bindingIndex << ", " << imageFormatToGlsl(binding.imageFormat) << ") uniform writeonly image2D " << binding.name << ";\n";
                 break;
             case RayTracingPipelineLayoutDescriptor::DescriptorType::StorageBuffer:
                 userParams << "layout(std430, set = 0, binding = " << bindingIndex << ") buffer " << "Buffer" << bindingIndex << " {\n";
@@ -534,6 +549,18 @@ namespace tracey
             case RayTracingPipelineLayoutDescriptor::DescriptorType::AccelerationStructure:
                 // TLAS bindings already defined in template
                 break;
+            case RayTracingPipelineLayoutDescriptor::DescriptorType::Sampler:
+                // Generate separate sampler binding (for bindless)
+                userParams << "layout(set = 0, binding = " << bindingIndex << ") uniform sampler " << binding.name << ";\n";
+                break;
+            case RayTracingPipelineLayoutDescriptor::DescriptorType::SampledImageArray:
+                // Generate separate texture2D array binding (for bindless)
+                userParams << "layout(set = 0, binding = " << bindingIndex << ") uniform texture2D " << binding.name << "[" << binding.textureArrayCount << "];\n";
+                break;
+            case RayTracingPipelineLayoutDescriptor::DescriptorType::SampledTextureArray:
+                // Generate combined sampler2D array binding (legacy, limited to 16)
+                userParams << "layout(set = 0, binding = " << bindingIndex << ") uniform sampler2D " << binding.name << "[" << binding.textureArrayCount << "];\n";
+                break;
             default:
                 break;
             }
@@ -555,8 +582,8 @@ namespace tracey
         // Generate user parameters (bindings and payloads)
         std::stringstream userParams;
 
-        // User bindings start after TLAS (0-5) at binding 6
-        const auto bindingStartOffset = 6;
+        // User bindings start after TLAS (0-7) at binding 8
+        const auto bindingStartOffset = 8;
         generateUserBindings(userParams, layout, bindingStartOffset);
 
         // Generate payload structures with proper std430 padding
@@ -653,8 +680,8 @@ namespace tracey
         // Generate user parameters (bindings and payloads)
         std::stringstream userParams;
 
-        // User bindings start after TLAS (0-5) at binding 6
-        const auto bindingStartOffset = 6;
+        // User bindings start after TLAS (0-7) at binding 8
+        const auto bindingStartOffset = 8;
         generateUserBindings(userParams, layout, bindingStartOffset);
 
         // Generate payload structures with proper std430 padding
@@ -708,11 +735,13 @@ namespace tracey
         const auto hitShader = sbt.hitModules()[hitShaderIndex];
         const auto cpuModule = dynamic_cast<const CpuShaderModule *>(hitShader);
         std::string userSource(cpuModule->source());
-        // replace user entry point with hit_shader_main
-        size_t entryPointPos = userSource.find(cpuModule->entryPoint());
-        if (entryPointPos != std::string_view::npos)
+        // replace user entry point with hit_shader_main using regex to match function definition
+        std::string entryPoint(cpuModule->entryPoint());
+        if (!entryPoint.empty())
         {
-            userSource.replace(entryPointPos, cpuModule->entryPoint().size(), "hit_shader_main");
+            // Match "void <entryPoint>(" to ensure we're replacing the function definition
+            std::regex functionPattern("\\bvoid\\s+" + entryPoint + "\\s*\\(");
+            userSource = std::regex_replace(userSource, functionPattern, "void hit_shader_main(");
         }
 
         const auto userSourcePosition = hitShaderTemplate.find("//___HIT_SHADER_FUNCTION___");
@@ -751,8 +780,8 @@ namespace tracey
         // Generate user parameters (bindings and payloads)
         std::stringstream userParams;
 
-        // User bindings start after TLAS (0-5) at binding 6
-        const auto bindingStartOffset = 6;
+        // User bindings start after TLAS (0-7) at binding 8
+        const auto bindingStartOffset = 8;
         generateUserBindings(userParams, layout, bindingStartOffset);
 
         // Generate payload structures with proper std430 padding
@@ -877,15 +906,15 @@ namespace tracey
             userParams << "    RayPayloads payloads[];\n";
             userParams << "} rayPayloadBuffer;\n";
 
-            // Add user-defined image/buffer bindings (starting at offset 6)
-            const size_t bindingStartOffset = 6;
+            // Add user-defined image/buffer bindings (starting at offset 8)
+            const size_t bindingStartOffset = 8;
             for (const auto &binding : layout.bindings())
             {
                 const size_t bindingIndex = layout.indexForBinding(binding.name);
                 switch (binding.type)
                 {
                 case RayTracingPipelineLayoutDescriptor::DescriptorType::Image2D:
-                    userParams << "layout(set = 0, binding = " << (bindingIndex + bindingStartOffset) << ", rgba8) uniform image2D " << binding.name << ";\n";
+                    userParams << "layout(set = 0, binding = " << (bindingIndex + bindingStartOffset) << ", " << imageFormatToGlsl(binding.imageFormat) << ") uniform image2D " << binding.name << ";\n";
                     break;
                 case RayTracingPipelineLayoutDescriptor::DescriptorType::StorageBuffer:
                     userParams << "layout(std430, set = 0, binding = " << (bindingIndex + bindingStartOffset) << ") buffer " << binding.name << "_buffer {\n";

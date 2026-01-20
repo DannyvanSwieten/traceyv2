@@ -6,6 +6,7 @@
 #include <vector>
 #include "hit.hpp"
 #include "bvh_node.hpp"
+#include "blas.hpp"
 #include "ray.hpp"
 namespace tracey
 {
@@ -13,6 +14,14 @@ namespace tracey
     class Tlas
     {
     public:
+        /// Configuration for TLAS BVH construction
+        struct Config
+        {
+            int leafThreshold = 4;
+            float traversalCost = 1.0f;
+            float intersectionCost = 1.0f;
+            int binCount = 16;
+        };
         struct alignas(16) Instance
         {
             float transform[3][4]; // row-major 3x4 matrix
@@ -112,6 +121,7 @@ namespace tracey
         static_assert(alignof(Instance) == 16, "Tlas::Instance alignment must be 16 bytes");
 
         Tlas(std::span<const Blas *> blases, std::span<const Instance> instances);
+        Tlas(std::span<const Blas *> blases, std::span<const Instance> instances, const Config &config);
 
         std::optional<Hit> intersect(const Ray &ray, float tMin, float tMax, RayFlags flags) const;
         const Instance &getInstance(uint32_t index) const
@@ -137,10 +147,27 @@ namespace tracey
             return instanceTransforms;
         }
 
+        // BVH accessors
+        const std::vector<BVHNode> &nodes() const { return m_nodes; }
+        const std::vector<uint32_t> &instanceIndices() const { return m_instanceIndices; }
+        size_t nodeCount() const { return m_nodes.size(); }
+
     private:
+        /// Reference for instance during BVH construction
+        struct InstanceRef
+        {
+            uint32_t index;
+            Vec3 bMin;
+            Vec3 bMax;
+        };
+
+        uint32_t buildRecursive(std::span<InstanceRef> refs, uint32_t nodeIndex, uint32_t start, uint32_t end, int depth);
+
         std::span<const Blas *> blases;
         std::span<const Instance> instances;
         std::vector<Transforms> instanceTransforms;
         std::vector<BVHNode> m_nodes;
+        std::vector<uint32_t> m_instanceIndices;
+        Config m_config;
     };
 }

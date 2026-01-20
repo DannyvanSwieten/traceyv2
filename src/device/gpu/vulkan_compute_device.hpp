@@ -19,7 +19,11 @@ namespace tracey
         RayTracingCommandBuffer *createRayTracingCommandBuffer() override;
         Buffer *createBuffer(uint32_t size, BufferUsage usageFlags) override;
         Image2D *createImage2D(uint32_t width, uint32_t height, ImageFormat format) override;
-        BottomLevelAccelerationStructure *createBottomLevelAccelerationStructure(const Buffer *positions, uint32_t positionCount, uint32_t positionStride, const Buffer *indices, uint32_t indexCount) override;
+        Image2D *createImage2DWithData(uint32_t width, uint32_t height, ImageFormat format,
+                                       const void *data, size_t dataSize,
+                                       SamplerFilter filter = SamplerFilter::Linear,
+                                       SamplerAddressMode addressMode = SamplerAddressMode::Repeat) override;
+        BottomLevelAccelerationStructure *createBottomLevelAccelerationStructure(const Buffer *positions, uint32_t positionCount, uint32_t positionStride, const Buffer *indices, uint32_t indexCount, const BVHConfig &bvhConfig = {}) override;
         TopLevelAccelerationStructure *createTopLevelAccelerationStructure(std::span<const BottomLevelAccelerationStructure *> blases, std::span<const Tlas::Instance> instances) override;
 
         int findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties);
@@ -29,9 +33,15 @@ namespace tracey
         VkCommandPool commandPool() const { return m_commandPool; }
         VkQueue computeQueue() const { return m_vulkanContext.computeQueue(); }
 
+        // Get fixed samplers for bindless texture support
+        VkSampler linearSampler() const { return m_linearSampler; }
+        VkSampler nearestSampler() const { return m_nearestSampler; }
+
     private:
         VkDescriptorPool m_descriptorPool = VK_NULL_HANDLE;
         VkCommandPool m_commandPool = VK_NULL_HANDLE;
+        VkSampler m_linearSampler = VK_NULL_HANDLE;
+        VkSampler m_nearestSampler = VK_NULL_HANDLE;
 
     private:
         VulkanContext m_vulkanContext;

@@ -7,10 +7,13 @@ namespace tracey
     {
     public:
         CpuImage2D(uint32_t width, uint32_t height, ImageFormat format);
+        CpuImage2D(uint32_t width, uint32_t height, ImageFormat format, const void *data, size_t dataSize);
         ~CpuImage2D();
 
         void store(uint32_t x, uint32_t y, const Vec4 &value);
-        char *data() { return m_data; }
+        char *data() override { return m_data; }
+        uint32_t width() const override { return m_width; }
+        uint32_t height() const override { return m_height; }
 
     private:
         char *m_data;

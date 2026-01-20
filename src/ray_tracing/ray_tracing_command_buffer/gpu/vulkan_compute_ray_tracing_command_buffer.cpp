@@ -113,7 +113,7 @@ namespace tracey
             // ================================================================
 
             const uint32_t sampleCount = 16;
-            const uint32_t maxBounces = 5;
+            const uint32_t maxBounces = 8;
             uint32_t rayCount = width * height;
             uint32_t workGroups = (rayCount + 255) / 256;
 
@@ -123,7 +123,7 @@ namespace tracey
             initializeWavefrontBuffers(wavefront);
 
             // Multi-sample loop for anti-aliasing / Monte Carlo integration
-            for (size_t sample = 0; sample < 4; ++sample)
+            for (size_t sample = 0; sample < sampleCount; ++sample)
             {
                 // Reset hit info for this sample
                 clearHitInfoBuffer(wavefront);
@@ -249,6 +249,37 @@ namespace tracey
     void VulkanComputeRayTracingCommandBuffer::waitUntilCompleted()
     {
         vkQueueWaitIdle(m_device.computeQueue());
+    }
+
+    void VulkanComputeRayTracingCommandBuffer::clearImage(Image2D *image, float r, float g, float b, float a)
+    {
+        VkClearColorValue clearColor = {{r, g, b, a}};
+        VkImageSubresourceRange range{};
+        range.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        range.baseMipLevel = 0;
+        range.levelCount = 1;
+        range.baseArrayLayer = 0;
+        range.layerCount = 1;
+
+        vkCmdClearColorImage(
+            m_vkCommandBuffer,
+            dynamic_cast<VulkanImage2D *>(image)->vkImage(),
+            VK_IMAGE_LAYOUT_GENERAL,
+            &clearColor,
+            1,
+            &range);
+
+        // Barrier to ensure clear completes before shader access
+        VkMemoryBarrier barrier{};
+        barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+        barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+
+        vkCmdPipelineBarrier(
+            m_vkCommandBuffer,
+            VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            0, 1, &barrier, 0, nullptr, 0, nullptr);
     }
 
     // ============================================================================

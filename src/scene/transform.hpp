@@ -54,8 +54,8 @@ namespace tracey
         }
 
     private:
-        tracey::Vec3 m_position;
-        tracey::Quaternion m_rotation;
-        tracey::Vec3 m_scale;
+        tracey::Vec3 m_position{0.0f, 0.0f, 0.0f};
+        tracey::Quaternion m_rotation{1.0f, 0.0f, 0.0f, 0.0f};  // identity quaternion (w, x, y, z)
+        tracey::Vec3 m_scale{1.0f, 1.0f, 1.0f};
     };
 }

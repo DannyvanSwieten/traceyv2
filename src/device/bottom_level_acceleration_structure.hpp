@@ -1,4 +1,5 @@
 #pragma once
+#include <cstddef>
 
 namespace tracey
 {
@@ -6,5 +7,8 @@ namespace tracey
     {
     public:
         virtual ~BottomLevelAccelerationStructure() = default;
+
+        /// Get the number of BVH nodes (for statistics/debugging)
+        virtual size_t nodeCount() const = 0;
     };
 } // namespace tracey

@@ -154,14 +154,18 @@ namespace tracey
     {
         if (isfType == "float")
             return "float";
-        if (isfType == "color")
+        if (isfType == "color" || isfType == "vec4")
             return "vec4";
-        if (isfType == "point2D")
+        if (isfType == "vec3")
+            return "vec3";
+        if (isfType == "point2D" || isfType == "vec2")
             return "vec2";
         if (isfType == "bool")
             return "uint"; // bool in uniform buffer uses uint for std140/std430 alignment
-        if (isfType == "long")
+        if (isfType == "long" || isfType == "int")
             return "int";
+        if (isfType == "uint")
+            return "uint";
         return "float"; // Default fallback
     }
 

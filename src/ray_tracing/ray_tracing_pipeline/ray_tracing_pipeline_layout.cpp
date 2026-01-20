@@ -1,9 +1,9 @@
 #include "ray_tracing_pipeline_layout.hpp"
 namespace tracey
 {
-    void RayTracingPipelineLayoutDescriptor::addImage2D(std::string name, ShaderStage stage)
+    void RayTracingPipelineLayoutDescriptor::addImage2D(std::string name, ShaderStage stage, ImageLayoutFormat format)
     {
-        m_bindings.emplace_back(DescriptorBinding{name, DescriptorType::Image2D, stage});
+        m_bindings.emplace_back(DescriptorBinding{name, DescriptorType::Image2D, stage, std::nullopt, format});
     }
 
     void RayTracingPipelineLayoutDescriptor::addStorageBuffer(std::string name, ShaderStage stage, const StructureLayout &structure)
@@ -21,6 +21,30 @@ namespace tracey
     void RayTracingPipelineLayoutDescriptor::addPayload(std::string name, ShaderStage stage, const StructureLayout &structure)
     {
         m_payloads.emplace_back(PayloadBinding{name, stage, structure});
+    }
+    void RayTracingPipelineLayoutDescriptor::addSampledTextureArray(std::string name, ShaderStage stage, uint32_t maxCount)
+    {
+        DescriptorBinding binding;
+        binding.name = std::move(name);
+        binding.type = DescriptorType::SampledTextureArray;
+        binding.stage = stage;
+        binding.textureArrayCount = maxCount;
+        m_bindings.emplace_back(std::move(binding));
+    }
+
+    void RayTracingPipelineLayoutDescriptor::addSampler(std::string name, ShaderStage stage)
+    {
+        m_bindings.emplace_back(DescriptorBinding{std::move(name), DescriptorType::Sampler, stage});
+    }
+
+    void RayTracingPipelineLayoutDescriptor::addSampledImageArray(std::string name, ShaderStage stage, uint32_t maxCount)
+    {
+        DescriptorBinding binding;
+        binding.name = std::move(name);
+        binding.type = DescriptorType::SampledImageArray;
+        binding.stage = stage;
+        binding.textureArrayCount = maxCount;
+        m_bindings.emplace_back(std::move(binding));
     }
     size_t RayTracingPipelineLayoutDescriptor::indexForBinding(const std::string_view name) const
     {

@@ -5,6 +5,7 @@
 #include "../../../device/gpu/vulkan_buffer.hpp"
 #include "../../../device/gpu/vulkan_compute_top_level_acceleration_structure.hpp"
 #include <stdexcept>
+#include <vector>
 
 namespace tracey
 {
@@ -17,6 +18,7 @@ namespace tracey
         allocInfo.descriptorPool = descriptorPool;
         allocInfo.descriptorSetCount = 1;
         allocInfo.pSetLayouts = &m_descriptorSetLayout;
+
         if (vkAllocateDescriptorSets(m_device.vkDevice(), &allocInfo, &m_descriptorSet) != VK_SUCCESS)
         {
             throw std::runtime_error("Failed to allocate descriptor set");
@@ -88,7 +90,7 @@ namespace tracey
     void VulkanComputeRayTracingDescriptorSet::setAccelerationStructure(const std::string_view binding, const TopLevelAccelerationStructure *tlas)
     {
         const auto index = static_cast<uint32_t>(m_layout.indexForBinding(binding));
-        VkWriteDescriptorSet writeDesc[6]{
+        VkWriteDescriptorSet writeDesc[8]{
             {
                 .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                 .dstSet = m_descriptorSet,
@@ -137,7 +139,22 @@ namespace tracey
                 .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                 .descriptorCount = 1,
             },
-
+            {
+                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                .dstSet = m_descriptorSet,
+                .dstBinding = index + 6,
+                .dstArrayElement = 0,
+                .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                .descriptorCount = 1,
+            },
+            {
+                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                .dstSet = m_descriptorSet,
+                .dstBinding = index + 7,
+                .dstArrayElement = 0,
+                .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                .descriptorCount = 1,
+            },
         };
 
         VkDescriptorBufferInfo bufferInfo{};
@@ -176,6 +193,135 @@ namespace tracey
         instanceInverseTransformsBufferInfo.range = VK_WHOLE_SIZE;
         writeDesc[5].pBufferInfo = &instanceInverseTransformsBufferInfo;
 
-        vkUpdateDescriptorSets(m_device.vkDevice(), 6, writeDesc, 0, nullptr);
+        VkDescriptorBufferInfo tlasNodesBufferInfo{};
+        tlasNodesBufferInfo.buffer = static_cast<const VulkanComputeTopLevelAccelerationStructure *>(tlas)->tlasNodesBuffer()->vkBuffer();
+        tlasNodesBufferInfo.offset = 0;
+        tlasNodesBufferInfo.range = VK_WHOLE_SIZE;
+        writeDesc[6].pBufferInfo = &tlasNodesBufferInfo;
+
+        VkDescriptorBufferInfo tlasInstanceIndicesBufferInfo{};
+        tlasInstanceIndicesBufferInfo.buffer = static_cast<const VulkanComputeTopLevelAccelerationStructure *>(tlas)->tlasInstanceIndicesBuffer()->vkBuffer();
+        tlasInstanceIndicesBufferInfo.offset = 0;
+        tlasInstanceIndicesBufferInfo.range = VK_WHOLE_SIZE;
+        writeDesc[7].pBufferInfo = &tlasInstanceIndicesBufferInfo;
+
+        vkUpdateDescriptorSets(m_device.vkDevice(), 8, writeDesc, 0, nullptr);
+    }
+
+    void VulkanComputeRayTracingDescriptorSet::setSampledTexture(uint32_t bindingIndex, Image2D *image)
+    {
+        VkWriteDescriptorSet writeDesc{};
+        writeDesc.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writeDesc.dstSet = m_descriptorSet;
+        writeDesc.dstBinding = bindingIndex;
+        writeDesc.dstArrayElement = 0;
+        writeDesc.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        writeDesc.descriptorCount = 1;
+
+        auto *vulkanImage = static_cast<VulkanImage2D *>(image);
+        VkDescriptorImageInfo imageInfo{};
+        imageInfo.imageView = vulkanImage->vkImageView();
+        imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        imageInfo.sampler = vulkanImage->vkSampler();
+        writeDesc.pImageInfo = &imageInfo;
+
+        vkUpdateDescriptorSets(m_device.vkDevice(), 1, &writeDesc, 0, nullptr);
+    }
+
+    void VulkanComputeRayTracingDescriptorSet::setSampledTextureArray(uint32_t bindingIndex, std::span<Image2D *> images)
+    {
+        if (images.empty())
+            return;
+
+        std::vector<VkDescriptorImageInfo> imageInfos(images.size());
+        for (size_t i = 0; i < images.size(); ++i)
+        {
+            auto *vulkanImage = static_cast<VulkanImage2D *>(images[i]);
+            imageInfos[i].imageView = vulkanImage->vkImageView();
+            imageInfos[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            imageInfos[i].sampler = vulkanImage->vkSampler();
+        }
+
+        VkWriteDescriptorSet writeDesc{};
+        writeDesc.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writeDesc.dstSet = m_descriptorSet;
+        writeDesc.dstBinding = bindingIndex;
+        writeDesc.dstArrayElement = 0;
+        writeDesc.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        writeDesc.descriptorCount = static_cast<uint32_t>(images.size());
+        writeDesc.pImageInfo = imageInfos.data();
+
+        vkUpdateDescriptorSets(m_device.vkDevice(), 1, &writeDesc, 0, nullptr);
+    }
+
+    void VulkanComputeRayTracingDescriptorSet::setSampledTextureArray(const std::string_view name, std::span<Image2D *> images)
+    {
+        const auto index = m_layout.indexForBinding(name) + m_userBindingOffset;
+        setSampledTextureArray(static_cast<uint32_t>(index), images);
+    }
+
+    void VulkanComputeRayTracingDescriptorSet::setStorageBuffer(uint32_t bindingIndex, Buffer *buffer)
+    {
+        VkWriteDescriptorSet writeDesc{};
+        writeDesc.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writeDesc.dstSet = m_descriptorSet;
+        writeDesc.dstBinding = bindingIndex;
+        writeDesc.dstArrayElement = 0;
+        writeDesc.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        writeDesc.descriptorCount = 1;
+
+        VkDescriptorBufferInfo bufferInfo{};
+        bufferInfo.buffer = static_cast<VulkanBuffer *>(buffer)->vkBuffer();
+        bufferInfo.offset = 0;
+        bufferInfo.range = VK_WHOLE_SIZE;
+        writeDesc.pBufferInfo = &bufferInfo;
+
+        vkUpdateDescriptorSets(m_device.vkDevice(), 1, &writeDesc, 0, nullptr);
+    }
+
+    void VulkanComputeRayTracingDescriptorSet::setSampler(const std::string_view name, bool useLinearFiltering)
+    {
+        const auto index = m_layout.indexForBinding(name) + m_userBindingOffset;
+
+        VkWriteDescriptorSet writeDesc{};
+        writeDesc.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writeDesc.dstSet = m_descriptorSet;
+        writeDesc.dstBinding = index;
+        writeDesc.dstArrayElement = 0;
+        writeDesc.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+        writeDesc.descriptorCount = 1;
+
+        VkDescriptorImageInfo imageInfo{};
+        imageInfo.sampler = useLinearFiltering ? m_device.linearSampler() : m_device.nearestSampler();
+        writeDesc.pImageInfo = &imageInfo;
+
+        vkUpdateDescriptorSets(m_device.vkDevice(), 1, &writeDesc, 0, nullptr);
+    }
+
+    void VulkanComputeRayTracingDescriptorSet::setSampledImageArray(const std::string_view name, std::span<Image2D *> images)
+    {
+        const auto index = m_layout.indexForBinding(name) + m_userBindingOffset;
+
+        std::vector<VkDescriptorImageInfo> imageInfos;
+        imageInfos.reserve(images.size());
+
+        for (const auto &img : images)
+        {
+            VkDescriptorImageInfo imageInfo{};
+            imageInfo.imageView = static_cast<VulkanImage2D *>(img)->vkImageView();
+            imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            imageInfos.push_back(imageInfo);
+        }
+
+        VkWriteDescriptorSet writeDesc{};
+        writeDesc.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writeDesc.dstSet = m_descriptorSet;
+        writeDesc.dstBinding = index;
+        writeDesc.dstArrayElement = 0;
+        writeDesc.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+        writeDesc.descriptorCount = static_cast<uint32_t>(imageInfos.size());
+        writeDesc.pImageInfo = imageInfos.data();
+
+        vkUpdateDescriptorSets(m_device.vkDevice(), 1, &writeDesc, 0, nullptr);
     }
 }

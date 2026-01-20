@@ -4,6 +4,7 @@
 #include "vulkan_compute_device.hpp"
 #include <cstdint>
 #include <cstring>
+#include <iostream>
 
 namespace tracey
 {
@@ -21,6 +22,17 @@ namespace tracey
 
     VulkanComputeTopLevelAccelerationStructure::VulkanComputeTopLevelAccelerationStructure(VulkanComputeDevice &device, std::span<const BottomLevelAccelerationStructure *> blases, std::span<const Tlas::Instance> instances) : m_device(device)
     {
+        // Build the CPU-side TLAS with BVH
+        std::vector<const Blas *> blasPtrs;
+        blasPtrs.reserve(blases.size());
+        for (const auto &blas : blases)
+        {
+            const auto vulkanBlas = static_cast<const VulkanComputeBottomLevelAccelerationStructure *>(blas);
+            blasPtrs.push_back(&vulkanBlas->blas());
+        }
+        Tlas tlas(blasPtrs, instances);
+
+        std::cout << "TLAS BVH: " << tlas.nodeCount() << " nodes, " << instances.size() << " instances" << std::endl;
         size_t nodeCount = 0;
         size_t triangleCount = 0;
         // Count the total number of bvh nodes
@@ -95,5 +107,25 @@ namespace tracey
         m_instancesBuffer->flush();
         m_blasInfoBuffer->flush();
         m_primitiveIndicesBuffer->flush();
+
+        // Upload TLAS BVH nodes
+        const auto &tlasNodes = tlas.nodes();
+        const auto &tlasInstanceIndices = tlas.instanceIndices();
+
+        if (!tlasNodes.empty())
+        {
+            m_tlasNodesBuffer = std::make_unique<VulkanBuffer>(m_device, sizeof(BVHNode) * tlasNodes.size(), BufferUsage::StorageBuffer);
+            BVHNode *tlasNodeData = static_cast<BVHNode *>(m_tlasNodesBuffer->mapForWriting());
+            std::memcpy(tlasNodeData, tlasNodes.data(), sizeof(BVHNode) * tlasNodes.size());
+            m_tlasNodesBuffer->flush();
+        }
+
+        if (!tlasInstanceIndices.empty())
+        {
+            m_tlasInstanceIndicesBuffer = std::make_unique<VulkanBuffer>(m_device, sizeof(uint32_t) * tlasInstanceIndices.size(), BufferUsage::StorageBuffer);
+            uint32_t *tlasInstanceIndexData = static_cast<uint32_t *>(m_tlasInstanceIndicesBuffer->mapForWriting());
+            std::memcpy(tlasInstanceIndexData, tlasInstanceIndices.data(), sizeof(uint32_t) * tlasInstanceIndices.size());
+            m_tlasInstanceIndicesBuffer->flush();
+        }
     }
 } // namespace tracey

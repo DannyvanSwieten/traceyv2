@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <algorithm>
 #include <shaderc/shaderc.hpp>
 
 namespace tracey
@@ -22,9 +23,9 @@ namespace tracey
         // Create descriptor set layout (shared by all pipelines)
         std::vector<VkDescriptorSetLayoutBinding> bindings;
 
-        // Reserve first 6 bindings (0-5) for acceleration structure (TLAS)
-        // User bindings start at 6
-        const size_t bindingStartOffset = 6;
+        // Reserve first 8 bindings (0-7) for acceleration structure (TLAS + BVH)
+        // User bindings start at 8
+        const size_t bindingStartOffset = 8;
 
         // Add wavefront internal buffers at bindings 20 (payload), 50-52 (internal)
         // Payload buffer at binding 20
@@ -87,8 +88,9 @@ namespace tracey
                             .descriptorCount = 1,
                             .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT});
 
-        // TLAS buffers (bindings 0-5) - always added for acceleration structure access
-        for (size_t i = 0; i < 6; ++i)
+        // TLAS buffers (bindings 0-7) - always added for acceleration structure access
+        // 0-5: existing TLAS data, 6-7: TLAS BVH nodes and instance indices
+        for (size_t i = 0; i < 8; ++i)
         {
             bindings.push_back({.binding = static_cast<uint32_t>(i),
                                 .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
@@ -97,12 +99,10 @@ namespace tracey
         }
 
         // Add user-defined bindings (images, buffers, etc.)
-        // User bindings start at offset 6 (after TLAS bindings 0-5)
+        // User bindings start at offset 8 (after TLAS bindings 0-7)
         for (const auto &binding : layout.bindings())
         {
             const size_t bindingIndex = layout.indexForBinding(binding.name);
-            fprintf(stderr, "*** User binding: %s, index=%zu, final binding=%zu\n", binding.name.c_str(), bindingIndex, bindingIndex + bindingStartOffset);
-            fflush(stderr);
             VkDescriptorSetLayoutBinding vkBinding{};
             vkBinding.binding = bindingIndex + bindingStartOffset; // Apply offset to ALL user bindings
             vkBinding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
@@ -123,13 +123,37 @@ namespace tracey
                 bindings.push_back(vkBinding);
                 break;
             case RayTracingPipelineLayoutDescriptor::DescriptorType::AccelerationStructure:
-                // TLAS bindings already added above (0-5), skip here
+                // TLAS bindings already added above (0-7), skip here
+                break;
+            case RayTracingPipelineLayoutDescriptor::DescriptorType::SampledTextureArray:
+                vkBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                vkBinding.descriptorCount = binding.textureArrayCount;
+                bindings.push_back(vkBinding);
+                break;
+            case RayTracingPipelineLayoutDescriptor::DescriptorType::Sampler:
+                vkBinding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+                vkBinding.descriptorCount = 1;
+                bindings.push_back(vkBinding);
+                break;
+            case RayTracingPipelineLayoutDescriptor::DescriptorType::SampledImageArray:
+                vkBinding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+                vkBinding.descriptorCount = binding.textureArrayCount;
+                bindings.push_back(vkBinding);
                 break;
             default:
                 throw std::runtime_error("Unsupported descriptor type");
             }
         }
 
+        // Sort bindings by binding number to ensure texture array (with variable count) is last
+        // This is required for VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT
+        std::sort(bindings.begin(), bindings.end(),
+                  [](const VkDescriptorSetLayoutBinding& a, const VkDescriptorSetLayoutBinding& b) {
+                      return a.binding < b.binding;
+                  });
+
+        // Descriptor set layout without bindless support for now
+        // TODO: Re-enable bindless texture support once binding order issues are resolved
         VkDescriptorSetLayoutCreateInfo descriptorSetLayoutInfo{};
         descriptorSetLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
         descriptorSetLayoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
@@ -491,9 +515,9 @@ namespace tracey
 
         for (size_t i = 0; i < sets.size(); ++i)
         {
-            // Reuse existing VulkanComputeRayTracingDescriptorSet with user binding offset of 6
-            // (TLAS uses bindings 0-5, user bindings start at 6)
-            auto vkSet = new VulkanComputeRayTracingDescriptorSet(m_device, m_layout, m_rayGenPipelineInfo.descriptorSetLayout, 6);
+            // Reuse existing VulkanComputeRayTracingDescriptorSet with user binding offset of 8
+            // (TLAS uses bindings 0-7 including BVH, user bindings start at 8)
+            auto vkSet = new VulkanComputeRayTracingDescriptorSet(m_device, m_layout, m_rayGenPipelineInfo.descriptorSetLayout, 8);
             sets[i] = vkSet;
 
             // Bind internal buffers if they're allocated

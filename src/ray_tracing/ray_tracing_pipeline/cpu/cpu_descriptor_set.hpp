@@ -21,7 +21,15 @@ namespace tracey
 
         void setImage2D(const std::string_view binding, Image2D *image) override;
         void setBuffer(const std::string_view binding, Buffer *buffer) override;
+        void setUniformBuffer(const std::string_view binding, Buffer *buffer) override;
         void setAccelerationStructure(const std::string_view binding, const TopLevelAccelerationStructure *tlas) override;
+
+        // Explicit binding methods for materials and textures
+        void setSampledTexture(uint32_t bindingIndex, Image2D *image) override;
+        void setSampledTextureArray(uint32_t bindingIndex, std::span<Image2D *> images) override;
+        void setSampledTextureArray(const std::string_view name, std::span<Image2D *> images) override;
+        void setStorageBuffer(uint32_t bindingIndex, Buffer *buffer) override;
+
         template <typename Visitor>
         auto visit(Visitor &&visitor, uint32_t binding) const
         {

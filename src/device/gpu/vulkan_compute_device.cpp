@@ -17,14 +17,21 @@ namespace tracey
     {
         VkDescriptorPoolCreateInfo poolInfo{};
         poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;  // Required for bindless textures
         poolInfo.maxSets = 1000;
-        std::array<VkDescriptorPoolSize, 3> poolSizes{};
+        std::array<VkDescriptorPoolSize, 6> poolSizes{};
         poolSizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
         poolSizes[0].descriptorCount = 2048;
         poolSizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         poolSizes[1].descriptorCount = 500;
         poolSizes[2].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         poolSizes[2].descriptorCount = 100;
+        poolSizes[3].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        poolSizes[3].descriptorCount = 256;  // Legacy combined samplers
+        poolSizes[4].type = VK_DESCRIPTOR_TYPE_SAMPLER;
+        poolSizes[4].descriptorCount = 16;  // Fixed samplers (linear + nearest per set)
+        poolSizes[5].type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+        poolSizes[5].descriptorCount = 512;  // Bindless images (256 per set * 2 sets)
         poolInfo.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
         poolInfo.pPoolSizes = poolSizes.data();
 
@@ -41,10 +48,43 @@ namespace tracey
         {
             throw std::runtime_error("Failed to create command pool");
         }
+
+        // Create fixed samplers for bindless texture support
+        VkSamplerCreateInfo linearSamplerInfo{};
+        linearSamplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        linearSamplerInfo.magFilter = VK_FILTER_LINEAR;
+        linearSamplerInfo.minFilter = VK_FILTER_LINEAR;
+        linearSamplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        linearSamplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        linearSamplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        linearSamplerInfo.anisotropyEnable = VK_FALSE;
+        linearSamplerInfo.maxAnisotropy = 1.0f;
+        linearSamplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+        linearSamplerInfo.unnormalizedCoordinates = VK_FALSE;
+        linearSamplerInfo.compareEnable = VK_FALSE;
+        linearSamplerInfo.compareOp = VK_COMPARE_OP_ALWAYS;
+        linearSamplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+
+        if (vkCreateSampler(m_vulkanContext.device(), &linearSamplerInfo, nullptr, &m_linearSampler) != VK_SUCCESS)
+        {
+            throw std::runtime_error("Failed to create linear sampler");
+        }
+
+        VkSamplerCreateInfo nearestSamplerInfo = linearSamplerInfo;
+        nearestSamplerInfo.magFilter = VK_FILTER_NEAREST;
+        nearestSamplerInfo.minFilter = VK_FILTER_NEAREST;
+        nearestSamplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+
+        if (vkCreateSampler(m_vulkanContext.device(), &nearestSamplerInfo, nullptr, &m_nearestSampler) != VK_SUCCESS)
+        {
+            throw std::runtime_error("Failed to create nearest sampler");
+        }
     }
 
     VulkanComputeDevice::~VulkanComputeDevice()
     {
+        vkDestroySampler(m_vulkanContext.device(), m_linearSampler, nullptr);
+        vkDestroySampler(m_vulkanContext.device(), m_nearestSampler, nullptr);
         vkDestroyCommandPool(m_vulkanContext.device(), m_commandPool, nullptr);
         vkDestroyDescriptorPool(m_vulkanContext.device(), m_descriptorPool, nullptr);
     }
@@ -89,9 +129,15 @@ namespace tracey
     {
         return new VulkanImage2D(*this, width, height, format);
     }
-    BottomLevelAccelerationStructure *VulkanComputeDevice::createBottomLevelAccelerationStructure(const Buffer *positions, uint32_t positionCount, uint32_t positionStride, const Buffer *indices, uint32_t indexCount)
+    Image2D *VulkanComputeDevice::createImage2DWithData(uint32_t width, uint32_t height, ImageFormat format,
+                                                        const void *data, size_t dataSize,
+                                                        SamplerFilter filter, SamplerAddressMode addressMode)
     {
-        return new VulkanComputeBottomLevelAccelerationStructure(*this, positions, positionCount, positionStride, indices, indexCount);
+        return new VulkanImage2D(*this, width, height, format, data, dataSize, filter, addressMode);
+    }
+    BottomLevelAccelerationStructure *VulkanComputeDevice::createBottomLevelAccelerationStructure(const Buffer *positions, uint32_t positionCount, uint32_t positionStride, const Buffer *indices, uint32_t indexCount, const BVHConfig &bvhConfig)
+    {
+        return new VulkanComputeBottomLevelAccelerationStructure(*this, positions, positionCount, positionStride, indices, indexCount, bvhConfig);
     }
     TopLevelAccelerationStructure *VulkanComputeDevice::createTopLevelAccelerationStructure(std::span<const BottomLevelAccelerationStructure *> blases, std::span<const Tlas::Instance> instances)
     {

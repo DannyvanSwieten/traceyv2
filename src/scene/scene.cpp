@@ -26,9 +26,37 @@ namespace tracey
     std::vector<SceneNode> Scene::flatten() const
     {
         std::vector<SceneNode> out;
-        if (m_root != -1)
+        // Iterate over all actors directly
+        // This handles both hierarchical scenes (via children) and flat lists
+        for (const auto &actorPtr : m_actors)
         {
-            addChildren(out, Mat4(1.0), m_root);
+            if (actorPtr)
+            {
+                // Check if this actor has a parent - skip if it does (it will be visited via parent)
+                bool hasParent = false;
+                for (const auto &otherPtr : m_actors)
+                {
+                    if (otherPtr && otherPtr.get() != actorPtr.get())
+                    {
+                        for (auto childUid : otherPtr->children())
+                        {
+                            if (childUid == actorPtr->getUid())
+                            {
+                                hasParent = true;
+                                break;
+                            }
+                        }
+                    }
+                    if (hasParent)
+                        break;
+                }
+
+                // Only add top-level actors (those without parents)
+                if (!hasParent)
+                {
+                    addChildren(out, Mat4(1.0), actorPtr->getUid());
+                }
+            }
         }
         return out;
     }
@@ -44,5 +72,42 @@ namespace tracey
         {
             addChildren(out, worldTransform, childUid);
         }
+    }
+
+    void Scene::addObject(const std::string &name, std::unique_ptr<SceneObject> obj)
+    {
+        obj->setName(name);
+        m_objects[name] = std::move(obj);
+    }
+
+    void Scene::addObject(const std::string &name, SceneObject &&obj)
+    {
+        obj.setName(name);
+        m_objects[name] = std::make_unique<SceneObject>(std::move(obj));
+    }
+
+    SceneObject *Scene::getObject(const std::string &name)
+    {
+        auto it = m_objects.find(name);
+        if (it != m_objects.end())
+        {
+            return it->second.get();
+        }
+        return nullptr;
+    }
+
+    const SceneObject *Scene::getObject(const std::string &name) const
+    {
+        auto it = m_objects.find(name);
+        if (it != m_objects.end())
+        {
+            return it->second.get();
+        }
+        return nullptr;
+    }
+
+    bool Scene::hasObject(const std::string &name) const
+    {
+        return m_objects.find(name) != m_objects.end();
     }
 } // namespace tracey

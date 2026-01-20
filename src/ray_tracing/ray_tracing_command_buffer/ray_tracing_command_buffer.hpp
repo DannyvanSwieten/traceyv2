@@ -20,6 +20,7 @@ namespace tracey
         virtual void traceRays(const ShaderBindingTable &sbt, uint32_t width, uint32_t height) = 0;
 
         virtual void copyImageToBuffer(const Image2D *image, Buffer *buffer) = 0;
+        virtual void clearImage(Image2D *image, float r, float g, float b, float a) = 0;
 
         virtual void waitUntilCompleted() = 0;
     };

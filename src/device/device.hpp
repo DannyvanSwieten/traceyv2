@@ -3,6 +3,7 @@
 #include <span>
 #include <string_view>
 #include "../core/tlas.hpp"
+#include "../core/blas.hpp"
 
 namespace tracey
 {
@@ -48,8 +49,22 @@ namespace tracey
     enum class ImageFormat
     {
         R8G8B8A8Unorm,
+        R8G8B8A8Srgb,
         R32G32B32A32Sfloat,
         R32Sfloat,
+    };
+
+    enum class SamplerFilter
+    {
+        Nearest,
+        Linear
+    };
+
+    enum class SamplerAddressMode
+    {
+        Repeat,
+        ClampToEdge,
+        MirroredRepeat
     };
 
     class BottomLevelAccelerationStructure;
@@ -73,7 +88,11 @@ namespace tracey
         virtual RayTracingCommandBuffer *createRayTracingCommandBuffer() = 0;
         virtual Buffer *createBuffer(uint32_t size, BufferUsage usageFlags) = 0;
         virtual Image2D *createImage2D(uint32_t width, uint32_t height, ImageFormat format) = 0;
-        virtual BottomLevelAccelerationStructure *createBottomLevelAccelerationStructure(const Buffer *positions, uint32_t positionCount, uint32_t positionStride, const Buffer *indices, uint32_t indexCount) = 0;
+        virtual Image2D *createImage2DWithData(uint32_t width, uint32_t height, ImageFormat format,
+                                               const void *data, size_t dataSize,
+                                               SamplerFilter filter = SamplerFilter::Linear,
+                                               SamplerAddressMode addressMode = SamplerAddressMode::Repeat) = 0;
+        virtual BottomLevelAccelerationStructure *createBottomLevelAccelerationStructure(const Buffer *positions, uint32_t positionCount, uint32_t positionStride, const Buffer *indices, uint32_t indexCount, const BVHConfig &bvhConfig = {}) = 0;
         virtual TopLevelAccelerationStructure *createTopLevelAccelerationStructure(std::span<const BottomLevelAccelerationStructure *> blases, std::span<const Tlas::Instance> instances) = 0;
     };
 

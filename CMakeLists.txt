@@ -37,6 +37,25 @@ add_library(tracey
     src/scene/actor.cpp
     src/scene/scene.hpp
     src/scene/scene.cpp
+    src/scene/scene_object.hpp
+    src/scene/scene_object.cpp
+    src/scene/material_instance.hpp
+    src/scene/material_instance.cpp
+    src/scene/scene_instance.hpp
+    src/scene/scene_instance.cpp
+    src/scene/scene_loader.hpp
+    src/scene/scene_loader.cpp
+    src/scene/scene_compiler.hpp
+    src/scene/scene_compiler.cpp
+    src/scene/gltf_loader.hpp
+    src/scene/gltf_loader.cpp
+    src/scene/camera.hpp
+    src/scene/camera.cpp
+
+    src/rendering/path_tracer.hpp
+    src/rendering/path_tracer.cpp
+    src/rendering/post_processing.hpp
+    src/rendering/post_processing.cpp
 
     src/graph/graph.hpp
     src/graph/graph.cpp
@@ -169,6 +188,8 @@ target_link_libraries(tracey PRIVATE glm::glm Vulkan::Vulkan PkgConfig::SHADERC 
 target_include_directories(tracey
     PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
+    PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/deps/tinygltf
 )
 target_link_libraries(tracey PRIVATE
     shaderc

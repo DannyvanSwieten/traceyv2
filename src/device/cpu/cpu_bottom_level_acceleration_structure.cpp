@@ -2,7 +2,7 @@
 #include "cpu_buffer.hpp"
 namespace tracey
 {
-    CpuBottomLevelAccelerationStructure::CpuBottomLevelAccelerationStructure(const Buffer *positions, uint32_t positionCount, uint32_t positionStride, const Buffer *indices, uint32_t indexCount)
+    CpuBottomLevelAccelerationStructure::CpuBottomLevelAccelerationStructure(const Buffer *positions, uint32_t positionCount, uint32_t positionStride, const Buffer *indices, uint32_t indexCount, const BVHConfig &bvhConfig)
     {
         if (!indices)
         {
@@ -10,7 +10,7 @@ namespace tracey
             const auto stride = positionStride / sizeof(float);
             const std::span<const float> positionsSpan(posData, positionCount * stride);
 
-            m_blas.emplace(positionsSpan, stride);
+            m_blas.emplace(positionsSpan, stride, std::nullopt, bvhConfig);
             return;
         }
 
@@ -20,6 +20,6 @@ namespace tracey
         const std::span<const float> positionsSpan(posData, positionCount * stride);
         const std::span<const uint32_t> indicesSpan(indexData, indexCount);
 
-        m_blas.emplace(positionsSpan, stride, indicesSpan);
+        m_blas.emplace(positionsSpan, stride, indicesSpan, bvhConfig);
     }
 } // namespace tracey

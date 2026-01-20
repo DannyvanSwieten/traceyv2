@@ -16,6 +16,16 @@ namespace tracey
         void setUniformBuffer(const std::string_view binding, Buffer *buffer) override;
         void setAccelerationStructure(const std::string_view binding, const TopLevelAccelerationStructure *tlas) override;
 
+        // Explicit binding methods for materials and textures
+        void setSampledTexture(uint32_t bindingIndex, Image2D *image) override;
+        void setSampledTextureArray(uint32_t bindingIndex, std::span<Image2D *> images) override;
+        void setSampledTextureArray(const std::string_view name, std::span<Image2D *> images) override;
+        void setStorageBuffer(uint32_t bindingIndex, Buffer *buffer) override;
+
+        // Bindless texture support
+        void setSampler(const std::string_view name, bool useLinearFiltering) override;
+        void setSampledImageArray(const std::string_view name, std::span<Image2D *> images) override;
+
         VkDescriptorSet vkDescriptorSet() const { return m_descriptorSet; }
 
     private:

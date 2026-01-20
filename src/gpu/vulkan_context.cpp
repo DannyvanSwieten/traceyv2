@@ -293,8 +293,20 @@ namespace tracey
         VkPhysicalDeviceFeatures deviceFeatures{};
         // Enable features if you need them later (e.g. shaderInt64, etc.)
 
+        // Enable descriptor indexing for bindless textures (Vulkan 1.2 core)
+        // On macOS, requires MVK_CONFIG_USE_METAL_ARGUMENT_BUFFERS=1 environment variable
+        VkPhysicalDeviceDescriptorIndexingFeatures indexingFeatures{};
+        indexingFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES;
+        indexingFeatures.pNext = nullptr;
+        indexingFeatures.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
+        indexingFeatures.descriptorBindingVariableDescriptorCount = VK_TRUE;
+        indexingFeatures.runtimeDescriptorArray = VK_TRUE;
+        indexingFeatures.descriptorBindingPartiallyBound = VK_TRUE;
+        indexingFeatures.descriptorBindingSampledImageUpdateAfterBind = VK_TRUE;  // Required for UPDATE_AFTER_BIND
+
         VkDeviceCreateInfo createInfo{};
         createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
+        createInfo.pNext = &indexingFeatures;  // Chain descriptor indexing features
         createInfo.queueCreateInfoCount = 1;
         createInfo.pQueueCreateInfos = &queueInfo;
         createInfo.pEnabledFeatures = &deviceFeatures;

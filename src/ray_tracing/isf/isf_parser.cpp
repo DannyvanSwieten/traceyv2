@@ -4,10 +4,57 @@
 #include <regex>
 #include <sstream>
 #include <stdexcept>
+#include <iostream>
 
 namespace tracey {
 
 namespace {
+
+// Process #include directives recursively
+std::string processIncludes(const std::string &source, const std::filesystem::path &basePath, int depth = 0) {
+    // Prevent infinite recursion
+    if (depth > 32) {
+        throw std::runtime_error("Include depth exceeded maximum (32) - possible circular includes");
+    }
+
+    std::stringstream result;
+    std::istringstream sourceStream(source);
+    std::string line;
+
+    while (std::getline(sourceStream, line)) {
+        // Check for #include directive
+        std::regex includePattern(R"(^\s*#include\s+\"([^\"]+)\"\s*$)");
+        std::smatch match;
+
+        if (std::regex_match(line, match, includePattern)) {
+            std::string includePath = match[1].str();
+            std::filesystem::path fullPath = basePath / includePath;
+
+            // Read the included file
+            std::ifstream includeFile(fullPath);
+            if (!includeFile.is_open()) {
+                throw std::runtime_error("Failed to open included file: " + fullPath.string());
+            }
+
+            std::stringstream includeBuffer;
+            includeBuffer << includeFile.rdbuf();
+            std::string includeContent = includeBuffer.str();
+
+            // Recursively process includes in the included file
+            std::string processedInclude = processIncludes(includeContent, fullPath.parent_path(), depth + 1);
+
+            // Add the processed content
+            result << "// Begin include: " << includePath << "\n";
+            result << processedInclude;
+            result << "// End include: " << includePath << "\n";
+        } else {
+            // Not an include directive, keep the line as-is
+            result << line << "\n";
+        }
+    }
+
+    return result.str();
+}
 
 // Simple JSON value extraction helpers
 std::string extractStringValue(const std::string &json, const std::string &key) {
@@ -289,7 +336,12 @@ ISFShaderDefinition ISFParser::parseFile(const std::filesystem::path &path) {
 
     std::stringstream buffer;
     buffer << file.rdbuf();
-    return parse(buffer.str());
+    std::string source = buffer.str();
+
+    // Process includes relative to the shader file's directory
+    std::string processedSource = processIncludes(source, path.parent_path());
+
+    return parse(processedSource);
 }
 
 } // namespace tracey
