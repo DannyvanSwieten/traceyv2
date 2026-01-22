@@ -330,7 +330,7 @@ namespace tracey
     }
     MissShader::MissShader(CompiledShader shader) : shader(shader)
     {
-        this->setBuiltins = reinterpret_cast<setBuiltinsFunc>(dlsym(this->shader.dylib, "setBuiltins"));
-        this->getBuiltins = reinterpret_cast<getBuiltinsFunc>(dlsym(this->shader.dylib, "getBuiltins"));
+        this->setBuiltins = reinterpret_cast<setBuiltinsFunc>(loadSymbol(this->shader.dylib, "setBuiltins"));
+        this->getBuiltins = reinterpret_cast<getBuiltinsFunc>(loadSymbol(this->shader.dylib, "getBuiltins"));
     }
 }

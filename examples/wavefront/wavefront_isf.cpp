@@ -15,6 +15,7 @@
 #include <fstream>
 #include <iostream>
 #include <filesystem>
+#include <array>
 
 int main()
 {

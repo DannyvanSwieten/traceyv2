@@ -1,6 +1,7 @@
 #include "vulkan_buffer.hpp"
 #include "vulkan_compute_device.hpp"
 #include <stdexcept>
+#include <array>
 namespace tracey
 {
     VulkanBuffer::VulkanBuffer(VulkanComputeDevice &device, uint32_t size, BufferUsage usageFlags) : m_device(device.vkDevice())

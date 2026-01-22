@@ -272,7 +272,7 @@ namespace tracey
             if (!(cMax > cMin))
                 continue;
 
-            Bin bins[BIN_COUNT];
+            std::vector<Bin> bins(BIN_COUNT);
 
             const float invBinSize = (float)BIN_COUNT / (cMax - cMin);
 
@@ -294,13 +294,13 @@ namespace tracey
             }
 
             // Prefix (left) and suffix (right) aggregates over bins
-            int leftCount[BIN_COUNT];
-            Vec3 leftMin[BIN_COUNT];
-            Vec3 leftMax[BIN_COUNT];
+            std::vector<int> leftCount(BIN_COUNT);
+            std::vector<Vec3> leftMin(BIN_COUNT);
+            std::vector<Vec3> leftMax(BIN_COUNT);
 
-            int rightCount[BIN_COUNT];
-            Vec3 rightMin[BIN_COUNT];
-            Vec3 rightMax[BIN_COUNT];
+            std::vector<int> rightCount(BIN_COUNT);
+            std::vector<Vec3> rightMin(BIN_COUNT);
+            std::vector<Vec3> rightMax(BIN_COUNT);
 
             // Build left side prefix
             int runningCount = 0;

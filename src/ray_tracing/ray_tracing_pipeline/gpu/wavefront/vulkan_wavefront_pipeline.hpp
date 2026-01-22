@@ -1,5 +1,6 @@
 #pragma once
 #include <volk.h>
+#include <vector>
 #include "../../ray_tracing_pipeline.hpp"
 namespace tracey
 {

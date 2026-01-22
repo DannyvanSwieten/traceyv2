@@ -1,3 +1,4 @@
+#include <array>
 #include "../../src/core/blas.hpp"
 #include <vector>
 #include <iostream>

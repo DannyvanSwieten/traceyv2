@@ -39,10 +39,10 @@ namespace tracey
 
         struct BlasInfo
         {
-            uint rootNodeIndex;
-            uint triangleCount;
-            uint triangleOffset;
-            uint padding0;
+            uint32_t rootNodeIndex;
+            uint32_t triangleCount;
+            uint32_t triangleOffset;
+            uint32_t padding0;
         };
     };
 }

@@ -1,3 +1,4 @@
+#include <array>
 #include "../../src/core/blas.hpp"
 #include "../../src/core/tlas.hpp"
 #include <iostream>

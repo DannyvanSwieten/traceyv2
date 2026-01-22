@@ -11,6 +11,7 @@
 #include "../../ray_tracing/ray_tracing_pipeline/gpu/wavefront/vulkan_wavefront_pipeline.hpp"
 #include "../../ray_tracing/ray_tracing_command_buffer/gpu/vulkan_compute_ray_tracing_command_buffer.hpp"
 #include <sstream>
+#include <array>
 namespace tracey
 {
     VulkanComputeDevice::VulkanComputeDevice(VulkanContext context) : m_vulkanContext(std::move(context))

@@ -1,3 +1,5 @@
+#include <array>
+#include <chrono>
 #include "../src/device/device.hpp"
 #include "../src/device/buffer.hpp"
 #include "../src/device/image_2d.hpp"

@@ -161,43 +161,90 @@ add_compile_definitions(
 
 if(MSVC)
     target_compile_options(tracey PRIVATE /W4 /permissive-)
+    target_compile_definitions(tracey PRIVATE NOMINMAX)
 else()
     target_compile_options(tracey PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
 find_package(Vulkan REQUIRED)
 
-find_package(PkgConfig REQUIRED)
+# Try to find PkgConfig (available on Unix/Linux/macOS, not typically on Windows)
+find_package(PkgConfig QUIET)
 
-pkg_check_modules(SHADERC REQUIRED IMPORTED_TARGET shaderc)
+if(PKG_CONFIG_FOUND)
+    # Unix/Linux/macOS: Use pkg-config to find shaderc
+    pkg_check_modules(SHADERC REQUIRED IMPORTED_TARGET shaderc)
 
-# Optional: shaderc_combined (not commonly available on macOS)
-pkg_check_modules(SHADERC_COMBINED QUIET IMPORTED_TARGET shaderc_combined)
-target_include_directories(tracey PRIVATE
-    ${SHADERC_INCLUDE_DIRS}
-)
+    # Optional: shaderc_combined (not commonly available on macOS)
+    pkg_check_modules(SHADERC_COMBINED QUIET IMPORTED_TARGET shaderc_combined)
 
-# IMPORTANT: static deps (glslang + spirv-tools) are only in the --static output
-execute_process(
-    COMMAND pkg-config --libs --static shaderc
-    OUTPUT_VARIABLE SHADERC_STATIC_LIBS
-    OUTPUT_STRIP_TRAILING_WHITESPACE
-)
+    target_include_directories(tracey PRIVATE
+        ${SHADERC_INCLUDE_DIRS}
+    )
 
-target_link_libraries(tracey PRIVATE glm::glm Vulkan::Vulkan PkgConfig::SHADERC volk::volk)
+    # IMPORTANT: static deps (glslang + spirv-tools) are only in the --static output
+    execute_process(
+        COMMAND pkg-config --libs --static shaderc
+        OUTPUT_VARIABLE SHADERC_STATIC_LIBS
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+    )
+
+    target_link_libraries(tracey PRIVATE glm::glm Vulkan::Vulkan PkgConfig::SHADERC volk::volk)
+else()
+    # Windows: Manually find shaderc libraries
+    message(STATUS "PkgConfig not found, using manual library search for Windows")
+
+    # Find shaderc include directory (usually in Vulkan SDK)
+    find_path(SHADERC_INCLUDE_DIR
+        NAMES shaderc/shaderc.hpp
+        PATHS
+            ${Vulkan_INCLUDE_DIRS}
+            $ENV{VULKAN_SDK}/Include
+            $ENV{VK_SDK_PATH}/Include
+        PATH_SUFFIXES shaderc
+    )
+
+    # Find shaderc libraries
+    find_library(SHADERC_LIBRARY
+        NAMES shaderc_combined shaderc_shared shaderc
+        PATHS
+            ${Vulkan_LIBRARY_DIRS}
+            $ENV{VULKAN_SDK}/Lib
+            $ENV{VK_SDK_PATH}/Lib
+    )
+
+    if(NOT SHADERC_INCLUDE_DIR OR NOT SHADERC_LIBRARY)
+        message(FATAL_ERROR "Could not find shaderc. Please install the Vulkan SDK with shaderc support.")
+    endif()
+
+    message(STATUS "Found shaderc: ${SHADERC_LIBRARY}")
+    message(STATUS "Found shaderc include: ${SHADERC_INCLUDE_DIR}")
+
+    target_include_directories(tracey PRIVATE
+        ${SHADERC_INCLUDE_DIR}
+    )
+
+    target_link_libraries(tracey PRIVATE glm::glm Vulkan::Vulkan volk::volk)
+    target_link_libraries(tracey PRIVATE ${SHADERC_LIBRARY})
+endif()
+
 target_include_directories(tracey
     PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/deps/tinygltf
 )
-target_link_libraries(tracey PRIVATE
-    shaderc
-    shaderc_util
-    glslang
-    SPIRV-Tools
-    SPIRV-Tools-opt
-)
+
+# Additional libraries needed when using pkg-config on Unix/Linux/macOS
+if(PKG_CONFIG_FOUND)
+    target_link_libraries(tracey PRIVATE
+        shaderc
+        shaderc_util
+        glslang
+        SPIRV-Tools
+        SPIRV-Tools-opt
+    )
+endif()
 
 # Optional: Build C API for FFI (Rust/Tauri editor)
 option(BUILD_C_API "Build C API shared library for FFI" ON)

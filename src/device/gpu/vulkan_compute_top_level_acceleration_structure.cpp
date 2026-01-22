@@ -90,8 +90,8 @@ namespace tracey
             const auto blasTriangleCount = vulkanBlas->triangleCount();
             std::memcpy(&triangleData[triangleOffset], vulkanBlas->triangleData().data(), sizeof(Blas::TriangleData) * blasTriangleCount);
             std::memcpy(&primitiveIndexData[triangleOffset], vulkanBlas->primIndices().data(), sizeof(uint32_t) * blasTriangleCount);
-            blasInfoData[blasIndex].rootNodeIndex = static_cast<uint>(nodeOffset);
-            blasInfoData[blasIndex].triangleOffset = static_cast<uint>(triangleOffset);
+            blasInfoData[blasIndex].rootNodeIndex = static_cast<uint32_t>(nodeOffset);
+            blasInfoData[blasIndex].triangleOffset = static_cast<uint32_t>(triangleOffset);
 
             // Upload BVH nodes for this BLAS into the global node buffer (CPU-identical semantics).
             const auto &srcNodes = vulkanBlas->nodes();

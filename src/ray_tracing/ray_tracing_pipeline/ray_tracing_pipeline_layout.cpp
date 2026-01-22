@@ -1,4 +1,5 @@
 #include "ray_tracing_pipeline_layout.hpp"
+#include <stdexcept>
 namespace tracey
 {
     void RayTracingPipelineLayoutDescriptor::addImage2D(std::string name, ShaderStage stage, ImageLayoutFormat format)
