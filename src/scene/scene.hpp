@@ -50,6 +50,7 @@ namespace tracey
         }
 
         void removeActor(size_t uid);
+        void clear();
         std::vector<SceneNode> flatten() const;
         const std::vector<std::unique_ptr<Actor>> &actors() const { return m_actors; }
 

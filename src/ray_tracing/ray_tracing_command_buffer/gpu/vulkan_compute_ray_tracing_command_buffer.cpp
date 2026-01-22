@@ -113,7 +113,7 @@ namespace tracey
             // 3. Resolve: accumulate final colors to output image
             // ================================================================
 
-            const uint32_t sampleCount = 16;
+            const uint32_t sampleCount = 1;
             const uint32_t maxBounces = 8;
             uint32_t rayCount = width * height;
             uint32_t workGroups = (rayCount + 255) / 256;
@@ -263,6 +263,31 @@ namespace tracey
             dynamic_cast<VulkanBuffer *>(buffer)->vkBuffer(),
             1,
             &copyRegion);
+
+        // Transition image back to GENERAL for subsequent compute shader use
+        VkImageMemoryBarrier barrierBack{};
+        barrierBack.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        barrierBack.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        barrierBack.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+        barrierBack.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrierBack.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrierBack.image = dynamic_cast<const VulkanImage2D *>(image)->vkImage();
+        barrierBack.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        barrierBack.subresourceRange.baseMipLevel = 0;
+        barrierBack.subresourceRange.levelCount = 1;
+        barrierBack.subresourceRange.baseArrayLayer = 0;
+        barrierBack.subresourceRange.layerCount = 1;
+        barrierBack.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        barrierBack.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+
+        vkCmdPipelineBarrier(
+            m_vkCommandBuffer,
+            VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            0,
+            0, nullptr,
+            0, nullptr,
+            1, &barrierBack);
     }
 
     void VulkanComputeRayTracingCommandBuffer::waitUntilCompleted()

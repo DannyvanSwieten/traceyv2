@@ -126,6 +126,10 @@ impl SceneState {
 
     /// Load a GLTF file into this scene
     pub fn load_gltf(&mut self, cpp_scene: &mut CppScene, path: &str) -> Result<(), String> {
+        // Clear existing scene state
+        self.actors.clear();
+        self.next_actor_id = 1;
+
         cpp_scene
             .load_gltf(path)
             .map_err(|e| format!("Failed to load GLTF: {}", e))?;

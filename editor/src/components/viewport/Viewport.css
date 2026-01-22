@@ -22,6 +22,11 @@
   color: #4ec9b0;
 }
 
+.viewport-camera {
+  color: #9cdcfe;
+  font-family: 'Monaco', 'Menlo', 'Courier New', monospace;
+}
+
 .viewport-stats {
   color: #858585;
   font-family: 'Monaco', 'Menlo', 'Courier New', monospace;
@@ -34,6 +39,17 @@
   justify-content: center;
   background: #2d2d2d;
   overflow: hidden;
+  cursor: grab;
+  outline: none;
+}
+
+.viewport-canvas-container:active {
+  cursor: grabbing;
+}
+
+.viewport-canvas-container:focus {
+  outline: 1px solid #007acc;
+  outline-offset: -1px;
 }
 
 .viewport-canvas {

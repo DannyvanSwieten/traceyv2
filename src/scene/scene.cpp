@@ -23,6 +23,15 @@ namespace tracey
 
         m_actors[uid].reset();
     }
+
+    void Scene::clear()
+    {
+        m_actors.clear();
+        m_objects.clear();
+        m_embeddedTextures.clear();
+        m_camera.reset();
+        m_root = -1;
+    }
     std::vector<SceneNode> Scene::flatten() const
     {
         std::vector<SceneNode> out;

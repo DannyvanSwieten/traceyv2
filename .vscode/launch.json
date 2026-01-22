@@ -103,5 +103,18 @@
             "cwd": "${workspaceFolder}",
             "preLaunchTask": "CMake: build"
         },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Tracey Editor (Debug Rust + C++)",
+            "program": "${workspaceFolder}/editor/src-tauri/target/debug/tracey-editor",
+            "args": [],
+            "cwd": "${workspaceFolder}/editor",
+            "env": {
+                "DYLD_LIBRARY_PATH": "${workspaceFolder}/editor/src-tauri/libs:/usr/local/lib"
+            },
+            "sourceLanguages": ["rust", "cpp"],
+            "preLaunchTask": "Build and Start Editor"
+        },
     ]
 }

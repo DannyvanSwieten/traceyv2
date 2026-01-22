@@ -40,7 +40,7 @@ fn main() {
         width: 1280,
         height: 720,
         shader_dir,
-        hdr_output: true, // Enable HDR for proper accumulation
+        hdr_output: false, // LDR - tonemapping done in resolve shader
     };
 
     let mut engine = RenderEngine::new(config).expect("Failed to create render engine");

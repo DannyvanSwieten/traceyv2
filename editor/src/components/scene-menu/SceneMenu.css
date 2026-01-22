@@ -1,0 +1,50 @@
+.scene-menu {
+  margin-top: 8px;
+}
+
+.scene-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.scene-item {
+  display: flex;
+  align-items: center;
+  padding: 8px 12px;
+  cursor: pointer;
+  border-radius: 4px;
+  margin-bottom: 2px;
+  transition: background-color 0.15s ease;
+}
+
+.scene-item:hover:not(.scene-item--disabled) {
+  background-color: #2a2d2e;
+}
+
+.scene-item--active {
+  background-color: #094771;
+}
+
+.scene-item--active:hover {
+  background-color: #094771;
+}
+
+.scene-item--disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.scene-icon {
+  margin-right: 8px;
+  font-size: 14px;
+}
+
+.scene-name {
+  font-size: 13px;
+  color: #cccccc;
+}
+
+.scene-item--active .scene-name {
+  color: #ffffff;
+}

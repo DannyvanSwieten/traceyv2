@@ -1,8 +1,26 @@
-import { Component } from 'solid-js';
-import { Viewport } from './components/viewport/Viewport';
+import { Component, createSignal } from 'solid-js';
+import { Viewport, ViewportHandle } from './components/viewport/Viewport';
+import { SceneMenu } from './components/scene-menu/SceneMenu';
 import './App.css';
 
 const App: Component = () => {
+  const [currentScene, setCurrentScene] = createSignal<string | null>(null);
+  const [isLoading, setIsLoading] = createSignal(false);
+  let viewportRef: ViewportHandle | undefined;
+
+  const handleSceneSelect = async (path: string) => {
+    if (isLoading() || path === currentScene()) return;
+
+    setIsLoading(true);
+    setCurrentScene(path);
+
+    if (viewportRef) {
+      await viewportRef.loadScene(path);
+    }
+
+    setIsLoading(false);
+  };
+
   return (
     <div class="app">
       <div class="toolbar">
@@ -11,12 +29,16 @@ const App: Component = () => {
 
       <div class="main-content">
         <div class="left-panel panel">
-          <h3>Scene Hierarchy</h3>
-          <p>Scene tree will go here</p>
+          <h3>Scenes</h3>
+          <SceneMenu
+            onSceneSelect={handleSceneSelect}
+            currentScene={currentScene}
+            isLoading={isLoading}
+          />
         </div>
 
         <div class="viewport-container">
-          <Viewport />
+          <Viewport ref={(ref) => (viewportRef = ref)} />
         </div>
 
         <div class="right-panel panel">

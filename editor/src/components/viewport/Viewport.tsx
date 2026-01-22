@@ -1,4 +1,4 @@
-import { Component, createSignal, onMount } from 'solid-js';
+import { Component, createSignal, onMount, onCleanup } from 'solid-js';
 import { invoke } from '@tauri-apps/api/core';
 import './Viewport.css';
 
@@ -18,25 +18,94 @@ interface RenderResult {
   render_time_ms: number;
 }
 
-export const Viewport: Component = () => {
+export interface ViewportHandle {
+  loadScene: (path: string) => Promise<void>;
+}
+
+interface ViewportProps {
+  ref?: (handle: ViewportHandle) => void;
+}
+
+// Quaternion math utilities
+const quatFromEuler = (yaw: number, pitch: number): Camera['rotation'] => {
+  const cy = Math.cos(yaw * 0.5);
+  const sy = Math.sin(yaw * 0.5);
+  const cp = Math.cos(pitch * 0.5);
+  const sp = Math.sin(pitch * 0.5);
+
+  return {
+    w: cy * cp,
+    x: cy * sp,
+    y: sy * cp,
+    z: -sy * sp,
+  };
+};
+
+const getForward = (q: Camera['rotation']): { x: number; y: number; z: number } => {
+  // Forward vector from quaternion (looking down -Z by default)
+  return {
+    x: 2 * (q.x * q.z + q.w * q.y),
+    y: 2 * (q.y * q.z - q.w * q.x),
+    z: -(1 - 2 * (q.x * q.x + q.y * q.y)),
+  };
+};
+
+const getRight = (q: Camera['rotation']): { x: number; y: number; z: number } => {
+  // Right vector from quaternion
+  return {
+    x: 1 - 2 * (q.y * q.y + q.z * q.z),
+    y: 2 * (q.x * q.y + q.w * q.z),
+    z: 2 * (q.x * q.z - q.w * q.y),
+  };
+};
+
+export const Viewport: Component<ViewportProps> = (props) => {
   const [status, setStatus] = createSignal('Initializing...');
   const [renderTime, setRenderTime] = createSignal(0);
   const [sampleCount, setSampleCount] = createSignal(0);
+  const [sceneLoaded, setSceneLoaded] = createSignal(false);
+  const [cameraPos, setCameraPos] = createSignal({ x: 0, y: 0, z: 3 });
   let canvasRef: HTMLCanvasElement | undefined;
+  let containerRef: HTMLDivElement | undefined;
 
-  // Camera positioned to view DamagedHelmet at origin
+  // Camera state
   const camera: Camera = {
     position: { x: 0, y: 0, z: 3 },
-    rotation: { w: 1.0, x: 0, y: 0, z: 0 }, // Default forward = (0,0,-1) looks at origin
+    rotation: { w: 1.0, x: 0, y: 0, z: 0 },
     fov: 45.0,
     near_plane: 0.01,
     far_plane: 1000.0,
     aspect_ratio: 16.0 / 9.0,
   };
 
+  // Camera control state
+  let yaw = 0;
+  let pitch = 0;
+  let isDragging = false;
+  let lastMouseX = 0;
+  let lastMouseY = 0;
+  const keysPressed = new Set<string>();
+  let isRendering = false;
+  let needsRender = false;
+
+  const MOUSE_SENSITIVITY = 0.003;
+  const MOVE_SPEED = 0.1;
+  const SCROLL_SPEED = 0.5;
+
+  const updateCameraRotation = () => {
+    // Clamp pitch to avoid gimbal lock
+    pitch = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, pitch));
+    camera.rotation = quatFromEuler(yaw, pitch);
+  };
+
   const renderFrame = async (clear: boolean) => {
+    if (isRendering) {
+      needsRender = true;
+      return;
+    }
+
+    isRendering = true;
     try {
-      // Render the frame
       const result = (await invoke('render_frame', {
         camera,
         clearAccumulation: clear,
@@ -45,18 +114,13 @@ export const Viewport: Component = () => {
       setRenderTime(result.render_time_ms);
       setSampleCount(result.sample_count);
 
-      // Get the pixels as a Uint8Array
       const pixels = new Uint8Array(await invoke('get_render_pixels'));
 
-      // Draw to canvas
       if (canvasRef) {
         const ctx = canvasRef.getContext('2d');
         if (ctx) {
           const imageData = ctx.createImageData(result.width, result.height);
-
-          // Copy pixel data (RGBA format)
           imageData.data.set(pixels);
-
           ctx.putImageData(imageData, 0, 0);
           setStatus('Rendering');
         }
@@ -64,66 +128,191 @@ export const Viewport: Component = () => {
     } catch (e) {
       setStatus(`Error: ${e}`);
       console.error('Render failed:', e);
+    } finally {
+      isRendering = false;
+      if (needsRender) {
+        needsRender = false;
+        renderFrame(true);
+      }
     }
   };
 
-  const startRendering = async () => {
+  const handleMouseDown = (e: MouseEvent) => {
+    if (e.button === 0 || e.button === 2) {
+      isDragging = true;
+      lastMouseX = e.clientX;
+      lastMouseY = e.clientY;
+      containerRef?.focus();
+    }
+  };
+
+  const handleMouseUp = () => {
+    isDragging = false;
+  };
+
+  const handleMouseMove = (e: MouseEvent) => {
+    if (!isDragging || !sceneLoaded()) return;
+
+    const deltaX = e.clientX - lastMouseX;
+    const deltaY = e.clientY - lastMouseY;
+    lastMouseX = e.clientX;
+    lastMouseY = e.clientY;
+
+    yaw -= deltaX * MOUSE_SENSITIVITY;
+    pitch -= deltaY * MOUSE_SENSITIVITY;
+
+    updateCameraRotation();
+    setCameraPos({ ...camera.position });
+    renderFrame(true);
+  };
+
+  const handleWheel = (e: WheelEvent) => {
+    if (!sceneLoaded()) return;
+    e.preventDefault();
+
+    const forward = getForward(camera.rotation);
+    const distance = e.deltaY > 0 ? -SCROLL_SPEED : SCROLL_SPEED;
+
+    camera.position.x += forward.x * distance;
+    camera.position.y += forward.y * distance;
+    camera.position.z += forward.z * distance;
+
+    setCameraPos({ ...camera.position });
+    renderFrame(true);
+  };
+
+  const handleKeyDown = (e: KeyboardEvent) => {
+    if (!sceneLoaded()) return;
+    keysPressed.add(e.key.toLowerCase());
+    processMovement();
+  };
+
+  const handleKeyUp = (e: KeyboardEvent) => {
+    keysPressed.delete(e.key.toLowerCase());
+  };
+
+  const processMovement = () => {
+    if (keysPressed.size === 0) return;
+
+    const forward = getForward(camera.rotation);
+    const right = getRight(camera.rotation);
+    let moved = false;
+
+    if (keysPressed.has('w')) {
+      camera.position.x += forward.x * MOVE_SPEED;
+      camera.position.y += forward.y * MOVE_SPEED;
+      camera.position.z += forward.z * MOVE_SPEED;
+      moved = true;
+    }
+    if (keysPressed.has('s')) {
+      camera.position.x -= forward.x * MOVE_SPEED;
+      camera.position.y -= forward.y * MOVE_SPEED;
+      camera.position.z -= forward.z * MOVE_SPEED;
+      moved = true;
+    }
+    if (keysPressed.has('a')) {
+      camera.position.x -= right.x * MOVE_SPEED;
+      camera.position.y -= right.y * MOVE_SPEED;
+      camera.position.z -= right.z * MOVE_SPEED;
+      moved = true;
+    }
+    if (keysPressed.has('d')) {
+      camera.position.x += right.x * MOVE_SPEED;
+      camera.position.y += right.y * MOVE_SPEED;
+      camera.position.z += right.z * MOVE_SPEED;
+      moved = true;
+    }
+    if (keysPressed.has('q') || keysPressed.has(' ')) {
+      camera.position.y += MOVE_SPEED;
+      moved = true;
+    }
+    if (keysPressed.has('e') || keysPressed.has('shift')) {
+      camera.position.y -= MOVE_SPEED;
+      moved = true;
+    }
+
+    if (moved) {
+      setCameraPos({ ...camera.position });
+      renderFrame(true);
+    }
+  };
+
+  const handleContextMenu = (e: MouseEvent) => {
+    e.preventDefault();
+  };
+
+  const loadScene = async (scenePath: string) => {
     try {
-      // Load DamagedHelmet
+      setSceneLoaded(false);
       setStatus('Loading scene...');
-      const scenePath = '/Users/dannyvanswieten/Documents/code/traceyv2/examples/scenes/DamagedHelmet.glb';
       await invoke('import_gltf', { path: scenePath });
 
-      // Compile the scene
       setStatus('Compiling scene...');
       await invoke('compile_scene');
 
-      // Get viewport resolution
-      const [width, height] = (await invoke('get_viewport_resolution')) as [
-        number,
-        number
-      ];
+      const [width, height] = (await invoke('get_viewport_resolution')) as [number, number];
 
-      // Update canvas size
       if (canvasRef) {
         canvasRef.width = width;
         canvasRef.height = height;
       }
 
-      // Update camera aspect ratio
       camera.aspect_ratio = width / height;
 
-      setStatus('Rendering...');
+      // Reset camera position for new scene
+      camera.position = { x: 0, y: 0, z: 3 };
+      yaw = 0;
+      pitch = 0;
+      updateCameraRotation();
+      setCameraPos({ ...camera.position });
 
-      // Render just one sample for debugging
+      setStatus('Rendering...');
       await renderFrame(true);
 
-      setStatus('Done (1 sample)');
+      setSceneLoaded(true);
+      setStatus('Ready - WASD to move, drag to look');
     } catch (e) {
-      setStatus(`Initialization error: ${e}`);
-      console.error('Failed to start rendering:', e);
+      setStatus(`Error: ${e}`);
+      console.error('Failed to load scene:', e);
     }
   };
 
   onMount(() => {
-    startRendering();
+    props.ref?.({ loadScene });
+    setStatus('Select a scene to begin');
+
+    // Add global mouse up listener to handle drag release outside canvas
+    document.addEventListener('mouseup', handleMouseUp);
+    document.addEventListener('mousemove', handleMouseMove);
+  });
+
+  onCleanup(() => {
+    document.removeEventListener('mouseup', handleMouseUp);
+    document.removeEventListener('mousemove', handleMouseMove);
   });
 
   return (
     <div class="viewport-wrapper">
       <div class="viewport-header">
         <span class="viewport-status">{status()}</span>
+        <span class="viewport-camera">
+          pos: ({cameraPos().x.toFixed(2)}, {cameraPos().y.toFixed(2)}, {cameraPos().z.toFixed(2)})
+        </span>
         <span class="viewport-stats">
           {renderTime().toFixed(2)}ms | {sampleCount()} samples
         </span>
       </div>
-      <div class="viewport-canvas-container">
-        <canvas
-          ref={canvasRef}
-          class="viewport-canvas"
-          width={1280}
-          height={720}
-        />
+      <div
+        ref={containerRef}
+        class="viewport-canvas-container"
+        tabIndex={0}
+        onMouseDown={handleMouseDown}
+        onWheel={handleWheel}
+        onKeyDown={handleKeyDown}
+        onKeyUp={handleKeyUp}
+        onContextMenu={handleContextMenu}
+      >
+        <canvas ref={canvasRef} class="viewport-canvas" width={1280} height={720} />
       </div>
     </div>
   );

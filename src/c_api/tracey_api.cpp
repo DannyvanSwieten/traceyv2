@@ -419,6 +419,9 @@ TraceyResult tracey_scene_load_gltf(
         clearError();
         auto* s = reinterpret_cast<tracey::Scene*>(scene);
 
+        // Clear existing scene before loading new one
+        s->clear();
+
         // Load GLTF into a temporary scene
         auto loadedScene = tracey::GltfLoader::loadFromFile(filePath);
         if (!loadedScene) {
@@ -426,7 +429,7 @@ TraceyResult tracey_scene_load_gltf(
             return TRACEY_ERROR_FILE_NOT_FOUND;
         }
 
-        // Merge loaded scene into existing scene
+        // Copy loaded scene into cleared scene
         // Copy all actors
         for (const auto& actor : loadedScene->actors()) {
             auto* newActor = s->createActor();
