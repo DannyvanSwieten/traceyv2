@@ -16,12 +16,12 @@ int main(int argc, char *argv[])
     std::filesystem::path scenePath;
     if (argc > 1)
     {
-        scenePath = std::filesystem::path(__FILE__).parent_path().parent_path() / "scenes" / argv[1];
+        scenePath = argv[1];
     }
     else
     {
         // Default to the example scene
-        scenePath = std::filesystem::path(__FILE__).parent_path().parent_path() / "scenes" / "DamagedHelmet.glb";
+        scenePath = std::filesystem::path(__FILE__).parent_path().parent_path() / "scenes" / "simple_scene.json";
     }
 
     std::cout << "Loading scene from: " << scenePath << std::endl;
@@ -154,12 +154,67 @@ int main(int argc, char *argv[])
         std::cout << "Scene bounds: min=(" << minBounds.x << ", " << minBounds.y << ", " << minBounds.z << ")"
                   << " max=(" << maxBounds.x << ", " << maxBounds.y << ", " << maxBounds.z << ")" << std::endl;
 
-        // Fit camera to scene bounds
-        camera = tracey::Camera::fitToBounds(minBounds, maxBounds, 45.0f);
+        // Special case for Cornell box: place camera inside looking at back wall
+        if (scenePath.stem().string().find("cornell_box") != std::string::npos)
+        {
+            glm::vec3 cameraPos(0.0f, 2.0f, 1.8f);   // Near front wall, inside scaled box (front wall at z=2)
+            glm::vec3 lookTarget(0.0f, 2.0f, -2.0f); // Looking at back wall
+            glm::vec3 cameraForward = glm::normalize(lookTarget - cameraPos);
 
-        std::cout << "Auto-generated camera: pos=(" << camera.position().x << ", "
-                  << camera.position().y << ", " << camera.position().z
-                  << "), fov=" << camera.fov() << std::endl;
+            // Compute camera basis
+            glm::vec3 worldUp(0.0f, 1.0f, 0.0f);
+            glm::vec3 cameraRight = glm::normalize(glm::cross(cameraForward, worldUp));
+            glm::vec3 cameraUp = glm::cross(cameraRight, cameraForward);
+
+            // Create lookAt rotation
+            glm::mat4 lookAtMatrix = glm::lookAt(cameraPos, lookTarget, worldUp);
+            glm::quat rotation = glm::quat_cast(glm::inverse(lookAtMatrix));
+
+            camera.setPosition(cameraPos);
+            camera.setRotation(rotation);
+            camera.setFov(40.0f); // Standard FOV for Cornell box
+
+            std::cout << "Cornell box interior camera: pos=(" << cameraPos.x << ", "
+                      << cameraPos.y << ", " << cameraPos.z
+                      << "), looking at back wall, fov=40" << std::endl;
+        }
+        // Special case for Sponza: place camera in center of atrium at ground level
+        else if (scenePath.stem().string().find("Sponza") != std::string::npos)
+        {
+            glm::vec3 sceneCenter = (minBounds + maxBounds) * 0.5f;
+            // Place camera at ground level (Y near minimum), centered in X/Z
+            glm::vec3 cameraPos(sceneCenter.x, minBounds.y + 2.0f, sceneCenter.z);
+
+            // Look down the +X axis (typical Sponza orientation)
+            glm::vec3 lookTarget = cameraPos + glm::vec3(1.0f, 0.0f, 0.0f);
+            glm::vec3 cameraForward = glm::normalize(lookTarget - cameraPos);
+
+            // Compute camera basis
+            glm::vec3 worldUp(0.0f, 1.0f, 0.0f);
+            glm::vec3 cameraRight = glm::normalize(glm::cross(cameraForward, worldUp));
+            glm::vec3 cameraUp = glm::cross(cameraRight, cameraForward);
+
+            // Create lookAt rotation
+            glm::mat4 lookAtMatrix = glm::lookAt(cameraPos, lookTarget, worldUp);
+            glm::quat rotation = glm::quat_cast(glm::inverse(lookAtMatrix));
+
+            camera.setPosition(cameraPos);
+            camera.setRotation(rotation);
+            camera.setFov(60.0f); // Wider FOV for interior
+
+            std::cout << "Sponza interior camera: pos=(" << cameraPos.x << ", "
+                      << cameraPos.y << ", " << cameraPos.z
+                      << "), looking along +X axis, fov=60" << std::endl;
+        }
+        else
+        {
+            // Fit camera to scene bounds
+            camera = tracey::Camera::fitToBounds(minBounds, maxBounds, 45.0f);
+
+            std::cout << "Auto-generated camera: pos=(" << camera.position().x << ", "
+                      << camera.position().y << ", " << camera.position().z
+                      << "), fov=" << camera.fov() << std::endl;
+        }
     }
 
     // Render
@@ -170,21 +225,32 @@ int main(int argc, char *argv[])
     std::vector<float> hdrData(config.width * config.height * 4);
     pathTracer.readback(hdrData.data());
 
+    // Divide by sample count to get average
+    const uint32_t numSamples = 16;
+    float invSamples = 1.0f / float(numSamples);
+    for (size_t i = 0; i < hdrData.size(); i += 4)
+    {
+        hdrData[i + 0] *= invSamples; // R
+        hdrData[i + 1] *= invSamples; // G
+        hdrData[i + 2] *= invSamples; // B
+        // Keep alpha as-is
+    }
+
     // Tone map to LDR
     std::vector<uint8_t> ldrData(config.width * config.height * 4);
     tracey::ToneMapSettings toneMapSettings;
-    toneMapSettings.exposure = 0.2f;
+    toneMapSettings.exposure = 1.0f;
     toneMapSettings.gamma = 2.2f;
     toneMapSettings.toneMapOperator = tracey::ToneMapSettings::Operator::ACES;
 
     tracey::PostProcessing::toneMap(hdrData.data(), ldrData.data(),
-                                   config.width, config.height,
-                                   toneMapSettings);
+                                    config.width, config.height,
+                                    toneMapSettings);
 
     // Save output
     std::string outputFileName = scenePath.stem().string() + ".ppm";
     tracey::PostProcessing::savePPM(outputFileName, ldrData.data(),
-                                   config.width, config.height);
+                                    config.width, config.height);
 
     std::cout << "Output saved to " << outputFileName << std::endl;
 

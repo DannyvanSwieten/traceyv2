@@ -1,6 +1,6 @@
 /*{
     "STAGE": "ClosestHit",
-    "DESCRIPTION": "PBR material with texture sampling",
+    "DESCRIPTION": "Simple diffuse path tracer for debugging",
     "INPUTS": [
         { "NAME": "albedo", "TYPE": "color", "DEFAULT": [0.5, 0.5, 0.5, 1.0] }
     ]
@@ -14,165 +14,54 @@ void shader(HitInfo hitInfo, inout RayPayloads payloads) {
     // Only process if ray is still alive
     if (!payloads.rayPayload.alive) return;
 
+    // Check max depth - terminate and return accumulated radiance
+    if (payloads.rayPayload.depth >= MAX_DEPTH) {
+        payloads.rayPayload.color = vec3(0.0); // Return radiance
+        payloads.rayPayload.alive = false;
+        return;
+    }
+
     // Normal is already in world space
     vec3 N = normalize(vec3(hitInfo.normalX, hitInfo.normalY, hitInfo.normalZ));
 
-    // Validate normal
-    if (!isValidVec3(N)) {
-        payloads.rayPayload.color = vec3(0.0);
-        payloads.rayPayload.alive = false;
-        return;
-    }
-
     // Get hit position
     vec3 hitPos = getWorldHitPosition(g_CurrentRayIndex, hitInfo);
-
-    // Check max depth - terminate with black if max depth reached
-    if (payloads.rayPayload.depth >= MAX_DEPTH) {
-        payloads.rayPayload.color = vec3(0.0);
-        payloads.rayPayload.alive = false;
-        return;
-    }
 
     // Get UV coordinates for texture sampling
     vec2 uv = getHitUV(hitInfo);
 
     // Get material properties
     vec3 albedo = getMaterialAlbedo(hitInfo.instanceIndex, uv);
-    vec2 metallicRoughness = getMaterialMetallicRoughness(hitInfo.instanceIndex, uv);
     vec3 emission = getMaterialEmissive(hitInfo.instanceIndex, uv);
 
-    // Validate and clamp material properties
-    if (!isValidVec3(albedo)) albedo = vec3(0.5);
-    albedo = clamp(albedo, vec3(0.0), vec3(1.0));
-
-    // Add emission to the accumulated color (emission doesn't affect throughput)
-    if (isValidVec3(emission) && length(emission) > 0.0) {
-        payloads.rayPayload.color += emission;
+    // Check if we hit a light source
+    if(length(emission) > 0.0){
+        // Return emission weighted by current throughput
+        payloads.rayPayload.color *= emission;
+        payloads.rayPayload.alive = false;
+        return;
     }
 
-    float metallic = clamp(metallicRoughness.x, 0.0, 1.0);
-    float roughness = clamp(metallicRoughness.y, 0.1, 1.0); // Higher minimum roughness
+    // Current throughput and accumulated radiance
+    payloads.rayPayload.color *= albedo;
 
-    // Get incoming ray direction
-    vec3 V = -normalize(getRayDirection(g_CurrentRayIndex));
-    if (!isValidVec3(V)) V = N; // Fallback
+    // Generate random numbers for sampling
+    float r1 = nextRandom(payloads.rayPayload.rngSeed);
+    float r2 = nextRandom(payloads.rayPayload.rngSeed);
 
     // Build tangent frame
     vec3 T, B;
     buildTangentFrame(N, T, B);
 
-    // Generate random numbers
-    float r1 = nextRandom(payloads.rayPayload.rngSeed);
-    float r2 = nextRandom(payloads.rayPayload.rngSeed);
-    float r3 = nextRandom(payloads.rayPayload.rngSeed);
-
-    // Compute F0 (reflectance at normal incidence)
-    vec3 F0 = mix(vec3(0.04), albedo, metallic);
-
-    float NdotV = max(dot(N, V), 0.001);
-
-    // Simple selection: choose specular for metals and low roughness
-    float specularProbability = mix(0.2, 0.8, metallic * (1.0 - roughness));
-    specularProbability = clamp(specularProbability, 0.2, 0.8);
-
-    vec3 L;
-    vec3 throughput;
-
-    if (r3 < specularProbability) {
-        // ===== Specular GGX BRDF =====
-
-        // Importance sample GGX distribution to get half-vector
-        vec3 H_local = sampleGGX(r1, r2, roughness);
-        vec3 H = tangentToWorld(H_local, N, T, B);
-        H = normalize(H);
-
-        // Compute reflection direction
-        L = reflect(-V, H);
-
-        float NdotL = max(dot(N, L), 0.0);
-        float NdotH = max(dot(N, H), 0.0);
-        float HdotV = max(dot(H, V), 0.0);
-
-        // Check if reflection is valid
-        if (NdotL <= 0.0 || !isValidVec3(L)) {
-            // Invalid sample - terminate ray
-            payloads.rayPayload.color = vec3(0.0);
-            payloads.rayPayload.alive = false;
-            return;
-        }
-
-        // Evaluate GGX BRDF components
-        float D = distributionGGX(NdotH, roughness);
-        float G = geometrySmith(NdotV, NdotL, roughness);
-        vec3 F_spec = fresnelSchlick(HdotV, F0);
-
-        // Cook-Torrance BRDF
-        vec3 specular = (D * G * F_spec) / max(4.0 * NdotV * NdotL, 0.001);
-
-        // PDF for GGX sampling
-        float pdf = (D * NdotH) / max(4.0 * HdotV, 0.001);
-
-        // Throughput = BRDF * NdotL / pdf (selection probability is NOT in denominator!)
-        throughput = (specular * NdotL) / max(pdf, 0.001);
-
-    } else {
-        // ===== Diffuse Lambertian BRDF =====
-
-        // Importance sample cosine-weighted hemisphere
-        vec3 L_local = sampleCosineHemisphere(r1, r2);
-        L = tangentToWorld(L_local, N, T, B);
-
-        float NdotL = max(dot(N, L), 0.0);
-
-        if (!isValidVec3(L)) {
-            // Invalid sample - terminate ray
-            payloads.rayPayload.color = vec3(0.0);
-            payloads.rayPayload.alive = false;
-            return;
-        }
-
-        // Fresnel for diffuse
-        vec3 F = fresnelSchlick(NdotV, F0);
-        vec3 kD = (vec3(1.0) - F) * (1.0 - metallic);
-
-        // Lambertian BRDF
-        vec3 diffuse = albedo / PI;
-
-        // PDF for cosine-weighted sampling
-        float pdf = NdotL / PI;
-
-        // Throughput = BRDF * kD * NdotL / pdf (selection probability is NOT in denominator!)
-        // = (albedo / PI) * kD * NdotL / (NdotL / PI)
-        // = albedo * kD
-        throughput = (diffuse * kD * NdotL) / max(pdf, 0.001);
-    }
-
-    // Validate throughput (but don't clamp - importance sampling can have values > 1)
-    if (!isValidVec3(throughput)) throughput = vec3(0.0);
-
-    // Validate direction
-    if (!isValidVec3(L)) {
-        L = N; // Fallback to normal direction
-    }
+    // Cosine-weighted hemisphere sampling
+    vec3 L_local = sampleCosineHemisphere(r1, r2);
+    vec3 L = tangentToWorld(L_local, N, T, B);
     L = normalize(L);
-
-    // Update accumulated color
-    payloads.rayPayload.color *= throughput;
-
-    // Validate accumulated color
-    if (!isValidVec3(payloads.rayPayload.color)) {
-        payloads.rayPayload.color = vec3(0.0);
-        payloads.rayPayload.alive = false;
-        return;
-    }
 
     // Increment depth
     payloads.rayPayload.depth += 1u;
-
-    // Store new direction for miss shader to use
     payloads.rayPayload.direction = L;
 
     // Spawn secondary ray
-    traceRay(hitPos + N * 0.001, 0.01, L, 1000.0);
+   traceRay(hitPos + N * 0.001, 0.01, L, 1000.0);
 }

@@ -1,0 +1,32 @@
+[package]
+name = "tracey-editor"
+version = "0.1.0"
+description = "Scene editor for Tracey ray tracer"
+authors = ["Danny van Swieten"]
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["devtools"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.21"
+
+# For shared memory viewport
+shared_memory = "0.12"
+
+# For FFI
+libc = "0.2"
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true

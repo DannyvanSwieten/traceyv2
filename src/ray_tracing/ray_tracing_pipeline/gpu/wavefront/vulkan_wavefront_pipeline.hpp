@@ -34,6 +34,10 @@ namespace tracey
         VkPipeline prepareIndirectPipeline() const { return m_prepareIndirectPipelineInfo.pipeline; }
         uint32_t maxRayCount() const { return m_maxRayCount; }
 
+        // Memory handles for CPU readback (debug)
+        VkDeviceMemory rayQueueMemory() const { return m_rayQueueMemory; }
+        VkDeviceMemory rayQueueMemory2() const { return m_rayQueueMemory2; }
+
         struct PipelineInfo
         {
             VkShaderModule shaderModule = VK_NULL_HANDLE;

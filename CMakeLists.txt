@@ -198,4 +198,11 @@ target_link_libraries(tracey PRIVATE
     SPIRV-Tools
     SPIRV-Tools-opt
 )
+
+# Optional: Build C API for FFI (Rust/Tauri editor)
+option(BUILD_C_API "Build C API shared library for FFI" ON)
+if(BUILD_C_API)
+    add_subdirectory(src/c_api)
+endif()
+
 add_subdirectory(./examples)

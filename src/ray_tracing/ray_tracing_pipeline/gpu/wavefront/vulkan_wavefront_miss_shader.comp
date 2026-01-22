@@ -52,6 +52,21 @@ layout(std430, binding = 52, set = 0) readonly buffer HitInfos {
 // User-defined bindings
 //___USER_PARAMS___
 
+// Current ray index for this invocation (set in main before calling the user miss shader)
+uint g_CurrentRayIndex = 0u;
+
+// Helper: Get ray origin for current ray
+vec3 getRayOrigin() {
+    PathHeader header = pathHeaders.headers[g_CurrentRayIndex];
+    return vec3(header.originX, header.originY, header.originZ);
+}
+
+// Helper: Get ray direction for current ray
+vec3 getRayDirection() {
+    PathHeader header = pathHeaders.headers[g_CurrentRayIndex];
+    return vec3(header.directionX, header.directionY, header.directionZ);
+}
+
 // User shader function signature - will receive payload reference
 //___MISS_SHADER_SIGNATURE___
 
@@ -62,6 +77,7 @@ void main() {
     if (workItemId >= missQueue.count) return;
 
     uint rayIndex = missQueue.rayIndices[workItemId];
+    g_CurrentRayIndex = rayIndex;
 
     // All rays in missQueue are guaranteed to be misses - no need to check
     // OLD: if (hitInfos.hits[rayIndex].triangleIndex != 0xFFFFFFFF) return;

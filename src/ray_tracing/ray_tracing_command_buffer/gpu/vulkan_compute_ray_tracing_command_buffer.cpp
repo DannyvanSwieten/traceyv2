@@ -5,6 +5,7 @@
 #include "../../../ray_tracing/ray_tracing_pipeline/gpu/vulkan_compute_raytracing_descriptor_set.hpp"
 #include "../../../device/gpu/vulkan_buffer.hpp"
 #include "../../../device/gpu/vulkan_image_2d.hpp"
+#include <iostream>
 
 namespace tracey
 {
@@ -143,6 +144,14 @@ namespace tracey
                 dispatchRayGeneration(wavefront, pushConstants, workGroups);
                 insertComputeBarrier();
 
+                // DEBUG: Log execution flow (only for sample 0)
+                if (sample == 0)
+                {
+                    std::cout << "[DEBUG] After ray gen: dispatched " << workGroups << " workgroups for "
+                              << rayCount << " rays" << std::endl;
+                    std::cout << "[DEBUG] Descriptor sets available: " << m_descriptorSets.size() << std::endl;
+                }
+
                 // Bounce loop: trace rays through the scene
                 for (uint32_t bounce = 0; bounce < maxBounces; bounce++)
                 {
@@ -157,6 +166,16 @@ namespace tracey
 
                     // Clear queues for this bounce iteration
                     clearBounceBuffers(wavefront, bounce);
+
+                    // DEBUG: Log execution flow (only for sample 0, only first 2 bounces)
+                    if (sample == 0 && bounce < 2)
+                    {
+                        const char *currentBufferName = (bounce % 2 == 0) ? "rayQueueBuffer" : "rayQueueBuffer2";
+                        const char *nextBufferName = (bounce % 2 == 0) ? "rayQueueBuffer2" : "rayQueueBuffer";
+                        std::cout << "[DEBUG] Bounce " << bounce << ": descriptor set " << (bounce % 2)
+                                  << ", current buffer = " << currentBufferName
+                                  << ", next buffer = " << nextBufferName << std::endl;
+                    }
 
                     // Compute workgroup counts for indirect dispatch
                     dispatchPrepareIndirect(wavefront);
@@ -371,13 +390,14 @@ namespace tracey
                                                                     const WavefrontPushConstants &pushConstants,
                                                                     uint32_t workGroups)
     {
+        (void)workGroups; // Unused - we use indirect dispatch based on ray queue count
         vkCmdBindPipeline(m_vkCommandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
                           wavefront->intersectPipeline());
         vkCmdPushConstants(m_vkCommandBuffer, wavefront->pipelineLayout(),
                            VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pushConstants),
                            &pushConstants);
-        // Using direct dispatch for now (indirect dispatch can be enabled later)
-        vkCmdDispatch(m_vkCommandBuffer, workGroups, 1, 1);
+        // Use indirect dispatch based on rayQueue.count (computed by prepareIndirect)
+        vkCmdDispatchIndirect(m_vkCommandBuffer, wavefront->indirectDispatchBuffer(), 0);
     }
 
     void VulkanComputeRayTracingCommandBuffer::dispatchHitShader(VulkanWaveFrontPipeline *wavefront,
@@ -426,43 +446,43 @@ namespace tracey
 
     void VulkanComputeRayTracingCommandBuffer::insertComputeBarrier()
     {
-        // Ensure shader writes are visible to subsequent shader reads
+        // TEST: Full pipeline barrier to rule out sync issues
         VkMemoryBarrier barrier{};
         barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-        barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+        barrier.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
+        barrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
 
         vkCmdPipelineBarrier(m_vkCommandBuffer,
-                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                             VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
                              0, 1, &barrier, 0, nullptr, 0, nullptr);
     }
 
     void VulkanComputeRayTracingCommandBuffer::insertTransferToComputeBarrier()
     {
-        // Ensure transfer writes (vkCmdFillBuffer) complete before shader access
+        // TEST: Full pipeline barrier to rule out sync issues
         VkMemoryBarrier barrier{};
         barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-        barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+        barrier.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
+        barrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
 
         vkCmdPipelineBarrier(m_vkCommandBuffer,
-                             VK_PIPELINE_STAGE_TRANSFER_BIT,
-                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                             VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
                              0, 1, &barrier, 0, nullptr, 0, nullptr);
     }
 
     void VulkanComputeRayTracingCommandBuffer::insertIndirectDispatchBarrier()
     {
-        // Ensure indirect buffer writes are visible for vkCmdDispatchIndirect
+        // TEST: Full pipeline barrier to rule out sync issues
         VkMemoryBarrier barrier{};
         barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-        barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-        barrier.dstAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+        barrier.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
+        barrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
 
         vkCmdPipelineBarrier(m_vkCommandBuffer,
-                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                             VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
+                             VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                             VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
                              0, 1, &barrier, 0, nullptr, 0, nullptr);
     }
 
