@@ -90,7 +90,7 @@ export const Viewport: Component<ViewportProps> = (props) => {
 
   const MOUSE_SENSITIVITY = 0.003;
   const MOVE_SPEED = 0.1;
-  const SCROLL_SPEED = 0.25;
+  const SCROLL_SPEED = 0.01;
 
   const updateCameraRotation = () => {
     // Clamp pitch to avoid gimbal lock

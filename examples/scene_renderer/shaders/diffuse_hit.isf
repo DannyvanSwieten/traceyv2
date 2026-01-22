@@ -43,7 +43,7 @@ void shader(HitInfo hitInfo, inout RayPayloads payloads) {
     }
 
     // Current throughput and accumulated radiance
-    payloads.rayPayload.color *= 0.5;
+    payloads.rayPayload.color *= albedo;
 
     // Generate random numbers for sampling
     float r1 = nextRandom(payloads.rayPayload.rngSeed);

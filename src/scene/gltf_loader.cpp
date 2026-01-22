@@ -128,21 +128,20 @@ namespace tracey
 
             const auto &image = model.images[texture.source];
 
-            // If the image has a URI, return the full path
+            // If tinygltf decoded the image (embedded via bufferView, data URI, or loaded from file),
+            // use embedded identifier to match extractEmbeddedTextures
+            if (!image.image.empty())
+            {
+                return "embedded:" + std::to_string(texture.source);
+            }
+
+            // External file that wasn't loaded by tinygltf - return file path
             if (!image.uri.empty())
             {
-                // Check if it's a data URI (embedded)
-                if (image.uri.find("data:") == 0)
-                {
-                    // Embedded image - return a special identifier
-                    return "embedded:" + std::to_string(texture.source);
-                }
-                // External file - combine with base directory
                 return baseDir + "/" + image.uri;
             }
 
-            // Image is embedded via bufferView - return special identifier
-            return "embedded:" + std::to_string(texture.source);
+            return "";
         }
 
         // Extract embedded texture data from tinygltf image

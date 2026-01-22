@@ -451,6 +451,12 @@ TraceyResult tracey_scene_load_gltf(
             s->setCamera(loadedScene->camera());
         }
 
+        // Copy embedded textures
+        for (const auto& [id, tex] : loadedScene->embeddedTextures()) {
+            tracey::EmbeddedTexture texCopy = tex;
+            s->addEmbeddedTexture(id, std::move(texCopy));
+        }
+
         return TRACEY_SUCCESS;
     } catch (const std::exception& e) {
         setError(std::string("GLTF loading failed: ") + e.what());

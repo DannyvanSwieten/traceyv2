@@ -71,7 +71,7 @@ namespace tracey
         // Embedded texture management
         void addEmbeddedTexture(const std::string &id, EmbeddedTexture &&texture)
         {
-            m_embeddedTextures[id] = std::move(texture);
+            m_embeddedTextures.emplace(id, std::move(texture));
         }
         const EmbeddedTexture *getEmbeddedTexture(const std::string &id) const
         {
@@ -81,6 +81,10 @@ namespace tracey
         bool hasEmbeddedTexture(const std::string &id) const
         {
             return m_embeddedTextures.find(id) != m_embeddedTextures.end();
+        }
+        const std::unordered_map<std::string, EmbeddedTexture> &embeddedTextures() const
+        {
+            return m_embeddedTextures;
         }
 
     private:
