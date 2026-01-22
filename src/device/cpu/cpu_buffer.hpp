@@ -10,6 +10,7 @@ namespace tracey
 
         void *mapForWriting() override;
         const void *mapForReading() const override;
+        void unmap() const override;
         void mapRange(uint32_t offset, uint32_t size) override;
         void flush() override;
         void flushRange(uint32_t offset, uint32_t size) override;

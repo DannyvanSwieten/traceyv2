@@ -104,17 +104,58 @@ impl RenderEngine {
 
         let sample_count = tracer.get_sample_count();
 
-        let pixels = tracer
+        let hdr_pixels = tracer
             .readback()
             .map_err(|e| format!("Readback failed: {}", e))?;
 
+        let width = tracer.width();
+        let height = tracer.height();
+
+        // Convert HDR to LDR for display
+        let hdr_output = self.config.hdr_output;
+        let pixels = if hdr_output {
+            Self::hdr_to_ldr_static(&hdr_pixels, sample_count, width, height)
+        } else {
+            hdr_pixels
+        };
+
         Ok(RenderResult {
             pixels,
-            width: tracer.width(),
-            height: tracer.height(),
+            width,
+            height,
             sample_count,
             render_time_ms: render_time,
         })
+    }
+
+    /// Convert HDR float pixels to LDR u8 pixels with tonemapping
+    fn hdr_to_ldr_static(hdr_data: &[u8], sample_count: u32, width: u32, height: u32) -> Vec<u8> {
+        let num_pixels = (width * height) as usize;
+        let mut ldr = vec![0u8; num_pixels * 4];
+
+        for i in 0..num_pixels {
+            // Read HDR pixel as f32
+            let offset = i * 16; // 4 floats * 4 bytes
+            let r = f32::from_le_bytes([hdr_data[offset], hdr_data[offset + 1], hdr_data[offset + 2], hdr_data[offset + 3]]);
+            let g = f32::from_le_bytes([hdr_data[offset + 4], hdr_data[offset + 5], hdr_data[offset + 6], hdr_data[offset + 7]]);
+            let b = f32::from_le_bytes([hdr_data[offset + 8], hdr_data[offset + 9], hdr_data[offset + 10], hdr_data[offset + 11]]);
+            let a = f32::from_le_bytes([hdr_data[offset + 12], hdr_data[offset + 13], hdr_data[offset + 14], hdr_data[offset + 15]]);
+
+            // Divide by sample count to get average
+            let scale = 1.0 / sample_count as f32;
+            let r_avg = r * scale;
+            let g_avg = g * scale;
+            let b_avg = b * scale;
+
+            // Simple clamp to [0, 1] and convert to u8
+            let out_offset = i * 4;
+            ldr[out_offset] = (r_avg.clamp(0.0, 1.0) * 255.0) as u8;
+            ldr[out_offset + 1] = (g_avg.clamp(0.0, 1.0) * 255.0) as u8;
+            ldr[out_offset + 2] = (b_avg.clamp(0.0, 1.0) * 255.0) as u8;
+            ldr[out_offset + 3] = (a.clamp(0.0, 1.0) * 255.0) as u8;
+        }
+
+        ldr
     }
 
     /// Load a GLTF file into the scene

@@ -24,6 +24,11 @@ namespace tracey
         return m_data;
     }
 
+    void CpuBuffer::unmap() const
+    {
+        // CPU buffer is always mapped, no-op
+    }
+
     void CpuBuffer::mapRange(uint32_t offset, uint32_t size)
     {
         (void)offset;

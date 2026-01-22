@@ -1,22 +1,8 @@
-import { Component, createSignal, onMount } from 'solid-js';
-import { invoke } from '@tauri-apps/api/core';
+import { Component } from 'solid-js';
+import { Viewport } from './components/viewport/Viewport';
 import './App.css';
 
 const App: Component = () => {
-  const [status, setStatus] = createSignal('Initializing...');
-
-  onMount(async () => {
-    try {
-      // Test connection to backend
-      const camera = await invoke('get_camera');
-      setStatus('Connected to Tracey backend');
-      console.log('Initial camera:', camera);
-    } catch (e) {
-      setStatus(`Error: ${e}`);
-      console.error('Failed to connect to backend:', e);
-    }
-  });
-
   return (
     <div class="app">
       <div class="toolbar">
@@ -30,15 +16,7 @@ const App: Component = () => {
         </div>
 
         <div class="viewport-container">
-          <div class="viewport">
-            <div class="viewport-placeholder">
-              <h2>3D Viewport</h2>
-              <p>{status()}</p>
-              <p style="font-size: 0.9em; opacity: 0.7;">
-                Renderer ready - awaiting integration
-              </p>
-            </div>
-          </div>
+          <Viewport />
         </div>
 
         <div class="right-panel panel">

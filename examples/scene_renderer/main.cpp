@@ -21,7 +21,7 @@ int main(int argc, char *argv[])
     else
     {
         // Default to the example scene
-        scenePath = std::filesystem::path(__FILE__).parent_path().parent_path() / "scenes" / "simple_scene.json";
+        scenePath = std::filesystem::path(__FILE__).parent_path().parent_path() / "scenes" / "DamagedHelmet.glb";
     }
 
     std::cout << "Loading scene from: " << scenePath << std::endl;

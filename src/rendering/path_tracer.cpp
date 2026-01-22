@@ -140,6 +140,7 @@ namespace tracey
         m_shaderInputs->setVec3("cameraForward", camera.forward());
         m_shaderInputs->setVec3("cameraRight", camera.right());
         m_shaderInputs->setVec3("cameraUp", camera.up());
+        m_shaderInputs->setInt("currentSample", m_sampleCount + 1);
         m_shaderInputs->upload();
     }
 
@@ -196,6 +197,7 @@ namespace tracey
 
         const void *gpuData = m_readbackBuffer->mapForReading();
         std::memcpy(outData, gpuData, bufferSize);
+        m_readbackBuffer->unmap();
 
         return bufferSize;
     }

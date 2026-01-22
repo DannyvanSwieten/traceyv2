@@ -86,6 +86,11 @@ namespace tracey
         return data;
     }
 
+    void VulkanBuffer::unmap() const
+    {
+        vkUnmapMemory(m_device, m_memory);
+    }
+
     void VulkanBuffer::mapRange(uint32_t offset, uint32_t size)
     {
         (void)offset;
