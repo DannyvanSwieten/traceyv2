@@ -60,6 +60,8 @@ namespace tracey
         {
             throw std::runtime_error("Failed to submit command buffer");
         }
+
+        m_descriptorSets.clear();
     }
 
     void VulkanComputeRayTracingCommandBuffer::setPipeline(RayTracingPipeline *pipeline)
