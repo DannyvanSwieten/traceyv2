@@ -2,3 +2,4 @@ build/
 *ppm
 target/
 editor/src-tauri/target/
+editor/node_modules/
