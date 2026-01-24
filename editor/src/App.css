@@ -13,12 +13,14 @@
   display: flex;
   align-items: center;
   padding: 0 16px;
+  gap: 16px;
 }
 
 .toolbar h1 {
   font-size: 14px;
   font-weight: 600;
   color: #cccccc;
+  margin-right: auto;
 }
 
 .main-content {
@@ -32,6 +34,8 @@
   border-right: 1px solid #3c3c3c;
   padding: 16px;
   overflow-y: auto;
+  display: flex;
+  flex-direction: column;
 }
 
 .left-panel {
@@ -53,6 +57,7 @@
   color: #cccccc;
   text-transform: uppercase;
   letter-spacing: 0.5px;
+  flex-shrink: 0;
 }
 
 .panel p {
@@ -60,8 +65,16 @@
   color: #858585;
 }
 
+.center-area {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
 .viewport-container {
   flex: 1;
   display: flex;
   background: #1e1e1e;
+  overflow: hidden;
 }

@@ -1,67 +1,108 @@
 /*{
     "STAGE": "ClosestHit",
-    "DESCRIPTION": "Simple diffuse path tracer for debugging",
+    "DESCRIPTION": "PBR path tracer with metallic-roughness workflow",
     "INPUTS": [
-        { "NAME": "albedo", "TYPE": "color", "DEFAULT": [0.5, 0.5, 0.5, 1.0] }
+        { "NAME": "albedo", "TYPE": "color", "DEFAULT": [0.5, 0.5, 0.5, 1.0] },
+        { "NAME": "maxDepth", "TYPE": "uint", "DEFAULT": 8 }
     ]
 }*/
 
 #include "pbr_lib.glsl"
 
 void shader(HitInfo hitInfo, inout RayPayloads payloads) {
-    const uint MAX_DEPTH = 8u;
 
     // Only process if ray is still alive
     if (!payloads.rayPayload.alive) return;
 
-    // Check max depth - terminate and return accumulated radiance
-    if (payloads.rayPayload.depth >= MAX_DEPTH) {
-        payloads.rayPayload.color = vec3(0.0); // Return radiance
+    // Check max depth - terminate
+    if (payloads.rayPayload.depth >= shaderInputs.maxDepth) {
+        payloads.rayPayload.color = vec3(0.0);
         payloads.rayPayload.alive = false;
         return;
     }
 
-    // Normal is already in world space
+    // Normal in world space
     vec3 N = normalize(vec3(hitInfo.normalX, hitInfo.normalY, hitInfo.normalZ));
+    vec3 V = -normalize(payloads.rayPayload.direction);
 
     // Get hit position
     vec3 hitPos = getWorldHitPosition(g_CurrentRayIndex, hitInfo);
 
-    // Get UV coordinates for texture sampling
+    // Get UV coordinates
     vec2 uv = getHitUV(hitInfo);
 
     // Get material properties
     vec3 albedo = getMaterialAlbedo(hitInfo.instanceIndex, uv);
     vec3 emission = getMaterialEmissive(hitInfo.instanceIndex, uv);
+    vec2 mr = getMaterialMetallicRoughness(hitInfo.instanceIndex, uv);
+    float metallic = mr.x;
+    float roughness = clamp(mr.y, 0.04, 1.0);
 
-    // Check if we hit a light source
-    if(length(emission) > 0.0){
-        // Return emission weighted by current throughput
+    // Hit a light source
+    if (length(emission) > 0.0) {
         payloads.rayPayload.color *= emission;
         payloads.rayPayload.alive = false;
         return;
     }
 
-    // Current throughput and accumulated radiance
-    payloads.rayPayload.color *= albedo;
-
-    // Generate random numbers for sampling
+    // Generate random numbers
     float r1 = nextRandom(payloads.rayPayload.rngSeed);
     float r2 = nextRandom(payloads.rayPayload.rngSeed);
+    float r3 = nextRandom(payloads.rayPayload.rngSeed);
 
     // Build tangent frame
     vec3 T, B;
     buildTangentFrame(N, T, B);
 
-    // Cosine-weighted hemisphere sampling
-    vec3 L_local = sampleCosineHemisphere(r1, r2);
-    vec3 L = tangentToWorld(L_local, N, T, B);
-    L = normalize(L);
+    vec3 L;
+    vec3 throughput;
 
-    // Increment depth
+    // Use metallic to decide between specular and diffuse
+    // Metals are purely specular, dielectrics mostly diffuse
+    float NdotV = max(dot(N, V), 0.001);
+
+    if (r3 < metallic) {
+        // Metallic specular: sample GGX, reflect albedo color
+        vec3 H_local = sampleGGX(r1, r2, roughness);
+        vec3 H = normalize(tangentToWorld(H_local, N, T, B));
+        L = reflect(-V, H);
+
+        float NdotL = dot(L, N);
+        // If below surface, use perfect reflection instead
+        if (NdotL <= 0.0) {
+            L = reflect(-V, N);
+            NdotL = max(dot(L, N), 0.001);
+            H = normalize(V + L);
+        }
+        NdotL = max(NdotL, 0.001);
+
+        float VdotH = max(dot(V, H), 0.001);
+        float NdotH = max(dot(N, H), 0.001);
+
+        // For metals, F0 = albedo
+        vec3 F = fresnelSchlick(VdotH, albedo);
+        float G = geometrySmith(NdotV, NdotL, roughness);
+
+        // Full GGX importance sampling weight
+        throughput = F * G * VdotH / (NdotV * NdotH);
+    } else {
+        // Dielectric: always use diffuse sampling for simplicity
+        // This works well for most dielectric materials
+        vec3 L_local = sampleCosineHemisphere(r1, r2);
+        L = normalize(tangentToWorld(L_local, N, T, B));
+        throughput = albedo;
+    }
+
+    // Clamp throughput to avoid fireflies
+    throughput = clamp(throughput, vec3(0.0), vec3(10.0));
+
+    // Update color
+    payloads.rayPayload.color *= throughput;
+
+    // Increment depth and set direction
     payloads.rayPayload.depth += 1u;
     payloads.rayPayload.direction = L;
 
     // Spawn secondary ray
-   traceRay(hitPos + N * 0.001, 0.01, L, 1000.0);
+    traceRay(hitPos + N * 0.001, 0.01, L, 1000.0);
 }

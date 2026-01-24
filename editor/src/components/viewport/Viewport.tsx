@@ -1,4 +1,4 @@
-import { Component, createSignal, onMount, onCleanup } from 'solid-js';
+import { Component, createSignal, createEffect, onMount, onCleanup, Accessor } from 'solid-js';
 import { invoke } from '@tauri-apps/api/core';
 import './Viewport.css';
 
@@ -18,12 +18,21 @@ interface RenderResult {
   render_time_ms: number;
 }
 
+export interface CameraPosition {
+  x: number;
+  y: number;
+  z: number;
+}
+
 export interface ViewportHandle {
   loadScene: (path: string) => Promise<void>;
+  render: () => void;
 }
 
 interface ViewportProps {
   ref?: (handle: ViewportHandle) => void;
+  cameraPosition: Accessor<CameraPosition>;
+  onCameraPositionChange: (pos: CameraPosition) => void;
 }
 
 // Quaternion math utilities
@@ -64,7 +73,6 @@ export const Viewport: Component<ViewportProps> = (props) => {
   const [renderTime, setRenderTime] = createSignal(0);
   const [sampleCount, setSampleCount] = createSignal(0);
   const [sceneLoaded, setSceneLoaded] = createSignal(false);
-  const [cameraPos, setCameraPos] = createSignal({ x: 0, y: 0, z: 3 });
   let canvasRef: HTMLCanvasElement | undefined;
   let containerRef: HTMLDivElement | undefined;
 
@@ -87,15 +95,37 @@ export const Viewport: Component<ViewportProps> = (props) => {
   const keysPressed = new Set<string>();
   let isRendering = false;
   let needsRender = false;
+  let externalUpdate = false;
 
   const MOUSE_SENSITIVITY = 0.003;
   const MOVE_SPEED = 0.1;
   const SCROLL_SPEED = 0.01;
 
+  // Sync camera position from props
+  createEffect(() => {
+    const pos = props.cameraPosition();
+    if (
+      camera.position.x !== pos.x ||
+      camera.position.y !== pos.y ||
+      camera.position.z !== pos.z
+    ) {
+      camera.position = { ...pos };
+      if (sceneLoaded() && !externalUpdate) {
+        externalUpdate = true;
+        renderFrame(true);
+        externalUpdate = false;
+      }
+    }
+  });
+
   const updateCameraRotation = () => {
     // Clamp pitch to avoid gimbal lock
     pitch = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, pitch));
     camera.rotation = quatFromEuler(yaw, pitch);
+  };
+
+  const updateCameraPosition = () => {
+    props.onCameraPositionChange({ ...camera.position });
   };
 
   const renderFrame = async (clear: boolean) => {
@@ -162,7 +192,7 @@ export const Viewport: Component<ViewportProps> = (props) => {
     pitch -= deltaY * MOUSE_SENSITIVITY;
 
     updateCameraRotation();
-    setCameraPos({ ...camera.position });
+    updateCameraPosition();
     renderFrame(true);
   };
 
@@ -177,7 +207,7 @@ export const Viewport: Component<ViewportProps> = (props) => {
     camera.position.y += forward.y * distance;
     camera.position.z += forward.z * distance;
 
-    setCameraPos({ ...camera.position });
+    updateCameraPosition();
     renderFrame(true);
   };
 
@@ -232,7 +262,7 @@ export const Viewport: Component<ViewportProps> = (props) => {
     }
 
     if (moved) {
-      setCameraPos({ ...camera.position });
+      updateCameraPosition();
       renderFrame(true);
     }
   };
@@ -264,7 +294,7 @@ export const Viewport: Component<ViewportProps> = (props) => {
       yaw = 0;
       pitch = 0;
       updateCameraRotation();
-      setCameraPos({ ...camera.position });
+      updateCameraPosition();
 
       setStatus('Rendering...');
       await renderFrame(true);
@@ -277,8 +307,14 @@ export const Viewport: Component<ViewportProps> = (props) => {
     }
   };
 
+  const triggerRender = () => {
+    if (sceneLoaded()) {
+      renderFrame(true);
+    }
+  };
+
   onMount(() => {
-    props.ref?.({ loadScene });
+    props.ref?.({ loadScene, render: triggerRender });
     setStatus('Select a scene to begin');
 
     // Add global mouse up listener to handle drag release outside canvas
@@ -296,7 +332,7 @@ export const Viewport: Component<ViewportProps> = (props) => {
       <div class="viewport-header">
         <span class="viewport-status">{status()}</span>
         <span class="viewport-camera">
-          pos: ({cameraPos().x.toFixed(2)}, {cameraPos().y.toFixed(2)}, {cameraPos().z.toFixed(2)})
+          pos: ({props.cameraPosition().x.toFixed(2)}, {props.cameraPosition().y.toFixed(2)}, {props.cameraPosition().z.toFixed(2)})
         </span>
         <span class="viewport-stats">
           {renderTime().toFixed(2)}ms | {sampleCount()} samples

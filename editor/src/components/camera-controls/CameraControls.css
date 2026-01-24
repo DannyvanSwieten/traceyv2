@@ -1,0 +1,53 @@
+.camera-controls {
+  padding: 12px 0;
+  border-top: 1px solid #3c3c3c;
+  margin-top: 12px;
+}
+
+.camera-controls h4 {
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 12px;
+  color: #cccccc;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.camera-inputs {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.camera-input-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.camera-input-row label {
+  font-size: 12px;
+  color: #858585;
+  width: 16px;
+  text-align: center;
+}
+
+.camera-input-row input {
+  flex: 1;
+  background: #3c3c3c;
+  border: 1px solid #5a5a5a;
+  border-radius: 3px;
+  color: #cccccc;
+  font-size: 12px;
+  padding: 4px 8px;
+  outline: none;
+}
+
+.camera-input-row input:focus {
+  border-color: #0e639c;
+}
+
+.camera-input-row input::-webkit-inner-spin-button,
+.camera-input-row input::-webkit-outer-spin-button {
+  opacity: 1;
+}

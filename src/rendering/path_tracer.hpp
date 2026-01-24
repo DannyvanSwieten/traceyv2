@@ -32,6 +32,10 @@ namespace tracey
 
         // HDR output (R32G32B32A32Sfloat vs R8G8B8A8Unorm)
         bool hdrOutput = true;
+
+        // Render quality settings
+        uint32_t samplesPerFrame = 16;
+        uint32_t maxBounces = 8;
     };
 
     /// High-level path tracing renderer that encapsulates the entire rendering pipeline
@@ -78,8 +82,16 @@ namespace tracey
         uint32_t width() const { return m_config.width; }
         uint32_t height() const { return m_config.height; }
 
-        /// Get current sample count (incremented each render call with clearAccumulation=false)
-        uint32_t sampleCount() const { return m_sampleCount; }
+        /// Get total accumulated sample count (render iterations * samples per frame)
+        uint32_t sampleCount() const { return m_sampleCount * m_config.samplesPerFrame; }
+
+        /// Get/set samples per frame (used during rendering)
+        uint32_t samplesPerFrame() const { return m_config.samplesPerFrame; }
+        void setSamplesPerFrame(uint32_t samples) { m_config.samplesPerFrame = samples; }
+
+        /// Get/set max bounces (ray depth)
+        uint32_t maxBounces() const { return m_config.maxBounces; }
+        void setMaxBounces(uint32_t bounces) { m_config.maxBounces = bounces; }
 
     private:
         // Setup methods called from constructor

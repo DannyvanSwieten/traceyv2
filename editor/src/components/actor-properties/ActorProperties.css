@@ -1,0 +1,164 @@
+.actor-properties {
+  padding: 0;
+}
+
+.no-selection {
+  color: #858585;
+  font-size: 12px;
+  text-align: center;
+  padding: 16px;
+}
+
+.property-section {
+  padding: 12px 0;
+  border-bottom: 1px solid #3c3c3c;
+}
+
+.property-section:last-child {
+  border-bottom: none;
+}
+
+.property-section h4 {
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 8px;
+  color: #cccccc;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.property-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 0;
+  font-size: 12px;
+}
+
+.property-label {
+  color: #858585;
+}
+
+.property-value {
+  color: #cccccc;
+  font-family: monospace;
+}
+
+.transform-group {
+  margin-bottom: 8px;
+}
+
+.transform-label {
+  display: block;
+  color: #858585;
+  font-size: 11px;
+  margin-bottom: 4px;
+}
+
+.transform-values {
+  display: flex;
+  gap: 8px;
+  font-size: 11px;
+  font-family: monospace;
+  color: #cccccc;
+}
+
+.transform-values span {
+  background: #3c3c3c;
+  padding: 2px 6px;
+  border-radius: 3px;
+  min-width: 70px;
+}
+
+.transform-inputs {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.transform-input-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.transform-input-row label {
+  font-size: 11px;
+  color: #858585;
+  width: 12px;
+  text-align: center;
+}
+
+.transform-input-row input {
+  flex: 1;
+  background: #3c3c3c;
+  border: 1px solid #5a5a5a;
+  border-radius: 3px;
+  color: #cccccc;
+  font-size: 11px;
+  font-family: monospace;
+  padding: 3px 6px;
+  outline: none;
+  width: 100%;
+}
+
+.transform-input-row input:focus {
+  border-color: #0e639c;
+}
+
+.transform-input-row input::-webkit-inner-spin-button,
+.transform-input-row input::-webkit-outer-spin-button {
+  opacity: 1;
+}
+
+.loading {
+  color: #858585;
+  font-size: 12px;
+  padding: 8px 0;
+}
+
+.no-instances {
+  color: #858585;
+  font-size: 12px;
+  font-style: italic;
+}
+
+.instance-item {
+  background: #2a2a2a;
+  border-radius: 4px;
+  padding: 8px;
+  margin-bottom: 8px;
+}
+
+.instance-item:last-child {
+  margin-bottom: 0;
+}
+
+.instance-header {
+  font-size: 11px;
+  font-weight: 600;
+  color: #0e639c;
+  margin-bottom: 6px;
+  text-transform: uppercase;
+}
+
+.instance-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 2px 0;
+  font-size: 11px;
+}
+
+.instance-label {
+  color: #858585;
+}
+
+.instance-value {
+  color: #cccccc;
+  font-family: monospace;
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

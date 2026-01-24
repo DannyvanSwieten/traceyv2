@@ -120,6 +120,8 @@ typedef struct {
     const char* missShaderPath;
     const char* resolveShaderPath;  // Can be NULL
     bool hdrOutput;
+    uint32_t samplesPerFrame;  // Samples per render call (default 16)
+    uint32_t maxBounces;       // Maximum ray bounces (default 8)
 } TraceyPathTracerConfig;
 
 // ============================================================================
@@ -136,8 +138,45 @@ typedef enum {
     TRACEY_ERROR_FILE_NOT_FOUND = -6,
     TRACEY_ERROR_RENDERING_FAILED = -7,
     TRACEY_ERROR_NULL_POINTER = -8,
+    TRACEY_ERROR_NOT_FOUND = -9,
     TRACEY_ERROR_UNKNOWN = -999
 } TraceyResult;
+
+// ============================================================================
+// Scene Query Types
+// ============================================================================
+
+typedef struct {
+    uint64_t uid;
+    const char* name;
+    TraceyTransform transform;
+    uint32_t childCount;
+    uint32_t instanceCount;
+} TraceyActorInfo;
+
+typedef struct {
+    const char* objectRef;      // Reference to mesh/scene object
+    const char* shaderId;       // Material shader ID
+    bool hasLocalTransform;
+    TraceyTransform localTransform;
+} TraceyInstanceInfo;
+
+typedef struct {
+    const char* name;
+    uint32_t vertexCount;
+    uint32_t triangleCount;
+    bool hasIndices;
+    bool hasNormals;
+    bool hasUvs;
+} TraceyMeshInfo;
+
+typedef struct {
+    const char* id;
+    int32_t width;
+    int32_t height;
+    int32_t channels;
+    const char* mimeType;
+} TraceyTextureInfo;
 
 #ifdef __cplusplus
 }

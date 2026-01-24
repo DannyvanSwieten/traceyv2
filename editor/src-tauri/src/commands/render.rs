@@ -92,3 +92,45 @@ pub async fn set_viewport_resolution(
     let viewport = state.viewport.lock().map_err(|_| "Failed to lock viewport")?;
     viewport.set_resolution(width, height)
 }
+
+#[tauri::command]
+pub async fn get_samples_per_frame(state: State<'_, AppState>) -> Result<u32, String> {
+    let engine = state
+        .engine
+        .lock()
+        .map_err(|_| "Failed to lock engine")?;
+    Ok(engine.get_samples_per_frame())
+}
+
+#[tauri::command]
+pub async fn set_samples_per_frame(
+    state: State<'_, AppState>,
+    samples: u32,
+) -> Result<(), String> {
+    let mut engine = state
+        .engine
+        .lock()
+        .map_err(|_| "Failed to lock engine")?;
+    engine.set_samples_per_frame(samples)
+}
+
+#[tauri::command]
+pub async fn get_max_bounces(state: State<'_, AppState>) -> Result<u32, String> {
+    let engine = state
+        .engine
+        .lock()
+        .map_err(|_| "Failed to lock engine")?;
+    Ok(engine.get_max_bounces())
+}
+
+#[tauri::command]
+pub async fn set_max_bounces(
+    state: State<'_, AppState>,
+    bounces: u32,
+) -> Result<(), String> {
+    let mut engine = state
+        .engine
+        .lock()
+        .map_err(|_| "Failed to lock engine")?;
+    engine.set_max_bounces(bounces)
+}

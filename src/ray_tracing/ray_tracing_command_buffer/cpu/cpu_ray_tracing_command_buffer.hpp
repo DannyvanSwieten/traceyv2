@@ -17,7 +17,8 @@ namespace tracey
 
         void setPipeline(RayTracingPipeline *pipeline) override;
         void setDescriptorSet(DescriptorSet *set) override;
-        void traceRays(const ShaderBindingTable &sbt, uint32_t width, uint32_t height) override;
+        void traceRays(const ShaderBindingTable &sbt, uint32_t width, uint32_t height,
+                       const TraceRaysParams &params = TraceRaysParams{}) override;
         void copyImageToBuffer(const Image2D *image, Buffer *buffer) override;
         void clearImage(Image2D *image, float r, float g, float b, float a) override;
 

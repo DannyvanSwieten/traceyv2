@@ -143,6 +143,198 @@ uint32_t tracey_scene_get_actor_uids(
 );
 
 // ============================================================================
+// Scene Query Functions
+// ============================================================================
+
+/// Get actor name
+/// @param scene Scene handle
+/// @param actorUid Actor unique identifier
+/// @return Actor name (valid until scene is modified), or NULL on error
+const char* tracey_scene_get_actor_name(
+    TraceyScene* scene,
+    uint64_t actorUid
+);
+
+/// Get actor children UIDs
+/// @param scene Scene handle
+/// @param actorUid Actor unique identifier
+/// @param outUids Buffer to receive child UIDs
+/// @param maxCount Maximum number of UIDs to write
+/// @return Number of children written
+uint32_t tracey_scene_get_actor_children(
+    TraceyScene* scene,
+    uint64_t actorUid,
+    uint64_t* outUids,
+    uint32_t maxCount
+);
+
+/// Get actor instance count
+/// @param scene Scene handle
+/// @param actorUid Actor unique identifier
+/// @return Number of instances on this actor
+uint32_t tracey_scene_get_actor_instance_count(
+    TraceyScene* scene,
+    uint64_t actorUid
+);
+
+/// Get actor instance info
+/// @param scene Scene handle
+/// @param actorUid Actor unique identifier
+/// @param instanceIndex Index of the instance
+/// @param outInfo Pointer to receive instance info
+/// @return TRACEY_SUCCESS or error code
+TraceyResult tracey_scene_get_actor_instance(
+    TraceyScene* scene,
+    uint64_t actorUid,
+    uint32_t instanceIndex,
+    TraceyInstanceInfo* outInfo
+);
+
+/// Get number of mesh objects in scene
+/// @param scene Scene handle
+/// @return Number of mesh objects
+uint32_t tracey_scene_get_mesh_count(TraceyScene* scene);
+
+/// Get mesh names
+/// @param scene Scene handle
+/// @param outNames Buffer to receive mesh name pointers
+/// @param maxCount Maximum number of names to write
+/// @return Number of names written
+uint32_t tracey_scene_get_mesh_names(
+    TraceyScene* scene,
+    const char** outNames,
+    uint32_t maxCount
+);
+
+/// Get mesh info by name
+/// @param scene Scene handle
+/// @param name Mesh name
+/// @param outInfo Pointer to receive mesh info
+/// @return TRACEY_SUCCESS or error code
+TraceyResult tracey_scene_get_mesh_info(
+    TraceyScene* scene,
+    const char* name,
+    TraceyMeshInfo* outInfo
+);
+
+/// Get number of embedded textures in scene
+/// @param scene Scene handle
+/// @return Number of embedded textures
+uint32_t tracey_scene_get_texture_count(TraceyScene* scene);
+
+/// Get texture IDs
+/// @param scene Scene handle
+/// @param outIds Buffer to receive texture ID pointers
+/// @param maxCount Maximum number of IDs to write
+/// @return Number of IDs written
+uint32_t tracey_scene_get_texture_ids(
+    TraceyScene* scene,
+    const char** outIds,
+    uint32_t maxCount
+);
+
+/// Get embedded texture info by ID
+/// @param scene Scene handle
+/// @param id Texture ID
+/// @param outInfo Pointer to receive texture info
+/// @return TRACEY_SUCCESS or error code
+TraceyResult tracey_scene_get_texture_info(
+    TraceyScene* scene,
+    const char* id,
+    TraceyTextureInfo* outInfo
+);
+
+// ============================================================================
+// Primitive Creation Functions
+// ============================================================================
+
+/// Add a cube primitive to the scene
+/// @param scene Scene handle
+/// @param name Name for the mesh object
+/// @param size Cube size (default 1.0)
+/// @return Actor UID for the created primitive, or UINT64_MAX on failure
+uint64_t tracey_scene_add_cube(
+    TraceyScene* scene,
+    const char* name,
+    float size
+);
+
+/// Add a sphere primitive to the scene
+/// @param scene Scene handle
+/// @param name Name for the mesh object
+/// @param radius Sphere radius (default 1.0)
+/// @param segments Number of horizontal segments (default 16)
+/// @param rings Number of vertical rings (default 16)
+/// @return Actor UID for the created primitive, or UINT64_MAX on failure
+uint64_t tracey_scene_add_sphere(
+    TraceyScene* scene,
+    const char* name,
+    float radius,
+    uint32_t segments,
+    uint32_t rings
+);
+
+/// Add a torus primitive to the scene
+/// @param scene Scene handle
+/// @param name Name for the mesh object
+/// @param majorRadius Distance from center to tube center (default 1.0)
+/// @param minorRadius Radius of the tube (default 0.3)
+/// @param majorSegments Segments around the torus (default 32)
+/// @param minorSegments Segments around the tube (default 16)
+/// @return Actor UID for the created primitive, or UINT64_MAX on failure
+uint64_t tracey_scene_add_torus(
+    TraceyScene* scene,
+    const char* name,
+    float majorRadius,
+    float minorRadius,
+    uint32_t majorSegments,
+    uint32_t minorSegments
+);
+
+/// Add a plane primitive to the scene
+/// @param scene Scene handle
+/// @param name Name for the mesh object
+/// @param width Width of the plane (default 1.0)
+/// @param depth Depth of the plane (default 1.0)
+/// @return Actor UID for the created primitive, or UINT64_MAX on failure
+uint64_t tracey_scene_add_plane(
+    TraceyScene* scene,
+    const char* name,
+    float width,
+    float depth
+);
+
+/// Add a cylinder primitive to the scene
+/// @param scene Scene handle
+/// @param name Name for the mesh object
+/// @param radius Cylinder radius (default 0.5)
+/// @param height Cylinder height (default 1.0)
+/// @param segments Number of segments around the cylinder (default 32)
+/// @return Actor UID for the created primitive, or UINT64_MAX on failure
+uint64_t tracey_scene_add_cylinder(
+    TraceyScene* scene,
+    const char* name,
+    float radius,
+    float height,
+    uint32_t segments
+);
+
+/// Add a cone primitive to the scene
+/// @param scene Scene handle
+/// @param name Name for the mesh object
+/// @param radius Cone base radius (default 0.5)
+/// @param height Cone height (default 1.0)
+/// @param segments Number of segments around the cone (default 32)
+/// @return Actor UID for the created primitive, or UINT64_MAX on failure
+uint64_t tracey_scene_add_cone(
+    TraceyScene* scene,
+    const char* name,
+    float radius,
+    float height,
+    uint32_t segments
+);
+
+// ============================================================================
 // Scene Compilation
 // ============================================================================
 
@@ -217,6 +409,28 @@ TraceyResult tracey_path_tracer_get_resolution(
 /// @param pathTracer Path tracer handle
 /// @return Sample count (incremented each render without clearAccumulation)
 uint32_t tracey_path_tracer_get_sample_count(TraceyPathTracer* pathTracer);
+
+/// Get samples per frame setting
+/// @param pathTracer Path tracer handle
+/// @return Samples per frame
+uint32_t tracey_path_tracer_get_samples_per_frame(TraceyPathTracer* pathTracer);
+
+/// Set samples per frame setting
+/// @param pathTracer Path tracer handle
+/// @param samples New samples per frame value
+/// @return TRACEY_SUCCESS or error code
+TraceyResult tracey_path_tracer_set_samples_per_frame(TraceyPathTracer* pathTracer, uint32_t samples);
+
+/// Get max bounces setting
+/// @param pathTracer Path tracer handle
+/// @return Max bounces (ray depth)
+uint32_t tracey_path_tracer_get_max_bounces(TraceyPathTracer* pathTracer);
+
+/// Set max bounces setting
+/// @param pathTracer Path tracer handle
+/// @param bounces New max bounces value
+/// @return TRACEY_SUCCESS or error code
+TraceyResult tracey_path_tracer_set_max_bounces(TraceyPathTracer* pathTracer, uint32_t bounces);
 
 // ============================================================================
 // Error Handling

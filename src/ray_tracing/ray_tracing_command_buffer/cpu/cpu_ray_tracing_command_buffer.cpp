@@ -45,8 +45,12 @@ namespace tracey
             }
         }
     }
-    void CpuRayTracingCommandBuffer::traceRays(const ShaderBindingTable &sbt, uint32_t width, uint32_t height)
+    void CpuRayTracingCommandBuffer::traceRays(const ShaderBindingTable &sbt, uint32_t width, uint32_t height,
+                                                const TraceRaysParams &params)
     {
+        // Note: CPU implementation doesn't currently use params.samplesPerFrame or params.maxBounces
+        // These would need to be integrated into the CPU path tracing loop if needed
+        (void)params;
         if (!m_pipeline)
         {
             assert(false && "Pipeline not set for CpuRayTracingCommandBuffer");

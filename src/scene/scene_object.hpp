@@ -36,6 +36,10 @@ namespace tracey
         static SceneObject createCube(float size = 1.0f);
         static SceneObject createPlane(float width = 1.0f, float depth = 1.0f);
         static SceneObject createSphere(float radius = 1.0f, uint32_t segments = 16, uint32_t rings = 16);
+        static SceneObject createTorus(float majorRadius = 1.0f, float minorRadius = 0.3f,
+                                       uint32_t majorSegments = 32, uint32_t minorSegments = 16);
+        static SceneObject createCylinder(float radius = 0.5f, float height = 1.0f, uint32_t segments = 32);
+        static SceneObject createCone(float radius = 0.5f, float height = 1.0f, uint32_t segments = 32);
 
     private:
         std::string m_name;

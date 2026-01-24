@@ -141,6 +141,7 @@ namespace tracey
         m_shaderInputs->setVec3("cameraRight", camera.right());
         m_shaderInputs->setVec3("cameraUp", camera.up());
         m_shaderInputs->setInt("currentSample", m_sampleCount + 1);
+        m_shaderInputs->setUint("maxDepth", m_config.maxBounces);
         m_shaderInputs->upload();
     }
 
@@ -175,8 +176,12 @@ namespace tracey
         m_commandBuffer->setPipeline(m_pipeline.get());
         m_commandBuffer->setDescriptorSet(m_descriptorSets[0].get());
         m_commandBuffer->setDescriptorSet(m_descriptorSets[1].get());
+
+        TraceRaysParams traceParams;
+        traceParams.samplesPerFrame = m_config.samplesPerFrame;
+        traceParams.maxBounces = m_config.maxBounces;
         m_commandBuffer->traceRays(*m_pipelineBuilder->getShaderBindingTable(),
-                                   m_config.width, m_config.height);
+                                   m_config.width, m_config.height, traceParams);
         m_commandBuffer->copyImageToBuffer(m_outputImage.get(), m_readbackBuffer.get());
         m_commandBuffer->end();
 

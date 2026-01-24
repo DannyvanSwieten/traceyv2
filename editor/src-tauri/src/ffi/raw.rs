@@ -180,6 +180,8 @@ pub struct TraceyPathTracerConfig {
     pub miss_shader_path: *const c_char,
     pub resolve_shader_path: *const c_char,
     pub hdr_output: bool,
+    pub samples_per_frame: c_uint,
+    pub max_bounces: c_uint,
 }
 
 // ============================================================================
@@ -198,7 +200,52 @@ pub enum TraceyResult {
     ErrorFileNotFound = -6,
     ErrorRenderingFailed = -7,
     ErrorNullPointer = -8,
+    ErrorNotFound = -9,
     ErrorUnknown = -999,
+}
+
+// ============================================================================
+// Scene Query Types
+// ============================================================================
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct TraceyActorInfo {
+    pub uid: u64,
+    pub name: *const c_char,
+    pub transform: TraceyTransform,
+    pub child_count: c_uint,
+    pub instance_count: c_uint,
+}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct TraceyInstanceInfo {
+    pub object_ref: *const c_char,
+    pub shader_id: *const c_char,
+    pub has_local_transform: bool,
+    pub local_transform: TraceyTransform,
+}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct TraceyMeshInfo {
+    pub name: *const c_char,
+    pub vertex_count: c_uint,
+    pub triangle_count: c_uint,
+    pub has_indices: bool,
+    pub has_normals: bool,
+    pub has_uvs: bool,
+}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct TraceyTextureInfo {
+    pub id: *const c_char,
+    pub width: i32,
+    pub height: i32,
+    pub channels: i32,
+    pub mime_type: *const c_char,
 }
 
 // ============================================================================
@@ -254,6 +301,92 @@ extern "C" {
         max_count: c_uint,
     ) -> c_uint;
 
+    // Scene Query Functions
+    pub fn tracey_scene_get_actor_name(
+        scene: *mut TraceyScene,
+        actor_uid: u64,
+    ) -> *const c_char;
+    pub fn tracey_scene_get_actor_children(
+        scene: *mut TraceyScene,
+        actor_uid: u64,
+        out_uids: *mut u64,
+        max_count: c_uint,
+    ) -> c_uint;
+    pub fn tracey_scene_get_actor_instance_count(
+        scene: *mut TraceyScene,
+        actor_uid: u64,
+    ) -> c_uint;
+    pub fn tracey_scene_get_actor_instance(
+        scene: *mut TraceyScene,
+        actor_uid: u64,
+        instance_index: c_uint,
+        out_info: *mut TraceyInstanceInfo,
+    ) -> TraceyResult;
+    pub fn tracey_scene_get_mesh_count(scene: *mut TraceyScene) -> c_uint;
+    pub fn tracey_scene_get_mesh_names(
+        scene: *mut TraceyScene,
+        out_names: *mut *const c_char,
+        max_count: c_uint,
+    ) -> c_uint;
+    pub fn tracey_scene_get_mesh_info(
+        scene: *mut TraceyScene,
+        name: *const c_char,
+        out_info: *mut TraceyMeshInfo,
+    ) -> TraceyResult;
+    pub fn tracey_scene_get_texture_count(scene: *mut TraceyScene) -> c_uint;
+    pub fn tracey_scene_get_texture_ids(
+        scene: *mut TraceyScene,
+        out_ids: *mut *const c_char,
+        max_count: c_uint,
+    ) -> c_uint;
+    pub fn tracey_scene_get_texture_info(
+        scene: *mut TraceyScene,
+        id: *const c_char,
+        out_info: *mut TraceyTextureInfo,
+    ) -> TraceyResult;
+
+    // Primitive Creation Functions
+    pub fn tracey_scene_add_cube(
+        scene: *mut TraceyScene,
+        name: *const c_char,
+        size: c_float,
+    ) -> u64;
+    pub fn tracey_scene_add_sphere(
+        scene: *mut TraceyScene,
+        name: *const c_char,
+        radius: c_float,
+        segments: c_uint,
+        rings: c_uint,
+    ) -> u64;
+    pub fn tracey_scene_add_torus(
+        scene: *mut TraceyScene,
+        name: *const c_char,
+        major_radius: c_float,
+        minor_radius: c_float,
+        major_segments: c_uint,
+        minor_segments: c_uint,
+    ) -> u64;
+    pub fn tracey_scene_add_plane(
+        scene: *mut TraceyScene,
+        name: *const c_char,
+        width: c_float,
+        depth: c_float,
+    ) -> u64;
+    pub fn tracey_scene_add_cylinder(
+        scene: *mut TraceyScene,
+        name: *const c_char,
+        radius: c_float,
+        height: c_float,
+        segments: c_uint,
+    ) -> u64;
+    pub fn tracey_scene_add_cone(
+        scene: *mut TraceyScene,
+        name: *const c_char,
+        radius: c_float,
+        height: c_float,
+        segments: c_uint,
+    ) -> u64;
+
     // Scene Compilation
     pub fn tracey_compile_scene(
         device: *mut TraceyDevice,
@@ -284,6 +417,16 @@ extern "C" {
         out_height: *mut c_uint,
     ) -> TraceyResult;
     pub fn tracey_path_tracer_get_sample_count(path_tracer: *mut TraceyPathTracer) -> c_uint;
+    pub fn tracey_path_tracer_get_samples_per_frame(path_tracer: *mut TraceyPathTracer) -> c_uint;
+    pub fn tracey_path_tracer_set_samples_per_frame(
+        path_tracer: *mut TraceyPathTracer,
+        samples: c_uint,
+    ) -> TraceyResult;
+    pub fn tracey_path_tracer_get_max_bounces(path_tracer: *mut TraceyPathTracer) -> c_uint;
+    pub fn tracey_path_tracer_set_max_bounces(
+        path_tracer: *mut TraceyPathTracer,
+        bounces: c_uint,
+    ) -> TraceyResult;
 
     // Error Handling
     pub fn tracey_get_last_error() -> *const c_char;

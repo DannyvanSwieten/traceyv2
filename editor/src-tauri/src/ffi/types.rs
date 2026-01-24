@@ -6,6 +6,7 @@ use super::raw::*;
 use serde::{Deserialize, Serialize};
 use std::ffi::{CStr, CString};
 use std::fmt;
+use std::os::raw::c_char;
 use std::ptr;
 
 // ============================================================================
@@ -380,6 +381,216 @@ impl Scene {
     pub fn as_ptr(&self) -> *mut TraceyScene {
         self.ptr
     }
+
+    pub fn get_actor_name(&self, actor_uid: u64) -> Option<String> {
+        unsafe {
+            let name_ptr = tracey_scene_get_actor_name(self.ptr, actor_uid);
+            if name_ptr.is_null() {
+                None
+            } else {
+                Some(CStr::from_ptr(name_ptr).to_string_lossy().into_owned())
+            }
+        }
+    }
+
+    pub fn get_actor_children(&self, actor_uid: u64) -> Vec<u64> {
+        unsafe {
+            // First get the count by passing 0 as max_count
+            let instance_count = tracey_scene_get_actor_instance_count(self.ptr, actor_uid);
+            // Allocate a reasonable buffer for children
+            let mut children = vec![0u64; 256];
+            let count = tracey_scene_get_actor_children(
+                self.ptr,
+                actor_uid,
+                children.as_mut_ptr(),
+                256,
+            );
+            children.truncate(count as usize);
+            children
+        }
+    }
+
+    pub fn get_actor_instance_count(&self, actor_uid: u64) -> u32 {
+        unsafe { tracey_scene_get_actor_instance_count(self.ptr, actor_uid) }
+    }
+
+    pub fn get_actor_instance(&self, actor_uid: u64, instance_index: u32) -> Result<InstanceInfo> {
+        unsafe {
+            let mut info = TraceyInstanceInfo {
+                object_ref: ptr::null(),
+                shader_id: ptr::null(),
+                has_local_transform: false,
+                local_transform: tracey_transform_identity(),
+            };
+            check_result(tracey_scene_get_actor_instance(
+                self.ptr,
+                actor_uid,
+                instance_index,
+                &mut info,
+            ))?;
+            Ok(InstanceInfo::from(info))
+        }
+    }
+
+    pub fn get_mesh_count(&self) -> u32 {
+        unsafe { tracey_scene_get_mesh_count(self.ptr) }
+    }
+
+    pub fn get_mesh_names(&self) -> Vec<String> {
+        let count = self.get_mesh_count() as usize;
+        if count == 0 {
+            return Vec::new();
+        }
+
+        let mut name_ptrs = vec![ptr::null::<std::os::raw::c_char>(); count];
+        unsafe {
+            tracey_scene_get_mesh_names(self.ptr, name_ptrs.as_mut_ptr(), count as u32);
+            name_ptrs
+                .iter()
+                .filter(|p| !p.is_null())
+                .map(|&p| CStr::from_ptr(p).to_string_lossy().into_owned())
+                .collect()
+        }
+    }
+
+    pub fn get_mesh_info(&self, name: &str) -> Result<MeshInfo> {
+        let c_name = CString::new(name).map_err(|_| TraceyError("Invalid name".to_string()))?;
+        unsafe {
+            let mut info = TraceyMeshInfo {
+                name: ptr::null(),
+                vertex_count: 0,
+                triangle_count: 0,
+                has_indices: false,
+                has_normals: false,
+                has_uvs: false,
+            };
+            check_result(tracey_scene_get_mesh_info(self.ptr, c_name.as_ptr(), &mut info))?;
+            Ok(MeshInfo::from(info))
+        }
+    }
+
+    pub fn get_texture_count(&self) -> u32 {
+        unsafe { tracey_scene_get_texture_count(self.ptr) }
+    }
+
+    pub fn get_texture_ids(&self) -> Vec<String> {
+        let count = self.get_texture_count() as usize;
+        if count == 0 {
+            return Vec::new();
+        }
+
+        let mut id_ptrs = vec![ptr::null::<std::os::raw::c_char>(); count];
+        unsafe {
+            tracey_scene_get_texture_ids(self.ptr, id_ptrs.as_mut_ptr(), count as u32);
+            id_ptrs
+                .iter()
+                .filter(|p| !p.is_null())
+                .map(|&p| CStr::from_ptr(p).to_string_lossy().into_owned())
+                .collect()
+        }
+    }
+
+    pub fn get_texture_info(&self, id: &str) -> Result<TextureInfo> {
+        let c_id = CString::new(id).map_err(|_| TraceyError("Invalid id".to_string()))?;
+        unsafe {
+            let mut info = TraceyTextureInfo {
+                id: ptr::null(),
+                width: 0,
+                height: 0,
+                channels: 0,
+                mime_type: ptr::null(),
+            };
+            check_result(tracey_scene_get_texture_info(self.ptr, c_id.as_ptr(), &mut info))?;
+            Ok(TextureInfo::from(info))
+        }
+    }
+
+    // Primitive creation methods
+    pub fn add_cube(&mut self, name: &str, size: f32) -> Result<u64> {
+        let c_name = CString::new(name).map_err(|_| TraceyError("Invalid name".to_string()))?;
+        unsafe {
+            let uid = tracey_scene_add_cube(self.ptr, c_name.as_ptr(), size);
+            if uid == u64::MAX {
+                Err(TraceyError(get_last_error()))
+            } else {
+                Ok(uid)
+            }
+        }
+    }
+
+    pub fn add_sphere(&mut self, name: &str, radius: f32, segments: u32, rings: u32) -> Result<u64> {
+        let c_name = CString::new(name).map_err(|_| TraceyError("Invalid name".to_string()))?;
+        unsafe {
+            let uid = tracey_scene_add_sphere(self.ptr, c_name.as_ptr(), radius, segments, rings);
+            if uid == u64::MAX {
+                Err(TraceyError(get_last_error()))
+            } else {
+                Ok(uid)
+            }
+        }
+    }
+
+    pub fn add_torus(
+        &mut self,
+        name: &str,
+        major_radius: f32,
+        minor_radius: f32,
+        major_segments: u32,
+        minor_segments: u32,
+    ) -> Result<u64> {
+        let c_name = CString::new(name).map_err(|_| TraceyError("Invalid name".to_string()))?;
+        unsafe {
+            let uid = tracey_scene_add_torus(
+                self.ptr,
+                c_name.as_ptr(),
+                major_radius,
+                minor_radius,
+                major_segments,
+                minor_segments,
+            );
+            if uid == u64::MAX {
+                Err(TraceyError(get_last_error()))
+            } else {
+                Ok(uid)
+            }
+        }
+    }
+
+    pub fn add_plane(&mut self, name: &str, width: f32, depth: f32) -> Result<u64> {
+        let c_name = CString::new(name).map_err(|_| TraceyError("Invalid name".to_string()))?;
+        unsafe {
+            let uid = tracey_scene_add_plane(self.ptr, c_name.as_ptr(), width, depth);
+            if uid == u64::MAX {
+                Err(TraceyError(get_last_error()))
+            } else {
+                Ok(uid)
+            }
+        }
+    }
+
+    pub fn add_cylinder(&mut self, name: &str, radius: f32, height: f32, segments: u32) -> Result<u64> {
+        let c_name = CString::new(name).map_err(|_| TraceyError("Invalid name".to_string()))?;
+        unsafe {
+            let uid = tracey_scene_add_cylinder(self.ptr, c_name.as_ptr(), radius, height, segments);
+            if uid == u64::MAX {
+                Err(TraceyError(get_last_error()))
+            } else {
+                Ok(uid)
+            }
+        }
+    }
+
+    pub fn add_cone(&mut self, name: &str, radius: f32, height: f32, segments: u32) -> Result<u64> {
+        let c_name = CString::new(name).map_err(|_| TraceyError("Invalid name".to_string()))?;
+        unsafe {
+            let uid = tracey_scene_add_cone(self.ptr, c_name.as_ptr(), radius, height, segments);
+            if uid == u64::MAX {
+                Err(TraceyError(get_last_error()))
+            } else {
+                Ok(uid)
+            }
+        }
+    }
 }
 
 impl Drop for Scene {
@@ -439,6 +650,8 @@ pub struct PathTracerConfig {
     pub miss_shader: String,
     pub resolve_shader: Option<String>,
     pub hdr_output: bool,
+    pub samples_per_frame: u32,
+    pub max_bounces: u32,
 }
 
 pub struct PathTracer {
@@ -470,6 +683,8 @@ impl PathTracer {
             miss_shader_path: c_miss.as_ptr(),
             resolve_shader_path: c_resolve.as_ref().map_or(ptr::null(), |s| s.as_ptr()),
             hdr_output: config.hdr_output,
+            samples_per_frame: config.samples_per_frame,
+            max_bounces: config.max_bounces,
         };
 
         unsafe {
@@ -532,6 +747,26 @@ impl PathTracer {
         unsafe { tracey_path_tracer_get_sample_count(self.ptr as *mut _) }
     }
 
+    pub fn get_samples_per_frame(&self) -> u32 {
+        unsafe { tracey_path_tracer_get_samples_per_frame(self.ptr as *mut _) }
+    }
+
+    pub fn set_samples_per_frame(&mut self, samples: u32) -> Result<()> {
+        unsafe {
+            check_result(tracey_path_tracer_set_samples_per_frame(self.ptr, samples))
+        }
+    }
+
+    pub fn get_max_bounces(&self) -> u32 {
+        unsafe { tracey_path_tracer_get_max_bounces(self.ptr as *mut _) }
+    }
+
+    pub fn set_max_bounces(&mut self, bounces: u32) -> Result<()> {
+        unsafe {
+            check_result(tracey_path_tracer_set_max_bounces(self.ptr, bounces))
+        }
+    }
+
     pub fn width(&self) -> u32 {
         self.width
     }
@@ -545,6 +780,112 @@ impl Drop for PathTracer {
     fn drop(&mut self) {
         unsafe {
             tracey_path_tracer_destroy(self.ptr);
+        }
+    }
+}
+
+// ============================================================================
+// Scene Query Types
+// ============================================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InstanceInfo {
+    pub object_ref: String,
+    pub shader_id: String,
+    pub has_local_transform: bool,
+    pub local_transform: Option<Transform>,
+}
+
+impl From<TraceyInstanceInfo> for InstanceInfo {
+    fn from(info: TraceyInstanceInfo) -> Self {
+        unsafe {
+            let object_ref = if info.object_ref.is_null() {
+                String::new()
+            } else {
+                CStr::from_ptr(info.object_ref).to_string_lossy().into_owned()
+            };
+            let shader_id = if info.shader_id.is_null() {
+                String::new()
+            } else {
+                CStr::from_ptr(info.shader_id).to_string_lossy().into_owned()
+            };
+            let local_transform = if info.has_local_transform {
+                Some(info.local_transform.into())
+            } else {
+                None
+            };
+
+            InstanceInfo {
+                object_ref,
+                shader_id,
+                has_local_transform: info.has_local_transform,
+                local_transform,
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MeshInfo {
+    pub name: String,
+    pub vertex_count: u32,
+    pub triangle_count: u32,
+    pub has_indices: bool,
+    pub has_normals: bool,
+    pub has_uvs: bool,
+}
+
+impl From<TraceyMeshInfo> for MeshInfo {
+    fn from(info: TraceyMeshInfo) -> Self {
+        unsafe {
+            let name = if info.name.is_null() {
+                String::new()
+            } else {
+                CStr::from_ptr(info.name).to_string_lossy().into_owned()
+            };
+
+            MeshInfo {
+                name,
+                vertex_count: info.vertex_count,
+                triangle_count: info.triangle_count,
+                has_indices: info.has_indices,
+                has_normals: info.has_normals,
+                has_uvs: info.has_uvs,
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TextureInfo {
+    pub id: String,
+    pub width: i32,
+    pub height: i32,
+    pub channels: i32,
+    pub mime_type: String,
+}
+
+impl From<TraceyTextureInfo> for TextureInfo {
+    fn from(info: TraceyTextureInfo) -> Self {
+        unsafe {
+            let id = if info.id.is_null() {
+                String::new()
+            } else {
+                CStr::from_ptr(info.id).to_string_lossy().into_owned()
+            };
+            let mime_type = if info.mime_type.is_null() {
+                String::new()
+            } else {
+                CStr::from_ptr(info.mime_type).to_string_lossy().into_owned()
+            };
+
+            TextureInfo {
+                id,
+                width: info.width,
+                height: info.height,
+                channels: info.channels,
+                mime_type,
+            }
         }
     }
 }

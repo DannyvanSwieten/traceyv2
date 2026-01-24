@@ -1,0 +1,84 @@
+.scene-hierarchy {
+  margin-top: 8px;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.hierarchy-empty {
+  padding: 16px;
+  color: #858585;
+  font-size: 13px;
+  text-align: center;
+}
+
+.hierarchy-tree {
+  padding: 4px 0;
+}
+
+.tree-item {
+  user-select: none;
+}
+
+.tree-item-row {
+  display: flex;
+  align-items: center;
+  padding: 4px 8px;
+  cursor: pointer;
+  border-radius: 4px;
+  margin: 1px 4px;
+  transition: background-color 0.1s ease;
+}
+
+.tree-item-row:hover {
+  background-color: #2a2d2e;
+}
+
+.tree-item-row--selected {
+  background-color: #094771;
+}
+
+.tree-item-row--selected:hover {
+  background-color: #094771;
+}
+
+.tree-expand {
+  width: 16px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  color: #858585;
+  flex-shrink: 0;
+}
+
+.tree-expand:hover {
+  color: #cccccc;
+}
+
+.tree-expand-placeholder {
+  width: 16px;
+  flex-shrink: 0;
+}
+
+.tree-icon {
+  margin-right: 6px;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.tree-name {
+  font-size: 13px;
+  color: #cccccc;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tree-item-row--selected .tree-name {
+  color: #ffffff;
+}
+
+.tree-children {
+  /* Children are indented via padding-left on tree-item-row */
+}

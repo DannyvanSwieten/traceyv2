@@ -3,6 +3,7 @@
 
 mod commands;
 mod ffi;
+mod menu;
 mod renderer;
 mod scene;
 
@@ -41,6 +42,8 @@ fn main() {
         height: 720,
         shader_dir,
         hdr_output: false, // LDR - tonemapping done in resolve shader
+        samples_per_frame: 16,
+        max_bounces: 8,
     };
 
     let mut engine = RenderEngine::new(config).expect("Failed to create render engine");
@@ -66,7 +69,12 @@ fn main() {
     };
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .manage(app_state)
+        .setup(|app| {
+            menu::setup(app)?;
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             // Scene commands
             commands::create_actor,
@@ -79,6 +87,16 @@ fn main() {
             commands::get_camera,
             commands::add_child,
             commands::remove_child,
+            // Scene resource query commands
+            commands::get_actor_instances,
+            commands::get_mesh_names,
+            commands::get_mesh_info,
+            commands::get_all_meshes,
+            commands::get_texture_ids,
+            commands::get_texture_info,
+            commands::get_all_textures,
+            // Primitive creation command
+            commands::add_primitive,
             // Render commands
             commands::render_frame,
             commands::get_render_pixels,
@@ -86,6 +104,10 @@ fn main() {
             commands::compile_scene,
             commands::get_viewport_resolution,
             commands::set_viewport_resolution,
+            commands::get_samples_per_frame,
+            commands::set_samples_per_frame,
+            commands::get_max_bounces,
+            commands::set_max_bounces,
             // IO commands
             commands::save_scene,
             commands::load_scene,

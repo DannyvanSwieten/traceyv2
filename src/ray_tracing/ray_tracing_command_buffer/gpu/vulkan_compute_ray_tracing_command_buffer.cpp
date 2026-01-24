@@ -99,7 +99,8 @@ namespace tracey
     }
 
     void VulkanComputeRayTracingCommandBuffer::traceRays(const ShaderBindingTable &sbt,
-                                                         uint32_t width, uint32_t height)
+                                                         uint32_t width, uint32_t height,
+                                                         const TraceRaysParams &params)
     {
         if (auto *wavefront = dynamic_cast<VulkanWaveFrontPipeline *>(m_pipeline))
         {
@@ -115,8 +116,8 @@ namespace tracey
             // 3. Resolve: accumulate final colors to output image
             // ================================================================
 
-            const uint32_t sampleCount = 1;
-            const uint32_t maxBounces = 8;
+            const uint32_t sampleCount = params.samplesPerFrame;
+            const uint32_t maxBounces = params.maxBounces;
             uint32_t rayCount = width * height;
             uint32_t workGroups = (rayCount + 255) / 256;
 

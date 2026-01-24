@@ -1,8 +1,8 @@
 //! Rendering engine that orchestrates path tracing
 
 use crate::ffi::{
-    Camera, CompiledScene, Device, DeviceBackend, DeviceType, PathTracer, PathTracerConfig,
-    Scene as CppScene,
+    Camera, CompiledScene, Device, DeviceBackend, DeviceType, InstanceInfo, MeshInfo, PathTracer,
+    PathTracerConfig, Scene as CppScene, TextureInfo,
 };
 use crate::scene::SceneState;
 use std::path::PathBuf;
@@ -22,6 +22,8 @@ pub struct RenderConfig {
     pub height: u32,
     pub shader_dir: PathBuf,
     pub hdr_output: bool,
+    pub samples_per_frame: u32,
+    pub max_bounces: u32,
 }
 
 impl RenderEngine {
@@ -55,6 +57,8 @@ impl RenderEngine {
             miss_shader: miss.to_string_lossy().to_string(),
             resolve_shader: Some(resolve.to_string_lossy().to_string()),
             hdr_output: self.config.hdr_output,
+            samples_per_frame: self.config.samples_per_frame,
+            max_bounces: self.config.max_bounces,
         };
 
         let path_tracer = PathTracer::new(&self.device, &pt_config)
@@ -182,6 +186,209 @@ impl RenderEngine {
         self.config.height = height;
         // Path tracer needs to be recreated with new resolution
         self.path_tracer = None;
+    }
+
+    pub fn get_samples_per_frame(&self) -> u32 {
+        if let Some(ref tracer) = self.path_tracer {
+            tracer.get_samples_per_frame()
+        } else {
+            self.config.samples_per_frame
+        }
+    }
+
+    pub fn set_samples_per_frame(&mut self, samples: u32) -> Result<(), String> {
+        self.config.samples_per_frame = samples;
+        if let Some(ref mut tracer) = self.path_tracer {
+            tracer
+                .set_samples_per_frame(samples)
+                .map_err(|e| format!("Failed to set samples per frame: {}", e))?;
+        }
+        Ok(())
+    }
+
+    pub fn get_max_bounces(&self) -> u32 {
+        if let Some(ref tracer) = self.path_tracer {
+            tracer.get_max_bounces()
+        } else {
+            self.config.max_bounces
+        }
+    }
+
+    pub fn set_max_bounces(&mut self, bounces: u32) -> Result<(), String> {
+        self.config.max_bounces = bounces;
+        if let Some(ref mut tracer) = self.path_tracer {
+            tracer
+                .set_max_bounces(bounces)
+                .map_err(|e| format!("Failed to set max bounces: {}", e))?;
+        }
+        Ok(())
+    }
+
+    // Scene query methods
+    pub fn get_actor_name(&self, actor_uid: u64) -> Option<String> {
+        let cpp_scene = self.cpp_scene.lock().ok()?;
+        cpp_scene.get_actor_name(actor_uid)
+    }
+
+    pub fn get_actor_children(&self, actor_uid: u64) -> Vec<u64> {
+        if let Ok(cpp_scene) = self.cpp_scene.lock() {
+            cpp_scene.get_actor_children(actor_uid)
+        } else {
+            Vec::new()
+        }
+    }
+
+    pub fn get_actor_instance_count(&self, actor_uid: u64) -> u32 {
+        if let Ok(cpp_scene) = self.cpp_scene.lock() {
+            cpp_scene.get_actor_instance_count(actor_uid)
+        } else {
+            0
+        }
+    }
+
+    pub fn get_actor_instance(&self, actor_uid: u64, index: u32) -> Result<InstanceInfo, String> {
+        let cpp_scene = self
+            .cpp_scene
+            .lock()
+            .map_err(|_| "Failed to lock scene".to_string())?;
+        cpp_scene
+            .get_actor_instance(actor_uid, index)
+            .map_err(|e| format!("Failed to get instance: {}", e))
+    }
+
+    pub fn get_mesh_count(&self) -> u32 {
+        if let Ok(cpp_scene) = self.cpp_scene.lock() {
+            cpp_scene.get_mesh_count()
+        } else {
+            0
+        }
+    }
+
+    pub fn get_mesh_names(&self) -> Vec<String> {
+        if let Ok(cpp_scene) = self.cpp_scene.lock() {
+            cpp_scene.get_mesh_names()
+        } else {
+            Vec::new()
+        }
+    }
+
+    pub fn get_mesh_info(&self, name: &str) -> Result<MeshInfo, String> {
+        let cpp_scene = self
+            .cpp_scene
+            .lock()
+            .map_err(|_| "Failed to lock scene".to_string())?;
+        cpp_scene
+            .get_mesh_info(name)
+            .map_err(|e| format!("Failed to get mesh info: {}", e))
+    }
+
+    pub fn get_texture_count(&self) -> u32 {
+        if let Ok(cpp_scene) = self.cpp_scene.lock() {
+            cpp_scene.get_texture_count()
+        } else {
+            0
+        }
+    }
+
+    pub fn get_texture_ids(&self) -> Vec<String> {
+        if let Ok(cpp_scene) = self.cpp_scene.lock() {
+            cpp_scene.get_texture_ids()
+        } else {
+            Vec::new()
+        }
+    }
+
+    pub fn get_texture_info(&self, id: &str) -> Result<TextureInfo, String> {
+        let cpp_scene = self
+            .cpp_scene
+            .lock()
+            .map_err(|_| "Failed to lock scene".to_string())?;
+        cpp_scene
+            .get_texture_info(id)
+            .map_err(|e| format!("Failed to get texture info: {}", e))
+    }
+
+    /// Update an actor's transform in the C++ scene
+    pub fn set_actor_transform(
+        &self,
+        actor_uid: u64,
+        transform: &crate::ffi::Transform,
+    ) -> Result<(), String> {
+        let mut cpp_scene = self
+            .cpp_scene
+            .lock()
+            .map_err(|_| "Failed to lock scene".to_string())?;
+        cpp_scene
+            .set_actor_transform(actor_uid, transform)
+            .map_err(|e| format!("Failed to set actor transform: {}", e))
+    }
+
+    // Primitive creation methods
+    pub fn add_cube(&self, name: &str, size: f32) -> Result<u64, String> {
+        let mut cpp_scene = self
+            .cpp_scene
+            .lock()
+            .map_err(|_| "Failed to lock scene".to_string())?;
+        cpp_scene
+            .add_cube(name, size)
+            .map_err(|e| format!("Failed to add cube: {}", e))
+    }
+
+    pub fn add_sphere(&self, name: &str, radius: f32, segments: u32, rings: u32) -> Result<u64, String> {
+        let mut cpp_scene = self
+            .cpp_scene
+            .lock()
+            .map_err(|_| "Failed to lock scene".to_string())?;
+        cpp_scene
+            .add_sphere(name, radius, segments, rings)
+            .map_err(|e| format!("Failed to add sphere: {}", e))
+    }
+
+    pub fn add_torus(
+        &self,
+        name: &str,
+        major_radius: f32,
+        minor_radius: f32,
+        major_segments: u32,
+        minor_segments: u32,
+    ) -> Result<u64, String> {
+        let mut cpp_scene = self
+            .cpp_scene
+            .lock()
+            .map_err(|_| "Failed to lock scene".to_string())?;
+        cpp_scene
+            .add_torus(name, major_radius, minor_radius, major_segments, minor_segments)
+            .map_err(|e| format!("Failed to add torus: {}", e))
+    }
+
+    pub fn add_plane(&self, name: &str, width: f32, depth: f32) -> Result<u64, String> {
+        let mut cpp_scene = self
+            .cpp_scene
+            .lock()
+            .map_err(|_| "Failed to lock scene".to_string())?;
+        cpp_scene
+            .add_plane(name, width, depth)
+            .map_err(|e| format!("Failed to add plane: {}", e))
+    }
+
+    pub fn add_cylinder(&self, name: &str, radius: f32, height: f32, segments: u32) -> Result<u64, String> {
+        let mut cpp_scene = self
+            .cpp_scene
+            .lock()
+            .map_err(|_| "Failed to lock scene".to_string())?;
+        cpp_scene
+            .add_cylinder(name, radius, height, segments)
+            .map_err(|e| format!("Failed to add cylinder: {}", e))
+    }
+
+    pub fn add_cone(&self, name: &str, radius: f32, height: f32, segments: u32) -> Result<u64, String> {
+        let mut cpp_scene = self
+            .cpp_scene
+            .lock()
+            .map_err(|_| "Failed to lock scene".to_string())?;
+        cpp_scene
+            .add_cone(name, radius, height, segments)
+            .map_err(|e| format!("Failed to add cone: {}", e))
     }
 }
 

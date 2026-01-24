@@ -1,6 +1,7 @@
 #include "tracey_api.h"
 #include "../device/device.hpp"
 #include "../scene/scene.hpp"
+#include "../scene/scene_object.hpp"
 #include "../scene/scene_compiler.hpp"
 #include "../scene/gltf_loader.hpp"
 #include "../rendering/path_tracer.hpp"
@@ -8,6 +9,7 @@
 #include <string>
 #include <cstring>
 #include <stdexcept>
+#include <unordered_map>
 
 // Thread-local error storage
 thread_local std::string g_lastError;
@@ -503,6 +505,460 @@ uint32_t tracey_scene_get_actor_uids(
 }
 
 // ============================================================================
+// Scene Query Functions
+// ============================================================================
+
+const char* tracey_scene_get_actor_name(
+    TraceyScene* scene,
+    uint64_t actorUid)
+{
+    if (!scene) return nullptr;
+
+    try {
+        auto* s = reinterpret_cast<tracey::Scene*>(scene);
+        auto* actor = s->getActor(actorUid);
+        if (!actor) return nullptr;
+        return actor->name().c_str();
+    } catch (...) {
+        return nullptr;
+    }
+}
+
+uint32_t tracey_scene_get_actor_children(
+    TraceyScene* scene,
+    uint64_t actorUid,
+    uint64_t* outUids,
+    uint32_t maxCount)
+{
+    if (!scene || !outUids || maxCount == 0) return 0;
+
+    try {
+        auto* s = reinterpret_cast<tracey::Scene*>(scene);
+        auto* actor = s->getActor(actorUid);
+        if (!actor) return 0;
+
+        const auto children = actor->children();
+        uint32_t count = 0;
+        for (size_t childUid : children) {
+            if (count >= maxCount) break;
+            outUids[count++] = childUid;
+        }
+        return count;
+    } catch (...) {
+        return 0;
+    }
+}
+
+uint32_t tracey_scene_get_actor_instance_count(
+    TraceyScene* scene,
+    uint64_t actorUid)
+{
+    if (!scene) return 0;
+
+    try {
+        auto* s = reinterpret_cast<tracey::Scene*>(scene);
+        auto* actor = s->getActor(actorUid);
+        if (!actor) return 0;
+        return static_cast<uint32_t>(actor->instances().size());
+    } catch (...) {
+        return 0;
+    }
+}
+
+TraceyResult tracey_scene_get_actor_instance(
+    TraceyScene* scene,
+    uint64_t actorUid,
+    uint32_t instanceIndex,
+    TraceyInstanceInfo* outInfo)
+{
+    if (!scene || !outInfo) {
+        setError("Null pointer parameter");
+        return TRACEY_ERROR_NULL_POINTER;
+    }
+
+    try {
+        clearError();
+        auto* s = reinterpret_cast<tracey::Scene*>(scene);
+        auto* actor = s->getActor(actorUid);
+        if (!actor) {
+            setError("Actor not found");
+            return TRACEY_ERROR_NOT_FOUND;
+        }
+
+        const auto& instances = actor->instances();
+        if (instanceIndex >= instances.size()) {
+            setError("Instance index out of range");
+            return TRACEY_ERROR_INVALID_PARAMETER;
+        }
+
+        const auto& inst = instances[instanceIndex];
+        outInfo->objectRef = inst.objectRef().c_str();
+        outInfo->shaderId = inst.material().shaderId().c_str();
+        outInfo->hasLocalTransform = inst.hasLocalTransform();
+        if (inst.hasLocalTransform()) {
+            outInfo->localTransform = fromTransform(inst.localTransform().value());
+        }
+
+        return TRACEY_SUCCESS;
+    } catch (const std::exception& e) {
+        setError(std::string("Failed to get instance: ") + e.what());
+        return TRACEY_ERROR_UNKNOWN;
+    } catch (...) {
+        setError("Failed to get instance: unknown error");
+        return TRACEY_ERROR_UNKNOWN;
+    }
+}
+
+uint32_t tracey_scene_get_mesh_count(TraceyScene* scene)
+{
+    if (!scene) return 0;
+
+    try {
+        auto* s = reinterpret_cast<tracey::Scene*>(scene);
+        return static_cast<uint32_t>(s->objects().size());
+    } catch (...) {
+        return 0;
+    }
+}
+
+uint32_t tracey_scene_get_mesh_names(
+    TraceyScene* scene,
+    const char** outNames,
+    uint32_t maxCount)
+{
+    if (!scene || !outNames || maxCount == 0) return 0;
+
+    try {
+        auto* s = reinterpret_cast<tracey::Scene*>(scene);
+        const auto& objects = s->objects();
+
+        uint32_t count = 0;
+        for (const auto& [name, obj] : objects) {
+            if (count >= maxCount) break;
+            outNames[count++] = name.c_str();
+        }
+        return count;
+    } catch (...) {
+        return 0;
+    }
+}
+
+TraceyResult tracey_scene_get_mesh_info(
+    TraceyScene* scene,
+    const char* name,
+    TraceyMeshInfo* outInfo)
+{
+    if (!scene || !name || !outInfo) {
+        setError("Null pointer parameter");
+        return TRACEY_ERROR_NULL_POINTER;
+    }
+
+    try {
+        clearError();
+        auto* s = reinterpret_cast<tracey::Scene*>(scene);
+        const auto* obj = s->getObject(name);
+        if (!obj) {
+            setError("Mesh not found");
+            return TRACEY_ERROR_NOT_FOUND;
+        }
+
+        outInfo->name = obj->name().c_str();
+        outInfo->vertexCount = static_cast<uint32_t>(obj->vertexCount());
+        outInfo->triangleCount = static_cast<uint32_t>(obj->triangleCount());
+        outInfo->hasIndices = obj->hasIndices();
+        outInfo->hasNormals = obj->hasNormals();
+        outInfo->hasUvs = obj->hasUvs();
+
+        return TRACEY_SUCCESS;
+    } catch (const std::exception& e) {
+        setError(std::string("Failed to get mesh info: ") + e.what());
+        return TRACEY_ERROR_UNKNOWN;
+    } catch (...) {
+        setError("Failed to get mesh info: unknown error");
+        return TRACEY_ERROR_UNKNOWN;
+    }
+}
+
+uint32_t tracey_scene_get_texture_count(TraceyScene* scene)
+{
+    if (!scene) return 0;
+
+    try {
+        auto* s = reinterpret_cast<tracey::Scene*>(scene);
+        return static_cast<uint32_t>(s->embeddedTextures().size());
+    } catch (...) {
+        return 0;
+    }
+}
+
+uint32_t tracey_scene_get_texture_ids(
+    TraceyScene* scene,
+    const char** outIds,
+    uint32_t maxCount)
+{
+    if (!scene || !outIds || maxCount == 0) return 0;
+
+    try {
+        auto* s = reinterpret_cast<tracey::Scene*>(scene);
+        const auto& textures = s->embeddedTextures();
+
+        uint32_t count = 0;
+        for (const auto& [id, tex] : textures) {
+            if (count >= maxCount) break;
+            outIds[count++] = id.c_str();
+        }
+        return count;
+    } catch (...) {
+        return 0;
+    }
+}
+
+TraceyResult tracey_scene_get_texture_info(
+    TraceyScene* scene,
+    const char* id,
+    TraceyTextureInfo* outInfo)
+{
+    if (!scene || !id || !outInfo) {
+        setError("Null pointer parameter");
+        return TRACEY_ERROR_NULL_POINTER;
+    }
+
+    try {
+        clearError();
+        auto* s = reinterpret_cast<tracey::Scene*>(scene);
+        const auto* tex = s->getEmbeddedTexture(id);
+        if (!tex) {
+            setError("Texture not found");
+            return TRACEY_ERROR_NOT_FOUND;
+        }
+
+        // Store id in a static map to keep it alive
+        static std::unordered_map<std::string, std::string> idStorage;
+        idStorage[id] = id;
+        outInfo->id = idStorage[id].c_str();
+        outInfo->width = tex->width;
+        outInfo->height = tex->height;
+        outInfo->channels = tex->channels;
+        outInfo->mimeType = tex->mimeType.c_str();
+
+        return TRACEY_SUCCESS;
+    } catch (const std::exception& e) {
+        setError(std::string("Failed to get texture info: ") + e.what());
+        return TRACEY_ERROR_UNKNOWN;
+    } catch (...) {
+        setError("Failed to get texture info: unknown error");
+        return TRACEY_ERROR_UNKNOWN;
+    }
+}
+
+// ============================================================================
+// Primitive Creation Functions
+// ============================================================================
+
+// Helper function to add a primitive and create an actor with instance
+static uint64_t addPrimitiveToScene(tracey::Scene* scene, const char* name, tracey::SceneObject&& obj) {
+    try {
+        // Generate a unique object name based on provided name
+        std::string objName = name ? name : "primitive";
+
+        // Add the object to scene
+        scene->addObject(objName, std::move(obj));
+
+        // Create actor for this primitive
+        auto* actor = scene->createActor();
+        actor->setName(objName);
+
+        // Create default material instance
+        tracey::MaterialInstance material("pbr");
+        material.setVec3("baseColor", tracey::Vec3(0.8f, 0.8f, 0.8f));
+        material.setFloat("metallic", 0.0f);
+        material.setFloat("roughness", 0.5f);
+
+        // Create scene instance referencing the object
+        tracey::SceneInstance instance(objName, material);
+        actor->addInstance(instance);
+
+        return actor->getUid();
+    } catch (...) {
+        return UINT64_MAX;
+    }
+}
+
+uint64_t tracey_scene_add_cube(
+    TraceyScene* scene,
+    const char* name,
+    float size)
+{
+    if (!scene) {
+        setError("Scene pointer is null");
+        return UINT64_MAX;
+    }
+
+    try {
+        clearError();
+        auto* s = reinterpret_cast<tracey::Scene*>(scene);
+        auto obj = tracey::SceneObject::createCube(size > 0 ? size : 1.0f);
+        return addPrimitiveToScene(s, name, std::move(obj));
+    } catch (const std::exception& e) {
+        setError(std::string("Failed to add cube: ") + e.what());
+        return UINT64_MAX;
+    } catch (...) {
+        setError("Failed to add cube: unknown error");
+        return UINT64_MAX;
+    }
+}
+
+uint64_t tracey_scene_add_sphere(
+    TraceyScene* scene,
+    const char* name,
+    float radius,
+    uint32_t segments,
+    uint32_t rings)
+{
+    if (!scene) {
+        setError("Scene pointer is null");
+        return UINT64_MAX;
+    }
+
+    try {
+        clearError();
+        auto* s = reinterpret_cast<tracey::Scene*>(scene);
+        auto obj = tracey::SceneObject::createSphere(
+            radius > 0 ? radius : 1.0f,
+            segments > 0 ? segments : 16,
+            rings > 0 ? rings : 16
+        );
+        return addPrimitiveToScene(s, name, std::move(obj));
+    } catch (const std::exception& e) {
+        setError(std::string("Failed to add sphere: ") + e.what());
+        return UINT64_MAX;
+    } catch (...) {
+        setError("Failed to add sphere: unknown error");
+        return UINT64_MAX;
+    }
+}
+
+uint64_t tracey_scene_add_torus(
+    TraceyScene* scene,
+    const char* name,
+    float majorRadius,
+    float minorRadius,
+    uint32_t majorSegments,
+    uint32_t minorSegments)
+{
+    if (!scene) {
+        setError("Scene pointer is null");
+        return UINT64_MAX;
+    }
+
+    try {
+        clearError();
+        auto* s = reinterpret_cast<tracey::Scene*>(scene);
+        auto obj = tracey::SceneObject::createTorus(
+            majorRadius > 0 ? majorRadius : 1.0f,
+            minorRadius > 0 ? minorRadius : 0.3f,
+            majorSegments > 0 ? majorSegments : 32,
+            minorSegments > 0 ? minorSegments : 16
+        );
+        return addPrimitiveToScene(s, name, std::move(obj));
+    } catch (const std::exception& e) {
+        setError(std::string("Failed to add torus: ") + e.what());
+        return UINT64_MAX;
+    } catch (...) {
+        setError("Failed to add torus: unknown error");
+        return UINT64_MAX;
+    }
+}
+
+uint64_t tracey_scene_add_plane(
+    TraceyScene* scene,
+    const char* name,
+    float width,
+    float depth)
+{
+    if (!scene) {
+        setError("Scene pointer is null");
+        return UINT64_MAX;
+    }
+
+    try {
+        clearError();
+        auto* s = reinterpret_cast<tracey::Scene*>(scene);
+        auto obj = tracey::SceneObject::createPlane(
+            width > 0 ? width : 1.0f,
+            depth > 0 ? depth : 1.0f
+        );
+        return addPrimitiveToScene(s, name, std::move(obj));
+    } catch (const std::exception& e) {
+        setError(std::string("Failed to add plane: ") + e.what());
+        return UINT64_MAX;
+    } catch (...) {
+        setError("Failed to add plane: unknown error");
+        return UINT64_MAX;
+    }
+}
+
+uint64_t tracey_scene_add_cylinder(
+    TraceyScene* scene,
+    const char* name,
+    float radius,
+    float height,
+    uint32_t segments)
+{
+    if (!scene) {
+        setError("Scene pointer is null");
+        return UINT64_MAX;
+    }
+
+    try {
+        clearError();
+        auto* s = reinterpret_cast<tracey::Scene*>(scene);
+        auto obj = tracey::SceneObject::createCylinder(
+            radius > 0 ? radius : 0.5f,
+            height > 0 ? height : 1.0f,
+            segments > 0 ? segments : 32
+        );
+        return addPrimitiveToScene(s, name, std::move(obj));
+    } catch (const std::exception& e) {
+        setError(std::string("Failed to add cylinder: ") + e.what());
+        return UINT64_MAX;
+    } catch (...) {
+        setError("Failed to add cylinder: unknown error");
+        return UINT64_MAX;
+    }
+}
+
+uint64_t tracey_scene_add_cone(
+    TraceyScene* scene,
+    const char* name,
+    float radius,
+    float height,
+    uint32_t segments)
+{
+    if (!scene) {
+        setError("Scene pointer is null");
+        return UINT64_MAX;
+    }
+
+    try {
+        clearError();
+        auto* s = reinterpret_cast<tracey::Scene*>(scene);
+        auto obj = tracey::SceneObject::createCone(
+            radius > 0 ? radius : 0.5f,
+            height > 0 ? height : 1.0f,
+            segments > 0 ? segments : 32
+        );
+        return addPrimitiveToScene(s, name, std::move(obj));
+    } catch (const std::exception& e) {
+        setError(std::string("Failed to add cone: ") + e.what());
+        return UINT64_MAX;
+    } catch (...) {
+        setError("Failed to add cone: unknown error");
+        return UINT64_MAX;
+    }
+}
+
+// ============================================================================
 // Scene Compilation
 // ============================================================================
 
@@ -569,6 +1025,8 @@ TraceyPathTracer* tracey_path_tracer_create(
             cppConfig.resolveShader = config->resolveShaderPath;
         }
         cppConfig.hdrOutput = config->hdrOutput;
+        cppConfig.samplesPerFrame = config->samplesPerFrame > 0 ? config->samplesPerFrame : 16;
+        cppConfig.maxBounces = config->maxBounces > 0 ? config->maxBounces : 8;
 
         auto* tracer = new tracey::PathTracer(dev, cppConfig);
         return reinterpret_cast<TraceyPathTracer*>(tracer);
@@ -672,6 +1130,72 @@ uint32_t tracey_path_tracer_get_sample_count(TraceyPathTracer* pathTracer)
         return tracer->sampleCount();
     } catch (...) {
         return 0;
+    }
+}
+
+uint32_t tracey_path_tracer_get_samples_per_frame(TraceyPathTracer* pathTracer)
+{
+    if (!pathTracer) return 0;
+
+    try {
+        auto* tracer = reinterpret_cast<tracey::PathTracer*>(pathTracer);
+        return tracer->samplesPerFrame();
+    } catch (...) {
+        return 0;
+    }
+}
+
+TraceyResult tracey_path_tracer_set_samples_per_frame(TraceyPathTracer* pathTracer, uint32_t samples)
+{
+    if (!pathTracer) {
+        setError("Null pointer parameter");
+        return TRACEY_ERROR_NULL_POINTER;
+    }
+
+    try {
+        clearError();
+        auto* tracer = reinterpret_cast<tracey::PathTracer*>(pathTracer);
+        tracer->setSamplesPerFrame(samples);
+        return TRACEY_SUCCESS;
+    } catch (const std::exception& e) {
+        setError(std::string("Failed to set samples per frame: ") + e.what());
+        return TRACEY_ERROR_UNKNOWN;
+    } catch (...) {
+        setError("Failed to set samples per frame: unknown error");
+        return TRACEY_ERROR_UNKNOWN;
+    }
+}
+
+uint32_t tracey_path_tracer_get_max_bounces(TraceyPathTracer* pathTracer)
+{
+    if (!pathTracer) return 0;
+
+    try {
+        auto* tracer = reinterpret_cast<tracey::PathTracer*>(pathTracer);
+        return tracer->maxBounces();
+    } catch (...) {
+        return 0;
+    }
+}
+
+TraceyResult tracey_path_tracer_set_max_bounces(TraceyPathTracer* pathTracer, uint32_t bounces)
+{
+    if (!pathTracer) {
+        setError("Null pointer parameter");
+        return TRACEY_ERROR_NULL_POINTER;
+    }
+
+    try {
+        clearError();
+        auto* tracer = reinterpret_cast<tracey::PathTracer*>(pathTracer);
+        tracer->setMaxBounces(bounces);
+        return TRACEY_SUCCESS;
+    } catch (const std::exception& e) {
+        setError(std::string("Failed to set max bounces: ") + e.what());
+        return TRACEY_ERROR_UNKNOWN;
+    } catch (...) {
+        setError("Failed to set max bounces: unknown error");
+        return TRACEY_ERROR_UNKNOWN;
     }
 }
 
