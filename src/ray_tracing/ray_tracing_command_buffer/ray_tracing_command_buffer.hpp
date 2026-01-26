@@ -13,6 +13,7 @@ namespace tracey
     {
         uint32_t samplesPerFrame = 16;
         uint32_t maxBounces = 8;
+        uint32_t baseSampleCount = 0;  // For resolve shader accumulation
     };
 
     class RayTracingCommandBuffer

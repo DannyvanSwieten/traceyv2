@@ -1,20 +1,29 @@
-import { Component, createSignal, onMount } from 'solid-js';
+import { Component, createSignal, onMount, createEffect } from 'solid-js';
 import { invoke } from '@tauri-apps/api/core';
+import { ViewportHandle } from '../viewport/Viewport';
 import './RenderSettings.css';
 
 interface RenderSettingsProps {
   onSettingsChange?: () => void;
+  viewportHandle?: ViewportHandle;
 }
 
+type RenderMode = 'PathTracer' | 'Rasterizer';
+type PresentationMode = 'canvas' | 'native';
+
 export const RenderSettings: Component<RenderSettingsProps> = (props) => {
+  const [renderMode, setRenderMode] = createSignal<RenderMode>('PathTracer');
+  const [presentationMode, setPresentationMode] = createSignal<PresentationMode>('canvas');
   const [samplesPerFrame, setSamplesPerFrame] = createSignal(16);
   const [maxBounces, setMaxBounces] = createSignal(8);
   const [isLoading, setIsLoading] = createSignal(true);
 
   onMount(async () => {
     try {
+      const mode = await invoke<string>('get_render_mode');
       const samples = await invoke<number>('get_samples_per_frame');
       const bounces = await invoke<number>('get_max_bounces');
+      setRenderMode(mode as RenderMode);
       setSamplesPerFrame(samples);
       setMaxBounces(bounces);
     } catch (error) {
@@ -23,6 +32,18 @@ export const RenderSettings: Component<RenderSettingsProps> = (props) => {
       setIsLoading(false);
     }
   });
+
+  const handleRenderModeChange = async (mode: RenderMode) => {
+    console.log(`Switching render mode to: ${mode}`);
+    setRenderMode(mode);
+    try {
+      await invoke('set_render_mode', { mode });
+      console.log(`Render mode switched successfully to: ${mode}`);
+      props.onSettingsChange?.();
+    } catch (error) {
+      console.error('Failed to set render mode:', error);
+    }
+  };
 
   const handleSamplesChange = async (value: number) => {
     setSamplesPerFrame(value);
@@ -44,6 +65,31 @@ export const RenderSettings: Component<RenderSettingsProps> = (props) => {
     }
   };
 
+  const handlePresentationModeChange = async (mode: PresentationMode) => {
+    console.log('[RenderSettings] handlePresentationModeChange called with:', mode);
+    console.log('[RenderSettings] viewportHandle exists:', !!props.viewportHandle);
+    setPresentationMode(mode);
+    try {
+      if (props.viewportHandle) {
+        console.log('[RenderSettings] Calling viewportHandle.setRenderMode');
+        await props.viewportHandle.setRenderMode(mode);
+        props.onSettingsChange?.();
+      } else {
+        console.warn('[RenderSettings] No viewportHandle available!');
+      }
+    } catch (error) {
+      console.error('Failed to set presentation mode:', error);
+    }
+  };
+
+  // Sync presentation mode from viewport handle
+  createEffect(() => {
+    if (props.viewportHandle) {
+      const mode = props.viewportHandle.getRenderMode();
+      setPresentationMode(mode);
+    }
+  });
+
   return (
     <div class="render-settings">
       <h4>Render Settings</h4>
@@ -51,6 +97,52 @@ export const RenderSettings: Component<RenderSettingsProps> = (props) => {
         <p class="loading">Loading...</p>
       ) : (
         <>
+          <div class="setting-row">
+            <label for="render-mode">Render Mode</label>
+            <div class="setting-control">
+              <div class="render-mode-toggle">
+                <button
+                  type="button"
+                  class={`mode-button ${renderMode() === 'Rasterizer' ? 'active' : ''}`}
+                  onClick={() => handleRenderModeChange('Rasterizer')}
+                  title="Real-time preview using rasterization"
+                >
+                  Realtime Preview
+                </button>
+                <button
+                  type="button"
+                  class={`mode-button ${renderMode() === 'PathTracer' ? 'active' : ''}`}
+                  onClick={() => handleRenderModeChange('PathTracer')}
+                  title="High-quality path tracing"
+                >
+                  Path Traced
+                </button>
+              </div>
+            </div>
+          </div>
+          <div class="setting-row">
+            <label for="presentation-mode">Presentation Mode</label>
+            <div class="setting-control">
+              <div class="render-mode-toggle">
+                <button
+                  type="button"
+                  class={`mode-button ${presentationMode() === 'canvas' ? 'active' : ''}`}
+                  onClick={() => handlePresentationModeChange('canvas')}
+                  title="Canvas 2D rendering (compatible)"
+                >
+                  Canvas
+                </button>
+                <button
+                  type="button"
+                  class={`mode-button ${presentationMode() === 'native' ? 'active' : ''}`}
+                  onClick={() => handlePresentationModeChange('native')}
+                  title="Direct GPU presentation (faster)"
+                >
+                  Native
+                </button>
+              </div>
+            </div>
+          </div>
           <div class="setting-row">
             <label for="samples">Samples per Frame</label>
             <div class="setting-control">
@@ -61,6 +153,7 @@ export const RenderSettings: Component<RenderSettingsProps> = (props) => {
                 max="64"
                 value={samplesPerFrame()}
                 onInput={(e) => handleSamplesChange(parseInt(e.currentTarget.value))}
+                disabled={renderMode() === 'Rasterizer'}
               />
               <span class="setting-value">{samplesPerFrame()}</span>
             </div>
@@ -75,6 +168,7 @@ export const RenderSettings: Component<RenderSettingsProps> = (props) => {
                 max="16"
                 value={maxBounces()}
                 onInput={(e) => handleBouncesChange(parseInt(e.currentTarget.value))}
+                disabled={renderMode() === 'Rasterizer'}
               />
               <span class="setting-value">{maxBounces()}</span>
             </div>

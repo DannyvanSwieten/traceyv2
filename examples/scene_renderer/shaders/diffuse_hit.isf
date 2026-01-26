@@ -1,9 +1,10 @@
 /*{
     "STAGE": "ClosestHit",
-    "DESCRIPTION": "PBR path tracer with metallic-roughness workflow",
+    "DESCRIPTION": "PBR path tracer with metallic-roughness workflow and Russian roulette",
     "INPUTS": [
         { "NAME": "albedo", "TYPE": "color", "DEFAULT": [0.5, 0.5, 0.5, 1.0] },
-        { "NAME": "maxDepth", "TYPE": "uint", "DEFAULT": 8 }
+        { "NAME": "maxDepth", "TYPE": "uint", "DEFAULT": 8 },
+        { "NAME": "rrMinDepth", "TYPE": "uint", "DEFAULT": 3 }
     ]
 }*/
 
@@ -99,10 +100,29 @@ void shader(HitInfo hitInfo, inout RayPayloads payloads) {
     // Update color
     payloads.rayPayload.color *= throughput;
 
-    // Increment depth and set direction
+    // Increment depth
     payloads.rayPayload.depth += 1u;
-    payloads.rayPayload.direction = L;
 
-    // Spawn secondary ray
+    // Russian roulette termination (after minimum depth)
+    if (payloads.rayPayload.depth >= shaderInputs.rrMinDepth) {
+        // Calculate survival probability based on throughput luminance
+        float luminance = dot(throughput, vec3(0.2126, 0.7152, 0.0722));
+        float survivalProbability = min(luminance, 0.95); // Cap at 95% to avoid infinite paths
+
+        // Generate random number for Russian roulette
+        float rrRandom = nextRandom(payloads.rayPayload.rngSeed);
+
+        if (rrRandom > survivalProbability) {
+            // Terminate path
+            payloads.rayPayload.alive = false;
+            return;
+        }
+
+        // Ray survived - boost throughput to maintain unbiasedness
+        payloads.rayPayload.color /= survivalProbability;
+    }
+
+    // Set direction and spawn secondary ray
+    payloads.rayPayload.direction = L;
     traceRay(hitPos + N * 0.001, 0.01, L, 1000.0);
 }

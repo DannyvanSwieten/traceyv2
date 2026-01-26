@@ -86,6 +86,12 @@ target_link_libraries(scene_renderer
     shaderc
 )
 
+# Graphics test subdirectory
+add_subdirectory(graphics_test)
+
+# Rasterizer test subdirectory
+add_subdirectory(rasterizer_test)
+
 # Set rpath for all executables that link against Vulkan and shaderc
 set_target_properties(device_api wavefront wavefront_isf scene_renderer PROPERTIES
     MACOSX_RPATH ON

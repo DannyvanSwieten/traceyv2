@@ -1,4 +1,4 @@
-import { Component, createSignal, createEffect, onMount, onCleanup, Accessor } from 'solid-js';
+import { Component, createSignal, createEffect, onMount, onCleanup, Accessor, Show } from 'solid-js';
 import { invoke } from '@tauri-apps/api/core';
 import './Viewport.css';
 
@@ -27,6 +27,8 @@ export interface CameraPosition {
 export interface ViewportHandle {
   loadScene: (path: string) => Promise<void>;
   render: () => void;
+  setRenderMode: (mode: 'canvas' | 'native') => Promise<void>;
+  getRenderMode: () => 'canvas' | 'native';
 }
 
 interface ViewportProps {
@@ -68,13 +70,18 @@ const getRight = (q: Camera['rotation']): { x: number; y: number; z: number } =>
   };
 };
 
+type RenderMode = 'canvas' | 'native';
+
 export const Viewport: Component<ViewportProps> = (props) => {
   const [status, setStatus] = createSignal('Initializing...');
   const [renderTime, setRenderTime] = createSignal(0);
   const [sampleCount, setSampleCount] = createSignal(0);
   const [sceneLoaded, setSceneLoaded] = createSignal(false);
+  const [renderMode, setRenderMode] = createSignal<RenderMode>('canvas');
+  const [nativeViewportReady, setNativeViewportReady] = createSignal(false);
   let canvasRef: HTMLCanvasElement | undefined;
   let containerRef: HTMLDivElement | undefined;
+  let nativePlaceholderRef: HTMLDivElement | undefined;
 
   // Camera state
   const camera: Camera = {
@@ -136,23 +143,44 @@ export const Viewport: Component<ViewportProps> = (props) => {
 
     isRendering = true;
     try {
-      const result = (await invoke('render_frame', {
-        camera,
-        clearAccumulation: clear,
-      })) as RenderResult;
+      if (renderMode() === 'native' && nativeViewportReady()) {
+        // Native mode: render directly to native window
+        const result = (await invoke('render_frame', {
+          camera,
+          clearAccumulation: clear,
+        })) as RenderResult;
 
-      setRenderTime(result.render_time_ms);
-      setSampleCount(result.sample_count);
+        setRenderTime(result.render_time_ms);
+        setSampleCount(result.sample_count);
 
-      const pixels = new Uint8Array(await invoke('get_render_pixels'));
+        // Present to native viewport
+        try {
+          await invoke('present_pathtracer');
+          setStatus('Rendering (Native)');
+        } catch (e) {
+          console.error('Native presentation failed:', e);
+          setStatus(`Present Error: ${e}`);
+        }
+      } else {
+        // Canvas mode: traditional CPU readback
+        const result = (await invoke('render_frame', {
+          camera,
+          clearAccumulation: clear,
+        })) as RenderResult;
 
-      if (canvasRef) {
-        const ctx = canvasRef.getContext('2d');
-        if (ctx) {
-          const imageData = ctx.createImageData(result.width, result.height);
-          imageData.data.set(pixels);
-          ctx.putImageData(imageData, 0, 0);
-          setStatus('Rendering');
+        setRenderTime(result.render_time_ms);
+        setSampleCount(result.sample_count);
+
+        const pixels = new Uint8Array(await invoke('get_render_pixels'));
+
+        if (canvasRef) {
+          const ctx = canvasRef.getContext('2d');
+          if (ctx) {
+            const imageData = ctx.createImageData(result.width, result.height);
+            imageData.data.set(pixels);
+            ctx.putImageData(imageData, 0, 0);
+            setStatus('Rendering (Canvas)');
+          }
         }
       }
     } catch (e) {
@@ -188,8 +216,8 @@ export const Viewport: Component<ViewportProps> = (props) => {
     lastMouseX = e.clientX;
     lastMouseY = e.clientY;
 
-    yaw -= deltaX * MOUSE_SENSITIVITY;
-    pitch -= deltaY * MOUSE_SENSITIVITY;
+    yaw += deltaX * MOUSE_SENSITIVITY;
+    pitch += deltaY * MOUSE_SENSITIVITY;
 
     updateCameraRotation();
     updateCameraPosition();
@@ -313,8 +341,124 @@ export const Viewport: Component<ViewportProps> = (props) => {
     }
   };
 
+  // Sync native viewport bounds with container
+  const syncNativeViewportBounds = async () => {
+    if (renderMode() !== 'native' || !nativePlaceholderRef) return;
+
+    const rect = nativePlaceholderRef.getBoundingClientRect();
+    try {
+      await invoke('sync_native_viewport', {
+        bounds: {
+          x: Math.floor(rect.left),
+          y: Math.floor(rect.top),
+          width: Math.floor(rect.width),
+          height: Math.floor(rect.height),
+        },
+      });
+    } catch (e) {
+      console.error('Failed to sync native viewport bounds:', e);
+    }
+  };
+
+  // Create native viewport
+  const createNativeViewport = async () => {
+    console.log('[Viewport] createNativeViewport called, ref exists:', !!nativePlaceholderRef);
+    if (!nativePlaceholderRef) return;
+
+    try {
+      const rect = nativePlaceholderRef.getBoundingClientRect();
+      console.log('[Viewport] Creating native viewport with bounds:', rect);
+      await invoke('create_native_viewport', {
+        bounds: {
+          x: Math.floor(rect.left),
+          y: Math.floor(rect.top),
+          width: Math.floor(rect.width),
+          height: Math.floor(rect.height),
+        },
+      });
+      setNativeViewportReady(true);
+      setStatus('Native viewport ready');
+      console.log('[Viewport] Native viewport created successfully');
+    } catch (e) {
+      console.error('Failed to create native viewport:', e);
+      setStatus(`Native viewport error: ${e}`);
+      // Fall back to canvas mode
+      setRenderMode('canvas');
+    }
+  };
+
+  // Destroy native viewport
+  const destroyNativeViewport = async () => {
+    try {
+      await invoke('destroy_native_viewport');
+      setNativeViewportReady(false);
+    } catch (e) {
+      console.error('Failed to destroy native viewport:', e);
+    }
+  };
+
+  // Switch render mode
+  const switchRenderMode = async (mode: RenderMode) => {
+    console.log('[Viewport] switchRenderMode called with:', mode, 'current:', renderMode());
+    if (mode === renderMode()) return;
+
+    if (mode === 'native') {
+      console.log('[Viewport] Switching to native mode');
+      setRenderMode('native');
+      await createNativeViewport();
+      if (sceneLoaded()) {
+        renderFrame(true);
+      }
+    } else {
+      console.log('[Viewport] Switching to canvas mode');
+      await destroyNativeViewport();
+      setRenderMode('canvas');
+      if (sceneLoaded()) {
+        renderFrame(true);
+      }
+    }
+  };
+
+  // Setup ResizeObserver when placeholder becomes available
+  let resizeObserver: ResizeObserver | null = null;
+
+  // Effect to handle render mode changes and setup observers
+  createEffect(() => {
+    const mode = renderMode();
+    console.log('[Viewport] createEffect triggered, mode:', mode, 'ready:', nativeViewportReady());
+
+    if (mode === 'native') {
+      // Wait a tick for the DOM to update
+      setTimeout(() => {
+        console.log('[Viewport] setTimeout fired, ref exists:', !!nativePlaceholderRef, 'ready:', nativeViewportReady());
+        if (nativePlaceholderRef && !nativeViewportReady()) {
+          createNativeViewport();
+
+          // Setup ResizeObserver
+          if (!resizeObserver) {
+            resizeObserver = new ResizeObserver(() => {
+              syncNativeViewportBounds();
+            });
+            resizeObserver.observe(nativePlaceholderRef);
+          }
+        }
+      }, 0);
+    } else {
+      // Clean up observer when switching away from native mode
+      if (resizeObserver) {
+        resizeObserver.disconnect();
+        resizeObserver = null;
+      }
+    }
+  });
+
   onMount(() => {
-    props.ref?.({ loadScene, render: triggerRender });
+    props.ref?.({
+      loadScene,
+      render: triggerRender,
+      setRenderMode: switchRenderMode,
+      getRenderMode: () => renderMode(),
+    });
     setStatus('Select a scene to begin');
 
     // Add global mouse up listener to handle drag release outside canvas
@@ -325,6 +469,11 @@ export const Viewport: Component<ViewportProps> = (props) => {
   onCleanup(() => {
     document.removeEventListener('mouseup', handleMouseUp);
     document.removeEventListener('mousemove', handleMouseMove);
+
+    // Cleanup native viewport if active
+    if (renderMode() === 'native' && nativeViewportReady()) {
+      destroyNativeViewport();
+    }
   });
 
   return (
@@ -335,7 +484,7 @@ export const Viewport: Component<ViewportProps> = (props) => {
           pos: ({props.cameraPosition().x.toFixed(2)}, {props.cameraPosition().y.toFixed(2)}, {props.cameraPosition().z.toFixed(2)})
         </span>
         <span class="viewport-stats">
-          {renderTime().toFixed(2)}ms | {sampleCount()} samples
+          {renderTime().toFixed(2)}ms | {sampleCount()} samples | Mode: {renderMode()}
         </span>
       </div>
       <div
@@ -348,7 +497,16 @@ export const Viewport: Component<ViewportProps> = (props) => {
         onKeyUp={handleKeyUp}
         onContextMenu={handleContextMenu}
       >
-        <canvas ref={canvasRef} class="viewport-canvas" width={1280} height={720} />
+        <Show
+          when={renderMode() === 'canvas'}
+          fallback={
+            <div ref={nativePlaceholderRef} class="native-viewport-placeholder">
+              {/* Native window will render beneath this transparent div */}
+            </div>
+          }
+        >
+          <canvas ref={canvasRef} class="viewport-canvas" width={1280} height={720} />
+        </Show>
       </div>
     </div>
   );

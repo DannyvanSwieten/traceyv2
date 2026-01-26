@@ -24,6 +24,9 @@ namespace tracey
         VkDevice device() const { return m_device; }
         uint32_t computeQueueFamilyIndex() const { return m_computeQueueFamilyIndex; }
         VkQueue computeQueue() const { return m_computeQueue; }
+        uint32_t graphicsQueueFamilyIndex() const { return m_graphicsQueueFamilyIndex; }
+        VkQueue graphicsQueue() const { return m_graphicsQueue; }
+        bool hasUnifiedQueue() const { return m_computeQueueFamilyIndex == m_graphicsQueueFamilyIndex; }
 
     private:
         void createInstance();
@@ -39,6 +42,9 @@ namespace tracey
 
         uint32_t m_computeQueueFamilyIndex = 0;
         VkQueue m_computeQueue = VK_NULL_HANDLE;
+
+        uint32_t m_graphicsQueueFamilyIndex = 0;
+        VkQueue m_graphicsQueue = VK_NULL_HANDLE;
 
         VkCommandPool m_commandPool = VK_NULL_HANDLE;
 

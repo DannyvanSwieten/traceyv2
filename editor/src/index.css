@@ -9,7 +9,7 @@ body {
     Ubuntu, Cantarell, 'Helvetica Neue', sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  background: #1e1e1e;
+  background: transparent;
   color: #d4d4d4;
   overflow: hidden;
 }
@@ -17,4 +17,5 @@ body {
 #root {
   width: 100vw;
   height: 100vh;
+  background: transparent;
 }

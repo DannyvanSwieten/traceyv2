@@ -54,8 +54,18 @@ add_library(tracey
 
     src/rendering/path_tracer.hpp
     src/rendering/path_tracer.cpp
+    src/rendering/rasterizer.hpp
+    src/rendering/rasterizer.cpp
     src/rendering/post_processing.hpp
     src/rendering/post_processing.cpp
+    src/rendering/graphics_pipeline.hpp
+    src/rendering/graphics_pipeline_layout.hpp
+    src/rendering/graphics_pipeline_layout.cpp
+    src/rendering/graphics_command_buffer.hpp
+    src/rendering/gpu/vulkan_graphics_pipeline.hpp
+    src/rendering/gpu/vulkan_graphics_pipeline.cpp
+    src/rendering/gpu/vulkan_graphics_command_buffer.hpp
+    src/rendering/gpu/vulkan_graphics_command_buffer.cpp
 
     src/graph/graph.hpp
     src/graph/graph.cpp
@@ -76,6 +86,10 @@ add_library(tracey
 
     src/gpu/vulkan_context.hpp
     src/gpu/vulkan_context.cpp
+    src/gpu/vulkan_presenter.hpp
+    src/gpu/vulkan_presenter.cpp
+    src/gpu/vulkan_surface_factory.hpp
+    src/gpu/vulkan_surface_factory.cpp
     # src/gpu/shader_compiler.hpp
     # src/gpu/shader_compiler.cpp
 
@@ -189,7 +203,8 @@ if(PKG_CONFIG_FOUND)
         OUTPUT_STRIP_TRAILING_WHITESPACE
     )
 
-    target_link_libraries(tracey PRIVATE glm::glm Vulkan::Vulkan PkgConfig::SHADERC volk::volk)
+    target_link_libraries(tracey PRIVATE glm::glm Vulkan::Vulkan PkgConfig::SHADERC)
+    target_link_libraries(tracey PUBLIC volk::volk)
 else()
     # Windows: Manually find shaderc libraries
     message(STATUS "PkgConfig not found, using manual library search for Windows")
@@ -224,8 +239,8 @@ else()
         ${SHADERC_INCLUDE_DIR}
     )
 
-    target_link_libraries(tracey PRIVATE glm::glm Vulkan::Vulkan volk::volk)
-    target_link_libraries(tracey PRIVATE ${SHADERC_LIBRARY})
+    target_link_libraries(tracey PRIVATE glm::glm Vulkan::Vulkan ${SHADERC_LIBRARY})
+    target_link_libraries(tracey PUBLIC volk::volk)
 endif()
 
 target_include_directories(tracey

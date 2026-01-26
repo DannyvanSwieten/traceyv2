@@ -5,6 +5,7 @@
 #include "camera.hpp"
 #include <tiny_gltf.h>
 #include <iostream>
+#include <fstream>
 #include <unordered_map>
 #include <cmath>
 
@@ -117,7 +118,7 @@ namespace tracey
         }
 
         // Helper to get texture URI from GLTF texture index
-        std::string getTextureUri(const tinygltf::Model &model, int textureIndex, const std::string &baseDir)
+        std::string getTextureUri(const tinygltf::Model &model, int textureIndex, const std::string &baseDir, const std::string &projectRoot = "")
         {
             if (textureIndex < 0 || textureIndex >= static_cast<int>(model.textures.size()))
                 return "";
@@ -135,9 +136,38 @@ namespace tracey
                 return "embedded:" + std::to_string(texture.source);
             }
 
-            // External file that wasn't loaded by tinygltf - return file path
+            // External file that wasn't loaded by tinygltf
             if (!image.uri.empty())
             {
+                // Extract filename from URI
+                std::string filename = image.uri;
+                size_t lastSlash = filename.find_last_of("/\\");
+                if (lastSlash != std::string::npos)
+                {
+                    filename = filename.substr(lastSlash + 1);
+                }
+
+                // If project root is provided, try project-relative paths first
+                if (!projectRoot.empty())
+                {
+                    // Priority 1: Try assets/textures/
+                    std::string projectTexPath = projectRoot + "/assets/textures/" + filename;
+                    std::ifstream testFile1(projectTexPath);
+                    if (testFile1.good())
+                    {
+                        return projectTexPath;
+                    }
+
+                    // Priority 2: Try assets/models/ (texture co-located with model)
+                    std::string projectModelPath = projectRoot + "/assets/models/" + filename;
+                    std::ifstream testFile2(projectModelPath);
+                    if (testFile2.good())
+                    {
+                        return projectModelPath;
+                    }
+                }
+
+                // Fallback: Use original GLTF-relative path
                 return baseDir + "/" + image.uri;
             }
 
@@ -174,7 +204,7 @@ namespace tracey
         }
 
         // Convert GLTF material to our MaterialInstance
-        MaterialInstance convertMaterial(const tinygltf::Model &model, int materialIndex, const std::string &baseDir)
+        MaterialInstance convertMaterial(const tinygltf::Model &model, int materialIndex, const std::string &baseDir, const std::string &projectRoot = "")
         {
             MaterialInstance material("pbr");
 
@@ -199,7 +229,7 @@ namespace tracey
             // Base color texture (albedo)
             if (pbr.baseColorTexture.index >= 0)
             {
-                std::string texPath = getTextureUri(model, pbr.baseColorTexture.index, baseDir);
+                std::string texPath = getTextureUri(model, pbr.baseColorTexture.index, baseDir, projectRoot);
                 if (!texPath.empty())
                 {
                     material.setTexture(TEXTURE_ALBEDO, texPath);
@@ -214,7 +244,7 @@ namespace tracey
             // Metallic-roughness texture
             if (pbr.metallicRoughnessTexture.index >= 0)
             {
-                std::string texPath = getTextureUri(model, pbr.metallicRoughnessTexture.index, baseDir);
+                std::string texPath = getTextureUri(model, pbr.metallicRoughnessTexture.index, baseDir, projectRoot);
                 if (!texPath.empty())
                 {
                     material.setTexture(TEXTURE_METALLIC_ROUGHNESS, texPath);
@@ -225,7 +255,7 @@ namespace tracey
             // Normal texture
             if (gltfMat.normalTexture.index >= 0)
             {
-                std::string texPath = getTextureUri(model, gltfMat.normalTexture.index, baseDir);
+                std::string texPath = getTextureUri(model, gltfMat.normalTexture.index, baseDir, projectRoot);
                 if (!texPath.empty())
                 {
                     material.setTexture(TEXTURE_NORMAL, texPath);
@@ -245,7 +275,7 @@ namespace tracey
             // Emissive texture
             if (gltfMat.emissiveTexture.index >= 0)
             {
-                std::string texPath = getTextureUri(model, gltfMat.emissiveTexture.index, baseDir);
+                std::string texPath = getTextureUri(model, gltfMat.emissiveTexture.index, baseDir, projectRoot);
                 if (!texPath.empty())
                 {
                     material.setTexture(TEXTURE_EMISSIVE, texPath);
@@ -256,7 +286,7 @@ namespace tracey
             // Occlusion texture
             if (gltfMat.occlusionTexture.index >= 0)
             {
-                std::string texPath = getTextureUri(model, gltfMat.occlusionTexture.index, baseDir);
+                std::string texPath = getTextureUri(model, gltfMat.occlusionTexture.index, baseDir, projectRoot);
                 if (!texPath.empty())
                 {
                     material.setTexture(TEXTURE_OCCLUSION, texPath);
@@ -454,7 +484,7 @@ namespace tracey
                         // Set material
                         if (options.loadMaterials)
                         {
-                            instance.setMaterial(convertMaterial(model, primitive.material, baseDir));
+                            instance.setMaterial(convertMaterial(model, primitive.material, baseDir, options.projectRoot));
                         }
 
                         actor->addInstance(std::move(instance));

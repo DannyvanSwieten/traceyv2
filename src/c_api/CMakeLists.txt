@@ -34,23 +34,28 @@ install(TARGETS tracey_c_api
     LIBRARY DESTINATION ${EDITOR_DIR}/src-tauri/libs
     RUNTIME DESTINATION ${EDITOR_DIR}/src-tauri/libs
     ARCHIVE DESTINATION ${EDITOR_DIR}/src-tauri/libs
+    PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE
 )
 
 install(FILES
     tracey_api.h
     tracey_types.h
     DESTINATION ${EDITOR_DIR}/src-tauri/include
+    PERMISSIONS OWNER_READ OWNER_WRITE GROUP_READ WORLD_READ
 )
 
-# Also install to system directories (optional, for standalone use)
-install(TARGETS tracey_c_api
-    LIBRARY DESTINATION lib
-    RUNTIME DESTINATION bin
-    ARCHIVE DESTINATION lib
-)
-
-install(FILES
-    tracey_api.h
-    tracey_types.h
-    DESTINATION include/tracey
-)
+# System-wide install (optional, disabled by default for editor development)
+# Uncomment if you need to install to /usr/local/lib for standalone use
+# Requires: sudo cmake --install build
+#
+# install(TARGETS tracey_c_api
+#     LIBRARY DESTINATION lib
+#     RUNTIME DESTINATION bin
+#     ARCHIVE DESTINATION lib
+# )
+#
+# install(FILES
+#     tracey_api.h
+#     tracey_types.h
+#     DESTINATION include/tracey
+# )

@@ -88,8 +88,12 @@ vec3 getMaterialEmissive(uint instanceIndex, vec2 uv) {
 
 // Get interpolated UV from the UV buffer using barycentric coordinates
 vec2 getHitUV(HitInfo hitInfo) {
+    // Get vertex offset for this instance's BLAS
+    uint vertexOffset = vertexOffsets.offsets[hitInfo.instanceIndex];
+
+    // Add offset to local triangle index to get global buffer index
     uint triIdx = hitInfo.triangleIndex;
-    uint baseVertex = triIdx * 3u;
+    uint baseVertex = vertexOffset + triIdx * 3u;
 
     vec2 uv0 = uvBuffer.uvs[baseVertex + 0u];
     vec2 uv1 = uvBuffer.uvs[baseVertex + 1u];

@@ -444,7 +444,7 @@ namespace tracey
             finalShader.replace(pos, std::string("// [HIT_SHADER_CALLS]").length(), hitShaderCallsCode);
         }
 
-        printf("Vulkan Compute Ray Tracing Shader Source:\n%s\n", finalShader.c_str());
+        // printf("Vulkan Compute Ray Tracing Shader Source:\n%s\n", finalShader.c_str());
 
         // Compile finalShader using shaderc
         shaderc::Compiler compiler;
@@ -650,7 +650,7 @@ namespace tracey
             rayGenShaderTemplate.replace(userSourcePosition, std::string("//___RAY_GENERATION_FUNCTION___").length(), userSource);
         }
 
-        printf("Vulkan Compute Ray Tracing Shader Source:\n%s\n", rayGenShaderTemplate.c_str());
+        // printf("Vulkan Compute Ray Tracing Shader Source:\n%s\n", rayGenShaderTemplate.c_str());
         // Compile finalShader using shaderc
         shaderc::Compiler compiler;
         shaderc::CompileOptions options;
@@ -750,7 +750,7 @@ namespace tracey
             hitShaderTemplate.replace(userSourcePosition, std::string("//___HIT_SHADER_FUNCTION___").length(), userSource);
         }
 
-        printf("Vulkan Compute Ray Tracing Hit Shader Source:\n%s\n", hitShaderTemplate.c_str());
+        // printf("Vulkan Compute Ray Tracing Hit Shader Source:\n%s\n", hitShaderTemplate.c_str());
         // Compile finalShader using shaderc
         shaderc::Compiler compiler;
         shaderc::CompileOptions options;
@@ -848,7 +848,7 @@ namespace tracey
             missShaderTemplate.replace(userSourcePosition, std::string("//___MISS_SHADER_FUNCTION___").length(), userSource);
         }
 
-        printf("Vulkan Compute Ray Tracing Miss Shader Source:\n%s\n", missShaderTemplate.c_str());
+        // printf("Vulkan Compute Ray Tracing Miss Shader Source:\n%s\n", missShaderTemplate.c_str());
         // Compile finalShader using shaderc
         shaderc::Compiler compiler;
         shaderc::CompileOptions options;
@@ -1003,7 +1003,7 @@ namespace tracey
             }
         }
 
-        printf("Vulkan Compute Ray Tracing Resolve Shader Source:\n%s\n", resolveShaderTemplate.c_str());
+        // printf("Vulkan Compute Ray Tracing Resolve Shader Source:\n%s\n", resolveShaderTemplate.c_str());
 
         // Compile finalShader using shaderc
         shaderc::Compiler compiler;

@@ -1,33 +1,24 @@
 /*{
     "STAGE": "Resolve",
     "DESCRIPTION": "Average samples and write to output image",
-    "INPUTS": [
-        {
-            "NAME": "currentSample",
-            "TYPE": "int"
-        }
-    ]
+    "INPUTS": []
 }*/
 
 void shader(uvec2 pixel, in RayPayloads payloads) {
     // Read the final color from the payload (set by hit/miss shaders)
     vec3 sampleColor = payloads.rayPayload.color;
 
-    // Read previous accumulated value (stored as running average * sampleCount)
+    // Read previous accumulated HDR value
     vec4 currentOutput = imageLoad(outputImage, ivec2(pixel));
 
-    // Running average: newAvg = oldAvg + (sample - oldAvg) / n
+    // Compute global sample index: base + local + 1 (1-indexed)
+    uint globalSampleIndex = pc.baseSampleCount + pc.localSampleIndex + 1u;
+
+    // Running average in HDR space: newAvg = oldAvg + (sample - oldAvg) / n
     // This avoids overflow issues with pure accumulation
-    float n = float(shaderInputs.currentSample);
-    vec3 avgColor = currentOutput.rgb + (sampleColor - currentOutput.rgb) / n;
+    float n = float(globalSampleIndex);
+    vec3 avgColorHDR = currentOutput.rgb + (sampleColor - currentOutput.rgb) / n;
 
-    // Simple Reinhard tonemapping for display
-    vec3 tonemapped = avgColor / (avgColor + vec3(1.0));
-
-    // Gamma correction (linear to sRGB)
-    vec3 gammaCorrected = pow(tonemapped, vec3(1.0 / 2.2));
-
-    // Store tonemapped LDR value
-    imageStore(outputImage, ivec2(pixel), vec4(gammaCorrected, 1.0));
+    // Store HDR accumulated value (no tonemapping during accumulation)
+    imageStore(outputImage, ivec2(pixel), vec4(avgColorHDR, 1.0));
 }
-    

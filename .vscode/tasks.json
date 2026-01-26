@@ -2,10 +2,17 @@
     "version": "2.0.0",
     "tasks": [
         {
+            "label": "Check Permissions",
+            "type": "shell",
+            "command": "if ([ -f editor/src-tauri/libs/libtracey_c_api.1.0.0.dylib ] && [ \"$(stat -f '%Su' editor/src-tauri/libs/libtracey_c_api.1.0.0.dylib)\" = \"root\" ]) || ([ -d build/CMakeFiles ] && [ \"$(stat -f '%Su' build/CMakeFiles)\" = \"root\" ]) || ([ -d editor/src-tauri/target ] && [ \"$(stat -f '%Su' editor/src-tauri/target)\" = \"root\" ]); then echo ''; echo '❌ ERROR: Build directories owned by root!'; echo ''; echo 'Run this command to fix:'; echo '  ./fix-permissions.sh'; echo ''; exit 1; fi",
+            "problemMatcher": []
+        },
+        {
             "label": "Build Editor",
             "type": "shell",
-            "command": "cmake --build ${workspaceFolder}/build --target tracey_c_api -j8 && (cmake --install ${workspaceFolder}/build || true) && cd ${workspaceFolder}/editor && pnpm build && cd src-tauri && cargo build",
+            "command": "cmake --build ${workspaceFolder}/build --target tracey_c_api -j8 && cmake --install ${workspaceFolder}/build && cd ${workspaceFolder}/editor && pnpm build && cd src-tauri && cargo build",
             "group": "build",
+            "dependsOn": ["Check Permissions"],
             "problemMatcher": [
                 "$gcc",
                 "$rustc"

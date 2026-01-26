@@ -3,7 +3,7 @@
   height: 100%;
   display: flex;
   flex-direction: column;
-  background: #1e1e1e;
+  background: transparent;
 }
 
 .toolbar {
@@ -75,6 +75,6 @@
 .viewport-container {
   flex: 1;
   display: flex;
-  background: #1e1e1e;
+  background: transparent;
   overflow: hidden;
 }

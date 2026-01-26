@@ -1,10 +1,15 @@
 #include "tracey_api.h"
 #include "../device/device.hpp"
+#include "../device/gpu/vulkan_compute_device.hpp"
+#include "../device/gpu/vulkan_image_2d.hpp"
 #include "../scene/scene.hpp"
 #include "../scene/scene_object.hpp"
 #include "../scene/scene_compiler.hpp"
 #include "../scene/gltf_loader.hpp"
 #include "../rendering/path_tracer.hpp"
+#include "../rendering/rasterizer.hpp"
+#include "../gpu/vulkan_presenter.hpp"
+#include "../gpu/vulkan_surface_factory.hpp"
 
 #include <string>
 #include <cstring>
@@ -408,9 +413,10 @@ TraceyResult tracey_scene_get_camera(
     }
 }
 
-TraceyResult tracey_scene_load_gltf(
+TraceyResult tracey_scene_load_gltf_with_project(
     TraceyScene* scene,
-    const char* filePath)
+    const char* filePath,
+    const char* projectRoot)
 {
     if (!scene || !filePath) {
         setError("Null pointer parameter");
@@ -424,21 +430,47 @@ TraceyResult tracey_scene_load_gltf(
         // Clear existing scene before loading new one
         s->clear();
 
-        // Load GLTF into a temporary scene
-        auto loadedScene = tracey::GltfLoader::loadFromFile(filePath);
+        // Load GLTF into a temporary scene with project root
+        tracey::GltfLoader::LoadOptions options;
+        if (projectRoot && projectRoot[0] != '\0') {
+            options.projectRoot = std::string(projectRoot);
+        }
+
+        auto loadedScene = tracey::GltfLoader::loadFromFile(filePath, options);
         if (!loadedScene) {
             setError("Failed to load GLTF file");
             return TRACEY_ERROR_FILE_NOT_FOUND;
         }
 
         // Copy loaded scene into cleared scene
-        // Copy all actors
+        // First pass: Copy all actors and build UID mapping
+        std::unordered_map<size_t, size_t> uidMapping; // old UID -> new UID
         for (const auto& actor : loadedScene->actors()) {
             auto* newActor = s->createActor();
             newActor->setName(actor->name());
             newActor->setTransform(actor->transform());
             for (const auto& instance : actor->instances()) {
                 newActor->addInstance(instance);
+            }
+            // Store UID mapping
+            uidMapping[actor->getUid()] = newActor->getUid();
+        }
+
+        // Second pass: Copy parent-child relationships
+        for (const auto& actor : loadedScene->actors()) {
+            size_t newActorUid = uidMapping[actor->getUid()];
+            auto* newActor = s->getActor(newActorUid);
+            if (!newActor) continue;
+
+            // Copy children relationships
+            for (size_t oldChildUid : actor->children()) {
+                if (uidMapping.count(oldChildUid)) {
+                    size_t newChildUid = uidMapping[oldChildUid];
+                    auto* childActor = s->getActor(newChildUid);
+                    if (childActor) {
+                        newActor->addChild(childActor);
+                    }
+                }
             }
         }
 
@@ -467,6 +499,14 @@ TraceyResult tracey_scene_load_gltf(
         setError("GLTF loading failed: unknown error");
         return TRACEY_ERROR_UNKNOWN;
     }
+}
+
+TraceyResult tracey_scene_load_gltf(
+    TraceyScene* scene,
+    const char* filePath)
+{
+    // Call the new function with null projectRoot for backward compatibility
+    return tracey_scene_load_gltf_with_project(scene, filePath, nullptr);
 }
 
 uint32_t tracey_scene_get_actor_count(TraceyScene* scene)
@@ -998,6 +1038,34 @@ void tracey_destroy_compiled_scene(TraceyCompiledScene* compiledScene)
     }
 }
 
+int tracey_update_scene_transforms(
+    TraceyDevice* device,
+    TraceyScene* scene,
+    TraceyCompiledScene* compiledScene)
+{
+    if (!device || !scene || !compiledScene) {
+        setError("Null pointer parameter");
+        return -1;
+    }
+
+    try {
+        clearError();
+        auto* dev = reinterpret_cast<tracey::Device*>(device);
+        auto* s = reinterpret_cast<tracey::Scene*>(scene);
+        auto* compiled = reinterpret_cast<tracey::SceneCompiler::CompiledScene*>(compiledScene);
+
+        // Update transforms only
+        tracey::SceneCompiler::updateTransforms(dev, *s, *compiled);
+        return 0;
+    } catch (const std::exception& e) {
+        setError(std::string("Transform update failed: ") + e.what());
+        return -1;
+    } catch (...) {
+        setError("Transform update failed: unknown error");
+        return -1;
+    }
+}
+
 // ============================================================================
 // Path Tracer
 // ============================================================================
@@ -1200,6 +1268,125 @@ TraceyResult tracey_path_tracer_set_max_bounces(TraceyPathTracer* pathTracer, ui
 }
 
 // ============================================================================
+// Rasterizer
+// ============================================================================
+
+TraceyRasterizer* tracey_rasterizer_create(
+    TraceyDevice* device,
+    const TraceyRasterizerConfig* config)
+{
+    if (!device || !config) {
+        setError("Null pointer parameter");
+        return nullptr;
+    }
+
+    try {
+        clearError();
+        auto* dev = reinterpret_cast<tracey::Device*>(device);
+
+        tracey::RasterizerConfig cppConfig;
+        cppConfig.width = config->width;
+        cppConfig.height = config->height;
+        cppConfig.vertexShader = config->vertexShaderPath ? config->vertexShaderPath : "";
+        cppConfig.fragmentShader = config->fragmentShaderPath ? config->fragmentShaderPath : "";
+        cppConfig.useDepthBuffer = config->useDepthBuffer;
+        cppConfig.depthTestEnable = config->depthTestEnable;
+        cppConfig.cullBackFaces = config->cullBackFaces;
+        cppConfig.alphaBlending = config->alphaBlending;
+
+        auto* rasterizer = new tracey::Rasterizer(dev, cppConfig);
+        return reinterpret_cast<TraceyRasterizer*>(rasterizer);
+    } catch (const std::exception& e) {
+        setError(std::string("Rasterizer creation failed: ") + e.what());
+        return nullptr;
+    } catch (...) {
+        setError("Rasterizer creation failed: unknown error");
+        return nullptr;
+    }
+}
+
+void tracey_rasterizer_destroy(TraceyRasterizer* rasterizer)
+{
+    if (rasterizer) {
+        delete reinterpret_cast<tracey::Rasterizer*>(rasterizer);
+    }
+}
+
+double tracey_rasterizer_render(
+    TraceyRasterizer* rasterizer,
+    TraceyCompiledScene* compiledScene,
+    const TraceyCamera* camera)
+{
+    if (!rasterizer || !compiledScene || !camera) {
+        setError("Null pointer parameter");
+        return -1.0;
+    }
+
+    try {
+        clearError();
+        auto* rast = reinterpret_cast<tracey::Rasterizer*>(rasterizer);
+        auto* scene = reinterpret_cast<tracey::SceneCompiler::CompiledScene*>(compiledScene);
+
+        double renderTime = rast->render(*scene, toCamera(*camera));
+        return renderTime;
+    } catch (const std::exception& e) {
+        setError(std::string("Rendering failed: ") + e.what());
+        return -1.0;
+    } catch (...) {
+        setError("Rendering failed: unknown error");
+        return -1.0;
+    }
+}
+
+size_t tracey_rasterizer_readback(
+    TraceyRasterizer* rasterizer,
+    void* outBuffer,
+    size_t bufferSize)
+{
+    if (!rasterizer || !outBuffer || bufferSize == 0) {
+        setError("Invalid parameter");
+        return 0;
+    }
+
+    try {
+        clearError();
+        auto* rast = reinterpret_cast<tracey::Rasterizer*>(rasterizer);
+        return rast->readback(outBuffer);
+    } catch (const std::exception& e) {
+        setError(std::string("Readback failed: ") + e.what());
+        return 0;
+    } catch (...) {
+        setError("Readback failed: unknown error");
+        return 0;
+    }
+}
+
+TraceyResult tracey_rasterizer_get_resolution(
+    TraceyRasterizer* rasterizer,
+    uint32_t* outWidth,
+    uint32_t* outHeight)
+{
+    if (!rasterizer || !outWidth || !outHeight) {
+        setError("Null pointer parameter");
+        return TRACEY_ERROR_NULL_POINTER;
+    }
+
+    try {
+        clearError();
+        auto* rast = reinterpret_cast<tracey::Rasterizer*>(rasterizer);
+        *outWidth = rast->width();
+        *outHeight = rast->height();
+        return TRACEY_SUCCESS;
+    } catch (const std::exception& e) {
+        setError(std::string("Failed to get resolution: ") + e.what());
+        return TRACEY_ERROR_UNKNOWN;
+    } catch (...) {
+        setError("Failed to get resolution: unknown error");
+        return TRACEY_ERROR_UNKNOWN;
+    }
+}
+
+// ============================================================================
 // Error Handling
 // ============================================================================
 
@@ -1241,6 +1428,362 @@ TraceyCamera tracey_camera_default(void)
     c.farPlane = 1000.0f;
     c.aspectRatio = 1.0f;
     return c;
+}
+
+// ============================================================================
+// Native Window Presentation
+// ============================================================================
+
+TraceyPresenter* tracey_presenter_create(
+    TraceyDevice* device,
+    void* nativeWindowHandle,
+    void* nativeDisplayHandle,
+    const TraceyPresenterConfig* config)
+{
+    if (!device) {
+        setError("Device pointer is null");
+        return nullptr;
+    }
+
+    if (!nativeWindowHandle) {
+        setError("Native window handle is null");
+        return nullptr;
+    }
+
+    if (!config) {
+        setError("Config pointer is null");
+        return nullptr;
+    }
+
+    try {
+        clearError();
+
+        // Cast device to internal type
+        auto* deviceImpl = reinterpret_cast<tracey::Device*>(device);
+
+        // Get VulkanComputeDevice (only GPU devices support presentation)
+        auto* vulkanDevice = dynamic_cast<tracey::VulkanComputeDevice*>(deviceImpl);
+        if (!vulkanDevice) {
+            setError("Device is not a Vulkan GPU device (presentation requires GPU)");
+            return nullptr;
+        }
+
+        // Get VulkanContext
+        tracey::VulkanContext& context = vulkanDevice->context();
+
+        // Create Vulkan surface from native handle
+        VkSurfaceKHR surface = VK_NULL_HANDLE;
+        std::string surfaceError = tracey::VulkanSurfaceFactory::createSurface(
+            context.instance(),
+            nativeWindowHandle,
+            nativeDisplayHandle,
+            &surface
+        );
+
+        if (!surfaceError.empty()) {
+            setError("Failed to create Vulkan surface: " + surfaceError);
+            return nullptr;
+        }
+
+        // Create presenter config
+        tracey::PresenterConfig presenterConfig;
+        presenterConfig.width = config->width;
+        presenterConfig.height = config->height;
+        presenterConfig.enableHDR = config->enableHDR;
+        presenterConfig.desiredImageCount = config->desiredImageCount;
+
+        // Create presenter
+        auto* presenter = new tracey::VulkanPresenter(context, surface, presenterConfig);
+        return reinterpret_cast<TraceyPresenter*>(presenter);
+
+    } catch (const std::exception& e) {
+        setError(std::string("Presenter creation failed: ") + e.what());
+        return nullptr;
+    } catch (...) {
+        setError("Presenter creation failed: unknown error");
+        return nullptr;
+    }
+}
+
+void tracey_presenter_destroy(TraceyPresenter* presenter)
+{
+    if (presenter) {
+        try {
+            delete reinterpret_cast<tracey::VulkanPresenter*>(presenter);
+        } catch (const std::exception& e) {
+            // Log error but don't propagate exception across FFI boundary
+            setError(std::string("Presenter destruction failed: ") + e.what());
+        } catch (...) {
+            setError("Presenter destruction failed: unknown error");
+        }
+    }
+}
+
+TraceyResult tracey_presenter_present_pathtracer(
+    TraceyPresenter* presenter,
+    TraceyPathTracer* pathTracer)
+{
+    if (!presenter) {
+        setError("Presenter pointer is null");
+        return TRACEY_ERROR_INVALID_ARGUMENT;
+    }
+
+    if (!pathTracer) {
+        setError("PathTracer pointer is null");
+        return TRACEY_ERROR_INVALID_ARGUMENT;
+    }
+
+    try {
+        clearError();
+
+        auto* presenterImpl = reinterpret_cast<tracey::VulkanPresenter*>(presenter);
+        auto* pathTracerImpl = reinterpret_cast<tracey::PathTracer*>(pathTracer);
+
+        // Get output image from path tracer
+        auto* outputImage = pathTracerImpl->outputImage();
+        if (!outputImage) {
+            setError("PathTracer has no output image");
+            return TRACEY_ERROR_INVALID_STATE;
+        }
+
+        // Cast to VulkanImage2D (safe because GPU devices create VulkanImage2D instances)
+        auto* vulkanImage = dynamic_cast<tracey::VulkanImage2D*>(outputImage);
+        if (!vulkanImage) {
+            setError("Output image is not a Vulkan image (presentation requires GPU device)");
+            return TRACEY_ERROR_INVALID_STATE;
+        }
+
+        // Present the image
+        bool success = presenterImpl->present(vulkanImage, true);
+        if (!success) {
+            setError("Presentation failed (swapchain may need recreation)");
+            return TRACEY_ERROR_PRESENTATION_FAILED;
+        }
+
+        return TRACEY_SUCCESS;
+
+    } catch (const std::exception& e) {
+        setError(std::string("Present failed: ") + e.what());
+        return TRACEY_ERROR_UNKNOWN;
+    } catch (...) {
+        setError("Present failed: unknown error");
+        return TRACEY_ERROR_UNKNOWN;
+    }
+}
+
+TraceyResult tracey_presenter_present_rasterizer(
+    TraceyPresenter* presenter,
+    TraceyRasterizer* rasterizer)
+{
+    if (!presenter) {
+        setError("Presenter pointer is null");
+        return TRACEY_ERROR_INVALID_ARGUMENT;
+    }
+
+    if (!rasterizer) {
+        setError("Rasterizer pointer is null");
+        return TRACEY_ERROR_INVALID_ARGUMENT;
+    }
+
+    try {
+        clearError();
+
+        auto* presenterImpl = reinterpret_cast<tracey::VulkanPresenter*>(presenter);
+        auto* rasterizerImpl = reinterpret_cast<tracey::Rasterizer*>(rasterizer);
+
+        // Get output image from rasterizer
+        auto* outputImage = rasterizerImpl->outputImage();
+        if (!outputImage) {
+            setError("Rasterizer has no output image");
+            return TRACEY_ERROR_INVALID_STATE;
+        }
+
+        // Cast to VulkanImage2D (safe because GPU devices create VulkanImage2D instances)
+        auto* vulkanImage = dynamic_cast<tracey::VulkanImage2D*>(outputImage);
+        if (!vulkanImage) {
+            setError("Output image is not a Vulkan image (presentation requires GPU device)");
+            return TRACEY_ERROR_INVALID_STATE;
+        }
+
+        // Present the image
+        bool success = presenterImpl->present(vulkanImage, true);
+        if (!success) {
+            setError("Presentation failed (swapchain may need recreation)");
+            return TRACEY_ERROR_PRESENTATION_FAILED;
+        }
+
+        return TRACEY_SUCCESS;
+
+    } catch (const std::exception& e) {
+        setError(std::string("Present failed: ") + e.what());
+        return TRACEY_ERROR_UNKNOWN;
+    } catch (...) {
+        setError("Present failed: unknown error");
+        return TRACEY_ERROR_UNKNOWN;
+    }
+}
+
+TraceyResult tracey_presenter_present_pathtracer_to_region(
+    TraceyPresenter* presenter,
+    TraceyPathTracer* pathTracer,
+    const TraceyViewportBounds* bounds)
+{
+    if (!presenter) {
+        setError("Presenter pointer is null");
+        return TRACEY_ERROR_INVALID_ARGUMENT;
+    }
+
+    if (!pathTracer) {
+        setError("PathTracer pointer is null");
+        return TRACEY_ERROR_INVALID_ARGUMENT;
+    }
+
+    if (!bounds) {
+        setError("ViewportBounds pointer is null");
+        return TRACEY_ERROR_INVALID_ARGUMENT;
+    }
+
+    try {
+        clearError();
+
+        auto* presenterImpl = reinterpret_cast<tracey::VulkanPresenter*>(presenter);
+        auto* pathTracerImpl = reinterpret_cast<tracey::PathTracer*>(pathTracer);
+
+        // Get output image from path tracer
+        auto* outputImage = pathTracerImpl->outputImage();
+        if (!outputImage) {
+            setError("PathTracer has no output image");
+            return TRACEY_ERROR_INVALID_STATE;
+        }
+
+        // Cast to VulkanImage2D
+        auto* vulkanImage = dynamic_cast<tracey::VulkanImage2D*>(outputImage);
+        if (!vulkanImage) {
+            setError("Output image is not a Vulkan image (presentation requires GPU device)");
+            return TRACEY_ERROR_INVALID_STATE;
+        }
+
+        // Present the image to specified region
+        bool success = presenterImpl->presentToRegion(
+            vulkanImage,
+            bounds->x, bounds->y,
+            bounds->width, bounds->height,
+            true
+        );
+
+        if (!success) {
+            setError("Presentation failed (swapchain may need recreation)");
+            return TRACEY_ERROR_PRESENTATION_FAILED;
+        }
+
+        return TRACEY_SUCCESS;
+
+    } catch (const std::exception& e) {
+        setError(std::string("Present to region failed: ") + e.what());
+        return TRACEY_ERROR_UNKNOWN;
+    } catch (...) {
+        setError("Present to region failed: unknown error");
+        return TRACEY_ERROR_UNKNOWN;
+    }
+}
+
+TraceyResult tracey_presenter_present_rasterizer_to_region(
+    TraceyPresenter* presenter,
+    TraceyRasterizer* rasterizer,
+    const TraceyViewportBounds* bounds)
+{
+    if (!presenter) {
+        setError("Presenter pointer is null");
+        return TRACEY_ERROR_INVALID_ARGUMENT;
+    }
+
+    if (!rasterizer) {
+        setError("Rasterizer pointer is null");
+        return TRACEY_ERROR_INVALID_ARGUMENT;
+    }
+
+    if (!bounds) {
+        setError("ViewportBounds pointer is null");
+        return TRACEY_ERROR_INVALID_ARGUMENT;
+    }
+
+    try {
+        clearError();
+
+        auto* presenterImpl = reinterpret_cast<tracey::VulkanPresenter*>(presenter);
+        auto* rasterizerImpl = reinterpret_cast<tracey::Rasterizer*>(rasterizer);
+
+        // Get output image from rasterizer
+        auto* outputImage = rasterizerImpl->outputImage();
+        if (!outputImage) {
+            setError("Rasterizer has no output image");
+            return TRACEY_ERROR_INVALID_STATE;
+        }
+
+        // Cast to VulkanImage2D
+        auto* vulkanImage = dynamic_cast<tracey::VulkanImage2D*>(outputImage);
+        if (!vulkanImage) {
+            setError("Output image is not a Vulkan image (presentation requires GPU device)");
+            return TRACEY_ERROR_INVALID_STATE;
+        }
+
+        // Present the image to specified region
+        bool success = presenterImpl->presentToRegion(
+            vulkanImage,
+            bounds->x, bounds->y,
+            bounds->width, bounds->height,
+            true
+        );
+
+        if (!success) {
+            setError("Presentation failed (swapchain may need recreation)");
+            return TRACEY_ERROR_PRESENTATION_FAILED;
+        }
+
+        return TRACEY_SUCCESS;
+
+    } catch (const std::exception& e) {
+        setError(std::string("Present to region failed: ") + e.what());
+        return TRACEY_ERROR_UNKNOWN;
+    } catch (...) {
+        setError("Present to region failed: unknown error");
+        return TRACEY_ERROR_UNKNOWN;
+    }
+}
+
+TraceyResult tracey_presenter_resize(
+    TraceyPresenter* presenter,
+    uint32_t newWidth,
+    uint32_t newHeight)
+{
+    if (!presenter) {
+        setError("Presenter pointer is null");
+        return TRACEY_ERROR_INVALID_ARGUMENT;
+    }
+
+    try {
+        clearError();
+
+        auto* presenterImpl = reinterpret_cast<tracey::VulkanPresenter*>(presenter);
+        presenterImpl->resize(newWidth, newHeight);
+
+        return TRACEY_SUCCESS;
+
+    } catch (const std::exception& e) {
+        setError(std::string("Resize failed: ") + e.what());
+        return TRACEY_ERROR_UNKNOWN;
+    } catch (...) {
+        setError("Resize failed: unknown error");
+        return TRACEY_ERROR_UNKNOWN;
+    }
+}
+
+void tracey_presenter_wait_idle(TraceyPresenter* presenter)
+{
+    if (presenter) {
+        auto* presenterImpl = reinterpret_cast<tracey::VulkanPresenter*>(presenter);
+        presenterImpl->waitIdle();
+    }
 }
 
 } // extern "C"

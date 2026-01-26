@@ -125,6 +125,21 @@ typedef struct {
 } TraceyPathTracerConfig;
 
 // ============================================================================
+// Rasterizer Configuration
+// ============================================================================
+
+typedef struct {
+    uint32_t width;
+    uint32_t height;
+    const char* vertexShaderPath;
+    const char* fragmentShaderPath;
+    bool useDepthBuffer;
+    bool depthTestEnable;
+    bool cullBackFaces;
+    bool alphaBlending;
+} TraceyRasterizerConfig;
+
+// ============================================================================
 // Result Codes
 // ============================================================================
 
@@ -139,6 +154,9 @@ typedef enum {
     TRACEY_ERROR_RENDERING_FAILED = -7,
     TRACEY_ERROR_NULL_POINTER = -8,
     TRACEY_ERROR_NOT_FOUND = -9,
+    TRACEY_ERROR_INVALID_ARGUMENT = -10,
+    TRACEY_ERROR_INVALID_STATE = -11,
+    TRACEY_ERROR_PRESENTATION_FAILED = -12,
     TRACEY_ERROR_UNKNOWN = -999
 } TraceyResult;
 

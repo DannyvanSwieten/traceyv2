@@ -72,6 +72,10 @@ namespace tracey
         uvStructure.addMember({"uvs", "vec2", 0, true, 0});
         m_pipelineLayout->addStorageBuffer("uvBuffer", ShaderStage::ClosestHit, uvStructure);
 
+        StructureLayout vertexOffsetStructure("VertexOffsets");
+        vertexOffsetStructure.addMember({"offsets", "uint", 0, true, 0});
+        m_pipelineLayout->addStorageBuffer("vertexOffsets", ShaderStage::ClosestHit, vertexOffsetStructure);
+
         // Bindless texture support: separate samplers and image array
         // Using 256 textures (maxPerStageDescriptorSampledImages limit on macOS)
         m_pipelineLayout->addSampler("linearSampler", ShaderStage::ClosestHit);
@@ -115,6 +119,11 @@ namespace tracey
                 descriptorSet->setBuffer("uvBuffer", scene.uvBuffer.get());
             }
 
+            if (scene.vertexOffsetBuffer)
+            {
+                descriptorSet->setBuffer("vertexOffsets", scene.vertexOffsetBuffer.get());
+            }
+
             // Bind samplers for bindless texture support
             descriptorSet->setSampler("linearSampler", true);   // Linear filtering
             descriptorSet->setSampler("nearestSampler", false); // Nearest filtering
@@ -140,7 +149,7 @@ namespace tracey
         m_shaderInputs->setVec3("cameraForward", camera.forward());
         m_shaderInputs->setVec3("cameraRight", camera.right());
         m_shaderInputs->setVec3("cameraUp", camera.up());
-        m_shaderInputs->setInt("currentSample", m_sampleCount + 1);
+        // m_shaderInputs->setInt("currentSample", m_sampleCount + 1);
         m_shaderInputs->setUint("maxDepth", m_config.maxBounces);
         m_shaderInputs->upload();
     }
@@ -180,6 +189,7 @@ namespace tracey
         TraceRaysParams traceParams;
         traceParams.samplesPerFrame = m_config.samplesPerFrame;
         traceParams.maxBounces = m_config.maxBounces;
+        traceParams.baseSampleCount = m_sampleCount; // For resolve shader accumulation
         m_commandBuffer->traceRays(*m_pipelineBuilder->getShaderBindingTable(),
                                    m_config.width, m_config.height, traceParams);
         m_commandBuffer->copyImageToBuffer(m_outputImage.get(), m_readbackBuffer.get());
@@ -189,7 +199,7 @@ namespace tracey
         m_commandBuffer->waitUntilCompleted();
         auto endTime = std::chrono::high_resolution_clock::now();
 
-        m_sampleCount++;
+        m_sampleCount += m_config.samplesPerFrame;
 
         std::chrono::duration<double, std::milli> executionTime = endTime - startTime;
         return executionTime.count();

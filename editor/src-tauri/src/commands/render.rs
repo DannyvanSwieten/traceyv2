@@ -1,7 +1,7 @@
 //! Rendering Tauri commands
 
 use crate::ffi::Camera;
-use crate::renderer::RenderResult;
+use crate::renderer::{RenderMode, RenderResult};
 use crate::AppState;
 use tauri::State;
 
@@ -78,6 +78,18 @@ pub async fn compile_scene(state: State<'_, AppState>) -> Result<(), String> {
 }
 
 #[tauri::command]
+pub async fn update_scene_transforms(state: State<'_, AppState>) -> Result<(), String> {
+    let scene = state.scene.lock().map_err(|_| "Failed to lock scene")?;
+    let mut engine = state
+        .engine
+        .lock()
+        .map_err(|_| "Failed to lock engine")?;
+
+    engine.update_transforms(&scene)?;
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn get_viewport_resolution(state: State<'_, AppState>) -> Result<(u32, u32), String> {
     let viewport = state.viewport.lock().map_err(|_| "Failed to lock viewport")?;
     viewport.get_resolution()
@@ -133,4 +145,38 @@ pub async fn set_max_bounces(
         .lock()
         .map_err(|_| "Failed to lock engine")?;
     engine.set_max_bounces(bounces)
+}
+
+#[tauri::command]
+pub async fn get_render_mode(state: State<'_, AppState>) -> Result<String, String> {
+    let engine = state
+        .engine
+        .lock()
+        .map_err(|_| "Failed to lock engine")?;
+
+    let mode = match engine.get_render_mode() {
+        RenderMode::PathTracer => "PathTracer",
+        RenderMode::Rasterizer => "Rasterizer",
+    };
+
+    Ok(mode.to_string())
+}
+
+#[tauri::command]
+pub async fn set_render_mode(
+    state: State<'_, AppState>,
+    mode: String,
+) -> Result<(), String> {
+    let mut engine = state
+        .engine
+        .lock()
+        .map_err(|_| "Failed to lock engine")?;
+
+    let render_mode = match mode.as_str() {
+        "PathTracer" => RenderMode::PathTracer,
+        "Rasterizer" => RenderMode::Rasterizer,
+        _ => return Err(format!("Invalid render mode: {}", mode)),
+    };
+
+    engine.set_render_mode(render_mode)
 }

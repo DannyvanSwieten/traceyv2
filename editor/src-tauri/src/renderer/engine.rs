@@ -1,16 +1,27 @@
-//! Rendering engine that orchestrates path tracing
+//! Rendering engine that orchestrates rendering (path tracing and rasterization)
 
 use crate::ffi::{
     Camera, CompiledScene, Device, DeviceBackend, DeviceType, InstanceInfo, MeshInfo, PathTracer,
-    PathTracerConfig, Scene as CppScene, TextureInfo,
+    PathTracerConfig, Rasterizer, RasterizerConfig, Scene as CppScene, TextureInfo,
 };
 use crate::scene::SceneState;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+/// Rendering mode selection
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RenderMode {
+    /// Real-time rasterization for interactive preview
+    Rasterizer,
+    /// Path tracing for high-quality final rendering
+    PathTracer,
+}
+
 pub struct RenderEngine {
     device: Arc<Device>,
     path_tracer: Option<PathTracer>,
+    rasterizer: Option<Rasterizer>,
+    render_mode: RenderMode,
     compiled_scene: Option<CompiledScene>,
     cpp_scene: Mutex<CppScene>,
     config: RenderConfig,
@@ -36,6 +47,8 @@ impl RenderEngine {
         Ok(Self {
             device: Arc::new(device),
             path_tracer: None,
+            rasterizer: None,
+            render_mode: RenderMode::PathTracer, // Default to path tracer
             compiled_scene: None,
             cpp_scene: Mutex::new(cpp_scene),
             config,
@@ -68,6 +81,32 @@ impl RenderEngine {
         Ok(())
     }
 
+    /// Initialize rasterizer with shader paths
+    /// Uses simple shaders for MoltenVK compatibility (no bindless textures)
+    pub fn initialize_rasterizer(&mut self) -> Result<(), String> {
+        // Use position-only shaders (compatible with our vertex buffer layout)
+        // TODO: Replace with PBR shaders once normals/UVs are added to vertex buffers
+        let vertex_shader = self.config.shader_dir.join("rasterizer/position_only.vert.spv");
+        let fragment_shader = self.config.shader_dir.join("rasterizer/position_only.frag.spv");
+
+        let rasterizer_config = RasterizerConfig {
+            width: self.config.width,
+            height: self.config.height,
+            vertex_shader: vertex_shader.to_string_lossy().to_string(),
+            fragment_shader: fragment_shader.to_string_lossy().to_string(),
+            use_depth_buffer: false,
+            depth_test_enable: false,
+            cull_back_faces: true,
+            alpha_blending: false,
+        };
+
+        let rasterizer = Rasterizer::new(&self.device, &rasterizer_config)
+            .map_err(|e| format!("Failed to create rasterizer: {}", e))?;
+
+        self.rasterizer = Some(rasterizer);
+        Ok(())
+    }
+
     /// Compile the scene for rendering
     pub fn compile_scene(&mut self, scene: &SceneState) -> Result<(), String> {
         let mut cpp_scene = self
@@ -86,18 +125,61 @@ impl RenderEngine {
         Ok(())
     }
 
-    /// Render a frame
+    /// Update only transforms in the compiled scene (fast update for animations)
+    /// This rebuilds the TLAS but keeps geometry, materials, and textures
+    pub fn update_transforms(&mut self, scene: &SceneState) -> Result<(), String> {
+        let mut cpp_scene = self
+            .cpp_scene
+            .lock()
+            .map_err(|_| "Failed to lock scene".to_string())?;
+
+        // Sync transforms to C++ scene
+        scene.sync_to_cpp(&mut cpp_scene)?;
+
+        // Update transforms in the existing compiled scene
+        let compiled = self.compiled_scene.as_mut()
+            .ok_or("Scene not compiled - call compile_scene first".to_string())?;
+
+        compiled.update_transforms(&self.device, &cpp_scene)
+            .map_err(|e| format!("Failed to update transforms: {}", e))?;
+
+        Ok(())
+    }
+
+    /// Render a frame using the active renderer (path tracer or rasterizer)
     pub fn render_frame(
         &mut self,
         camera: &Camera,
         clear_accumulation: bool,
     ) -> Result<RenderResult, String> {
+        // Check scene is compiled before borrowing
+        if self.compiled_scene.is_none() {
+            return Err("Scene not compiled".to_string());
+        }
+
+        match self.render_mode {
+            RenderMode::PathTracer => {
+                println!("Rendering with path tracer");
+                self.render_with_path_tracer(camera, clear_accumulation)
+            }
+            RenderMode::Rasterizer => {
+                println!("Rendering with rasterizer");
+                self.render_with_rasterizer(camera)
+            }
+        }
+    }
+
+    /// Render using path tracer
+    fn render_with_path_tracer(
+        &mut self,
+        camera: &Camera,
+        clear_accumulation: bool,
+    ) -> Result<RenderResult, String> {
+        let compiled = self.compiled_scene.as_ref().ok_or("Scene not compiled")?;
         let tracer = self
             .path_tracer
             .as_mut()
             .ok_or("Path tracer not initialized")?;
-
-        let compiled = self.compiled_scene.as_ref().ok_or("Scene not compiled")?;
 
         let render_time = tracer
             .render(compiled, camera, clear_accumulation)
@@ -125,6 +207,38 @@ impl RenderEngine {
             width,
             height,
             sample_count,
+            render_time_ms: render_time,
+        })
+    }
+
+    /// Render using rasterizer (realtime preview)
+    fn render_with_rasterizer(
+        &mut self,
+        camera: &Camera,
+    ) -> Result<RenderResult, String> {
+        let compiled = self.compiled_scene.as_ref().ok_or("Scene not compiled")?;
+
+        let rasterizer = self
+            .rasterizer
+            .as_mut()
+            .ok_or("Rasterizer not initialized")?;
+
+        let render_time = rasterizer
+            .render(compiled, camera)
+            .map_err(|e| format!("Rasterizer render failed: {}", e))?;
+
+        let pixels = rasterizer
+            .readback()
+            .map_err(|e| format!("Rasterizer readback failed: {}", e))?;
+
+        let width = rasterizer.width();
+        let height = rasterizer.height();
+
+        Ok(RenderResult {
+            pixels,
+            width,
+            height,
+            sample_count: 1, // Rasterizer doesn't accumulate samples
             render_time_ms: render_time,
         })
     }
@@ -168,12 +282,22 @@ impl RenderEngine {
 
     /// Load a GLTF file into the scene
     pub fn load_gltf(&mut self, scene: &mut SceneState, path: &str) -> Result<(), String> {
+        self.load_gltf_with_project(scene, path, None)
+    }
+
+    /// Load a GLTF file into the scene with optional project root
+    pub fn load_gltf_with_project(
+        &mut self,
+        scene: &mut SceneState,
+        path: &str,
+        project_root: Option<&str>,
+    ) -> Result<(), String> {
         let mut cpp_scene = self
             .cpp_scene
             .lock()
             .map_err(|_| "Failed to lock scene".to_string())?;
 
-        scene.load_gltf(&mut cpp_scene, path)?;
+        scene.load_gltf_with_project(&mut cpp_scene, path, project_root)?;
         Ok(())
     }
 
@@ -184,8 +308,44 @@ impl RenderEngine {
     pub fn set_resolution(&mut self, width: u32, height: u32) {
         self.config.width = width;
         self.config.height = height;
-        // Path tracer needs to be recreated with new resolution
+        // Both renderers need to be recreated with new resolution
         self.path_tracer = None;
+        self.rasterizer = None;
+    }
+
+    /// Get the current render mode
+    pub fn get_render_mode(&self) -> RenderMode {
+        self.render_mode
+    }
+
+    /// Set the render mode (PathTracer or Rasterizer)
+    /// Automatically initializes the selected renderer if not already initialized
+    pub fn set_render_mode(&mut self, mode: RenderMode) -> Result<(), String> {
+        println!("Setting render mode to: {:?}", mode);
+        self.render_mode = mode;
+
+        // Initialize the selected renderer if needed
+        match mode {
+            RenderMode::PathTracer => {
+                if self.path_tracer.is_none() {
+                    println!("Initializing path tracer...");
+                    self.initialize_path_tracer()?;
+                    println!("Path tracer initialized successfully");
+                }
+            }
+            RenderMode::Rasterizer => {
+                if self.rasterizer.is_none() {
+                    println!("Initializing rasterizer...");
+                    self.initialize_rasterizer()?;
+                    println!("Rasterizer initialized successfully");
+                } else {
+                    println!("Rasterizer already initialized");
+                }
+            }
+        }
+
+        println!("Render mode set successfully to: {:?}", mode);
+        Ok(())
     }
 
     pub fn get_samples_per_frame(&self) -> u32 {
@@ -389,6 +549,21 @@ impl RenderEngine {
         cpp_scene
             .add_cone(name, radius, height, segments)
             .map_err(|e| format!("Failed to add cone: {}", e))
+    }
+
+    /// Get device reference (for presenter creation)
+    pub fn device(&self) -> &Device {
+        &self.device
+    }
+
+    /// Get path tracer reference (for direct presentation)
+    pub fn pathtracer(&self) -> Option<&PathTracer> {
+        self.path_tracer.as_ref()
+    }
+
+    /// Get rasterizer reference (for direct presentation)
+    pub fn rasterizer(&self) -> Option<&Rasterizer> {
+        self.rasterizer.as_ref()
     }
 }
 

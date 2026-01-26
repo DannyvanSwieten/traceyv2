@@ -42,6 +42,52 @@ export const ActorProperties: Component<ActorPropertiesProps> = (props) => {
     return props.actors().find((a) => a.id === id) || null;
   };
 
+  // Convert quaternion to Euler angles (in degrees)
+  const quatToEuler = (q: { w: number; x: number; y: number; z: number }) => {
+    // Roll (x-axis rotation)
+    const sinr_cosp = 2 * (q.w * q.x + q.y * q.z);
+    const cosr_cosp = 1 - 2 * (q.x * q.x + q.y * q.y);
+    const roll = Math.atan2(sinr_cosp, cosr_cosp);
+
+    // Pitch (y-axis rotation)
+    const sinp = 2 * (q.w * q.y - q.z * q.x);
+    const pitch = Math.abs(sinp) >= 1
+      ? Math.sign(sinp) * Math.PI / 2
+      : Math.asin(sinp);
+
+    // Yaw (z-axis rotation)
+    const siny_cosp = 2 * (q.w * q.z + q.x * q.y);
+    const cosy_cosp = 1 - 2 * (q.y * q.y + q.z * q.z);
+    const yaw = Math.atan2(siny_cosp, cosy_cosp);
+
+    return {
+      x: roll * 180 / Math.PI,
+      y: pitch * 180 / Math.PI,
+      z: yaw * 180 / Math.PI,
+    };
+  };
+
+  // Convert Euler angles (in degrees) to quaternion
+  const eulerToQuat = (euler: { x: number; y: number; z: number }) => {
+    const roll = euler.x * Math.PI / 180;
+    const pitch = euler.y * Math.PI / 180;
+    const yaw = euler.z * Math.PI / 180;
+
+    const cy = Math.cos(yaw * 0.5);
+    const sy = Math.sin(yaw * 0.5);
+    const cp = Math.cos(pitch * 0.5);
+    const sp = Math.sin(pitch * 0.5);
+    const cr = Math.cos(roll * 0.5);
+    const sr = Math.sin(roll * 0.5);
+
+    return {
+      w: cr * cp * cy + sr * sp * sy,
+      x: sr * cp * cy - cr * sp * sy,
+      y: cr * sp * cy + sr * cp * sy,
+      z: cr * cp * sy - sr * sp * cy,
+    };
+  };
+
   createEffect(async () => {
     const id = props.selectedActorId();
     if (id === null) {
@@ -87,6 +133,37 @@ export const ActorProperties: Component<ActorPropertiesProps> = (props) => {
     }
   };
 
+  const updateRotation = async (
+    actor: Actor,
+    axis: 'x' | 'y' | 'z',
+    degrees: number
+  ) => {
+    // Get current Euler angles
+    const currentEuler = quatToEuler(actor.transform.rotation);
+
+    // Update the specified axis
+    const newEuler = { ...currentEuler, [axis]: degrees };
+
+    // Convert back to quaternion
+    const newQuat = eulerToQuat(newEuler);
+
+    const newTransform: Transform = {
+      position: { ...actor.transform.position },
+      rotation: newQuat,
+      scale: { ...actor.transform.scale },
+    };
+
+    try {
+      await invoke('set_actor_transform', {
+        actorId: actor.id,
+        transform: newTransform,
+      });
+      props.onTransformChange?.(actor.id, newTransform);
+    } catch (error) {
+      console.error('Failed to update transform:', error);
+    }
+  };
+
   const handleInputChange = (
     actor: Actor,
     field: 'position' | 'scale',
@@ -96,6 +173,17 @@ export const ActorProperties: Component<ActorPropertiesProps> = (props) => {
     const value = parseFloat(inputValue);
     if (!isNaN(value)) {
       updateTransform(actor, field, axis, value);
+    }
+  };
+
+  const handleRotationChange = (
+    actor: Actor,
+    axis: 'x' | 'y' | 'z',
+    inputValue: string
+  ) => {
+    const degrees = parseFloat(inputValue);
+    if (!isNaN(degrees)) {
+      updateRotation(actor, axis, degrees);
     }
   };
 
@@ -157,6 +245,47 @@ export const ActorProperties: Component<ActorPropertiesProps> = (props) => {
                       value={actor().transform.position.z.toFixed(3)}
                       onChange={(e) =>
                         handleInputChange(actor(), 'position', 'z', e.currentTarget.value)
+                      }
+                    />
+                  </div>
+                </div>
+              </div>
+              <div class="transform-group">
+                <span class="transform-label">Rotation</span>
+                <div class="transform-inputs">
+                  <div class="transform-input-row">
+                    <label for={`rot-x-${actor().id}`}>X</label>
+                    <input
+                      id={`rot-x-${actor().id}`}
+                      type="number"
+                      step="1"
+                      value={quatToEuler(actor().transform.rotation).x.toFixed(1)}
+                      onChange={(e) =>
+                        handleRotationChange(actor(), 'x', e.currentTarget.value)
+                      }
+                    />
+                  </div>
+                  <div class="transform-input-row">
+                    <label for={`rot-y-${actor().id}`}>Y</label>
+                    <input
+                      id={`rot-y-${actor().id}`}
+                      type="number"
+                      step="1"
+                      value={quatToEuler(actor().transform.rotation).y.toFixed(1)}
+                      onChange={(e) =>
+                        handleRotationChange(actor(), 'y', e.currentTarget.value)
+                      }
+                    />
+                  </div>
+                  <div class="transform-input-row">
+                    <label for={`rot-z-${actor().id}`}>Z</label>
+                    <input
+                      id={`rot-z-${actor().id}`}
+                      type="number"
+                      step="1"
+                      value={quatToEuler(actor().transform.rotation).z.toFixed(1)}
+                      onChange={(e) =>
+                        handleRotationChange(actor(), 'z', e.currentTarget.value)
                       }
                     />
                   </div>

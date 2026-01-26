@@ -33,10 +33,8 @@ impl Viewport {
             .lock()
             .map_err(|_| "Failed to lock engine".to_string())?;
 
-        // Ensure scene is compiled
-        if clear_accumulation {
-            engine.compile_scene(scene)?;
-        }
+        // Scene should be compiled explicitly via compile_scene command
+        // Not on every camera movement - that would be very slow!
 
         engine.render_frame(camera, clear_accumulation)
     }

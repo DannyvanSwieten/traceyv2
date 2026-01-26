@@ -74,6 +74,10 @@ namespace tracey
     class ShaderModule;
     class ShaderBindingTable;
     class RayTracingCommandBuffer;
+    class GraphicsPipeline;
+    struct GraphicsPipelineConfig;  // Note: struct not class
+    class GraphicsPipelineLayout;
+    class GraphicsCommandBuffer;
     class DescriptorSet;
     class Buffer;
     class Image2D;
@@ -81,11 +85,16 @@ namespace tracey
     {
     public:
         virtual ~Device() = default;
+        // Ray tracing pipeline creation
         virtual RayTracingPipeline *createRayTracingPipeline(const RayTracingPipelineLayoutDescriptor &layout, const ShaderBindingTable *sbt) = 0;
         virtual RayTracingPipeline *createWaveFrontRayTracingPipeline(const RayTracingPipelineLayoutDescriptor &layout, const ShaderBindingTable *sbt) = 0;
         virtual ShaderModule *createShaderModule(ShaderStage stage, const std::string_view source, const std::string_view entryPoint) = 0;
         virtual ShaderBindingTable *createShaderBindingTable(const ShaderModule *rayGen, const std::span<const ShaderModule *> hitShaders, const std::span<const ShaderModule *> missShaders, const ShaderModule *resolveShader = nullptr) = 0;
         virtual RayTracingCommandBuffer *createRayTracingCommandBuffer() = 0;
+
+        // Graphics pipeline creation (rasterization)
+        virtual GraphicsPipeline *createGraphicsPipeline(const GraphicsPipelineConfig &config, const GraphicsPipelineLayout &layout) = 0;
+        virtual GraphicsCommandBuffer *createGraphicsCommandBuffer() = 0;
         virtual Buffer *createBuffer(uint32_t size, BufferUsage usageFlags) = 0;
         virtual Image2D *createImage2D(uint32_t width, uint32_t height, ImageFormat format) = 0;
         virtual Image2D *createImage2DWithData(uint32_t width, uint32_t height, ImageFormat format,

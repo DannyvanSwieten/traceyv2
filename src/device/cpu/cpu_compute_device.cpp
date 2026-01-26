@@ -76,4 +76,14 @@ namespace tracey
     {
         return new CpuTopLevelAccelerationStructure(blases, instances);
     }
+
+    GraphicsPipeline *CpuComputeDevice::createGraphicsPipeline(const GraphicsPipelineConfig &, const GraphicsPipelineLayout &)
+    {
+        throw std::runtime_error("Graphics pipeline not supported on CPU device");
+    }
+
+    GraphicsCommandBuffer *CpuComputeDevice::createGraphicsCommandBuffer()
+    {
+        throw std::runtime_error("Graphics command buffer not supported on CPU device");
+    }
 } // namespace tracey

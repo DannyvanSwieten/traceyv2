@@ -121,7 +121,7 @@ namespace tracey
             uint32_t rayCount = width * height;
             uint32_t workGroups = (rayCount + 255) / 256;
 
-            WavefrontPushConstants pushConstants{width, height};
+            WavefrontPushConstants pushConstants{width, height, params.baseSampleCount, 0};
 
             // Initialize buffers once at the start
             initializeWavefrontBuffers(wavefront);
@@ -147,14 +147,6 @@ namespace tracey
                 dispatchRayGeneration(wavefront, pushConstants, workGroups);
                 insertComputeBarrier();
 
-                // DEBUG: Log execution flow (only for sample 0)
-                if (sample == 0)
-                {
-                    std::cout << "[DEBUG] After ray gen: dispatched " << workGroups << " workgroups for "
-                              << rayCount << " rays" << std::endl;
-                    std::cout << "[DEBUG] Descriptor sets available: " << m_descriptorSets.size() << std::endl;
-                }
-
                 // Bounce loop: trace rays through the scene
                 for (uint32_t bounce = 0; bounce < maxBounces; bounce++)
                 {
@@ -169,16 +161,6 @@ namespace tracey
 
                     // Clear queues for this bounce iteration
                     clearBounceBuffers(wavefront, bounce);
-
-                    // DEBUG: Log execution flow (only for sample 0, only first 2 bounces)
-                    if (sample == 0 && bounce < 2)
-                    {
-                        const char *currentBufferName = (bounce % 2 == 0) ? "rayQueueBuffer" : "rayQueueBuffer2";
-                        const char *nextBufferName = (bounce % 2 == 0) ? "rayQueueBuffer2" : "rayQueueBuffer";
-                        std::cout << "[DEBUG] Bounce " << bounce << ": descriptor set " << (bounce % 2)
-                                  << ", current buffer = " << currentBufferName
-                                  << ", next buffer = " << nextBufferName << std::endl;
-                    }
 
                     // Compute workgroup counts for indirect dispatch
                     dispatchPrepareIndirect(wavefront);
@@ -206,6 +188,7 @@ namespace tracey
                 }
 
                 // Write accumulated color to output image
+                pushConstants.localSampleIndex = static_cast<uint32_t>(sample);
                 dispatchResolve(wavefront, pushConstants, width, height);
             }
         }

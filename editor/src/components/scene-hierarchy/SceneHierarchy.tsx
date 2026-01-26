@@ -10,6 +10,7 @@ export interface Actor {
     scale: { x: number; y: number; z: number };
   };
   children: number[];
+  parent?: number | null;
 }
 
 interface TreeNode {

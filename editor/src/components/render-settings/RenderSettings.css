@@ -65,3 +65,58 @@
   min-width: 24px;
   text-align: right;
 }
+
+/* Render mode toggle */
+.render-mode-toggle {
+  display: flex;
+  gap: 6px;
+  width: 100%;
+}
+
+.mode-button {
+  flex: 1;
+  padding: 6px 12px;
+  font-size: 11px;
+  font-weight: 500;
+  color: #cccccc;
+  background: #2d2d2d;
+  border: 1px solid #3c3c3c;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  text-align: center;
+}
+
+.mode-button:hover {
+  background: #3c3c3c;
+  border-color: #4c4c4c;
+}
+
+.mode-button.active {
+  background: #0e639c;
+  border-color: #1177bb;
+  color: #ffffff;
+}
+
+.mode-button.active:hover {
+  background: #1177bb;
+  border-color: #1e8ad8;
+}
+
+/* Disabled state for path tracer settings */
+.setting-control input[type="range"]:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.setting-control input[type="range"]:disabled::-webkit-slider-thumb {
+  cursor: not-allowed;
+}
+
+.setting-row:has(input:disabled) label {
+  opacity: 0.6;
+}
+
+.setting-row:has(input:disabled) .setting-value {
+  opacity: 0.6;
+}

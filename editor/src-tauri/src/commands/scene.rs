@@ -73,14 +73,17 @@ pub async fn set_actor_transform(
     actor_id: u64,
     transform: Transform,
 ) -> Result<bool, String> {
-    // Update Rust scene state
+    // Update Rust scene state (local transform)
     let mut scene = state.scene.lock().map_err(|_| "Failed to lock scene")?;
     let updated = scene.set_actor_transform(actor_id, transform.clone());
 
-    // Also update C++ scene so changes take effect on next render
+    // Compute world transform and update C++ scene
     if updated {
+        let world_transform = scene.compute_world_transform(actor_id);
+        drop(scene); // Release scene lock before acquiring engine lock
+
         let engine = state.engine.lock().map_err(|_| "Failed to lock engine")?;
-        engine.set_actor_transform(actor_id, &transform)?;
+        engine.set_actor_transform(actor_id, &world_transform)?;
     }
 
     Ok(updated)
@@ -127,6 +130,31 @@ pub async fn remove_child(
 ) -> Result<bool, String> {
     let mut scene = state.scene.lock().map_err(|_| "Failed to lock scene")?;
     Ok(scene.remove_child(parent_id, child_id))
+}
+
+#[tauri::command]
+pub async fn set_actor_parent(
+    state: State<'_, AppState>,
+    actor_id: u64,
+    parent_id: Option<u64>,
+) -> Result<bool, String> {
+    let mut scene = state.scene.lock().map_err(|_| "Failed to lock scene")?;
+    Ok(scene.set_parent(actor_id, parent_id))
+}
+
+#[tauri::command]
+pub async fn get_root_actors(state: State<'_, AppState>) -> Result<Vec<u64>, String> {
+    let scene = state.scene.lock().map_err(|_| "Failed to lock scene")?;
+    Ok(scene.get_root_actors())
+}
+
+#[tauri::command]
+pub async fn get_world_transform(
+    state: State<'_, AppState>,
+    actor_id: u64,
+) -> Result<Transform, String> {
+    let scene = state.scene.lock().map_err(|_| "Failed to lock scene")?;
+    Ok(scene.compute_world_transform(actor_id))
 }
 
 // ============================================================================
@@ -256,6 +284,7 @@ pub async fn add_primitive(
             scale: Vec3::one(),
         },
         children: Vec::new(),
+        parent: None,
     };
     scene.actors.insert(actor_uid, actor.clone());
 

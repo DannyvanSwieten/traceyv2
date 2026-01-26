@@ -12,11 +12,16 @@ namespace tracey
 
         VkDevice vkDevice() const;
 
+        // Ray tracing
         RayTracingPipeline *createRayTracingPipeline(const RayTracingPipelineLayoutDescriptor &layout, const ShaderBindingTable *sbt) override;
         RayTracingPipeline *createWaveFrontRayTracingPipeline(const RayTracingPipelineLayoutDescriptor &layout, const ShaderBindingTable *sbt) override;
         ShaderModule *createShaderModule(ShaderStage stage, const std::string_view source, const std::string_view entryPoint) override;
         ShaderBindingTable *createShaderBindingTable(const ShaderModule *rayGen, const std::span<const ShaderModule *> hitShaders, const std::span<const ShaderModule *> missShaders, const ShaderModule *resolveShader = nullptr) override;
         RayTracingCommandBuffer *createRayTracingCommandBuffer() override;
+
+        // Graphics (rasterization)
+        GraphicsPipeline *createGraphicsPipeline(const GraphicsPipelineConfig &config, const GraphicsPipelineLayout &layout) override;
+        GraphicsCommandBuffer *createGraphicsCommandBuffer() override;
         Buffer *createBuffer(uint32_t size, BufferUsage usageFlags) override;
         Image2D *createImage2D(uint32_t width, uint32_t height, ImageFormat format) override;
         Image2D *createImage2DWithData(uint32_t width, uint32_t height, ImageFormat format,
@@ -32,6 +37,10 @@ namespace tracey
         VkDescriptorPool descriptorPool() const { return m_descriptorPool; }
         VkCommandPool commandPool() const { return m_commandPool; }
         VkQueue computeQueue() const { return m_vulkanContext.computeQueue(); }
+
+        // Get Vulkan context (for presentation, surface creation, etc.)
+        VulkanContext& context() { return m_vulkanContext; }
+        const VulkanContext& context() const { return m_vulkanContext; }
 
         // Get fixed samplers for bindless texture support
         VkSampler linearSampler() const { return m_linearSampler; }

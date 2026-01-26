@@ -16,6 +16,7 @@ typedef struct TraceyDevice TraceyDevice;
 typedef struct TraceyScene TraceyScene;
 typedef struct TraceyCompiledScene TraceyCompiledScene;
 typedef struct TraceyPathTracer TraceyPathTracer;
+typedef struct TraceyRasterizer TraceyRasterizer;
 
 // ============================================================================
 // Device Management
@@ -124,6 +125,17 @@ TraceyResult tracey_scene_get_camera(
 TraceyResult tracey_scene_load_gltf(
     TraceyScene* scene,
     const char* filePath
+);
+
+/// Load a GLTF/GLB file into the scene with project root for asset resolution
+/// @param scene Scene handle
+/// @param filePath Path to GLTF/GLB file
+/// @param projectRoot Optional project root directory for asset path resolution (can be NULL)
+/// @return TRACEY_SUCCESS or error code
+TraceyResult tracey_scene_load_gltf_with_project(
+    TraceyScene* scene,
+    const char* filePath,
+    const char* projectRoot
 );
 
 /// Get the number of actors in the scene
@@ -351,6 +363,18 @@ TraceyCompiledScene* tracey_compile_scene(
 /// @param compiledScene Compiled scene handle (can be NULL)
 void tracey_destroy_compiled_scene(TraceyCompiledScene* compiledScene);
 
+/// Update only instance transforms in a compiled scene (fast update for animations)
+/// This rebuilds the TLAS but keeps BLASes, vertex buffers, materials, and textures
+/// @param device Device to use
+/// @param scene Scene with updated transforms
+/// @param compiledScene Existing compiled scene to update
+/// @return 0 on success, -1 on failure
+int tracey_update_scene_transforms(
+    TraceyDevice* device,
+    TraceyScene* scene,
+    TraceyCompiledScene* compiledScene
+);
+
 // ============================================================================
 // Path Tracer
 // ============================================================================
@@ -433,6 +457,57 @@ uint32_t tracey_path_tracer_get_max_bounces(TraceyPathTracer* pathTracer);
 TraceyResult tracey_path_tracer_set_max_bounces(TraceyPathTracer* pathTracer, uint32_t bounces);
 
 // ============================================================================
+// Rasterizer
+// ============================================================================
+
+/// Create a rasterizer for realtime rendering
+/// @param device Device to use for rendering
+/// @param config Rasterizer configuration (shaders, resolution, etc.)
+/// @return Rasterizer handle, or NULL on failure
+TraceyRasterizer* tracey_rasterizer_create(
+    TraceyDevice* device,
+    const TraceyRasterizerConfig* config
+);
+
+/// Destroy a rasterizer and free resources
+/// @param rasterizer Rasterizer handle (can be NULL)
+void tracey_rasterizer_destroy(TraceyRasterizer* rasterizer);
+
+/// Render a frame using rasterization
+/// @param rasterizer Rasterizer handle
+/// @param compiledScene Compiled scene to render
+/// @param camera Camera to render from
+/// @return Render time in milliseconds, or negative value on error
+double tracey_rasterizer_render(
+    TraceyRasterizer* rasterizer,
+    TraceyCompiledScene* compiledScene,
+    const TraceyCamera* camera
+);
+
+/// Read back rendered image to CPU memory
+/// @param rasterizer Rasterizer handle
+/// @param outBuffer Buffer to receive pixel data (must be large enough)
+/// @param bufferSize Size of outBuffer in bytes
+/// @return Number of bytes written, or 0 on error
+/// @note Output: width * height * 4 bytes (R8G8B8A8)
+size_t tracey_rasterizer_readback(
+    TraceyRasterizer* rasterizer,
+    void* outBuffer,
+    size_t bufferSize
+);
+
+/// Get rasterizer output resolution
+/// @param rasterizer Rasterizer handle
+/// @param outWidth Pointer to receive width
+/// @param outHeight Pointer to receive height
+/// @return TRACEY_SUCCESS or error code
+TraceyResult tracey_rasterizer_get_resolution(
+    TraceyRasterizer* rasterizer,
+    uint32_t* outWidth,
+    uint32_t* outHeight
+);
+
+// ============================================================================
 // Error Handling
 // ============================================================================
 
@@ -457,6 +532,111 @@ TraceyTransform tracey_transform_identity(void);
 
 /// Create a default camera
 TraceyCamera tracey_camera_default(void);
+
+// ============================================================================
+// Native Window Presentation
+// ============================================================================
+
+/// Opaque presenter handle for native window presentation
+typedef struct TraceyPresenter TraceyPresenter;
+
+/// Presenter configuration
+typedef struct TraceyPresenterConfig {
+    uint32_t width;                 ///< Window width in pixels
+    uint32_t height;                ///< Window height in pixels
+    bool enableHDR;                 ///< Enable HDR if available
+    uint32_t desiredImageCount;     ///< Number of swapchain images (2=double, 3=triple)
+} TraceyPresenterConfig;
+
+/// Viewport bounds for region-based presentation
+typedef struct TraceyViewportBounds {
+    int32_t x;                      ///< Viewport X position in window
+    int32_t y;                      ///< Viewport Y position in window
+    uint32_t width;                 ///< Viewport width
+    uint32_t height;                ///< Viewport height
+} TraceyViewportBounds;
+
+/// Create a presenter for native window
+/// @param device The compute device (must be GPU-based Vulkan device)
+/// @param nativeWindowHandle Platform-specific window handle:
+///   - macOS: CAMetalLayer* (from NSView's layer)
+///   - Windows: HWND
+///   - Linux X11: Window (cast to void*)
+///   - Linux Wayland: wl_surface*
+/// @param nativeDisplayHandle Platform-specific display handle:
+///   - macOS: NULL (not needed)
+///   - Windows: HINSTANCE (from GetModuleHandle)
+///   - Linux X11: Display*
+///   - Linux Wayland: wl_display*
+/// @param config Presenter configuration
+/// @return Presenter instance, or NULL on failure
+TraceyPresenter* tracey_presenter_create(
+    TraceyDevice* device,
+    void* nativeWindowHandle,
+    void* nativeDisplayHandle,
+    const TraceyPresenterConfig* config
+);
+
+/// Destroy a presenter
+/// @param presenter The presenter to destroy
+void tracey_presenter_destroy(TraceyPresenter* presenter);
+
+/// Present PathTracer output to window
+/// @param presenter The presenter instance
+/// @param pathTracer The path tracer whose output to present
+/// @return TRACEY_SUCCESS on success, error code on failure
+TraceyResult tracey_presenter_present_pathtracer(
+    TraceyPresenter* presenter,
+    TraceyPathTracer* pathTracer
+);
+
+/// Present Rasterizer output to window
+/// @param presenter The presenter instance
+/// @param rasterizer The rasterizer whose output to present
+/// @return TRACEY_SUCCESS on success, error code on failure
+TraceyResult tracey_presenter_present_rasterizer(
+    TraceyPresenter* presenter,
+    TraceyRasterizer* rasterizer
+);
+
+/// Present PathTracer output to a specific region of the window
+/// Used for viewport-based rendering with full-window swapchain
+/// @param presenter The presenter instance
+/// @param pathTracer The path tracer whose output to present
+/// @param bounds Viewport bounds within the window
+/// @return TRACEY_SUCCESS on success, error code on failure
+TraceyResult tracey_presenter_present_pathtracer_to_region(
+    TraceyPresenter* presenter,
+    TraceyPathTracer* pathTracer,
+    const TraceyViewportBounds* bounds
+);
+
+/// Present Rasterizer output to a specific region of the window
+/// Used for viewport-based rendering with full-window swapchain
+/// @param presenter The presenter instance
+/// @param rasterizer The rasterizer whose output to present
+/// @param bounds Viewport bounds within the window
+/// @return TRACEY_SUCCESS on success, error code on failure
+TraceyResult tracey_presenter_present_rasterizer_to_region(
+    TraceyPresenter* presenter,
+    TraceyRasterizer* rasterizer,
+    const TraceyViewportBounds* bounds
+);
+
+/// Resize the presenter's swapchain
+/// @param presenter The presenter instance
+/// @param newWidth New width in pixels
+/// @param newHeight New height in pixels
+/// @return TRACEY_SUCCESS on success, error code on failure
+TraceyResult tracey_presenter_resize(
+    TraceyPresenter* presenter,
+    uint32_t newWidth,
+    uint32_t newHeight
+);
+
+/// Wait for all presentation operations to complete
+/// @param presenter The presenter instance
+void tracey_presenter_wait_idle(TraceyPresenter* presenter);
 
 #ifdef __cplusplus
 }

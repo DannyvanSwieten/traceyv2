@@ -10,6 +10,8 @@
 #include "../../ray_tracing/ray_tracing_pipeline/gpu/vulkan_compute_raytracing_pipeline.hpp"
 #include "../../ray_tracing/ray_tracing_pipeline/gpu/wavefront/vulkan_wavefront_pipeline.hpp"
 #include "../../ray_tracing/ray_tracing_command_buffer/gpu/vulkan_compute_ray_tracing_command_buffer.hpp"
+#include "../../rendering/gpu/vulkan_graphics_pipeline.hpp"
+#include "../../rendering/gpu/vulkan_graphics_command_buffer.hpp"
 #include <sstream>
 #include <array>
 namespace tracey
@@ -158,5 +160,15 @@ namespace tracey
         }
 
         return -1;
+    }
+
+    GraphicsPipeline *VulkanComputeDevice::createGraphicsPipeline(const GraphicsPipelineConfig &config, const GraphicsPipelineLayout &layout)
+    {
+        return new VulkanGraphicsPipeline(*this, config, layout);
+    }
+
+    GraphicsCommandBuffer *VulkanComputeDevice::createGraphicsCommandBuffer()
+    {
+        return new VulkanGraphicsCommandBuffer(*this);
     }
 } // namespace tracey

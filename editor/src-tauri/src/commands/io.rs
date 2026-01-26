@@ -25,7 +25,15 @@ pub async fn import_gltf(state: State<'_, AppState>, path: String) -> Result<(),
         .lock()
         .map_err(|_| "Failed to lock engine")?;
 
-    engine.load_gltf(&mut scene, &path)?;
+    // Check if there's a current project to get the project root
+    let project_root = {
+        let project_guard = state.project.lock().map_err(|_| "Failed to lock project")?;
+        project_guard
+            .as_ref()
+            .map(|p| p.project_dir.to_string_lossy().to_string())
+    };
+
+    engine.load_gltf_with_project(&mut scene, &path, project_root.as_deref())?;
     Ok(())
 }
 

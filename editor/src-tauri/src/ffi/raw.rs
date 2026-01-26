@@ -3,7 +3,7 @@
 //! These are direct, unsafe bindings to the C API.
 //! Use the safe wrappers in `types.rs` instead.
 
-use std::os::raw::{c_char, c_double, c_float, c_uint};
+use std::os::raw::{c_char, c_double, c_float, c_int, c_uint};
 
 // ============================================================================
 // Opaque Handle Types
@@ -26,6 +26,16 @@ pub struct TraceyCompiledScene {
 
 #[repr(C)]
 pub struct TraceyPathTracer {
+    _private: [u8; 0],
+}
+
+#[repr(C)]
+pub struct TraceyRasterizer {
+    _private: [u8; 0],
+}
+
+#[repr(C)]
+pub struct TraceyPresenter {
     _private: [u8; 0],
 }
 
@@ -185,6 +195,40 @@ pub struct TraceyPathTracerConfig {
 }
 
 // ============================================================================
+// Rasterizer Configuration
+// ============================================================================
+
+#[repr(C)]
+pub struct TraceyRasterizerConfig {
+    pub width: c_uint,
+    pub height: c_uint,
+    pub vertex_shader_path: *const c_char,
+    pub fragment_shader_path: *const c_char,
+    pub use_depth_buffer: bool,
+    pub depth_test_enable: bool,
+    pub cull_back_faces: bool,
+    pub alpha_blending: bool,
+}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct TraceyPresenterConfig {
+    pub width: c_uint,
+    pub height: c_uint,
+    pub enable_hdr: bool,
+    pub desired_image_count: c_uint,
+}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct TraceyViewportBounds {
+    pub x: i32,
+    pub y: i32,
+    pub width: c_uint,
+    pub height: c_uint,
+}
+
+// ============================================================================
 // Result Codes
 // ============================================================================
 
@@ -294,6 +338,11 @@ extern "C" {
     ) -> TraceyResult;
     pub fn tracey_scene_load_gltf(scene: *mut TraceyScene, file_path: *const c_char)
         -> TraceyResult;
+    pub fn tracey_scene_load_gltf_with_project(
+        scene: *mut TraceyScene,
+        file_path: *const c_char,
+        project_root: *const c_char,
+    ) -> TraceyResult;
     pub fn tracey_scene_get_actor_count(scene: *mut TraceyScene) -> c_uint;
     pub fn tracey_scene_get_actor_uids(
         scene: *mut TraceyScene,
@@ -393,6 +442,11 @@ extern "C" {
         scene: *mut TraceyScene,
     ) -> *mut TraceyCompiledScene;
     pub fn tracey_destroy_compiled_scene(compiled_scene: *mut TraceyCompiledScene);
+    pub fn tracey_update_scene_transforms(
+        device: *mut TraceyDevice,
+        scene: *mut TraceyScene,
+        compiled_scene: *mut TraceyCompiledScene,
+    ) -> c_int;
 
     // Path Tracer
     pub fn tracey_path_tracer_create(
@@ -427,6 +481,61 @@ extern "C" {
         path_tracer: *mut TraceyPathTracer,
         bounces: c_uint,
     ) -> TraceyResult;
+
+    // Rasterizer
+    pub fn tracey_rasterizer_create(
+        device: *mut TraceyDevice,
+        config: *const TraceyRasterizerConfig,
+    ) -> *mut TraceyRasterizer;
+    pub fn tracey_rasterizer_destroy(rasterizer: *mut TraceyRasterizer);
+    pub fn tracey_rasterizer_render(
+        rasterizer: *mut TraceyRasterizer,
+        compiled_scene: *mut TraceyCompiledScene,
+        camera: *const TraceyCamera,
+    ) -> c_double;
+    pub fn tracey_rasterizer_readback(
+        rasterizer: *mut TraceyRasterizer,
+        out_buffer: *mut u8,
+        buffer_size: usize,
+    ) -> usize;
+    pub fn tracey_rasterizer_get_resolution(
+        rasterizer: *mut TraceyRasterizer,
+        out_width: *mut c_uint,
+        out_height: *mut c_uint,
+    ) -> TraceyResult;
+
+    // Presenter
+    pub fn tracey_presenter_create(
+        device: *mut TraceyDevice,
+        native_window_handle: *mut std::ffi::c_void,
+        native_display_handle: *mut std::ffi::c_void,
+        config: *const TraceyPresenterConfig,
+    ) -> *mut TraceyPresenter;
+    pub fn tracey_presenter_destroy(presenter: *mut TraceyPresenter);
+    pub fn tracey_presenter_present_pathtracer(
+        presenter: *mut TraceyPresenter,
+        path_tracer: *mut TraceyPathTracer,
+    ) -> TraceyResult;
+    pub fn tracey_presenter_present_rasterizer(
+        presenter: *mut TraceyPresenter,
+        rasterizer: *mut TraceyRasterizer,
+    ) -> TraceyResult;
+    pub fn tracey_presenter_present_pathtracer_to_region(
+        presenter: *mut TraceyPresenter,
+        path_tracer: *mut TraceyPathTracer,
+        bounds: *const TraceyViewportBounds,
+    ) -> TraceyResult;
+    pub fn tracey_presenter_present_rasterizer_to_region(
+        presenter: *mut TraceyPresenter,
+        rasterizer: *mut TraceyRasterizer,
+        bounds: *const TraceyViewportBounds,
+    ) -> TraceyResult;
+    pub fn tracey_presenter_resize(
+        presenter: *mut TraceyPresenter,
+        new_width: c_uint,
+        new_height: c_uint,
+    ) -> TraceyResult;
+    pub fn tracey_presenter_wait_idle(presenter: *mut TraceyPresenter);
 
     // Error Handling
     pub fn tracey_get_last_error() -> *const c_char;

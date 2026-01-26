@@ -1,8 +1,9 @@
 /*{
     "STAGE": "ClosestHit",
-    "DESCRIPTION": "Cosine-weighted hemisphere sampling for diffuse materials",
+    "DESCRIPTION": "Cosine-weighted hemisphere sampling for diffuse materials with Russian roulette",
     "INPUTS": [
-        { "NAME": "albedo", "TYPE": "color", "DEFAULT": [0.5, 0.5, 0.5, 1.0] }
+        { "NAME": "albedo", "TYPE": "color", "DEFAULT": [0.5, 0.5, 0.5, 1.0] },
+        { "NAME": "rrMinDepth", "TYPE": "uint", "DEFAULT": 3 }
     ],
     "RESOURCES": [
         { "NAME": "vertexBuffer", "TYPE": "storage_buffer", "STRUCTURE": "Vertex" }
@@ -64,6 +65,26 @@ void shader(HitInfo hitInfo, inout RayPayloads payloads) {
 
     // Increment depth
     payloads.rayPayload.depth += 1u;
+
+    // Russian roulette termination (after minimum depth)
+    if (payloads.rayPayload.depth >= shaderInputs.rrMinDepth) {
+        // Calculate survival probability based on albedo luminance
+        vec3 albedo = shaderInputs.albedo.rgb;
+        float luminance = dot(albedo, vec3(0.2126, 0.7152, 0.0722));
+        float survivalProbability = min(luminance, 0.95); // Cap at 95% to avoid infinite paths
+
+        // Generate random number for Russian roulette
+        float rrRandom = nextRandom(payloads.rayPayload.rngSeed);
+
+        if (rrRandom > survivalProbability) {
+            // Terminate path
+            payloads.rayPayload.alive = false;
+            return;
+        }
+
+        // Ray survived - boost throughput to maintain unbiasedness
+        payloads.rayPayload.color /= survivalProbability;
+    }
 
     // Build tangent frame
     vec3 T, B;

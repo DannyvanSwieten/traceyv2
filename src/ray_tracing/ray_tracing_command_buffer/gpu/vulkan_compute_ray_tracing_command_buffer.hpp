@@ -37,6 +37,8 @@ namespace tracey
         {
             uint32_t width;
             uint32_t height;
+            uint32_t baseSampleCount;    // Base sample count for resolve shader
+            uint32_t localSampleIndex;   // Sample index within this frame
         };
 
         /// Initializes payload and hit info buffers to their default values.

@@ -18,6 +18,7 @@ namespace tracey
             bool loadNormals = true;
             bool loadTexCoords = true;
             float scaleFactor = 1.0f;
+            std::string projectRoot = "";  // Optional project root for asset resolution
         };
 
         static std::unique_ptr<Scene> loadFromFile(const std::string &path, const LoadOptions &options);

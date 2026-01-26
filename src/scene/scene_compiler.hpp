@@ -60,6 +60,7 @@ namespace tracey
 
             // Vertex buffers (one per unique object)
             std::vector<std::unique_ptr<Buffer>> vertexBuffers;
+            std::vector<uint32_t> vertexCounts; // Parallel to vertexBuffers - vertices per buffer
 
             // Material data
             std::unique_ptr<Buffer> materialBuffer;
@@ -73,6 +74,10 @@ namespace tracey
             // UV buffer (vec2 per vertex, parallel to triangle data)
             std::unique_ptr<Buffer> uvBuffer;
             bool hasUVs = false;
+
+            // Vertex offset buffer (uint per instance - offset into UV buffer for this instance's BLAS)
+            std::unique_ptr<Buffer> vertexOffsetBuffer;
+            std::vector<uint32_t> instanceVertexOffsets;
 
             // Instance data for reference
             std::vector<Tlas::Instance> instances;
@@ -90,6 +95,13 @@ namespace tracey
 
         /// Compile scene with custom BVH configuration
         static CompiledScene compile(Device *device, const Scene &scene, const BVHConfig &bvhConfig);
+
+        /// Update only instance transforms and rebuild TLAS (fast update for animations)
+        /// Keeps existing BLASes, vertex buffers, materials, and textures
+        /// @param device The device to use
+        /// @param scene The updated scene with new transforms
+        /// @param existing The existing compiled scene to update
+        static void updateTransforms(Device *device, const Scene &scene, CompiledScene &existing);
 
     private:
         struct ObjectData

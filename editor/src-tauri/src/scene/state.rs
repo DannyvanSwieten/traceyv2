@@ -18,8 +18,10 @@ pub struct SceneState {
 pub struct Actor {
     pub id: u64,
     pub name: String,
-    pub transform: Transform,
+    pub transform: Transform,  // Local transform (relative to parent)
     pub children: Vec<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent: Option<u64>,   // Parent actor ID
 }
 
 impl SceneState {
@@ -40,6 +42,7 @@ impl SceneState {
             name,
             transform: Transform::identity(),
             children: Vec::new(),
+            parent: None,
         };
 
         self.actors.insert(id, actor);
@@ -77,10 +80,18 @@ impl SceneState {
     }
 
     pub fn add_child(&mut self, parent_id: u64, child_id: u64) -> bool {
+        // Add to parent's children list
         if let Some(parent) = self.actors.get_mut(&parent_id) {
             if !parent.children.contains(&child_id) {
                 parent.children.push(child_id);
             }
+        } else {
+            return false;
+        }
+
+        // Set child's parent
+        if let Some(child) = self.actors.get_mut(&child_id) {
+            child.parent = Some(parent_id);
             true
         } else {
             false
@@ -88,16 +99,85 @@ impl SceneState {
     }
 
     pub fn remove_child(&mut self, parent_id: u64, child_id: u64) -> bool {
+        // Remove from parent's children list
         if let Some(parent) = self.actors.get_mut(&parent_id) {
             parent.children.retain(|&id| id != child_id);
+        } else {
+            return false;
+        }
+
+        // Clear child's parent
+        if let Some(child) = self.actors.get_mut(&child_id) {
+            child.parent = None;
             true
         } else {
             false
         }
     }
 
+    /// Set an actor's parent (automatically updates parent's children list)
+    pub fn set_parent(&mut self, actor_id: u64, parent_id: Option<u64>) -> bool {
+        // Remove from old parent if exists
+        if let Some(actor) = self.actors.get(&actor_id) {
+            if let Some(old_parent_id) = actor.parent {
+                if let Some(old_parent) = self.actors.get_mut(&old_parent_id) {
+                    old_parent.children.retain(|&id| id != actor_id);
+                }
+            }
+        }
+
+        // Set new parent
+        if let Some(actor) = self.actors.get_mut(&actor_id) {
+            actor.parent = parent_id;
+        } else {
+            return false;
+        }
+
+        // Add to new parent's children list
+        if let Some(new_parent_id) = parent_id {
+            if let Some(new_parent) = self.actors.get_mut(&new_parent_id) {
+                if !new_parent.children.contains(&actor_id) {
+                    new_parent.children.push(actor_id);
+                }
+            } else {
+                return false;
+            }
+        }
+
+        true
+    }
+
+    /// Get all root actors (actors with no parent)
+    pub fn get_root_actors(&self) -> Vec<u64> {
+        self.actors
+            .values()
+            .filter(|actor| actor.parent.is_none())
+            .map(|actor| actor.id)
+            .collect()
+    }
+
     pub fn set_camera(&mut self, camera: Camera) {
         self.camera = camera;
+    }
+
+    /// Compute world transform for an actor by walking up the parent chain
+    pub fn compute_world_transform(&self, actor_id: u64) -> Transform {
+        let actor = match self.actors.get(&actor_id) {
+            Some(a) => a,
+            None => return Transform::identity(),
+        };
+
+        // If no parent, local transform is world transform
+        let parent_id = match actor.parent {
+            Some(id) => id,
+            None => return actor.transform.clone(),
+        };
+
+        // Recursively compute parent's world transform
+        let parent_world = self.compute_world_transform(parent_id);
+
+        // Multiply: parent_world * local = world
+        parent_world.multiply(&actor.transform)
     }
 
     /// Sync this Rust scene state to a C++ scene for rendering
@@ -107,15 +187,18 @@ impl SceneState {
             .set_camera(&self.camera)
             .map_err(|e| format!("Failed to set camera: {}", e))?;
 
-        // Create actors in C++ scene
+        // Create actors in C++ scene with world transforms
         let mut actor_map = HashMap::new();
         for (id, actor) in &self.actors {
             let cpp_uid = cpp_scene
                 .create_actor(&actor.name)
                 .map_err(|e| format!("Failed to create actor: {}", e))?;
 
+            // Compute world transform from local transform + parent chain
+            let world_transform = self.compute_world_transform(*id);
+
             cpp_scene
-                .set_actor_transform(cpp_uid, &actor.transform)
+                .set_actor_transform(cpp_uid, &world_transform)
                 .map_err(|e| format!("Failed to set transform: {}", e))?;
 
             actor_map.insert(*id, cpp_uid);
@@ -126,12 +209,22 @@ impl SceneState {
 
     /// Load a GLTF file into this scene
     pub fn load_gltf(&mut self, cpp_scene: &mut CppScene, path: &str) -> Result<(), String> {
+        self.load_gltf_with_project(cpp_scene, path, None)
+    }
+
+    /// Load a GLTF file into this scene with optional project root
+    pub fn load_gltf_with_project(
+        &mut self,
+        cpp_scene: &mut CppScene,
+        path: &str,
+        project_root: Option<&str>,
+    ) -> Result<(), String> {
         // Clear existing scene state
         self.actors.clear();
         self.next_actor_id = 1;
 
         cpp_scene
-            .load_gltf(path)
+            .load_gltf_with_project(path, project_root)
             .map_err(|e| format!("Failed to load GLTF: {}", e))?;
 
         // Sync back from C++ to Rust
@@ -147,19 +240,31 @@ impl SceneState {
             self.camera = camera;
         }
 
-        // Get actors
+        // Get actors - first pass: create/update actors with transforms and children
         let uids = cpp_scene.get_actor_uids();
+        println!("sync_from_cpp: Found {} actors", uids.len());
+
         for uid in uids {
             if let Ok(transform) = cpp_scene.get_actor_transform(uid) {
+                // Get children from C++ scene
+                let children = cpp_scene.get_actor_children(uid);
+                let name = cpp_scene.get_actor_name(uid).unwrap_or_else(|| format!("Actor_{}", uid));
+
+                println!("  Actor {}: name='{}', children={:?}", uid, name, children);
+
                 if let Some(actor) = self.actors.get_mut(&uid) {
+                    actor.name = name;
                     actor.transform = transform;
+                    actor.children = children.clone();
+                    actor.parent = None; // Will set in second pass
                 } else {
                     // Create new actor
                     let actor = Actor {
                         id: uid,
-                        name: format!("Actor_{}", uid),
+                        name,
                         transform,
-                        children: Vec::new(),
+                        children: children.clone(),
+                        parent: None, // Will set in second pass
                     };
                     self.actors.insert(uid, actor);
 
@@ -168,6 +273,22 @@ impl SceneState {
                         self.next_actor_id = uid + 1;
                     }
                 }
+            }
+        }
+
+        // Second pass: set parent relationships based on children
+        println!("sync_from_cpp: Setting parent relationships...");
+        let mut parent_child_pairs = Vec::new();
+        for actor in self.actors.values() {
+            for &child_id in &actor.children {
+                parent_child_pairs.push((child_id, actor.id));
+            }
+        }
+
+        for (child_id, parent_id) in parent_child_pairs {
+            if let Some(child) = self.actors.get_mut(&child_id) {
+                println!("  Setting actor {} parent to {}", child_id, parent_id);
+                child.parent = Some(parent_id);
             }
         }
 
