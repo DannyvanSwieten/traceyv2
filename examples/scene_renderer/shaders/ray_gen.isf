@@ -61,7 +61,7 @@ void shader(uvec2 pixelCoord, inout RayPayloads payloads) {
     );
 
     // Initialize payload for path tracing
-    payloads.rayPayload.direction = vec3(0.0); // Use direction as accumulated radiance
+    payloads.rayPayload.direction = direction; // Use direction as accumulated radiance
     payloads.rayPayload.color = vec3(1.0); // Start with throughput = 1.0
     payloads.rayPayload.depth = 0u;
     payloads.rayPayload.alive = true;

@@ -125,6 +125,22 @@ impl RenderEngine {
         Ok(())
     }
 
+    /// Compile the existing C++ scene without syncing from Rust
+    /// Use this after loading GLTF directly into the C++ scene
+    pub fn compile_scene_no_sync(&mut self) -> Result<(), String> {
+        let cpp_scene = self
+            .cpp_scene
+            .lock()
+            .map_err(|_| "Failed to lock scene".to_string())?;
+
+        // Compile the C++ scene as-is (don't clear/sync from Rust)
+        let compiled = CompiledScene::compile(&self.device, &cpp_scene)
+            .map_err(|e| format!("Failed to compile scene: {}", e))?;
+
+        self.compiled_scene = Some(compiled);
+        Ok(())
+    }
+
     /// Update only transforms in the compiled scene (fast update for animations)
     /// This rebuilds the TLAS but keeps geometry, materials, and textures
     pub fn update_transforms(&mut self, scene: &SceneState) -> Result<(), String> {
@@ -298,6 +314,22 @@ impl RenderEngine {
             .map_err(|_| "Failed to lock scene".to_string())?;
 
         scene.load_gltf_with_project(&mut cpp_scene, path, project_root)?;
+        Ok(())
+    }
+
+    /// Add a GLTF file to the scene without clearing existing actors
+    pub fn add_gltf_with_project(
+        &mut self,
+        scene: &mut SceneState,
+        path: &str,
+        project_root: Option<&str>,
+    ) -> Result<(), String> {
+        let mut cpp_scene = self
+            .cpp_scene
+            .lock()
+            .map_err(|_| "Failed to lock scene".to_string())?;
+
+        scene.add_gltf_with_project(&mut cpp_scene, path, project_root)?;
         Ok(())
     }
 

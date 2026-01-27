@@ -15,6 +15,7 @@
 #include <cstring>
 #include <stdexcept>
 #include <unordered_map>
+#include <iostream>
 
 // Thread-local error storage
 thread_local std::string g_lastError;
@@ -213,6 +214,14 @@ void tracey_scene_destroy(TraceyScene* scene)
 {
     if (scene) {
         delete reinterpret_cast<tracey::Scene*>(scene);
+    }
+}
+
+void tracey_scene_clear(TraceyScene* scene)
+{
+    if (scene) {
+        auto* s = reinterpret_cast<tracey::Scene*>(scene);
+        s->clear();
     }
 }
 
@@ -490,6 +499,175 @@ TraceyResult tracey_scene_load_gltf_with_project(
             tracey::EmbeddedTexture texCopy = tex;
             s->addEmbeddedTexture(id, std::move(texCopy));
         }
+
+        return TRACEY_SUCCESS;
+    } catch (const std::exception& e) {
+        setError(std::string("GLTF loading failed: ") + e.what());
+        return TRACEY_ERROR_FILE_NOT_FOUND;
+    } catch (...) {
+        setError("GLTF loading failed: unknown error");
+        return TRACEY_ERROR_UNKNOWN;
+    }
+}
+
+TraceyResult tracey_scene_add_gltf_with_project(
+    TraceyScene* scene,
+    const char* filePath,
+    const char* projectRoot)
+{
+    if (!scene || !filePath) {
+        setError("Null pointer parameter");
+        return TRACEY_ERROR_NULL_POINTER;
+    }
+
+    try {
+        clearError();
+        auto* s = reinterpret_cast<tracey::Scene*>(scene);
+
+        // DON'T clear existing scene - we're adding to it
+        // s->clear(); // REMOVED - this is the key difference
+
+        // Load GLTF into a temporary scene with project root
+        tracey::GltfLoader::LoadOptions options;
+        if (projectRoot && projectRoot[0] != '\0') {
+            options.projectRoot = std::string(projectRoot);
+        }
+
+        auto loadedScene = tracey::GltfLoader::loadFromFile(filePath, options);
+        if (!loadedScene) {
+            setError("Failed to load GLTF file");
+            return TRACEY_ERROR_FILE_NOT_FOUND;
+        }
+
+        // Extract base filename from path for texture ID prefix
+        std::string filePathStr(filePath);
+        size_t lastSlash = filePathStr.find_last_of("/\\");
+        size_t lastDot = filePathStr.find_last_of('.');
+        std::string baseName = filePathStr.substr(
+            lastSlash == std::string::npos ? 0 : lastSlash + 1,
+            lastDot == std::string::npos ? std::string::npos : lastDot - (lastSlash == std::string::npos ? 0 : lastSlash + 1)
+        );
+
+        // Build texture ID mapping using file path as prefix
+        std::unordered_map<std::string, std::string> textureIdMapping;
+
+        std::cout << "=== GLTF Import ===" << std::endl;
+        std::cout << "File: " << filePath << std::endl;
+        std::cout << "Base name: " << baseName << std::endl;
+        std::cout << "Current scene has " << s->embeddedTextures().size() << " embedded textures" << std::endl;
+        std::cout << "Loading scene has " << loadedScene->embeddedTextures().size() << " embedded textures" << std::endl;
+
+        for (const auto& [oldId, tex] : loadedScene->embeddedTextures()) {
+            // Create unique ID based on filename: "avocado/textures/embedded:0"
+            std::string newId = baseName + "/textures/" + oldId;
+            textureIdMapping[oldId] = newId;
+            std::cout << "Texture ID mapping: " << oldId << " -> " << newId << std::endl;
+        }
+
+        // Copy loaded scene into existing scene (adding to current actors)
+        // First pass: Copy all actors and build UID mapping
+        std::unordered_map<size_t, size_t> uidMapping; // old UID -> new UID
+        for (const auto& actor : loadedScene->actors()) {
+            auto* newActor = s->createActor();
+            newActor->setName(actor->name());
+            newActor->setTransform(actor->transform());
+            for (const auto& instance : actor->instances()) {
+                // Make a copy of the instance
+                auto instanceCopy = instance;
+
+                // Get the material and create a modified copy with remapped texture IDs
+                auto materialCopy = instance.material();
+
+                // Remap texture references by checking each slot
+                if (auto albedoTex = materialCopy.getTexture(tracey::TEXTURE_ALBEDO)) {
+                    if (textureIdMapping.count(*albedoTex)) {
+                        std::string newId = textureIdMapping[*albedoTex];
+                        std::cout << "Remapping albedo texture: " << *albedoTex << " -> " << newId << std::endl;
+                        materialCopy.setTexture(tracey::TEXTURE_ALBEDO, newId);
+                    }
+                }
+                if (auto normalTex = materialCopy.getTexture(tracey::TEXTURE_NORMAL)) {
+                    if (textureIdMapping.count(*normalTex)) {
+                        std::string newId = textureIdMapping[*normalTex];
+                        std::cout << "Remapping normal texture: " << *normalTex << " -> " << newId << std::endl;
+                        materialCopy.setTexture(tracey::TEXTURE_NORMAL, newId);
+                    }
+                }
+                if (auto mrTex = materialCopy.getTexture(tracey::TEXTURE_METALLIC_ROUGHNESS)) {
+                    if (textureIdMapping.count(*mrTex)) {
+                        std::string newId = textureIdMapping[*mrTex];
+                        std::cout << "Remapping MR texture: " << *mrTex << " -> " << newId << std::endl;
+                        materialCopy.setTexture(tracey::TEXTURE_METALLIC_ROUGHNESS, newId);
+                    }
+                }
+                if (auto emissiveTex = materialCopy.getTexture(tracey::TEXTURE_EMISSIVE)) {
+                    if (textureIdMapping.count(*emissiveTex)) {
+                        std::string newId = textureIdMapping[*emissiveTex];
+                        std::cout << "Remapping emissive texture: " << *emissiveTex << " -> " << newId << std::endl;
+                        materialCopy.setTexture(tracey::TEXTURE_EMISSIVE, newId);
+                    }
+                }
+                if (auto occlusionTex = materialCopy.getTexture(tracey::TEXTURE_OCCLUSION)) {
+                    if (textureIdMapping.count(*occlusionTex)) {
+                        std::string newId = textureIdMapping[*occlusionTex];
+                        std::cout << "Remapping occlusion texture: " << *occlusionTex << " -> " << newId << std::endl;
+                        materialCopy.setTexture(tracey::TEXTURE_OCCLUSION, newId);
+                    }
+                }
+
+                // Explicitly set the modified material back on the instance
+                instanceCopy.setMaterial(materialCopy);
+                newActor->addInstance(instanceCopy);
+            }
+            // Store UID mapping
+            uidMapping[actor->getUid()] = newActor->getUid();
+        }
+
+        // Second pass: Copy parent-child relationships
+        for (const auto& actor : loadedScene->actors()) {
+            size_t newActorUid = uidMapping[actor->getUid()];
+            auto* newActor = s->getActor(newActorUid);
+            if (!newActor) continue;
+
+            // Copy children relationships
+            for (size_t oldChildUid : actor->children()) {
+                if (uidMapping.count(oldChildUid)) {
+                    size_t newChildUid = uidMapping[oldChildUid];
+                    auto* childActor = s->getActor(newChildUid);
+                    if (childActor) {
+                        newActor->addChild(childActor);
+                    }
+                }
+            }
+        }
+
+        // Copy all objects (meshes, materials, textures)
+        for (const auto& [name, obj] : loadedScene->objects()) {
+            tracey::SceneObject objCopy = *obj;  // Make a copy
+            s->addObject(name, std::move(objCopy));  // Move into scene
+        }
+
+        // Copy camera if present (optional - might want to skip this for additive load)
+        if (loadedScene->hasCamera()) {
+            s->setCamera(loadedScene->camera());
+        }
+
+        // Copy embedded textures with remapped IDs to avoid collisions
+        std::cout << "Adding " << loadedScene->embeddedTextures().size() << " embedded textures..." << std::endl;
+        for (const auto& [id, tex] : loadedScene->embeddedTextures()) {
+            std::string newId = textureIdMapping[id];  // Use remapped ID
+
+            // Skip if texture already exists (e.g., reimporting same file)
+            if (s->hasEmbeddedTexture(newId)) {
+                std::cout << "Texture already exists, skipping: " << newId << std::endl;
+                continue;
+            }
+
+            tracey::EmbeddedTexture texCopy = tex;
+            std::cout << "Adding embedded texture: " << id << " -> " << newId << std::endl;
+            s->addEmbeddedTexture(newId, std::move(texCopy));
+        }
+        std::cout << "Scene now has " << s->embeddedTextures().size() << " total embedded textures" << std::endl;
 
         return TRACEY_SUCCESS;
     } catch (const std::exception& e) {
@@ -810,7 +988,7 @@ static uint64_t addPrimitiveToScene(tracey::Scene* scene, const char* name, trac
 
         // Create default material instance
         tracey::MaterialInstance material("pbr");
-        material.setVec3("baseColor", tracey::Vec3(0.8f, 0.8f, 0.8f));
+        material.setVec3("baseColor", tracey::Vec3(0.5f, 0.5f, 0.5f));
         material.setFloat("metallic", 0.0f);
         material.setFloat("roughness", 0.5f);
 

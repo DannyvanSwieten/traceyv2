@@ -156,6 +156,24 @@ impl SceneState {
             .collect()
     }
 
+    /// Reorder a child within its parent's children list
+    pub fn reorder_child(&mut self, parent_id: u64, child_id: u64, new_index: usize) -> Result<(), String> {
+        if let Some(parent) = self.actors.get_mut(&parent_id) {
+            // Find and remove child
+            if let Some(old_pos) = parent.children.iter().position(|&id| id == child_id) {
+                parent.children.remove(old_pos);
+                // Insert at new position (clamped to valid range)
+                let insert_pos = new_index.min(parent.children.len());
+                parent.children.insert(insert_pos, child_id);
+                Ok(())
+            } else {
+                Err(format!("Child {} not found in parent {}", child_id, parent_id))
+            }
+        } else {
+            Err(format!("Parent actor {} not found", parent_id))
+        }
+    }
+
     pub fn set_camera(&mut self, camera: Camera) {
         self.camera = camera;
     }
@@ -182,6 +200,9 @@ impl SceneState {
 
     /// Sync this Rust scene state to a C++ scene for rendering
     pub fn sync_to_cpp(&self, cpp_scene: &mut CppScene) -> Result<(), String> {
+        // Clear the C++ scene first to avoid duplicates
+        cpp_scene.clear();
+
         // Set camera
         cpp_scene
             .set_camera(&self.camera)
@@ -229,6 +250,34 @@ impl SceneState {
 
         // Sync back from C++ to Rust
         self.sync_from_cpp(cpp_scene)?;
+
+        Ok(())
+    }
+
+    /// Add a GLTF file to this scene without clearing existing actors
+    pub fn add_gltf_with_project(
+        &mut self,
+        cpp_scene: &mut CppScene,
+        path: &str,
+        project_root: Option<&str>,
+    ) -> Result<(), String> {
+        // Don't sync_to_cpp here! The C++ scene should already be up to date
+        // from the previous compile_scene call. If we sync here, we'll create
+        // duplicate actors in the C++ scene.
+
+        println!("add_gltf_with_project: Before adding, Rust scene has {} actors", self.actors.len());
+
+        // Add GLTF to C++ scene (this adds to existing actors without clearing)
+        cpp_scene
+            .add_gltf_with_project(path, project_root)
+            .map_err(|e| format!("Failed to add GLTF: {}", e))?;
+
+        println!("add_gltf_with_project: After adding to C++, syncing back to Rust...");
+
+        // Sync back from C++ to Rust (this will include both old and new actors)
+        self.sync_from_cpp(cpp_scene)?;
+
+        println!("add_gltf_with_project: After sync, Rust scene has {} actors", self.actors.len());
 
         Ok(())
     }

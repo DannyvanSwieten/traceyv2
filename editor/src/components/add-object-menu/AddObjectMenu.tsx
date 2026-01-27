@@ -44,6 +44,36 @@ export const AddObjectMenu: Component<AddObjectMenuProps> = (props) => {
     }
   };
 
+  const addEmptyObject = async () => {
+    if (isAdding()) return;
+
+    setIsAdding(true);
+    setIsOpen(false);
+
+    try {
+      const name = `Empty_${Date.now()}`;
+      const actorId = await invoke<number>('create_actor', { name });
+
+      // Create an Actor object for local state
+      const actor: Actor = {
+        id: actorId,
+        name,
+        transform: {
+          position: { x: 0, y: 0, z: 0 },
+          rotation: { w: 1, x: 0, y: 0, z: 0 },
+          scale: { x: 1, y: 1, z: 1 },
+        },
+        children: [],
+      };
+
+      props.onObjectAdded(actor);
+    } catch (error) {
+      console.error('Failed to add empty object:', error);
+    } finally {
+      setIsAdding(false);
+    }
+  };
+
   return (
     <div class="add-object-menu">
       <button
@@ -56,6 +86,13 @@ export const AddObjectMenu: Component<AddObjectMenuProps> = (props) => {
 
       <Show when={isOpen()}>
         <div class="add-object-dropdown">
+          <button
+            class="dropdown-item"
+            onClick={() => addEmptyObject()}
+          >
+            <span class="item-icon">◯</span>
+            Empty Object
+          </button>
           <button
             class="dropdown-item"
             onClick={() => addPrimitive('cube', { size: 1.0 })}

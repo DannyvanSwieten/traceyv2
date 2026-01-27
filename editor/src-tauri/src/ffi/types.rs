@@ -371,6 +371,12 @@ impl Scene {
         }
     }
 
+    pub fn clear(&mut self) {
+        unsafe {
+            tracey_scene_clear(self.ptr);
+        }
+    }
+
     pub fn create_actor(&mut self, name: &str) -> Result<u64> {
         let c_name = CString::new(name).map_err(|_| TraceyError("Invalid name".to_string()))?;
         unsafe {
@@ -443,6 +449,29 @@ impl Scene {
         } else {
             unsafe {
                 check_result(tracey_scene_load_gltf_with_project(
+                    self.ptr,
+                    c_path.as_ptr(),
+                    std::ptr::null(),
+                ))
+            }
+        }
+    }
+
+    pub fn add_gltf_with_project(&mut self, path: &str, project_root: Option<&str>) -> Result<()> {
+        let c_path = CString::new(path).map_err(|_| TraceyError("Invalid path".to_string()))?;
+
+        if let Some(root) = project_root {
+            let c_root = CString::new(root).map_err(|_| TraceyError("Invalid project root".to_string()))?;
+            unsafe {
+                check_result(tracey_scene_add_gltf_with_project(
+                    self.ptr,
+                    c_path.as_ptr(),
+                    c_root.as_ptr(),
+                ))
+            }
+        } else {
+            unsafe {
+                check_result(tracey_scene_add_gltf_with_project(
                     self.ptr,
                     c_path.as_ptr(),
                     std::ptr::null(),

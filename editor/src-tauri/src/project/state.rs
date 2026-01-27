@@ -68,8 +68,8 @@ impl Default for ProjectRenderSettings {
             width: 1280,
             height: 720,
             hdr_output: false,
-            samples_per_frame: 16,
-            max_bounces: 8,
+            samples_per_frame: 4,
+            max_bounces: 2,
             render_mode: "PathTracer".to_string(),
         }
     }

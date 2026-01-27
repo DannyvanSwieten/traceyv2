@@ -22,8 +22,8 @@ void shader(HitInfo hitInfo, inout RayPayloads payloads) {
         return;
     }
 
-    // Normal in world space
-    vec3 N = normalize(vec3(hitInfo.normalX, hitInfo.normalY, hitInfo.normalZ));
+    // Geometric normal in world space
+    vec3 geometricN = normalize(vec3(hitInfo.normalX, hitInfo.normalY, hitInfo.normalZ));
     vec3 V = -normalize(payloads.rayPayload.direction);
 
     // Get hit position
@@ -39,6 +39,14 @@ void shader(HitInfo hitInfo, inout RayPayloads payloads) {
     float metallic = mr.x;
     float roughness = clamp(mr.y, 0.04, 1.0);
 
+    // Build tangent frame from geometric normal
+    vec3 T, B;
+    buildTangentFrame(geometricN, T, B);
+
+    // Sample normal map and transform to world space
+    vec3 tangentNormal = getMaterialNormal(hitInfo.instanceIndex, uv);
+    vec3 N = normalize(tangentToWorld(tangentNormal, geometricN, T, B));
+
     // Hit a light source
     if (length(emission) > 0.0) {
         payloads.rayPayload.color *= emission;
@@ -50,10 +58,6 @@ void shader(HitInfo hitInfo, inout RayPayloads payloads) {
     float r1 = nextRandom(payloads.rayPayload.rngSeed);
     float r2 = nextRandom(payloads.rayPayload.rngSeed);
     float r3 = nextRandom(payloads.rayPayload.rngSeed);
-
-    // Build tangent frame
-    vec3 T, B;
-    buildTangentFrame(N, T, B);
 
     vec3 L;
     vec3 throughput;
@@ -115,6 +119,7 @@ void shader(HitInfo hitInfo, inout RayPayloads payloads) {
         if (rrRandom > survivalProbability) {
             // Terminate path
             payloads.rayPayload.alive = false;
+            payloads.rayPayload.color = vec3(0.0);
             return;
         }
 

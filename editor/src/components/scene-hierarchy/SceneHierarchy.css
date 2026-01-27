@@ -2,13 +2,25 @@
   margin-top: 8px;
   overflow-y: auto;
   flex: 1;
+  min-height: 0; /* Important for flexbox */
 }
 
 .hierarchy-empty {
-  padding: 16px;
+  padding: 32px 16px;
   color: #858585;
   font-size: 13px;
   text-align: center;
+  min-height: 200px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px dashed transparent;
+  transition: border-color 0.2s ease, background-color 0.2s ease;
+}
+
+.hierarchy-empty.drag-over {
+  border-color: #007acc;
+  background-color: rgba(0, 122, 204, 0.1);
 }
 
 .hierarchy-tree {
@@ -16,6 +28,7 @@
 }
 
 .tree-item {
+  -webkit-user-select: none;
   user-select: none;
 }
 
@@ -39,6 +52,11 @@
 
 .tree-item-row--selected:hover {
   background-color: #094771;
+}
+
+.tree-item-row--drop-target {
+  background-color: #0a5a3c;
+  border: 2px dashed #4ec9b0;
 }
 
 .tree-expand {
@@ -73,12 +91,69 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  flex: 1;
 }
 
 .tree-item-row--selected .tree-name {
   color: #ffffff;
 }
 
+.tree-unparent {
+  background: none;
+  border: none;
+  color: #858585;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 4px;
+  margin-left: 4px;
+  opacity: 0;
+  transition: opacity 0.1s ease, color 0.1s ease;
+}
+
+.tree-item-row:hover .tree-unparent {
+  opacity: 1;
+}
+
+.tree-unparent:hover {
+  color: #4ec9b0;
+}
+
+.tree-remove {
+  background: none;
+  border: none;
+  color: #858585;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 4px;
+  margin-left: 4px;
+  opacity: 0;
+  transition: opacity 0.1s ease, color 0.1s ease;
+}
+
+.tree-item-row:hover .tree-remove {
+  opacity: 1;
+}
+
+.tree-remove:hover {
+  color: #f48771;
+}
+
 .tree-children {
   /* Children are indented via padding-left on tree-item-row */
+}
+
+.drop-zone {
+  height: 2px;
+  background-color: transparent;
+  transition: all 0.15s ease;
+  margin: 0;
+}
+
+.drop-zone--active {
+  height: 4px;
+  background-color: #4ec9b0;
+  margin: 2px 0;
+  box-shadow: 0 0 4px #4ec9b0;
 }

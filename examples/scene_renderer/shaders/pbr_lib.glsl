@@ -82,6 +82,21 @@ vec3 getMaterialEmissive(uint instanceIndex, vec2 uv) {
     return emissiveFactor;
 }
 
+// Get normal from material (returns tangent-space normal)
+vec3 getMaterialNormal(uint instanceIndex, vec2 uv) {
+    uint baseOffset = instanceIndex * uint(MATERIAL_STRIDE);
+    int normalTexIdx = materials.data[baseOffset + 1u];
+
+    if (normalTexIdx >= 0) {
+        vec3 normalSample = texture(sampler2D(textures[normalTexIdx], linearSampler), uv).rgb;
+        // Convert from [0,1] to [-1,1] tangent space
+        return normalize(normalSample * 2.0 - 1.0);
+    }
+
+    // No normal map, return default tangent-space up vector
+    return vec3(0.0, 0.0, 1.0);
+}
+
 // ============================================================================
 // UV Interpolation
 // ============================================================================

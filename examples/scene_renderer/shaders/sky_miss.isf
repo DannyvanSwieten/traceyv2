@@ -8,10 +8,34 @@ void shader(inout RayPayloads payloads) {
     if (!payloads.rayPayload.alive) return;
 
     vec3 throughput = payloads.rayPayload.color;
+    vec3 dir = normalize(payloads.rayPayload.direction);
 
-    // Get ray direction from PathHeader (not payload - payload.direction is unused)
-    float t = 0.5 * (payloads.rayPayload.direction.y + 1.0);
-    vec3 sky = mix(vec3(1.0, 1.0, 1.0), vec3(0.5, 0.7, 1.0), t);
+    // Sky gradient from horizon to zenith
+    // Map dir.y from [-1, 1] to blend factor
+    float horizonBlend = clamp(dir.y * 2.0, 0.0, 1.0);  // Faster transition near horizon
+
+    vec3 horizonColor = vec3(0.7, 0.75, 0.8);   // Cooler, less yellow horizon
+    vec3 zenithColor = vec3(0.3, 0.5, 0.9);     // Blue sky
+    vec3 groundColor = vec3(0.2, 0.15, 0.1);    // Dark ground below horizon
+
+    // Blend from ground through horizon to zenith
+    vec3 sky;
+    if (dir.y < 0.0) {
+        // Below horizon: blend from ground to horizon
+        float t = (dir.y + 1.0);  // [0 at bottom, 1 at horizon]
+        sky = mix(groundColor, horizonColor, t);
+    } else {
+        // Above horizon: blend from horizon to zenith
+        sky = mix(horizonColor, zenithColor, horizonBlend);
+    }
+
+    // Add sun
+    vec3 sunDir = normalize(vec3(0.3, 0.5, 0.2));  // Sun position
+    float sunDot = max(dot(dir, sunDir), 0.0);
+    float sun = pow(sunDot, 512.0) * 5.0;    // Smaller, less intense sun disk
+    sun += pow(sunDot, 64.0) * 0.5;          // Subtle sun glow
+    vec3 sunColor = vec3(1.0, 0.98, 0.9);
+    sky += sunColor * sun;
 
     // Sky contribution weighted by throughput
     payloads.rayPayload.color = throughput * sky;

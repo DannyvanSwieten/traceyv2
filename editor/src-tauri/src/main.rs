@@ -60,8 +60,8 @@ fn main() {
                 height: 720,
                 shader_dir,
                 hdr_output: false, // LDR - tonemapping done in resolve shader
-                samples_per_frame: 16,
-                max_bounces: 8,
+                samples_per_frame: 4,
+                max_bounces: 2,
             };
 
             let mut engine = RenderEngine::new(config).expect("Failed to create render engine");
@@ -118,6 +118,7 @@ fn main() {
             commands::set_actor_parent,
             commands::get_root_actors,
             commands::get_world_transform,
+            commands::reorder_child,
             // Scene resource query commands
             commands::get_actor_instances,
             commands::get_mesh_names,
@@ -133,6 +134,7 @@ fn main() {
             commands::get_render_pixels,
             commands::get_render_pixels_base64,
             commands::compile_scene,
+            commands::compile_scene_no_sync,
             commands::update_scene_transforms,
             commands::get_viewport_resolution,
             commands::set_viewport_resolution,
@@ -146,6 +148,7 @@ fn main() {
             commands::save_scene,
             commands::load_scene,
             commands::import_gltf,
+            commands::add_gltf_to_scene,
             commands::export_image,
             // Project commands
             commands::project_new,

@@ -77,13 +77,33 @@ pub async fn set_actor_transform(
     let mut scene = state.scene.lock().map_err(|_| "Failed to lock scene")?;
     let updated = scene.set_actor_transform(actor_id, transform.clone());
 
-    // Compute world transform and update C++ scene
+    // Compute world transform and update C++ scene (including all children)
     if updated {
-        let world_transform = scene.compute_world_transform(actor_id);
-        drop(scene); // Release scene lock before acquiring engine lock
+        // Helper function to recursively update an actor and its children
+        fn update_actor_and_children(
+            scene: &crate::scene::SceneState,
+            engine: &crate::renderer::engine::RenderEngine,
+            actor_id: u64,
+        ) -> Result<(), String> {
+            // Update this actor's world transform
+            let world_transform = scene.compute_world_transform(actor_id);
+            engine.set_actor_transform(actor_id, &world_transform)?;
 
+            // Recursively update all children
+            if let Some(actor) = scene.get_actor(actor_id) {
+                for &child_id in &actor.children {
+                    update_actor_and_children(scene, engine, child_id)?;
+                }
+            }
+
+            Ok(())
+        }
+
+        drop(scene); // Release scene lock before acquiring engine lock
+        let scene = state.scene.lock().map_err(|_| "Failed to lock scene")?;
         let engine = state.engine.lock().map_err(|_| "Failed to lock engine")?;
-        engine.set_actor_transform(actor_id, &world_transform)?;
+
+        update_actor_and_children(&scene, &engine, actor_id)?;
     }
 
     Ok(updated)
@@ -155,6 +175,26 @@ pub async fn get_world_transform(
 ) -> Result<Transform, String> {
     let scene = state.scene.lock().map_err(|_| "Failed to lock scene")?;
     Ok(scene.compute_world_transform(actor_id))
+}
+
+#[tauri::command]
+pub async fn reorder_child(
+    state: State<'_, AppState>,
+    parent_id: Option<u64>,
+    child_id: u64,
+    new_index: usize,
+) -> Result<(), String> {
+    let mut scene = state.scene.lock().map_err(|_| "Failed to lock scene")?;
+
+    if let Some(pid) = parent_id {
+        // Reorder within parent's children
+        scene.reorder_child(pid, child_id, new_index)?;
+    } else {
+        // Reordering root actors not yet supported
+        return Err("Reordering root actors not yet supported".to_string());
+    }
+
+    Ok(())
 }
 
 // ============================================================================

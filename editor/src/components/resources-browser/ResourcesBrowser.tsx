@@ -34,6 +34,7 @@ export const ResourcesBrowser: Component<ResourcesBrowserProps> = (props) => {
   const [meshes, setMeshes] = createSignal<MeshInfo[]>([]);
   const [textures, setTextures] = createSignal<TextureInfo[]>([]);
   const [isLoading, setIsLoading] = createSignal(false);
+  const [draggingId, setDraggingId] = createSignal<string | null>(null);
 
   createEffect(async () => {
     const currentPath = props.currentAssetPath();
@@ -104,6 +105,22 @@ export const ResourcesBrowser: Component<ResourcesBrowserProps> = (props) => {
                     classList={{
                       'resource-item--active':
                         props.currentAssetPath() === asset.path,
+                      'dragging': draggingId() === asset.id
+                    }}
+                    draggable={true}
+                    onDragStart={(e) => {
+                      const assetData = {
+                        id: asset.id,
+                        name: asset.name,
+                        path: asset.path,
+                        type: 'scene'
+                      };
+                      setDraggingId(asset.id);
+                      e.dataTransfer!.setData('application/x-asset', JSON.stringify(assetData));
+                      e.dataTransfer!.effectAllowed = 'copy';
+                    }}
+                    onDragEnd={() => {
+                      setDraggingId(null);
                     }}
                     onDblClick={() => props.onAssetSelect(asset)}
                     title={asset.path}

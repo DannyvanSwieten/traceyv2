@@ -23,15 +23,11 @@ namespace tracey
         bool needsStbiFree = false;
         bool needsPlainFree = false;
 
-        // Handle embedded textures
-        if (texturePath.find("embedded:") == 0)
+        // Check if this is an embedded texture (by checking if it exists in the scene)
+        const EmbeddedTexture *embedded = scene.getEmbeddedTexture(texturePath);
+        if (embedded)
         {
-            const EmbeddedTexture *embedded = scene.getEmbeddedTexture(texturePath);
-            if (!embedded)
-            {
-                std::cerr << "Warning: Embedded texture not found: " << texturePath << std::endl;
-                return -1;
-            }
+            // Handle embedded texture
 
             width = embedded->width;
             height = embedded->height;

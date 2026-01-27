@@ -27,6 +27,7 @@ export interface CameraPosition {
 export interface ViewportHandle {
   loadScene: (path: string) => Promise<void>;
   render: () => void;
+  markSceneLoaded: () => void;
   setRenderMode: (mode: 'canvas' | 'native') => Promise<void>;
   getRenderMode: () => 'canvas' | 'native';
 }
@@ -35,6 +36,7 @@ interface ViewportProps {
   ref?: (handle: ViewportHandle) => void;
   cameraPosition: Accessor<CameraPosition>;
   onCameraPositionChange: (pos: CameraPosition) => void;
+  onAssetDropped?: (assetPath: string) => void;
 }
 
 // Quaternion math utilities
@@ -456,6 +458,7 @@ export const Viewport: Component<ViewportProps> = (props) => {
     props.ref?.({
       loadScene,
       render: triggerRender,
+      markSceneLoaded: () => setSceneLoaded(true),
       setRenderMode: switchRenderMode,
       getRenderMode: () => renderMode(),
     });
@@ -496,6 +499,18 @@ export const Viewport: Component<ViewportProps> = (props) => {
         onKeyDown={handleKeyDown}
         onKeyUp={handleKeyUp}
         onContextMenu={handleContextMenu}
+        onDragOver={(e) => {
+          e.preventDefault();
+          e.dataTransfer!.dropEffect = 'copy';
+        }}
+        onDrop={(e) => {
+          e.preventDefault();
+          const data = e.dataTransfer!.getData('application/x-asset');
+          if (data && props.onAssetDropped) {
+            const asset = JSON.parse(data);
+            props.onAssetDropped(asset.path);
+          }
+        }}
       >
         <Show
           when={renderMode() === 'canvas'}

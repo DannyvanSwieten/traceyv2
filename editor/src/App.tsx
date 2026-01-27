@@ -70,9 +70,8 @@ const App: Component = () => {
       });
 
       if (selected && typeof selected === 'string') {
-        // Just load directly - don't copy to project for now
+        // Add to assets list - user can drag it into the scene when ready
         addAsset(selected);
-        await loadScene(selected);
       }
     } catch (error) {
       console.error('Failed to import asset:', error);
@@ -87,11 +86,18 @@ const App: Component = () => {
       const loadedActors = await invoke<Actor[]>('get_all_actors');
       setActors(loadedActors);
 
-      // Compile scene
-      await invoke('compile_scene');
+      // Compile scene (will fail gracefully if scene is empty - no geometry)
+      try {
+        await invoke('compile_scene');
+      } catch (compileError) {
+        // Empty scenes are valid - rays will miss and render only sky
+        console.log('Scene is empty - will render sky only');
+      }
 
+      // Always mark scene as loaded and try to render
       const viewport = viewportRef();
       if (viewport) {
+        viewport.markSceneLoaded();
         viewport.render();
       }
     } catch (error) {
@@ -113,8 +119,9 @@ const App: Component = () => {
     );
 
     // Recompile scene and re-render
+    // Use compile_scene_no_sync to preserve primitives added directly to C++ scene
     try {
-      await invoke('compile_scene');
+      await invoke('compile_scene_no_sync');
       const viewport = viewportRef();
       if (viewport) {
         viewport.render();
@@ -132,14 +139,110 @@ const App: Component = () => {
     setSelectedActorId(actor.id);
 
     // Compile scene and render
+    // Use compile_scene_no_sync because the primitive was already added to the C++ scene
     try {
+      await invoke('compile_scene_no_sync');
+      const viewport = viewportRef();
+      if (viewport) {
+        // Mark scene as loaded so render will work (needed for first object in empty scene)
+        viewport.markSceneLoaded();
+        viewport.render();
+      }
+    } catch (error) {
+      console.error('Failed to compile scene after adding object:', error);
+    }
+  };
+
+  const handleAssetDropped = async (assetPath: string) => {
+    try {
+      // Add the asset to the scene (without clearing existing actors)
+      await invoke('add_gltf_to_scene', { path: assetPath });
+
+      // Get all actors after import
+      const loadedActors = await invoke<Actor[]>('get_all_actors');
+      setActors(loadedActors);
+
+      // Compile and render (use compile_scene_no_sync to preserve C++ geometry)
+      await invoke('compile_scene_no_sync');
+      const viewport = viewportRef();
+      console.log('handleAssetDropped: viewport =', viewport, 'calling render...');
+      if (viewport) {
+        viewport.markSceneLoaded();
+        console.log('handleAssetDropped: calling viewport.render()');
+        viewport.render();
+      } else {
+        console.error('handleAssetDropped: viewport is undefined!');
+      }
+    } catch (error) {
+      console.error('Failed to load asset:', error);
+    }
+  };
+
+  const handleActorRemove = async (actorId: number) => {
+    try {
+      // Remove from backend
+      await invoke('delete_actor', { actorId });
+
+      // Update local state
+      setActors((prev) => prev.filter((a) => a.id !== actorId));
+
+      // Deselect if this actor was selected
+      if (selectedActorId() === actorId) {
+        setSelectedActorId(null);
+      }
+
+      // Recompile and render
       await invoke('compile_scene');
       const viewport = viewportRef();
       if (viewport) {
         viewport.render();
       }
     } catch (error) {
-      console.error('Failed to compile scene after adding object:', error);
+      console.error('Failed to remove actor:', error);
+    }
+  };
+
+  const handleActorReorder = async (
+    actorId: number,
+    parentId: number | null,
+    newIndex: number
+  ) => {
+    try {
+      // Call backend to reorder
+      await invoke('reorder_child', {
+        parentId,
+        childId: actorId,
+        newIndex,
+      });
+
+      // Refresh actors to get updated order
+      const updated = await invoke<Actor[]>('get_all_actors');
+      setActors(updated);
+    } catch (error) {
+      console.error('Failed to reorder actor:', error);
+    }
+  };
+
+  const handleSetParent = async (actorId: number, newParentId: number | null) => {
+    try {
+      // Call backend to set parent
+      await invoke('set_actor_parent', {
+        actorId,
+        parentId: newParentId,
+      });
+
+      // Refresh actors to get updated hierarchy
+      const updated = await invoke<Actor[]>('get_all_actors');
+      setActors(updated);
+
+      // Recompile and render
+      await invoke('compile_scene_no_sync');
+      const viewport = viewportRef();
+      if (viewport) {
+        viewport.render();
+      }
+    } catch (error) {
+      console.error('Failed to set parent:', error);
     }
   };
 
@@ -204,6 +307,10 @@ const App: Component = () => {
               selectedActorId={selectedActorId}
               onActorSelect={setSelectedActorId}
               isLoading={isLoading}
+              onAssetDropped={handleAssetDropped}
+              onActorRemove={handleActorRemove}
+              onActorReorder={handleActorReorder}
+              onSetParent={handleSetParent}
             />
           </div>
 
@@ -213,12 +320,13 @@ const App: Component = () => {
                 ref={setViewportRef}
                 cameraPosition={cameraPosition}
                 onCameraPositionChange={setCameraPosition}
+                onAssetDropped={handleAssetDropped}
               />
             </div>
             <ResourcesBrowser
               assets={getAssets()}
               currentAssetPath={currentScene}
-              onAssetSelect={(asset) => loadScene(asset.path)}
+              onAssetSelect={(asset) => handleAssetDropped(asset.path)}
               onAssetRemove={removeAsset}
             />
           </div>

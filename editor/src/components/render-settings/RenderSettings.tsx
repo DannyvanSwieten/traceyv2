@@ -14,8 +14,8 @@ type PresentationMode = 'canvas' | 'native';
 export const RenderSettings: Component<RenderSettingsProps> = (props) => {
   const [renderMode, setRenderMode] = createSignal<RenderMode>('PathTracer');
   const [presentationMode, setPresentationMode] = createSignal<PresentationMode>('canvas');
-  const [samplesPerFrame, setSamplesPerFrame] = createSignal(16);
-  const [maxBounces, setMaxBounces] = createSignal(8);
+  const [samplesPerFrame, setSamplesPerFrame] = createSignal(4);
+  const [maxBounces, setMaxBounces] = createSignal(2);
   const [isLoading, setIsLoading] = createSignal(true);
 
   onMount(async () => {

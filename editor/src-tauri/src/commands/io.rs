@@ -38,6 +38,27 @@ pub async fn import_gltf(state: State<'_, AppState>, path: String) -> Result<(),
 }
 
 #[tauri::command]
+pub async fn add_gltf_to_scene(state: State<'_, AppState>, path: String) -> Result<(), String> {
+    let mut scene = state.scene.lock().map_err(|_| "Failed to lock scene")?;
+    let mut engine = state
+        .engine
+        .lock()
+        .map_err(|_| "Failed to lock engine")?;
+
+    // Check if there's a current project to get the project root
+    let project_root = {
+        let project_guard = state.project.lock().map_err(|_| "Failed to lock project")?;
+        project_guard
+            .as_ref()
+            .map(|p| p.project_dir.to_string_lossy().to_string())
+    };
+
+    // Use add_gltf_with_project to preserve existing actors
+    engine.add_gltf_with_project(&mut scene, &path, project_root.as_deref())?;
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn export_image(
     state: State<'_, AppState>,
     path: String,

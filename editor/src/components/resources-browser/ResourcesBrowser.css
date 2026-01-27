@@ -6,6 +6,7 @@
   background-color: #252526;
 }
 
+
 .resources-header {
   display: flex;
   align-items: center;
@@ -78,6 +79,12 @@
   transition: background-color 0.1s ease;
   min-width: 80px;
   max-width: 100px;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.resource-item.dragging {
+  opacity: 0.5;
 }
 
 .resource-item:hover {

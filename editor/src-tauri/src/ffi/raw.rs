@@ -307,6 +307,7 @@ extern "C" {
     // Scene Management
     pub fn tracey_scene_create() -> *mut TraceyScene;
     pub fn tracey_scene_destroy(scene: *mut TraceyScene);
+    pub fn tracey_scene_clear(scene: *mut TraceyScene);
     pub fn tracey_scene_create_actor(scene: *mut TraceyScene, name: *const c_char) -> u64;
     pub fn tracey_scene_get_actor_transform(
         scene: *mut TraceyScene,
@@ -339,6 +340,11 @@ extern "C" {
     pub fn tracey_scene_load_gltf(scene: *mut TraceyScene, file_path: *const c_char)
         -> TraceyResult;
     pub fn tracey_scene_load_gltf_with_project(
+        scene: *mut TraceyScene,
+        file_path: *const c_char,
+        project_root: *const c_char,
+    ) -> TraceyResult;
+    pub fn tracey_scene_add_gltf_with_project(
         scene: *mut TraceyScene,
         file_path: *const c_char,
         project_root: *const c_char,

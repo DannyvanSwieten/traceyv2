@@ -47,6 +47,10 @@ TraceyScene* tracey_scene_create(void);
 /// @param scene Scene handle (can be NULL)
 void tracey_scene_destroy(TraceyScene* scene);
 
+/// Clear all actors and objects from the scene (but keep the scene itself)
+/// @param scene Scene handle
+void tracey_scene_clear(TraceyScene* scene);
+
 /// Create a new actor in the scene
 /// @param scene Scene handle
 /// @param name Actor name (UTF-8 string, can be NULL for unnamed actor)
@@ -133,6 +137,17 @@ TraceyResult tracey_scene_load_gltf(
 /// @param projectRoot Optional project root directory for asset path resolution (can be NULL)
 /// @return TRACEY_SUCCESS or error code
 TraceyResult tracey_scene_load_gltf_with_project(
+    TraceyScene* scene,
+    const char* filePath,
+    const char* projectRoot
+);
+
+/// Add a GLTF/GLB file to the scene without clearing existing actors
+/// @param scene Scene handle
+/// @param filePath Path to GLTF/GLB file
+/// @param projectRoot Optional project root directory for asset path resolution (can be NULL)
+/// @return TRACEY_SUCCESS or error code
+TraceyResult tracey_scene_add_gltf_with_project(
     TraceyScene* scene,
     const char* filePath,
     const char* projectRoot

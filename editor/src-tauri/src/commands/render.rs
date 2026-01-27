@@ -1,7 +1,7 @@
 //! Rendering Tauri commands
 
 use crate::ffi::Camera;
-use crate::renderer::{RenderMode, RenderResult};
+use crate::renderer::{RenderMode};
 use crate::AppState;
 use tauri::State;
 
@@ -74,6 +74,17 @@ pub async fn compile_scene(state: State<'_, AppState>) -> Result<(), String> {
         .map_err(|_| "Failed to lock engine")?;
 
     engine.compile_scene(&scene)?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn compile_scene_no_sync(state: State<'_, AppState>) -> Result<(), String> {
+    let mut engine = state
+        .engine
+        .lock()
+        .map_err(|_| "Failed to lock engine")?;
+
+    engine.compile_scene_no_sync()?;
     Ok(())
 }
 
