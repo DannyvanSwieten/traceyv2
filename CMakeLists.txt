@@ -52,6 +52,20 @@ add_library(tracey
     src/scene/camera.hpp
     src/scene/camera.cpp
 
+    # Procedural node system
+    src/scene/procedural/parameter_value.hpp
+    src/scene/procedural/evaluation_context.hpp
+    src/scene/procedural/parameter.hpp
+    src/scene/procedural/parameter.cpp
+    src/scene/procedural/node.hpp
+    src/scene/procedural/node.cpp
+    src/scene/procedural/node_graph.hpp
+    src/scene/procedural/node_graph.cpp
+    src/scene/procedural/nodes/actor_node.hpp
+    src/scene/procedural/nodes/actor_node.cpp
+    src/scene/procedural/nodes/primitive_node.hpp
+    src/scene/procedural/nodes/primitive_node.cpp
+
     src/rendering/path_tracer.hpp
     src/rendering/path_tracer.cpp
     src/rendering/rasterizer.hpp

@@ -39,6 +39,21 @@ pub struct TraceyPresenter {
     _private: [u8; 0],
 }
 
+#[repr(C)]
+pub struct TraceyNodeGraph {
+    _private: [u8; 0],
+}
+
+#[repr(C)]
+pub struct TraceyNode {
+    _private: [u8; 0],
+}
+
+#[repr(C)]
+pub struct TraceyParameter {
+    _private: [u8; 0],
+}
+
 // ============================================================================
 // Math Types
 // ============================================================================
@@ -114,6 +129,39 @@ pub enum TraceyMaterialPropertyType {
     Vec4 = 3,
     Int = 4,
     Texture = 5,
+}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum TraceyNodeType {
+    Actor = 0,
+    PrimitiveCube = 1,
+    PrimitiveSphere = 2,
+    PrimitiveTorus = 3,
+    PrimitivePlane = 4,
+    PrimitiveCylinder = 5,
+    PrimitiveCone = 6,
+    GeometryTransform = 7,
+    GeometryMerge = 8,
+    Material = 9,
+    Transform = 10,
+    Camera = 11,
+    MathFloat = 12,
+    MathVector = 13,
+}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum TraceyParameterType {
+    Float = 0,
+    Vec2 = 1,
+    Vec3 = 2,
+    Vec4 = 3,
+    Int = 4,
+    Bool = 5,
+    String = 6,
+    Color = 7,
+    Texture = 8,
 }
 
 #[repr(C)]
@@ -645,6 +693,48 @@ extern "C" {
         new_height: c_uint,
     ) -> TraceyResult;
     pub fn tracey_presenter_wait_idle(presenter: *mut TraceyPresenter);
+
+    // Procedural Node System (Phase 1)
+    pub fn tracey_scene_get_node_graph(scene: *mut TraceyScene) -> *mut TraceyNodeGraph;
+    pub fn tracey_node_graph_create_node(
+        graph: *mut TraceyNodeGraph,
+        node_type: TraceyNodeType,
+        name: *const c_char,
+    ) -> u64;
+    pub fn tracey_node_graph_get_node(graph: *mut TraceyNodeGraph, node_uid: u64)
+        -> *mut TraceyNode;
+    pub fn tracey_node_graph_remove_node(
+        graph: *mut TraceyNodeGraph,
+        node_uid: u64,
+    ) -> TraceyResult;
+    pub fn tracey_node_get_parameter(
+        node: *mut TraceyNode,
+        param_name: *const c_char,
+    ) -> *mut TraceyParameter;
+    pub fn tracey_parameter_set_float(param: *mut TraceyParameter, value: c_float)
+        -> TraceyResult;
+    pub fn tracey_parameter_get_float(
+        param: *mut TraceyParameter,
+        out_value: *mut c_float,
+    ) -> TraceyResult;
+    pub fn tracey_parameter_set_vec3(
+        param: *mut TraceyParameter,
+        value: *const TraceyVec3,
+    ) -> TraceyResult;
+    pub fn tracey_parameter_get_vec3(
+        param: *mut TraceyParameter,
+        out_value: *mut TraceyVec3,
+    ) -> TraceyResult;
+    pub fn tracey_parameter_set_int(param: *mut TraceyParameter, value: c_int) -> TraceyResult;
+    pub fn tracey_parameter_get_int(
+        param: *mut TraceyParameter,
+        out_value: *mut c_int,
+    ) -> TraceyResult;
+    pub fn tracey_parameter_set_bool(param: *mut TraceyParameter, value: bool) -> TraceyResult;
+    pub fn tracey_parameter_get_bool(
+        param: *mut TraceyParameter,
+        out_value: *mut bool,
+    ) -> TraceyResult;
 
     // Error Handling
     pub fn tracey_get_last_error() -> *const c_char;

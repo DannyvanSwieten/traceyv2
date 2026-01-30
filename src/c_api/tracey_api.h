@@ -847,6 +847,171 @@ TraceyResult tracey_presenter_resize(
 /// @param presenter The presenter instance
 void tracey_presenter_wait_idle(TraceyPresenter* presenter);
 
+// ============================================================================
+// Procedural Node System (Phase 1)
+// ============================================================================
+
+/// Opaque handles for node system
+typedef struct TraceyNodeGraph TraceyNodeGraph;
+typedef struct TraceyNode TraceyNode;
+typedef struct TraceyParameter TraceyParameter;
+
+/// Node type enumeration
+typedef enum TraceyNodeType {
+    TRACEY_NODE_ACTOR = 0,
+    TRACEY_NODE_PRIMITIVE_CUBE = 1,
+    TRACEY_NODE_PRIMITIVE_SPHERE = 2,
+    TRACEY_NODE_PRIMITIVE_TORUS = 3,
+    TRACEY_NODE_PRIMITIVE_PLANE = 4,
+    TRACEY_NODE_PRIMITIVE_CYLINDER = 5,
+    TRACEY_NODE_PRIMITIVE_CONE = 6,
+    TRACEY_NODE_GEOMETRY_TRANSFORM = 7,
+    TRACEY_NODE_GEOMETRY_MERGE = 8,
+    TRACEY_NODE_MATERIAL = 9,
+    TRACEY_NODE_MATH_FLOAT = 10,
+    TRACEY_NODE_MATH_VECTOR = 11
+} TraceyNodeType;
+
+/// Parameter type enumeration
+typedef enum TraceyParameterType {
+    TRACEY_PARAM_FLOAT = 0,
+    TRACEY_PARAM_VEC2 = 1,
+    TRACEY_PARAM_VEC3 = 2,
+    TRACEY_PARAM_VEC4 = 3,
+    TRACEY_PARAM_INT = 4,
+    TRACEY_PARAM_BOOL = 5,
+    TRACEY_PARAM_STRING = 6,
+    TRACEY_PARAM_COLOR = 7,
+    TRACEY_PARAM_TEXTURE = 8
+} TraceyParameterType;
+
+/// Get the scene's node graph
+/// @param scene Scene handle
+/// @return Node graph handle, or NULL if scene is invalid
+TraceyNodeGraph* tracey_scene_get_node_graph(TraceyScene* scene);
+
+/// Create a node in the graph
+/// @param graph Node graph handle
+/// @param type Type of node to create
+/// @param name Node name (can be NULL for auto-generated name)
+/// @return Node UID, or UINT64_MAX on failure
+uint64_t tracey_node_graph_create_node(
+    TraceyNodeGraph* graph,
+    TraceyNodeType type,
+    const char* name
+);
+
+/// Get a node by UID
+/// @param graph Node graph handle
+/// @param nodeUid Node UID
+/// @return Node handle, or NULL if not found
+TraceyNode* tracey_node_graph_get_node(
+    TraceyNodeGraph* graph,
+    uint64_t nodeUid
+);
+
+/// Remove a node from the graph
+/// @param graph Node graph handle
+/// @param nodeUid Node UID to remove
+/// @return TRACEY_SUCCESS on success, error code on failure
+TraceyResult tracey_node_graph_remove_node(
+    TraceyNodeGraph* graph,
+    uint64_t nodeUid
+);
+
+/// Get node type
+/// @param node Node handle
+/// @return Node type
+TraceyNodeType tracey_node_get_type(TraceyNode* node);
+
+/// Get node name
+/// @param node Node handle
+/// @return Node name (valid until node is modified/destroyed)
+const char* tracey_node_get_name(TraceyNode* node);
+
+/// Set node name
+/// @param node Node handle
+/// @param name New name for the node
+/// @return TRACEY_SUCCESS on success, error code on failure
+TraceyResult tracey_node_set_name(TraceyNode* node, const char* name);
+
+/// Get node UID
+/// @param node Node handle
+/// @return Node UID
+uint64_t tracey_node_get_uid(TraceyNode* node);
+
+/// Get a parameter by name
+/// @param node Node handle
+/// @param paramName Parameter name
+/// @return Parameter handle, or NULL if not found
+TraceyParameter* tracey_node_get_parameter(
+    TraceyNode* node,
+    const char* paramName
+);
+
+/// Get parameter count
+/// @param node Node handle
+/// @return Number of parameters on the node
+uint32_t tracey_node_get_parameter_count(TraceyNode* node);
+
+/// Get parameter type
+/// @param param Parameter handle
+/// @return Parameter type
+TraceyParameterType tracey_parameter_get_type(TraceyParameter* param);
+
+/// Get parameter name
+/// @param param Parameter handle
+/// @return Parameter name (valid until parameter is destroyed)
+const char* tracey_parameter_get_name(TraceyParameter* param);
+
+/// Set parameter value (float)
+/// @param param Parameter handle
+/// @param value Float value
+/// @return TRACEY_SUCCESS on success, error code on failure
+TraceyResult tracey_parameter_set_float(TraceyParameter* param, float value);
+
+/// Set parameter value (vec3)
+/// @param param Parameter handle
+/// @param value Vec3 value
+/// @return TRACEY_SUCCESS on success, error code on failure
+TraceyResult tracey_parameter_set_vec3(TraceyParameter* param, TraceyVec3 value);
+
+/// Set parameter value (int)
+/// @param param Parameter handle
+/// @param value Integer value
+/// @return TRACEY_SUCCESS on success, error code on failure
+TraceyResult tracey_parameter_set_int(TraceyParameter* param, int value);
+
+/// Set parameter value (bool)
+/// @param param Parameter handle
+/// @param value Boolean value (0 = false, non-zero = true)
+/// @return TRACEY_SUCCESS on success, error code on failure
+TraceyResult tracey_parameter_set_bool(TraceyParameter* param, int value);
+
+/// Get parameter value (float)
+/// @param param Parameter handle
+/// @param outValue Pointer to receive the value
+/// @return TRACEY_SUCCESS on success, error code on failure
+TraceyResult tracey_parameter_get_float(TraceyParameter* param, float* outValue);
+
+/// Get parameter value (vec3)
+/// @param param Parameter handle
+/// @param outValue Pointer to receive the value
+/// @return TRACEY_SUCCESS on success, error code on failure
+TraceyResult tracey_parameter_get_vec3(TraceyParameter* param, TraceyVec3* outValue);
+
+/// Get parameter value (int)
+/// @param param Parameter handle
+/// @param outValue Pointer to receive the value
+/// @return TRACEY_SUCCESS on success, error code on failure
+TraceyResult tracey_parameter_get_int(TraceyParameter* param, int* outValue);
+
+/// Get parameter value (bool)
+/// @param param Parameter handle
+/// @param outValue Pointer to receive the value (0 = false, 1 = true)
+/// @return TRACEY_SUCCESS on success, error code on failure
+TraceyResult tracey_parameter_get_bool(TraceyParameter* param, int* outValue);
+
 #ifdef __cplusplus
 }
 #endif

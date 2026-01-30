@@ -2632,4 +2632,394 @@ void tracey_presenter_wait_idle(TraceyPresenter* presenter)
     }
 }
 
+
+} // extern "C"
+// ============================================================================
+// Procedural Node System Implementation (Phase 1)
+// ============================================================================
+
+#include "../scene/procedural/node_graph.hpp"
+#include "../scene/procedural/nodes/actor_node.hpp"
+#include "../scene/procedural/nodes/primitive_node.hpp"
+extern "C" {
+
+TraceyNodeGraph* tracey_scene_get_node_graph(TraceyScene* scene)
+{
+    if (!scene) {
+        setError("Scene pointer is null");
+        return nullptr;
+    }
+
+    try {
+        clearError();
+        auto* sceneImpl = reinterpret_cast<tracey::Scene*>(scene);
+        // For Phase 1, Scene doesn't have a node graph yet
+        // This will be implemented when we add NodeGraph to Scene class
+        // For now, return nullptr
+        (void)sceneImpl;
+        setError("Node graph not yet integrated into Scene (Phase 1)");
+        return nullptr;
+    } catch (const std::exception& e) {
+        setError(std::string("Failed to get node graph: ") + e.what());
+        return nullptr;
+    }
+}
+
+uint64_t tracey_node_graph_create_node(
+    TraceyNodeGraph* graph,
+    TraceyNodeType type,
+    const char* name)
+{
+    if (!graph) {
+        setError("NodeGraph pointer is null");
+        return UINT64_MAX;
+    }
+
+    try {
+        clearError();
+        auto* graphImpl = reinterpret_cast<tracey::NodeGraph*>(graph);
+
+        std::string nodeName = name ? name : "Node";
+        size_t uid = graphImpl->generateNodeUid();
+
+        // Create the appropriate node type
+        std::unique_ptr<tracey::ProceduralNode> node;
+
+        switch (type) {
+            case TRACEY_NODE_ACTOR:
+                node = std::make_unique<tracey::ActorNode>(uid, nodeName);
+                break;
+            case TRACEY_NODE_PRIMITIVE_CUBE:
+                node = std::make_unique<tracey::CubeNode>(uid, nodeName);
+                break;
+            case TRACEY_NODE_PRIMITIVE_SPHERE:
+                node = std::make_unique<tracey::SphereNode>(uid, nodeName);
+                break;
+            case TRACEY_NODE_PRIMITIVE_TORUS:
+                node = std::make_unique<tracey::TorusNode>(uid, nodeName);
+                break;
+            case TRACEY_NODE_PRIMITIVE_PLANE:
+                node = std::make_unique<tracey::PlaneNode>(uid, nodeName);
+                break;
+            case TRACEY_NODE_PRIMITIVE_CYLINDER:
+                node = std::make_unique<tracey::CylinderNode>(uid, nodeName);
+                break;
+            case TRACEY_NODE_PRIMITIVE_CONE:
+                node = std::make_unique<tracey::ConeNode>(uid, nodeName);
+                break;
+            default:
+                setError("Unsupported node type");
+                return UINT64_MAX;
+        }
+
+        // Store the node in the graph - using const_cast workaround for Phase 1
+        const_cast<std::unordered_map<size_t, std::unique_ptr<tracey::ProceduralNode>>&>(
+            graphImpl->nodes()
+        )[uid] = std::move(node);
+
+        return uid;
+    } catch (const std::exception& e) {
+        setError(std::string("Failed to create node: ") + e.what());
+        return UINT64_MAX;
+    }
+}
+
+TraceyNode* tracey_node_graph_get_node(TraceyNodeGraph* graph, uint64_t nodeUid)
+{
+    if (!graph) {
+        setError("NodeGraph pointer is null");
+        return nullptr;
+    }
+
+    try {
+        clearError();
+        auto* graphImpl = reinterpret_cast<tracey::NodeGraph*>(graph);
+        auto* node = graphImpl->getNode(nodeUid);
+        return reinterpret_cast<TraceyNode*>(node);
+    } catch (const std::exception& e) {
+        setError(std::string("Failed to get node: ") + e.what());
+        return nullptr;
+    }
+}
+
+TraceyResult tracey_node_graph_remove_node(TraceyNodeGraph* graph, uint64_t nodeUid)
+{
+    if (!graph) {
+        setError("NodeGraph pointer is null");
+        return TRACEY_ERROR_NULL_POINTER;
+    }
+
+    try {
+        clearError();
+        auto* graphImpl = reinterpret_cast<tracey::NodeGraph*>(graph);
+        bool removed = graphImpl->removeNode(nodeUid);
+        return removed ? TRACEY_SUCCESS : TRACEY_ERROR_NOT_FOUND;
+    } catch (const std::exception& e) {
+        setError(std::string("Failed to remove node: ") + e.what());
+        return TRACEY_ERROR_UNKNOWN;
+    }
+}
+
+TraceyNodeType tracey_node_get_type(TraceyNode* node)
+{
+    if (!node) {
+        return TRACEY_NODE_ACTOR;
+    }
+
+    auto* nodeImpl = reinterpret_cast<tracey::ProceduralNode*>(node);
+    switch (nodeImpl->nodeType()) {
+        case tracey::NodeType::Actor: return TRACEY_NODE_ACTOR;
+        case tracey::NodeType::GeometryPrimitive: {
+            auto* primNode = dynamic_cast<tracey::PrimitiveNode*>(nodeImpl);
+            if (primNode) {
+                switch (primNode->primitiveType()) {
+                    case tracey::PrimitiveType::Cube: return TRACEY_NODE_PRIMITIVE_CUBE;
+                    case tracey::PrimitiveType::Sphere: return TRACEY_NODE_PRIMITIVE_SPHERE;
+                    case tracey::PrimitiveType::Torus: return TRACEY_NODE_PRIMITIVE_TORUS;
+                    case tracey::PrimitiveType::Plane: return TRACEY_NODE_PRIMITIVE_PLANE;
+                    case tracey::PrimitiveType::Cylinder: return TRACEY_NODE_PRIMITIVE_CYLINDER;
+                    case tracey::PrimitiveType::Cone: return TRACEY_NODE_PRIMITIVE_CONE;
+                }
+            }
+            return TRACEY_NODE_PRIMITIVE_CUBE;
+        }
+        default: return TRACEY_NODE_ACTOR;
+    }
+}
+
+const char* tracey_node_get_name(TraceyNode* node)
+{
+    if (!node) return "";
+    auto* nodeImpl = reinterpret_cast<tracey::ProceduralNode*>(node);
+    return nodeImpl->name().c_str();
+}
+
+TraceyResult tracey_node_set_name(TraceyNode* node, const char* name)
+{
+    if (!node || !name) {
+        setError("Null pointer parameter");
+        return TRACEY_ERROR_NULL_POINTER;
+    }
+
+    try {
+        clearError();
+        auto* nodeImpl = reinterpret_cast<tracey::ProceduralNode*>(node);
+        nodeImpl->setName(name);
+        return TRACEY_SUCCESS;
+    } catch (const std::exception& e) {
+        setError(std::string("Failed to set node name: ") + e.what());
+        return TRACEY_ERROR_UNKNOWN;
+    }
+}
+
+uint64_t tracey_node_get_uid(TraceyNode* node)
+{
+    if (!node) return UINT64_MAX;
+    auto* nodeImpl = reinterpret_cast<tracey::ProceduralNode*>(node);
+    return nodeImpl->uid();
+}
+
+TraceyParameter* tracey_node_get_parameter(TraceyNode* node, const char* paramName)
+{
+    if (!node || !paramName) return nullptr;
+    auto* nodeImpl = reinterpret_cast<tracey::ProceduralNode*>(node);
+    auto* param = nodeImpl->getParameter(paramName);
+    return reinterpret_cast<TraceyParameter*>(param);
+}
+
+uint32_t tracey_node_get_parameter_count(TraceyNode* node)
+{
+    if (!node) return 0;
+    auto* nodeImpl = reinterpret_cast<tracey::ProceduralNode*>(node);
+    return static_cast<uint32_t>(nodeImpl->parameters().size());
+}
+
+TraceyParameterType tracey_parameter_get_type(TraceyParameter* param)
+{
+    if (!param) return TRACEY_PARAM_FLOAT;
+    auto* paramImpl = reinterpret_cast<tracey::Parameter*>(param);
+    switch (paramImpl->type()) {
+        case tracey::ParameterType::Float: return TRACEY_PARAM_FLOAT;
+        case tracey::ParameterType::Vec2: return TRACEY_PARAM_VEC2;
+        case tracey::ParameterType::Vec3: return TRACEY_PARAM_VEC3;
+        case tracey::ParameterType::Vec4: return TRACEY_PARAM_VEC4;
+        case tracey::ParameterType::Int: return TRACEY_PARAM_INT;
+        case tracey::ParameterType::Bool: return TRACEY_PARAM_BOOL;
+        case tracey::ParameterType::String: return TRACEY_PARAM_STRING;
+        case tracey::ParameterType::Color: return TRACEY_PARAM_COLOR;
+        case tracey::ParameterType::Texture: return TRACEY_PARAM_TEXTURE;
+        default: return TRACEY_PARAM_FLOAT;
+    }
+}
+
+const char* tracey_parameter_get_name(TraceyParameter* param)
+{
+    if (!param) return "";
+    auto* paramImpl = reinterpret_cast<tracey::Parameter*>(param);
+    return paramImpl->name().c_str();
+}
+
+TraceyResult tracey_parameter_set_float(TraceyParameter* param, float value)
+{
+    if (!param) {
+        setError("Parameter pointer is null");
+        return TRACEY_ERROR_NULL_POINTER;
+    }
+
+    try {
+        clearError();
+        auto* paramImpl = reinterpret_cast<tracey::Parameter*>(param);
+        paramImpl->setValue(value);
+        return TRACEY_SUCCESS;
+    } catch (const std::exception& e) {
+        setError(std::string("Failed to set float parameter: ") + e.what());
+        return TRACEY_ERROR_UNKNOWN;
+    }
+}
+
+TraceyResult tracey_parameter_set_vec3(TraceyParameter* param, TraceyVec3 value)
+{
+    if (!param) {
+        setError("Parameter pointer is null");
+        return TRACEY_ERROR_NULL_POINTER;
+    }
+
+    try {
+        clearError();
+        auto* paramImpl = reinterpret_cast<tracey::Parameter*>(param);
+        tracey::Vec3 vec3(value.x, value.y, value.z);
+        paramImpl->setValue(vec3);
+        return TRACEY_SUCCESS;
+    } catch (const std::exception& e) {
+        setError(std::string("Failed to set vec3 parameter: ") + e.what());
+        return TRACEY_ERROR_UNKNOWN;
+    }
+}
+
+TraceyResult tracey_parameter_set_int(TraceyParameter* param, int value)
+{
+    if (!param) {
+        setError("Parameter pointer is null");
+        return TRACEY_ERROR_NULL_POINTER;
+    }
+
+    try {
+        clearError();
+        auto* paramImpl = reinterpret_cast<tracey::Parameter*>(param);
+        paramImpl->setValue(value);
+        return TRACEY_SUCCESS;
+    } catch (const std::exception& e) {
+        setError(std::string("Failed to set int parameter: ") + e.what());
+        return TRACEY_ERROR_UNKNOWN;
+    }
+}
+
+TraceyResult tracey_parameter_set_bool(TraceyParameter* param, int value)
+{
+    if (!param) {
+        setError("Parameter pointer is null");
+        return TRACEY_ERROR_NULL_POINTER;
+    }
+
+    try {
+        clearError();
+        auto* paramImpl = reinterpret_cast<tracey::Parameter*>(param);
+        paramImpl->setValue(value != 0);
+        return TRACEY_SUCCESS;
+    } catch (const std::exception& e) {
+        setError(std::string("Failed to set bool parameter: ") + e.what());
+        return TRACEY_ERROR_UNKNOWN;
+    }
+}
+
+TraceyResult tracey_parameter_get_float(TraceyParameter* param, float* outValue)
+{
+    if (!param || !outValue) {
+        setError("Null pointer parameter");
+        return TRACEY_ERROR_NULL_POINTER;
+    }
+
+    try {
+        clearError();
+        auto* paramImpl = reinterpret_cast<tracey::Parameter*>(param);
+        if (auto* floatVal = tracey::getValuePtr<float>(paramImpl->value())) {
+            *outValue = *floatVal;
+            return TRACEY_SUCCESS;
+        }
+        setError("Parameter is not a float type");
+        return TRACEY_ERROR_INVALID_ARGUMENT;
+    } catch (const std::exception& e) {
+        setError(std::string("Failed to get float parameter: ") + e.what());
+        return TRACEY_ERROR_UNKNOWN;
+    }
+}
+
+TraceyResult tracey_parameter_get_vec3(TraceyParameter* param, TraceyVec3* outValue)
+{
+    if (!param || !outValue) {
+        setError("Null pointer parameter");
+        return TRACEY_ERROR_NULL_POINTER;
+    }
+
+    try {
+        clearError();
+        auto* paramImpl = reinterpret_cast<tracey::Parameter*>(param);
+        if (auto* vec3Val = tracey::getValuePtr<tracey::Vec3>(paramImpl->value())) {
+            outValue->x = vec3Val->x;
+            outValue->y = vec3Val->y;
+            outValue->z = vec3Val->z;
+            return TRACEY_SUCCESS;
+        }
+        setError("Parameter is not a vec3 type");
+        return TRACEY_ERROR_INVALID_ARGUMENT;
+    } catch (const std::exception& e) {
+        setError(std::string("Failed to get vec3 parameter: ") + e.what());
+        return TRACEY_ERROR_UNKNOWN;
+    }
+}
+
+TraceyResult tracey_parameter_get_int(TraceyParameter* param, int* outValue)
+{
+    if (!param || !outValue) {
+        setError("Null pointer parameter");
+        return TRACEY_ERROR_NULL_POINTER;
+    }
+
+    try {
+        clearError();
+        auto* paramImpl = reinterpret_cast<tracey::Parameter*>(param);
+        if (auto* intVal = tracey::getValuePtr<int>(paramImpl->value())) {
+            *outValue = *intVal;
+            return TRACEY_SUCCESS;
+        }
+        setError("Parameter is not an int type");
+        return TRACEY_ERROR_INVALID_ARGUMENT;
+    } catch (const std::exception& e) {
+        setError(std::string("Failed to get int parameter: ") + e.what());
+        return TRACEY_ERROR_UNKNOWN;
+    }
+}
+
+TraceyResult tracey_parameter_get_bool(TraceyParameter* param, int* outValue)
+{
+    if (!param || !outValue) {
+        setError("Null pointer parameter");
+        return TRACEY_ERROR_NULL_POINTER;
+    }
+
+    try {
+        clearError();
+        auto* paramImpl = reinterpret_cast<tracey::Parameter*>(param);
+        if (auto* boolVal = tracey::getValuePtr<bool>(paramImpl->value())) {
+            *outValue = *boolVal ? 1 : 0;
+            return TRACEY_SUCCESS;
+        }
+        setError("Parameter is not a bool type");
+        return TRACEY_ERROR_INVALID_ARGUMENT;
+    } catch (const std::exception& e) {
+        setError(std::string("Failed to get bool parameter: ") + e.what());
+        return TRACEY_ERROR_UNKNOWN;
+    }
+}
+
 } // extern "C"
