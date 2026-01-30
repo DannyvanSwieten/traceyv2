@@ -1,4 +1,5 @@
 #include "primitive_node.hpp"
+#include "../../geometry.hpp"
 
 namespace tracey
 {
@@ -61,16 +62,122 @@ namespace tracey
 
     NodeEvaluationResult PrimitiveNode::evaluate(const EvaluationContext& ctx)
     {
-        // Phase 2: Actual geometry generation
-        // For Phase 1, return empty result
         (void)ctx;
+        NodeEvaluationResult result;
 
-        // TODO: Phase 2
-        // 1. Get parameter values
-        // 2. Create SceneObject based on primitive type and parameters
-        // 3. Return result with geometry
+        try {
+            std::shared_ptr<Geometry> geometry;
 
-        return NodeEvaluationResult();
+            switch (m_primitiveType) {
+                case PrimitiveType::Cube: {
+                    float size = 1.0f;
+                    if (auto* param = getParameter("size")) {
+                        if (auto* val = getValuePtr<float>(param->value())) {
+                            size = *val;
+                        }
+                    }
+                    geometry = std::make_shared<Geometry>(Geometry::createCube(size));
+                    break;
+                }
+
+                case PrimitiveType::Sphere: {
+                    float radius = 1.0f;
+                    float segments = 16.0f;
+                    float rings = 16.0f;
+                    if (auto* p = getParameter("radius")) {
+                        if (auto* v = getValuePtr<float>(p->value())) radius = *v;
+                    }
+                    if (auto* p = getParameter("segments")) {
+                        if (auto* v = getValuePtr<float>(p->value())) segments = *v;
+                    }
+                    if (auto* p = getParameter("rings")) {
+                        if (auto* v = getValuePtr<float>(p->value())) rings = *v;
+                    }
+                    geometry = std::make_shared<Geometry>(Geometry::createSphere(
+                        radius, static_cast<uint32_t>(segments), static_cast<uint32_t>(rings)));
+                    break;
+                }
+
+                case PrimitiveType::Torus: {
+                    float majorRadius = 1.0f, minorRadius = 0.3f;
+                    float majorSegments = 32.0f, minorSegments = 16.0f;
+                    if (auto* p = getParameter("majorRadius")) {
+                        if (auto* v = getValuePtr<float>(p->value())) majorRadius = *v;
+                    }
+                    if (auto* p = getParameter("minorRadius")) {
+                        if (auto* v = getValuePtr<float>(p->value())) minorRadius = *v;
+                    }
+                    if (auto* p = getParameter("majorSegments")) {
+                        if (auto* v = getValuePtr<float>(p->value())) majorSegments = *v;
+                    }
+                    if (auto* p = getParameter("minorSegments")) {
+                        if (auto* v = getValuePtr<float>(p->value())) minorSegments = *v;
+                    }
+                    geometry = std::make_shared<Geometry>(Geometry::createTorus(
+                        majorRadius, minorRadius,
+                        static_cast<uint32_t>(majorSegments), static_cast<uint32_t>(minorSegments)));
+                    break;
+                }
+
+                case PrimitiveType::Plane: {
+                    float width = 1.0f, depth = 1.0f;
+                    if (auto* p = getParameter("width")) {
+                        if (auto* v = getValuePtr<float>(p->value())) width = *v;
+                    }
+                    if (auto* p = getParameter("depth")) {
+                        if (auto* v = getValuePtr<float>(p->value())) depth = *v;
+                    }
+                    geometry = std::make_shared<Geometry>(Geometry::createPlane(width, depth));
+                    break;
+                }
+
+                case PrimitiveType::Cylinder: {
+                    float radius = 0.5f, height = 1.0f, segments = 32.0f;
+                    if (auto* p = getParameter("radius")) {
+                        if (auto* v = getValuePtr<float>(p->value())) radius = *v;
+                    }
+                    if (auto* p = getParameter("height")) {
+                        if (auto* v = getValuePtr<float>(p->value())) height = *v;
+                    }
+                    if (auto* p = getParameter("segments")) {
+                        if (auto* v = getValuePtr<float>(p->value())) segments = *v;
+                    }
+                    geometry = std::make_shared<Geometry>(Geometry::createCylinder(
+                        radius, height, static_cast<uint32_t>(segments)));
+                    break;
+                }
+
+                case PrimitiveType::Cone: {
+                    float radius = 0.5f, height = 1.0f, segments = 32.0f;
+                    if (auto* p = getParameter("radius")) {
+                        if (auto* v = getValuePtr<float>(p->value())) radius = *v;
+                    }
+                    if (auto* p = getParameter("height")) {
+                        if (auto* v = getValuePtr<float>(p->value())) height = *v;
+                    }
+                    if (auto* p = getParameter("segments")) {
+                        if (auto* v = getValuePtr<float>(p->value())) segments = *v;
+                    }
+                    geometry = std::make_shared<Geometry>(Geometry::createCone(
+                        radius, height, static_cast<uint32_t>(segments)));
+                    break;
+                }
+            }
+
+            if (geometry) {
+                result.data = geometry;
+                result.success = true;
+            } else {
+                result.success = false;
+                result.error = "Failed to create primitive geometry";
+            }
+
+        } catch (const std::exception& e) {
+            result.success = false;
+            result.error = std::string("Exception in primitive evaluation: ") + e.what();
+        }
+
+        return result;
     }
 
 } // namespace tracey

@@ -30,6 +30,14 @@ add_executable(scene_renderer
     scene_renderer/main.cpp
 )
 
+add_executable(test_node_system
+    test_node_system.cpp
+)
+
+add_executable(test_transform_and_render
+    test_transform_and_render.cpp
+)
+
 target_link_libraries(blas
     PRIVATE
     tracey
@@ -86,6 +94,20 @@ target_link_libraries(scene_renderer
     shaderc
 )
 
+target_link_libraries(test_node_system
+    PRIVATE
+    tracey
+    glm
+)
+
+target_link_libraries(test_transform_and_render
+    PRIVATE
+    tracey
+    glm
+    Vulkan::Vulkan
+    shaderc
+)
+
 # Graphics test subdirectory
 add_subdirectory(graphics_test)
 
@@ -93,7 +115,7 @@ add_subdirectory(graphics_test)
 add_subdirectory(rasterizer_test)
 
 # Set rpath for all executables that link against Vulkan and shaderc
-set_target_properties(device_api wavefront wavefront_isf scene_renderer PROPERTIES
+set_target_properties(device_api wavefront wavefront_isf scene_renderer test_transform_and_render PROPERTIES
     MACOSX_RPATH ON
     BUILD_RPATH "/usr/local/lib"
     INSTALL_RPATH "/usr/local/lib"

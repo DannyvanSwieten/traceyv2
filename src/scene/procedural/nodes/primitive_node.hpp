@@ -1,7 +1,7 @@
 #pragma once
 
 #include "../node.hpp"
-#include "../../scene_object.hpp"
+#include "../../geometry.hpp"
 
 namespace tracey
 {

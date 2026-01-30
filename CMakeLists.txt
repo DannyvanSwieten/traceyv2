@@ -51,6 +51,10 @@ add_library(tracey
     src/scene/gltf_loader.cpp
     src/scene/camera.hpp
     src/scene/camera.cpp
+    src/scene/attribute.hpp
+    src/scene/attribute.cpp
+    src/scene/geometry.hpp
+    src/scene/geometry.cpp
 
     # Procedural node system
     src/scene/procedural/parameter_value.hpp
@@ -65,6 +69,10 @@ add_library(tracey
     src/scene/procedural/nodes/actor_node.cpp
     src/scene/procedural/nodes/primitive_node.hpp
     src/scene/procedural/nodes/primitive_node.cpp
+    src/scene/procedural/nodes/merge_node.hpp
+    src/scene/procedural/nodes/merge_node.cpp
+    src/scene/procedural/nodes/transform_geo_node.hpp
+    src/scene/procedural/nodes/transform_geo_node.cpp
 
     src/rendering/path_tracer.hpp
     src/rendering/path_tracer.cpp

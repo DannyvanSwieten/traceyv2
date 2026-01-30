@@ -9,14 +9,14 @@ namespace tracey
 {
     // Forward declarations
     class NodeGraph;
-    class SceneObject;
+    class Geometry;
 
     /**
      * @brief Result of evaluating a single node
      *
      * Contains the output data from a node's evaluate() method.
      * The variant holds different types of data depending on the node type:
-     * - Geometry nodes output SceneObject
+     * - Geometry nodes output Geometry
      * - Material nodes output MaterialInstance
      * - Math nodes output scalars/vectors
      * - Transform nodes output transformation data
@@ -24,12 +24,12 @@ namespace tracey
     struct NodeEvaluationResult
     {
         std::variant<
-            std::monostate,                            // No output / void
-            std::shared_ptr<SceneObject>,             // Geometry output
-            float,                                     // Scalar output
-            Vec3,                                      // Vector output
-            Vec4,                                      // Vector4 output
-            std::vector<std::shared_ptr<SceneObject>> // Multi-geometry output
+            std::monostate,                          // No output / void
+            std::shared_ptr<Geometry>,              // Geometry output (SOP level)
+            float,                                   // Scalar output
+            Vec3,                                    // Vector output
+            Vec4,                                    // Vector4 output
+            std::vector<std::shared_ptr<Geometry>>  // Multi-geometry output
         > data;
 
         bool success = true;
@@ -38,7 +38,7 @@ namespace tracey
         NodeEvaluationResult() = default;
 
         // Constructors for convenience
-        explicit NodeEvaluationResult(std::shared_ptr<SceneObject> geometry)
+        explicit NodeEvaluationResult(std::shared_ptr<Geometry> geometry)
             : data(std::move(geometry)), success(true) {}
 
         explicit NodeEvaluationResult(float value)

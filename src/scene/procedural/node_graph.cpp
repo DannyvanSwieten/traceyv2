@@ -135,12 +135,57 @@ namespace tracey
 
     GraphEvaluationResult NodeGraph::evaluate(const EvaluationContext& ctx)
     {
-        // Phase 2: Full evaluation implementation
-        // For Phase 1, return empty result
-        (void)ctx;
-
         GraphEvaluationResult result;
-        // TODO: Phase 2 - implement topological sort and node evaluation
+
+        // Get evaluation order via topological sort
+        std::vector<size_t> evaluationOrder = computeEvaluationOrder();
+
+        // Check for cycles
+        if (evaluationOrder.empty() && !m_nodes.empty()) {
+            return GraphEvaluationResult::makeError("Cycle detected in node graph");
+        }
+
+        // Create a mutable context for caching results
+        EvaluationContext mutableCtx = ctx;
+        mutableCtx.graph = this;
+
+        // Evaluate nodes in topological order
+        for (size_t nodeUid : evaluationOrder) {
+            auto* node = getNode(nodeUid);
+            if (!node) {
+                continue;
+            }
+
+            // Skip evaluation if node is clean (not dirty)
+            if (!node->isDirty()) {
+                continue;
+            }
+
+            // Evaluate the node
+            NodeEvaluationResult nodeResult = node->evaluate(mutableCtx);
+
+            // Cache the result
+            mutableCtx.cache[nodeUid] = nodeResult;
+
+            // Mark node as clean
+            node->setDirty(false);
+
+            // Check for errors
+            if (!nodeResult.success) {
+                return GraphEvaluationResult::makeError(
+                    "Node '" + node->name() + "' failed: " + nodeResult.error
+                );
+            }
+        }
+
+        // Gather output node results
+        for (const auto& [outputName, nodeUid] : m_outputNodes) {
+            auto cacheIt = mutableCtx.cache.find(nodeUid);
+            if (cacheIt != mutableCtx.cache.end()) {
+                result.outputs[outputName] = cacheIt->second;
+            }
+        }
+
         return result;
     }
 
@@ -190,9 +235,53 @@ namespace tracey
 
     std::vector<size_t> NodeGraph::computeEvaluationOrder() const
     {
-        // Phase 2: Topological sort for evaluation order
-        // For Phase 1, return empty vector
-        return {};
+        // Topological sort using Kahn's algorithm
+        std::vector<size_t> result;
+        std::unordered_map<size_t, int> inDegree;
+        std::unordered_map<size_t, std::vector<size_t>> adjacencyList;
+
+        // Initialize in-degree for all nodes
+        for (const auto& [uid, node] : m_nodes) {
+            inDegree[uid] = 0;
+            adjacencyList[uid] = {};
+        }
+
+        // Build adjacency list and count in-degrees
+        for (const auto& conn : m_connections) {
+            adjacencyList[conn.fromNode].push_back(conn.toNode);
+            inDegree[conn.toNode]++;
+        }
+
+        // Find all nodes with in-degree 0
+        std::vector<size_t> queue;
+        for (const auto& [uid, degree] : inDegree) {
+            if (degree == 0) {
+                queue.push_back(uid);
+            }
+        }
+
+        // Process nodes in topological order
+        while (!queue.empty()) {
+            size_t current = queue.back();
+            queue.pop_back();
+            result.push_back(current);
+
+            // Reduce in-degree for connected nodes
+            for (size_t neighbor : adjacencyList[current]) {
+                inDegree[neighbor]--;
+                if (inDegree[neighbor] == 0) {
+                    queue.push_back(neighbor);
+                }
+            }
+        }
+
+        // If result doesn't contain all nodes, there's a cycle
+        if (result.size() != m_nodes.size()) {
+            // Return empty to indicate cycle detection
+            return {};
+        }
+
+        return result;
     }
 
 } // namespace tracey

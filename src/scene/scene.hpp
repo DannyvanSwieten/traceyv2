@@ -8,6 +8,7 @@
 #include "actor.hpp"
 #include "scene_object.hpp"
 #include "camera.hpp"
+#include "procedural/node_graph.hpp"
 
 namespace tracey
 {
@@ -69,6 +70,10 @@ namespace tracey
         const Camera &camera() const { return m_camera.value(); }
         Camera &camera() { return m_camera.value(); }
 
+        // Procedural node graph management
+        NodeGraph& nodeGraph() { return m_nodeGraph; }
+        const NodeGraph& nodeGraph() const { return m_nodeGraph; }
+
         // Embedded texture management
         void addEmbeddedTexture(const std::string &id, EmbeddedTexture &&texture)
         {
@@ -97,5 +102,6 @@ namespace tracey
         std::unordered_map<std::string, EmbeddedTexture> m_embeddedTextures;
         std::optional<Camera> m_camera;
         int64_t m_root = -1;
+        NodeGraph m_nodeGraph{0, "SceneGraph"};  // Root node graph for the scene
     };
 }

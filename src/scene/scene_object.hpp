@@ -1,5 +1,6 @@
 #pragma once
 #include "../core/types.hpp"
+#include "attribute.hpp"
 #include <string>
 #include <vector>
 #include <optional>
@@ -32,6 +33,10 @@ namespace tracey
         size_t vertexCount() const { return m_positions.size(); }
         size_t triangleCount() const;
 
+        // Attribute system access
+        AttributeSet& attributes() { return m_attributes; }
+        const AttributeSet& attributes() const { return m_attributes; }
+
         // Primitive generators
         static SceneObject createCube(float size = 1.0f);
         static SceneObject createPlane(float width = 1.0f, float depth = 1.0f);
@@ -47,6 +52,9 @@ namespace tracey
         std::vector<uint32_t> m_indices;
         std::vector<Vec3> m_normals;
         std::vector<Vec2> m_uvs;
+
+        // Attribute system for VOP-style operations
+        AttributeSet m_attributes;
 
         // Future extension point for geometry modification graphs
         // std::unique_ptr<GeometryGraph> m_modifierGraph;
