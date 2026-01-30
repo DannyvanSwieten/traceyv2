@@ -97,6 +97,11 @@ namespace tracey
         return m_vulkanContext.device();
     }
 
+    void VulkanComputeDevice::waitIdle()
+    {
+        vkDeviceWaitIdle(m_vulkanContext.device());
+    }
+
     RayTracingPipeline *VulkanComputeDevice::createRayTracingPipeline(const RayTracingPipelineLayoutDescriptor &layout, const ShaderBindingTable *sbt)
     {
         return new VulkanComputeRaytracingPipeline(*this, layout, *dynamic_cast<const CpuShaderBindingTable *>(sbt));

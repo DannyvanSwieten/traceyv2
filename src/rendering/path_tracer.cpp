@@ -102,7 +102,12 @@ namespace tracey
         for (auto &descriptorSet : m_descriptorSets)
         {
             descriptorSet->setImage2D("outputImage", m_outputImage.get());
-            descriptorSet->setAccelerationStructure("tlas", scene.tlas.get());
+
+            // Only bind TLAS if scene has geometry
+            if (scene.tlas)
+            {
+                descriptorSet->setAccelerationStructure("tlas", scene.tlas.get());
+            }
 
             if (!scene.vertexBuffers.empty())
             {
@@ -161,13 +166,13 @@ namespace tracey
         if (clearAccumulation)
         {
             m_sampleCount = 0;
+
+            // Only bind scene resources when starting new accumulation
+            bindSceneResources(scene);
+
+            // Only update camera when starting new accumulation
+            updateCameraUniforms(camera);
         }
-
-        // Bind scene resources
-        bindSceneResources(scene);
-
-        // Update camera parameters
-        updateCameraUniforms(camera);
 
         // Create/reset command buffer
         if (!m_commandBuffer)
@@ -186,20 +191,23 @@ namespace tracey
         m_commandBuffer->setDescriptorSet(m_descriptorSets[0].get());
         m_commandBuffer->setDescriptorSet(m_descriptorSets[1].get());
 
-        TraceRaysParams traceParams;
-        traceParams.samplesPerFrame = m_config.samplesPerFrame;
-        traceParams.maxBounces = m_config.maxBounces;
-        traceParams.baseSampleCount = m_sampleCount; // For resolve shader accumulation
-        m_commandBuffer->traceRays(*m_pipelineBuilder->getShaderBindingTable(),
-                                   m_config.width, m_config.height, traceParams);
-        m_commandBuffer->copyImageToBuffer(m_outputImage.get(), m_readbackBuffer.get());
+        // Render ONE sample for progressive rendering
+        TraceSingleSampleParams singleParams;
+        singleParams.globalSampleIndex = m_sampleCount;
+        singleParams.baseSampleCount = m_sampleCount;
+        singleParams.maxBounces = m_config.maxBounces;
+
+        m_commandBuffer->traceSingleSample(*m_pipelineBuilder->getShaderBindingTable(),
+                                           m_config.width, m_config.height, singleParams);
+        // Don't copy to buffer here - readback() will do it when needed
         m_commandBuffer->end();
 
         auto startTime = std::chrono::high_resolution_clock::now();
-        m_commandBuffer->waitUntilCompleted();
+        // m_commandBuffer->waitUntilCompleted();
+        m_device->waitIdle(); // Synchronous wait for simplicity
         auto endTime = std::chrono::high_resolution_clock::now();
 
-        m_sampleCount += m_config.samplesPerFrame;
+        m_sampleCount += 1; // Increment by 1 since we render one sample at a time
 
         std::chrono::duration<double, std::milli> executionTime = endTime - startTime;
         return executionTime.count();
@@ -207,6 +215,17 @@ namespace tracey
 
     size_t PathTracer::readback(void *outData)
     {
+        // Create temporary command buffer for readback
+        // (separate from render command buffer to avoid blocking render)
+        auto readbackCmd = std::unique_ptr<RayTracingCommandBuffer>(
+            m_device->createRayTracingCommandBuffer());
+
+        readbackCmd->begin();
+        readbackCmd->copyImageToBuffer(m_outputImage.get(), m_readbackBuffer.get());
+        readbackCmd->end();
+        readbackCmd->waitUntilCompleted();
+
+        // Now read from the buffer
         size_t pixelSize = m_config.hdrOutput ? 16 : 4;
         size_t bufferSize = m_config.width * m_config.height * pixelSize;
 

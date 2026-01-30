@@ -35,6 +35,7 @@ namespace tracey
 
         // Actor management
         Actor *createActor();
+        Actor *createActorWithUid(size_t uid);  // Create actor with specific UID (for Rust interop)
         Actor *getActor(size_t uid)
         {
             if (uid >= m_actors.size())

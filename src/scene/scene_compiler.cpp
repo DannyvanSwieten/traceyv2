@@ -200,6 +200,34 @@ namespace tracey
             gpuMat.emissiveB = emission->b;
         }
 
+        // Set clearcoat parameters
+        auto clearcoat = material.clearcoat();
+        if (clearcoat)
+        {
+            gpuMat.clearcoat = *clearcoat;
+        }
+
+        auto clearcoatRoughness = material.clearcoatRoughness();
+        if (clearcoatRoughness)
+        {
+            gpuMat.clearcoatRoughness = *clearcoatRoughness;
+        }
+
+        // Set sheen parameters
+        auto sheenColor = material.sheenColor();
+        if (sheenColor)
+        {
+            gpuMat.sheenColorR = sheenColor->r;
+            gpuMat.sheenColorG = sheenColor->g;
+            gpuMat.sheenColorB = sheenColor->b;
+        }
+
+        auto sheenRoughness = material.sheenRoughness();
+        if (sheenRoughness)
+        {
+            gpuMat.sheenRoughness = *sheenRoughness;
+        }
+
         return gpuMat;
     }
     SceneCompiler::ObjectData SceneCompiler::compileObject(Device *device, const SceneObject &obj, const BVHConfig &bvhConfig)
@@ -314,9 +342,10 @@ namespace tracey
             }
         }
 
+        // Allow empty scenes (will render only sky)
         if (result.blases.empty())
         {
-            throw std::runtime_error("Scene has no valid geometry objects");
+            std::cout << "Scene has no geometry - will render sky only" << std::endl;
         }
 
         // Create UV buffer if any object has UVs
@@ -385,16 +414,21 @@ namespace tracey
             }
         }
 
+        // Allow empty scenes (will render only sky)
         if (result.instances.empty())
         {
-            throw std::runtime_error("Scene has no instances to render");
+            std::cout << "Scene has no instances - will render sky only" << std::endl;
+            // Don't create TLAS for empty scenes - nullptr TLAS means all rays miss
+            result.tlas = nullptr;
         }
-
-        // Step 3: Create TLAS
-        result.tlas = std::unique_ptr<TopLevelAccelerationStructure>(
-            device->createTopLevelAccelerationStructure(
-                std::span<const BottomLevelAccelerationStructure *>(blasPtrs),
-                std::span<const Tlas::Instance>(result.instances)));
+        else
+        {
+            // Step 3: Create TLAS
+            result.tlas = std::unique_ptr<TopLevelAccelerationStructure>(
+                device->createTopLevelAccelerationStructure(
+                    std::span<const BottomLevelAccelerationStructure *>(blasPtrs),
+                    std::span<const Tlas::Instance>(result.instances)));
+        }
 
         // Step 4: Create material buffer
         if (!result.materials.empty())
@@ -501,6 +535,10 @@ namespace tracey
         }
 
         // Rebuild TLAS with updated instances
+        // CRITICAL: Wait for GPU to finish before destroying old TLAS
+        // Any command buffers using the old TLAS must complete first
+        device->waitIdle();
+
         // Extract BLAS pointers from existing BLASes
         std::vector<const BottomLevelAccelerationStructure *> blasPtrs;
         blasPtrs.reserve(existing.blases.size());
@@ -523,5 +561,107 @@ namespace tracey
         }
 
         std::cout << "Updated " << existing.instances.size() << " instance transforms (TLAS rebuild)" << std::endl;
+    }
+
+    void SceneCompiler::updateMaterials(Device *device, const Scene &scene, CompiledScene &existing)
+    {
+        if (existing.materials.empty() || !existing.materialBuffer)
+        {
+            std::cout << "No materials to update" << std::endl;
+            return;
+        }
+
+        // Flatten scene to get all instances in order
+        auto sceneNodes = scene.flatten();
+        size_t materialIndex = 0;
+
+        for (const auto &node : sceneNodes)
+        {
+            const Actor *actor = node.actor;
+
+            for (const auto &sceneInstance : actor->instances())
+            {
+                if (materialIndex >= existing.materials.size())
+                {
+                    std::cerr << "Warning: More instances than materials during update" << std::endl;
+                    break;
+                }
+
+                // Convert the material (keeping existing texture indices)
+                const MaterialInstance &material = sceneInstance.material();
+                GPUMaterial &gpuMat = existing.materials[materialIndex];
+
+                // Update base color factor (preserving texture index)
+                auto albedo = material.albedo();
+                if (albedo)
+                {
+                    gpuMat.baseColorR = albedo->r;
+                    gpuMat.baseColorG = albedo->g;
+                    gpuMat.baseColorB = albedo->b;
+                }
+
+                // Update metallic-roughness factors
+                auto metallic = material.metallic();
+                if (metallic)
+                {
+                    gpuMat.metallicFactor = *metallic;
+                }
+
+                auto roughness = material.roughness();
+                if (roughness)
+                {
+                    gpuMat.roughnessFactor = *roughness;
+                }
+
+                // Update emissive factor
+                auto emission = material.emission();
+                if (emission)
+                {
+                    gpuMat.emissiveR = emission->r;
+                    gpuMat.emissiveG = emission->g;
+                    gpuMat.emissiveB = emission->b;
+                }
+
+                // Update clearcoat parameters
+                auto clearcoat = material.clearcoat();
+                if (clearcoat)
+                {
+                    gpuMat.clearcoat = *clearcoat;
+                }
+
+                auto clearcoatRoughness = material.clearcoatRoughness();
+                if (clearcoatRoughness)
+                {
+                    gpuMat.clearcoatRoughness = *clearcoatRoughness;
+                }
+
+                // Update sheen parameters
+                auto sheenColor = material.sheenColor();
+                if (sheenColor)
+                {
+                    gpuMat.sheenColorR = sheenColor->r;
+                    gpuMat.sheenColorG = sheenColor->g;
+                    gpuMat.sheenColorB = sheenColor->b;
+                }
+
+                auto sheenRoughness = material.sheenRoughness();
+                if (sheenRoughness)
+                {
+                    gpuMat.sheenRoughness = *sheenRoughness;
+                }
+
+                materialIndex++;
+            }
+        }
+
+        // Wait for GPU to finish using the buffer before updating
+        device->waitIdle();
+
+        // Upload updated materials to GPU buffer
+        auto *mapped = static_cast<GPUMaterial *>(existing.materialBuffer->mapForWriting());
+        std::copy(existing.materials.begin(), existing.materials.end(), mapped);
+        existing.materialBuffer->flush();
+
+        std::cout << "Updated " << materialIndex << " materials in GPU buffer" << std::endl;
     }
 }

@@ -22,10 +22,14 @@ namespace tracey
         void setDescriptorSet(DescriptorSet *set) override;
         void traceRays(const ShaderBindingTable &sbt, uint32_t width, uint32_t height,
                        const TraceRaysParams &params = TraceRaysParams{}) override;
+        void traceSingleSample(const ShaderBindingTable &sbt, uint32_t width, uint32_t height,
+                              const TraceSingleSampleParams &params) override;
         void copyImageToBuffer(const Image2D *image, Buffer *buffer) override;
         void clearImage(Image2D *image, float r, float g, float b, float a) override;
 
         void waitUntilCompleted() override;
+        void submitAsync() override;
+        bool isCompleted() const override;
 
     private:
         // ============================================================================
@@ -104,6 +108,7 @@ namespace tracey
 
         VulkanComputeDevice &m_device;
         VkCommandBuffer m_vkCommandBuffer;
+        VkFence m_fence = VK_NULL_HANDLE;
         RayTracingPipeline *m_pipeline = nullptr;
         std::vector<VkDescriptorSet> m_descriptorSets;
     };

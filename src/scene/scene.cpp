@@ -10,15 +10,54 @@ namespace tracey
         m_actors.emplace_back(std::make_unique<Actor>(this, m_actors.size()));
         return m_actors.back().get();
     }
+
+    Actor *Scene::createActorWithUid(size_t uid)
+    {
+        if (m_root == -1)
+            m_root = 0;
+
+        // Ensure vector is large enough
+        if (uid >= m_actors.size())
+        {
+            m_actors.resize(uid + 1);
+        }
+
+        // Check if actor already exists at this slot
+        if (m_actors[uid])
+        {
+            return m_actors[uid].get();  // Return existing actor
+        }
+
+        // Create new actor at this specific UID
+        m_actors[uid] = std::make_unique<Actor>(this, uid);
+        return m_actors[uid].get();
+    }
+
     void Scene::removeActor(size_t uid)
     {
         if (uid >= m_actors.size())
             return;
 
+        auto *actor = m_actors[uid].get();
+        if (!actor)
+            return;  // Already removed
+
+        // Recursively remove all children first
+        // Make a copy of children list since we'll be modifying it
+        auto childrenSpan = actor->children();
+        std::vector<size_t> childrenCopy(childrenSpan.begin(), childrenSpan.end());
+        for (size_t childUid : childrenCopy)
+        {
+            removeActor(childUid);  // Recursive call
+        }
+
         // Remove from parent's children list if applicable
         for (auto &actorPtr : m_actors)
         {
-            actorPtr->removeChild(uid);
+            if (actorPtr)  // Check for null - actors may have been removed
+            {
+                actorPtr->removeChild(uid);
+            }
         }
 
         m_actors[uid].reset();

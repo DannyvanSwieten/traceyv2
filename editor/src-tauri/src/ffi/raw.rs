@@ -303,12 +303,14 @@ extern "C" {
         backend: TraceyDeviceBackend,
     ) -> *mut TraceyDevice;
     pub fn tracey_destroy_device(device: *mut TraceyDevice);
+    pub fn tracey_device_wait_idle(device: *mut TraceyDevice);
 
     // Scene Management
     pub fn tracey_scene_create() -> *mut TraceyScene;
     pub fn tracey_scene_destroy(scene: *mut TraceyScene);
     pub fn tracey_scene_clear(scene: *mut TraceyScene);
     pub fn tracey_scene_create_actor(scene: *mut TraceyScene, name: *const c_char) -> u64;
+    pub fn tracey_scene_remove_actor(scene: *mut TraceyScene, actor_uid: u64) -> TraceyResult;
     pub fn tracey_scene_get_actor_transform(
         scene: *mut TraceyScene,
         actor_uid: u64,
@@ -377,6 +379,54 @@ extern "C" {
         instance_index: c_uint,
         out_info: *mut TraceyInstanceInfo,
     ) -> TraceyResult;
+
+    // Material editing functions
+    pub fn tracey_scene_get_instance_material_property_count(
+        scene: *mut TraceyScene,
+        actor_uid: u64,
+        instance_index: c_uint,
+    ) -> c_uint;
+    pub fn tracey_scene_get_instance_material_property_by_name(
+        scene: *mut TraceyScene,
+        actor_uid: u64,
+        instance_index: c_uint,
+        property_name: *const c_char,
+        out_property: *mut TraceyMaterialProperty,
+    ) -> TraceyResult;
+    pub fn tracey_scene_set_instance_material_float(
+        scene: *mut TraceyScene,
+        actor_uid: u64,
+        instance_index: c_uint,
+        property_name: *const c_char,
+        value: c_float,
+    ) -> TraceyResult;
+    pub fn tracey_scene_set_instance_material_vec3(
+        scene: *mut TraceyScene,
+        actor_uid: u64,
+        instance_index: c_uint,
+        property_name: *const c_char,
+        value: TraceyVec3,
+    ) -> TraceyResult;
+    pub fn tracey_scene_set_instance_material_vec4(
+        scene: *mut TraceyScene,
+        actor_uid: u64,
+        instance_index: c_uint,
+        property_name: *const c_char,
+        value: TraceyVec4,
+    ) -> TraceyResult;
+    pub fn tracey_scene_set_instance_material_texture(
+        scene: *mut TraceyScene,
+        actor_uid: u64,
+        instance_index: c_uint,
+        property_name: *const c_char,
+        texture_path: *const c_char,
+    ) -> TraceyResult;
+    pub fn tracey_scene_get_instance_material_shader_id(
+        scene: *mut TraceyScene,
+        actor_uid: u64,
+        instance_index: c_uint,
+    ) -> *const c_char;
+
     pub fn tracey_scene_get_mesh_count(scene: *mut TraceyScene) -> c_uint;
     pub fn tracey_scene_get_mesh_names(
         scene: *mut TraceyScene,
@@ -442,6 +492,54 @@ extern "C" {
         segments: c_uint,
     ) -> u64;
 
+    // Primitive Creation with Pre-assigned Actor ID
+    pub fn tracey_scene_add_cube_with_id(
+        scene: *mut TraceyScene,
+        actor_uid: u64,
+        name: *const c_char,
+        size: c_float,
+    ) -> TraceyResult;
+    pub fn tracey_scene_add_sphere_with_id(
+        scene: *mut TraceyScene,
+        actor_uid: u64,
+        name: *const c_char,
+        radius: c_float,
+        segments: c_uint,
+        rings: c_uint,
+    ) -> TraceyResult;
+    pub fn tracey_scene_add_torus_with_id(
+        scene: *mut TraceyScene,
+        actor_uid: u64,
+        name: *const c_char,
+        major_radius: c_float,
+        minor_radius: c_float,
+        major_segments: c_uint,
+        minor_segments: c_uint,
+    ) -> TraceyResult;
+    pub fn tracey_scene_add_plane_with_id(
+        scene: *mut TraceyScene,
+        actor_uid: u64,
+        name: *const c_char,
+        width: c_float,
+        depth: c_float,
+    ) -> TraceyResult;
+    pub fn tracey_scene_add_cylinder_with_id(
+        scene: *mut TraceyScene,
+        actor_uid: u64,
+        name: *const c_char,
+        radius: c_float,
+        height: c_float,
+        segments: c_uint,
+    ) -> TraceyResult;
+    pub fn tracey_scene_add_cone_with_id(
+        scene: *mut TraceyScene,
+        actor_uid: u64,
+        name: *const c_char,
+        radius: c_float,
+        height: c_float,
+        segments: c_uint,
+    ) -> TraceyResult;
+
     // Scene Compilation
     pub fn tracey_compile_scene(
         device: *mut TraceyDevice,
@@ -449,6 +547,11 @@ extern "C" {
     ) -> *mut TraceyCompiledScene;
     pub fn tracey_destroy_compiled_scene(compiled_scene: *mut TraceyCompiledScene);
     pub fn tracey_update_scene_transforms(
+        device: *mut TraceyDevice,
+        scene: *mut TraceyScene,
+        compiled_scene: *mut TraceyCompiledScene,
+    ) -> c_int;
+    pub fn tracey_update_scene_materials(
         device: *mut TraceyDevice,
         scene: *mut TraceyScene,
         compiled_scene: *mut TraceyCompiledScene,

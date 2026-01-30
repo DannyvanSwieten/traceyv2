@@ -1,10 +1,14 @@
 /*{
     "STAGE": "ClosestHit",
-    "DESCRIPTION": "PBR path tracer with metallic-roughness workflow and Russian roulette",
+    "DESCRIPTION": "PBR path tracer with metallic-roughness workflow, clearcoat, sheen, and Russian roulette",
     "INPUTS": [
         { "NAME": "albedo", "TYPE": "color", "DEFAULT": [0.5, 0.5, 0.5, 1.0] },
         { "NAME": "maxDepth", "TYPE": "uint", "DEFAULT": 8 },
-        { "NAME": "rrMinDepth", "TYPE": "uint", "DEFAULT": 3 }
+        { "NAME": "rrMinDepth", "TYPE": "uint", "DEFAULT": 3 },
+        { "NAME": "clearcoat", "TYPE": "float", "DEFAULT": 0.0, "MIN": 0.0, "MAX": 1.0 },
+        { "NAME": "clearcoatRoughness", "TYPE": "float", "DEFAULT": 0.1, "MIN": 0.0, "MAX": 1.0 },
+        { "NAME": "sheenColor", "TYPE": "color", "DEFAULT": [0.0, 0.0, 0.0, 1.0] },
+        { "NAME": "sheenRoughness", "TYPE": "float", "DEFAULT": 0.5, "MIN": 0.0, "MAX": 1.0 }
     ]
 }*/
 
@@ -32,12 +36,32 @@ void shader(HitInfo hitInfo, inout RayPayloads payloads) {
     // Get UV coordinates
     vec2 uv = getHitUV(hitInfo);
 
-    // Get material properties
+    // Get material properties from GPU material buffer
     vec3 albedo = getMaterialAlbedo(hitInfo.instanceIndex, uv);
     vec3 emission = getMaterialEmissive(hitInfo.instanceIndex, uv);
     vec2 mr = getMaterialMetallicRoughness(hitInfo.instanceIndex, uv);
     float metallic = mr.x;
     float roughness = clamp(mr.y, 0.04, 1.0);
+
+    // Get clearcoat from material buffer (per-object) with shader input as override
+    vec2 clearcoatParams = getMaterialClearcoat(hitInfo.instanceIndex);
+    float clearcoat = clearcoatParams.x;
+    float clearcoatRoughness = clamp(clearcoatParams.y, 0.04, 1.0);
+    // Shader inputs can override if explicitly set (non-zero)
+    if (shaderInputs.clearcoat > 0.0) {
+        clearcoat = shaderInputs.clearcoat;
+        clearcoatRoughness = clamp(shaderInputs.clearcoatRoughness, 0.04, 1.0);
+    }
+
+    // Get sheen from material buffer (per-object) with shader input as override
+    vec4 sheenParams = getMaterialSheen(hitInfo.instanceIndex);
+    vec3 sheenColor = sheenParams.rgb;
+    float sheenRoughness = clamp(sheenParams.w, 0.04, 1.0);
+    // Shader inputs can override if explicitly set (non-zero sheen color)
+    if (length(shaderInputs.sheenColor.rgb) > 0.01) {
+        sheenColor = shaderInputs.sheenColor.rgb;
+        sheenRoughness = clamp(shaderInputs.sheenRoughness, 0.04, 1.0);
+    }
 
     // Build tangent frame from geometric normal
     vec3 T, B;
@@ -47,27 +71,71 @@ void shader(HitInfo hitInfo, inout RayPayloads payloads) {
     vec3 tangentNormal = getMaterialNormal(hitInfo.instanceIndex, uv);
     vec3 N = normalize(tangentToWorld(tangentNormal, geometricN, T, B));
 
-    // Hit a light source
+    // Hit a light source - emit and terminate
     if (length(emission) > 0.0) {
         payloads.rayPayload.color *= emission;
         payloads.rayPayload.alive = false;
         return;
     }
 
-    // Generate random numbers
+    // Generate random numbers for lobe selection and sampling
+    float r_lobe = nextRandom(payloads.rayPayload.rngSeed);
     float r1 = nextRandom(payloads.rayPayload.rngSeed);
     float r2 = nextRandom(payloads.rayPayload.rngSeed);
-    float r3 = nextRandom(payloads.rayPayload.rngSeed);
 
     vec3 L;
     vec3 throughput;
-
-    // Use metallic to decide between specular and diffuse
-    // Metals are purely specular, dielectrics mostly diffuse
     float NdotV = max(dot(N, V), 0.001);
 
-    if (r3 < metallic) {
-        // Metallic specular: sample GGX, reflect albedo color
+    // Build PBR material structure
+    PBRMaterial mat;
+    mat.albedo = albedo;
+    mat.metallic = metallic;
+    mat.roughness = roughness;
+    mat.emission = emission;
+    mat.clearcoat = clearcoat;
+    mat.clearcoatRoughness = clearcoatRoughness;
+    mat.sheenColor = sheenColor;
+    mat.sheenRoughness = sheenRoughness;
+
+    // Get lobe probabilities and select which lobe to sample
+    vec4 lobeProbs = getLobeProbabilities(mat);
+    int selectedLobe = selectLobe(r_lobe, lobeProbs);
+
+    // Get the probability of the selected lobe for MIS weighting
+    float lobePdf = (selectedLobe == LOBE_DIFFUSE) ? lobeProbs.x :
+                    (selectedLobe == LOBE_SPECULAR) ? lobeProbs.y :
+                    (selectedLobe == LOBE_CLEARCOAT) ? lobeProbs.z : lobeProbs.w;
+
+    if (selectedLobe == LOBE_CLEARCOAT && clearcoat > 0.0) {
+        // Sample clearcoat layer
+        vec3 ccWeight;
+        L = sampleClearcoat(r1, r2, clearcoatRoughness, N, V, T, B, ccWeight);
+
+        // Check if sampled direction is below surface
+        float NdotL = dot(N, L);
+        if (NdotL <= 0.0) {
+            // Fallback to perfect reflection
+            L = reflect(-V, N);
+            NdotL = max(dot(L, N), 0.001);
+            vec3 H = normalize(V + L);
+            float VdotH = max(dot(V, H), 0.001);
+            ccWeight = fresnelSchlickClearcoat(VdotH);
+        }
+
+        // Scale by clearcoat strength and lobe probability
+        throughput = ccWeight * clearcoat / max(lobePdf, 0.001);
+    }
+    else if (selectedLobe == LOBE_SHEEN && length(sheenColor) > 0.01) {
+        // Sample sheen layer
+        vec3 sheenWeight;
+        L = sampleSheen(r1, r2, N, T, B, sheenColor, sheenRoughness, sheenWeight);
+
+        // Scale by lobe probability
+        throughput = sheenWeight / max(lobePdf, 0.001);
+    }
+    else if (selectedLobe == LOBE_SPECULAR || metallic > 0.5) {
+        // Metallic/dielectric specular: sample GGX
         vec3 H_local = sampleGGX(r1, r2, roughness);
         vec3 H = normalize(tangentToWorld(H_local, N, T, B));
         L = reflect(-V, H);
@@ -84,18 +152,35 @@ void shader(HitInfo hitInfo, inout RayPayloads payloads) {
         float VdotH = max(dot(V, H), 0.001);
         float NdotH = max(dot(N, H), 0.001);
 
-        // For metals, F0 = albedo
-        vec3 F = fresnelSchlick(VdotH, albedo);
+        // F0 depends on metallic: metals use albedo, dielectrics use 0.04
+        vec3 F0 = mix(vec3(0.04), albedo, metallic);
+        vec3 F = fresnelSchlick(VdotH, F0);
         float G = geometrySmith(NdotV, NdotL, roughness);
 
-        // Full GGX importance sampling weight
-        throughput = F * G * VdotH / (NdotV * NdotH);
-    } else {
-        // Dielectric: always use diffuse sampling for simplicity
-        // This works well for most dielectric materials
+        // GGX importance sampling weight
+        vec3 specWeight = F * G * VdotH / (NdotV * NdotH);
+
+        // Apply clearcoat attenuation if clearcoat is present
+        if (clearcoat > 0.0) {
+            specWeight *= clearcoatAttenuation(NdotV) * (1.0 - clearcoat * 0.5);
+        }
+
+        throughput = specWeight / max(lobePdf, 0.001);
+    }
+    else {
+        // Diffuse: cosine-weighted hemisphere sampling
         vec3 L_local = sampleCosineHemisphere(r1, r2);
         L = normalize(tangentToWorld(L_local, N, T, B));
-        throughput = albedo;
+
+        // Diffuse throughput is albedo (Lambert)
+        vec3 diffuseWeight = albedo;
+
+        // Apply clearcoat attenuation if clearcoat is present
+        if (clearcoat > 0.0) {
+            diffuseWeight *= clearcoatAttenuation(NdotV) * (1.0 - clearcoat * 0.5);
+        }
+
+        throughput = diffuseWeight / max(lobePdf, 0.001);
     }
 
     // Clamp throughput to avoid fireflies

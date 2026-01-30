@@ -35,6 +35,10 @@ TraceyDevice* tracey_create_device(
 /// @param device Device handle (can be NULL)
 void tracey_destroy_device(TraceyDevice* device);
 
+/// Wait for all GPU operations on the device to complete
+/// @param device Device handle
+void tracey_device_wait_idle(TraceyDevice* device);
+
 // ============================================================================
 // Scene Management
 // ============================================================================
@@ -58,6 +62,15 @@ void tracey_scene_clear(TraceyScene* scene);
 uint64_t tracey_scene_create_actor(
     TraceyScene* scene,
     const char* name
+);
+
+/// Remove an actor from the scene
+/// @param scene Scene handle
+/// @param actorUid Actor unique identifier to remove
+/// @return TRACEY_SUCCESS or error code
+TraceyResult tracey_scene_remove_actor(
+    TraceyScene* scene,
+    uint64_t actorUid
 );
 
 /// Get an actor's transform
@@ -272,6 +285,107 @@ TraceyResult tracey_scene_get_texture_info(
 );
 
 // ============================================================================
+// Material Editing Functions
+// ============================================================================
+
+/// Get the number of material properties on an actor's instance
+/// @param scene Scene handle
+/// @param actorUid Actor unique identifier
+/// @param instanceIndex Index of the instance
+/// @return Number of properties, or 0 on error
+uint32_t tracey_scene_get_instance_material_property_count(
+    TraceyScene* scene,
+    uint64_t actorUid,
+    uint32_t instanceIndex
+);
+
+/// Get material property by name
+/// @param scene Scene handle
+/// @param actorUid Actor unique identifier
+/// @param instanceIndex Index of the instance
+/// @param propertyName Name of the property
+/// @param outProperty Pointer to receive property data
+/// @return TRACEY_SUCCESS or error code
+TraceyResult tracey_scene_get_instance_material_property_by_name(
+    TraceyScene* scene,
+    uint64_t actorUid,
+    uint32_t instanceIndex,
+    const char* propertyName,
+    TraceyMaterialProperty* outProperty
+);
+
+/// Set a float material property
+/// @param scene Scene handle
+/// @param actorUid Actor unique identifier
+/// @param instanceIndex Index of the instance
+/// @param propertyName Name of the property
+/// @param value Float value
+/// @return TRACEY_SUCCESS or error code
+TraceyResult tracey_scene_set_instance_material_float(
+    TraceyScene* scene,
+    uint64_t actorUid,
+    uint32_t instanceIndex,
+    const char* propertyName,
+    float value
+);
+
+/// Set a Vec3 material property (for albedo, emission, etc.)
+/// @param scene Scene handle
+/// @param actorUid Actor unique identifier
+/// @param instanceIndex Index of the instance
+/// @param propertyName Name of the property
+/// @param value Vec3 value
+/// @return TRACEY_SUCCESS or error code
+TraceyResult tracey_scene_set_instance_material_vec3(
+    TraceyScene* scene,
+    uint64_t actorUid,
+    uint32_t instanceIndex,
+    const char* propertyName,
+    TraceyVec3 value
+);
+
+/// Set a Vec4 material property (for RGBA values)
+/// @param scene Scene handle
+/// @param actorUid Actor unique identifier
+/// @param instanceIndex Index of the instance
+/// @param propertyName Name of the property
+/// @param value Vec4 value
+/// @return TRACEY_SUCCESS or error code
+TraceyResult tracey_scene_set_instance_material_vec4(
+    TraceyScene* scene,
+    uint64_t actorUid,
+    uint32_t instanceIndex,
+    const char* propertyName,
+    TraceyVec4 value
+);
+
+/// Set a texture material property
+/// @param scene Scene handle
+/// @param actorUid Actor unique identifier
+/// @param instanceIndex Index of the instance
+/// @param propertyName Name of the property (e.g., "albedoMap")
+/// @param texturePath Path to texture or embedded texture ID
+/// @return TRACEY_SUCCESS or error code
+TraceyResult tracey_scene_set_instance_material_texture(
+    TraceyScene* scene,
+    uint64_t actorUid,
+    uint32_t instanceIndex,
+    const char* propertyName,
+    const char* texturePath
+);
+
+/// Get the shader ID for an instance's material
+/// @param scene Scene handle
+/// @param actorUid Actor unique identifier
+/// @param instanceIndex Index of the instance
+/// @return Shader ID string (valid until scene is modified), or NULL on error
+const char* tracey_scene_get_instance_material_shader_id(
+    TraceyScene* scene,
+    uint64_t actorUid,
+    uint32_t instanceIndex
+);
+
+// ============================================================================
 // Primitive Creation Functions
 // ============================================================================
 
@@ -362,6 +476,74 @@ uint64_t tracey_scene_add_cone(
 );
 
 // ============================================================================
+// Primitive Creation with Pre-assigned Actor ID
+// These functions create primitives using a pre-assigned actor ID from Rust
+// ============================================================================
+
+/// Add a cube primitive to an existing actor
+/// @param scene Scene handle
+/// @param actorUid Pre-assigned actor UID
+/// @param name Name for the mesh object
+/// @param size Cube size
+/// @return TRACEY_SUCCESS or error code
+TraceyResult tracey_scene_add_cube_with_id(
+    TraceyScene* scene,
+    uint64_t actorUid,
+    const char* name,
+    float size
+);
+
+/// Add a sphere primitive to an existing actor
+TraceyResult tracey_scene_add_sphere_with_id(
+    TraceyScene* scene,
+    uint64_t actorUid,
+    const char* name,
+    float radius,
+    uint32_t segments,
+    uint32_t rings
+);
+
+/// Add a torus primitive to an existing actor
+TraceyResult tracey_scene_add_torus_with_id(
+    TraceyScene* scene,
+    uint64_t actorUid,
+    const char* name,
+    float majorRadius,
+    float minorRadius,
+    uint32_t majorSegments,
+    uint32_t minorSegments
+);
+
+/// Add a plane primitive to an existing actor
+TraceyResult tracey_scene_add_plane_with_id(
+    TraceyScene* scene,
+    uint64_t actorUid,
+    const char* name,
+    float width,
+    float depth
+);
+
+/// Add a cylinder primitive to an existing actor
+TraceyResult tracey_scene_add_cylinder_with_id(
+    TraceyScene* scene,
+    uint64_t actorUid,
+    const char* name,
+    float radius,
+    float height,
+    uint32_t segments
+);
+
+/// Add a cone primitive to an existing actor
+TraceyResult tracey_scene_add_cone_with_id(
+    TraceyScene* scene,
+    uint64_t actorUid,
+    const char* name,
+    float radius,
+    float height,
+    uint32_t segments
+);
+
+// ============================================================================
 // Scene Compilation
 // ============================================================================
 
@@ -385,6 +567,18 @@ void tracey_destroy_compiled_scene(TraceyCompiledScene* compiledScene);
 /// @param compiledScene Existing compiled scene to update
 /// @return 0 on success, -1 on failure
 int tracey_update_scene_transforms(
+    TraceyDevice* device,
+    TraceyScene* scene,
+    TraceyCompiledScene* compiledScene
+);
+
+/// Update only material properties in a compiled scene (fast update for material editing)
+/// This re-uploads material data to GPU but keeps TLAS, BLASes, vertex buffers, and textures
+/// @param device Device to use
+/// @param scene Scene with updated material values
+/// @param compiledScene Existing compiled scene to update
+/// @return 0 on success, -1 on failure
+int tracey_update_scene_materials(
     TraceyDevice* device,
     TraceyScene* scene,
     TraceyCompiledScene* compiledScene

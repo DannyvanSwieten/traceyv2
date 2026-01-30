@@ -1,7 +1,7 @@
 import { Component, createSignal, onMount, onCleanup, Show } from 'solid-js';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, UnlistenFn } from '@tauri-apps/api/event';
-import { open } from '@tauri-apps/plugin-dialog';
+import { open, save } from '@tauri-apps/plugin-dialog';
 import { Viewport, ViewportHandle, CameraPosition } from './components/viewport/Viewport';
 import {
   SceneHierarchy,
@@ -32,6 +32,8 @@ const App: Component = () => {
   const [viewportRef, setViewportRef] = createSignal<ViewportHandle | undefined>();
   let unlistenImport: UnlistenFn | undefined;
   let unlistenExport: UnlistenFn | undefined;
+  let unlistenSave: UnlistenFn | undefined;
+  let unlistenSaveAs: UnlistenFn | undefined;
   let shaderCheckInterval: number | undefined;
 
   const loadScene = async (path: string) => {
@@ -78,6 +80,35 @@ const App: Component = () => {
     }
   };
 
+  const handleSave = async () => {
+    try {
+      await invoke('project_save');
+      console.log('Project saved successfully');
+    } catch (error) {
+      console.error('Failed to save project:', error);
+    }
+  };
+
+  const handleSaveAs = async () => {
+    try {
+      const selected = await save({
+        filters: [
+          {
+            name: 'Tracey Scene',
+            extensions: ['json'],
+          },
+        ],
+      });
+
+      if (selected && typeof selected === 'string') {
+        await invoke('save_scene', { path: selected });
+        console.log('Scene saved to:', selected);
+      }
+    } catch (error) {
+      console.error('Failed to save scene:', error);
+    }
+  };
+
   const handleProjectOpened = async () => {
     setProjectOpen(true);
 
@@ -86,15 +117,10 @@ const App: Component = () => {
       const loadedActors = await invoke<Actor[]>('get_all_actors');
       setActors(loadedActors);
 
-      // Compile scene (will fail gracefully if scene is empty - no geometry)
-      try {
-        await invoke('compile_scene');
-      } catch (compileError) {
-        // Empty scenes are valid - rays will miss and render only sky
-        console.log('Scene is empty - will render sky only');
-      }
+      // Compile scene (empty scenes are now supported and render sky only)
+      await invoke('compile_scene');
 
-      // Always mark scene as loaded and try to render
+      // Mark scene as loaded and render
       const viewport = viewportRef();
       if (viewport) {
         viewport.markSceneLoaded();
@@ -180,22 +206,30 @@ const App: Component = () => {
 
   const handleActorRemove = async (actorId: number) => {
     try {
-      // Remove from backend
-      await invoke('delete_actor', { actorId });
+      console.log('handleActorRemove: Removing actor', actorId);
 
-      // Update local state
-      setActors((prev) => prev.filter((a) => a.id !== actorId));
+      // Remove from backend (this removes from both Rust and C++ scenes and recompiles)
+      await invoke('delete_actor', { actorId });
+      console.log('handleActorRemove: Actor removed from backend');
+
+      // Reload actor list from backend to reflect all changes (including removed children)
+      const loadedActors = await invoke<Actor[]>('get_all_actors');
+      setActors(loadedActors);
+      console.log('handleActorRemove: Actors reloaded, count:', loadedActors.length);
 
       // Deselect if this actor was selected
       if (selectedActorId() === actorId) {
         setSelectedActorId(null);
       }
 
-      // Recompile and render
-      await invoke('compile_scene');
+      // Render with the updated scene
       const viewport = viewportRef();
+      console.log('handleActorRemove: viewport =', viewport);
       if (viewport) {
+        console.log('handleActorRemove: Calling viewport.render()');
         viewport.render();
+      } else {
+        console.error('handleActorRemove: viewport is undefined!');
       }
     } catch (error) {
       console.error('Failed to remove actor:', error);
@@ -255,6 +289,14 @@ const App: Component = () => {
     unlistenExport = await listen('menu-export', () => {
       console.log('menu-export event received!');
     });
+    unlistenSave = await listen('menu-save', () => {
+      console.log('menu-save event received!');
+      handleSave();
+    });
+    unlistenSaveAs = await listen('menu-save-as', () => {
+      console.log('menu-save-as event received!');
+      handleSaveAs();
+    });
     console.log('Menu event listeners set up');
 
     // Start shader hot reload polling (every 2 seconds)
@@ -283,6 +325,8 @@ const App: Component = () => {
   onCleanup(() => {
     unlistenImport?.();
     unlistenExport?.();
+    unlistenSave?.();
+    unlistenSaveAs?.();
     if (shaderCheckInterval !== undefined) {
       window.clearInterval(shaderCheckInterval);
     }

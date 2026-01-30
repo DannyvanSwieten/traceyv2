@@ -9,6 +9,7 @@ extern crate objc;
 mod commands;
 mod ffi;
 mod menu;
+mod render_loop;
 mod renderer;
 mod scene;
 mod project;
@@ -19,9 +20,35 @@ use renderer::{RenderConfig, RenderEngine, RenderMode, Viewport};
 use scene::SceneState;
 use project::{ProjectState, RecentProjects};
 use window_manager::ViewportManager;
+use crate::ffi::Transform;
+use crate::commands::scene::PrimitiveParams;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tauri::Manager;
+use tokio::sync::mpsc;
+
+/// Commands that can be queued for the render thread to process
+#[derive(Debug, Clone)]
+pub enum SceneCommand {
+    /// Update an actor's transform (actor_id, world_transform)
+    SetTransform(u64, Transform),
+    /// Add a primitive to the scene (actor_id, name, params)
+    AddPrimitive(u64, String, PrimitiveParams),
+    /// Delete an actor and its children (actor_ids to remove from C++)
+    DeleteActors(Vec<u64>),
+    /// Request scene recompile
+    Recompile,
+    /// Update the camera for rendering
+    SetCamera(ffi::Camera),
+    /// Clear accumulation buffer (e.g., when camera moves)
+    ClearAccumulation,
+    /// Set samples per frame
+    SetSamplesPerFrame(u32),
+    /// Set max bounces
+    SetMaxBounces(u32),
+    /// Compile scene with Rust state sync
+    CompileScene(SceneState),
+}
 
 pub struct AppState {
     pub scene: Arc<Mutex<SceneState>>,
@@ -32,6 +59,8 @@ pub struct AppState {
     pub recent_projects: Arc<Mutex<RecentProjects>>,
     pub app_data_dir: PathBuf,
     pub viewport_manager: Arc<Mutex<ViewportManager>>,
+    /// MPSC channel sender for scene commands - lock-free sends from any thread
+    pub scene_command_tx: mpsc::UnboundedSender<SceneCommand>,
 }
 
 fn main() {
@@ -87,16 +116,35 @@ fn main() {
             // Load recent projects
             let recent_projects = RecentProjects::load(&app_data_dir);
 
+            // Create MPSC channel for scene commands
+            let (scene_command_tx, scene_command_rx) = mpsc::unbounded_channel::<SceneCommand>();
+
+            // Create shared state for pixels (render loop writes, frontend reads)
+            let last_render_pixels = Arc::new(Mutex::new(None));
+
+            // Create viewport manager (shared between render loop and commands)
+            let viewport_manager = Arc::new(Mutex::new(ViewportManager::new()));
+
+            // Start the dedicated render loop thread
+            render_loop::start_render_loop(
+                app.handle().clone(),
+                Arc::clone(&engine),
+                scene_command_rx,
+                Arc::clone(&last_render_pixels),
+                Arc::clone(&viewport_manager),
+            );
+
             // Build app state
             let app_state = AppState {
                 scene: Arc::new(Mutex::new(scene)),
                 engine,
                 viewport: Arc::new(Mutex::new(viewport)),
-                last_render_pixels: Arc::new(Mutex::new(None)),
+                last_render_pixels,
                 project: Arc::new(Mutex::new(None)),
                 recent_projects: Arc::new(Mutex::new(recent_projects)),
                 app_data_dir,
-                viewport_manager: Arc::new(Mutex::new(ViewportManager::new())),
+                viewport_manager,
+                scene_command_tx,
             };
 
             app.manage(app_state);
@@ -127,10 +175,19 @@ fn main() {
             commands::get_texture_ids,
             commands::get_texture_info,
             commands::get_all_textures,
+            // Material editing commands
+            commands::get_instance_material_shader,
+            commands::get_material_property,
+            commands::get_material_property_count,
+            commands::set_material_float,
+            commands::set_material_vec3,
+            commands::set_material_vec4,
+            commands::set_material_texture,
             // Primitive creation command
             commands::add_primitive,
-            // Render commands
-            commands::render_frame,
+            // Render commands (render loop runs continuously, these control it)
+            commands::update_camera,
+            commands::clear_accumulation,
             commands::get_render_pixels,
             commands::get_render_pixels_base64,
             commands::compile_scene,

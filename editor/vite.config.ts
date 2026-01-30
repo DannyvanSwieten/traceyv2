@@ -10,6 +10,7 @@ export default defineConfig({
   server: {
     port: 5173,
     strictPort: true,
+    host: '0.0.0.0', // Listen on all interfaces for Tauri webview
     watch: {
       // Tauri CLI uses this to determine when dev server is ready
       ignored: ["**/src-tauri/**"],

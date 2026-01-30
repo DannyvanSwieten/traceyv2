@@ -1,3 +1,3 @@
 pub mod state;
 
-pub use state::{Actor, SceneState};
+pub use state::{Actor, ActorInstance, SceneState};

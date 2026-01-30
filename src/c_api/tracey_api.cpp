@@ -191,6 +191,13 @@ void tracey_destroy_device(TraceyDevice* device)
     }
 }
 
+void tracey_device_wait_idle(TraceyDevice* device)
+{
+    if (device) {
+        reinterpret_cast<tracey::Device*>(device)->waitIdle();
+    }
+}
+
 // ============================================================================
 // Scene Management
 // ============================================================================
@@ -248,6 +255,29 @@ uint64_t tracey_scene_create_actor(
     } catch (...) {
         setError("Actor creation failed: unknown error");
         return UINT64_MAX;
+    }
+}
+
+TraceyResult tracey_scene_remove_actor(
+    TraceyScene* scene,
+    uint64_t actorUid)
+{
+    if (!scene) {
+        setError("Scene pointer is null");
+        return TRACEY_ERROR_NULL_POINTER;
+    }
+
+    try {
+        clearError();
+        auto* s = reinterpret_cast<tracey::Scene*>(scene);
+        s->removeActor(actorUid);
+        return TRACEY_SUCCESS;
+    } catch (const std::exception& e) {
+        setError(std::string("Actor removal failed: ") + e.what());
+        return TRACEY_ERROR_UNKNOWN;
+    } catch (...) {
+        setError("Actor removal failed: unknown error");
+        return TRACEY_ERROR_UNKNOWN;
     }
 }
 
@@ -451,10 +481,20 @@ TraceyResult tracey_scene_load_gltf_with_project(
             return TRACEY_ERROR_FILE_NOT_FOUND;
         }
 
+        // Extract base filename from path
+        std::string filePathStr(filePath);
+        size_t lastSlash = filePathStr.find_last_of("/\\");
+        size_t lastDot = filePathStr.find_last_of('.');
+        std::string baseName = filePathStr.substr(
+            lastSlash == std::string::npos ? 0 : lastSlash + 1,
+            lastDot == std::string::npos ? std::string::npos : lastDot - (lastSlash == std::string::npos ? 0 : lastSlash + 1)
+        );
+
         // Copy loaded scene into cleared scene
         // First pass: Copy all actors and build UID mapping
         std::unordered_map<size_t, size_t> uidMapping; // old UID -> new UID
         for (const auto& actor : loadedScene->actors()) {
+            if (!actor) continue;  // Skip null actors
             auto* newActor = s->createActor();
             newActor->setName(actor->name());
             newActor->setTransform(actor->transform());
@@ -467,6 +507,7 @@ TraceyResult tracey_scene_load_gltf_with_project(
 
         // Second pass: Copy parent-child relationships
         for (const auto& actor : loadedScene->actors()) {
+            if (!actor) continue;  // Skip null actors
             size_t newActorUid = uidMapping[actor->getUid()];
             auto* newActor = s->getActor(newActorUid);
             if (!newActor) continue;
@@ -479,6 +520,44 @@ TraceyResult tracey_scene_load_gltf_with_project(
                     if (childActor) {
                         newActor->addChild(childActor);
                     }
+                }
+            }
+        }
+
+        // If multiple top-level actors were imported, create a parent to group them
+        std::vector<size_t> topLevelActors;
+        for (const auto& [oldUid, newUid] : uidMapping) {
+            auto* actor = s->getActor(newUid);
+            if (!actor) continue;
+
+            // Check if this actor has a parent
+            bool hasParent = false;
+            for (const auto& otherActor : s->actors()) {
+                if (!otherActor || otherActor->getUid() == newUid) continue;
+                for (size_t childUid : otherActor->children()) {
+                    if (childUid == newUid) {
+                        hasParent = true;
+                        break;
+                    }
+                }
+                if (hasParent) break;
+            }
+
+            if (!hasParent) {
+                topLevelActors.push_back(newUid);
+            }
+        }
+
+        // If we have multiple top-level actors, create a parent group
+        if (topLevelActors.size() > 1) {
+            auto* parentActor = s->createActor();
+            parentActor->setName(baseName);  // Name it after the file
+
+            // Make all top-level actors children of this parent
+            for (size_t actorUid : topLevelActors) {
+                auto* actor = s->getActor(actorUid);
+                if (actor) {
+                    parentActor->addChild(actor);
                 }
             }
         }
@@ -568,6 +647,7 @@ TraceyResult tracey_scene_add_gltf_with_project(
         // First pass: Copy all actors and build UID mapping
         std::unordered_map<size_t, size_t> uidMapping; // old UID -> new UID
         for (const auto& actor : loadedScene->actors()) {
+            if (!actor) continue;  // Skip null actors
             auto* newActor = s->createActor();
             newActor->setName(actor->name());
             newActor->setTransform(actor->transform());
@@ -625,6 +705,7 @@ TraceyResult tracey_scene_add_gltf_with_project(
 
         // Second pass: Copy parent-child relationships
         for (const auto& actor : loadedScene->actors()) {
+            if (!actor) continue;  // Skip null actors
             size_t newActorUid = uidMapping[actor->getUid()];
             auto* newActor = s->getActor(newActorUid);
             if (!newActor) continue;
@@ -639,6 +720,47 @@ TraceyResult tracey_scene_add_gltf_with_project(
                     }
                 }
             }
+        }
+
+        // If multiple top-level actors were imported, create a parent to group them
+        std::vector<size_t> topLevelActors;
+        for (const auto& [oldUid, newUid] : uidMapping) {
+            auto* actor = s->getActor(newUid);
+            if (!actor) continue;
+
+            // Check if this actor has a parent
+            bool hasParent = false;
+            for (const auto& otherActor : s->actors()) {
+                if (!otherActor || otherActor->getUid() == newUid) continue;
+                for (size_t childUid : otherActor->children()) {
+                    if (childUid == newUid) {
+                        hasParent = true;
+                        break;
+                    }
+                }
+                if (hasParent) break;
+            }
+
+            if (!hasParent) {
+                topLevelActors.push_back(newUid);
+            }
+        }
+
+        // If we have multiple top-level actors, create a parent group
+        if (topLevelActors.size() > 1) {
+            auto* parentActor = s->createActor();
+            parentActor->setName(baseName);  // Name it after the file
+
+            // Make all top-level actors children of this parent
+            for (size_t actorUid : topLevelActors) {
+                auto* actor = s->getActor(actorUid);
+                if (actor) {
+                    parentActor->addChild(actor);
+                }
+            }
+
+            std::cout << "Created parent actor '" << baseName << "' for "
+                      << topLevelActors.size() << " top-level actors" << std::endl;
         }
 
         // Copy all objects (meshes, materials, textures)
@@ -713,7 +835,9 @@ uint32_t tracey_scene_get_actor_uids(
         uint32_t count = 0;
         for (const auto& actor : actors) {
             if (count >= maxCount) break;
-            outUids[count++] = actor->getUid();
+            if (actor) {  // Check for null - actors may have been removed
+                outUids[count++] = actor->getUid();
+            }
         }
 
         return count;
@@ -824,6 +948,280 @@ TraceyResult tracey_scene_get_actor_instance(
     } catch (...) {
         setError("Failed to get instance: unknown error");
         return TRACEY_ERROR_UNKNOWN;
+    }
+}
+
+// ============================================================================
+// Material Editing Functions
+// ============================================================================
+
+uint32_t tracey_scene_get_instance_material_property_count(
+    TraceyScene* scene,
+    uint64_t actorUid,
+    uint32_t instanceIndex)
+{
+    if (!scene) return 0;
+
+    try {
+        auto* s = reinterpret_cast<tracey::Scene*>(scene);
+        auto* actor = s->getActor(actorUid);
+        if (!actor) return 0;
+
+        const auto& instances = actor->instances();
+        if (instanceIndex >= instances.size()) return 0;
+
+        return static_cast<uint32_t>(instances[instanceIndex].material().properties().size());
+    } catch (...) {
+        return 0;
+    }
+}
+
+TraceyResult tracey_scene_get_instance_material_property_by_name(
+    TraceyScene* scene,
+    uint64_t actorUid,
+    uint32_t instanceIndex,
+    const char* propertyName,
+    TraceyMaterialProperty* outProperty)
+{
+    if (!scene || !propertyName || !outProperty) {
+        setError("Null pointer parameter");
+        return TRACEY_ERROR_NULL_POINTER;
+    }
+
+    try {
+        clearError();
+        auto* s = reinterpret_cast<tracey::Scene*>(scene);
+        auto* actor = s->getActor(actorUid);
+        if (!actor) {
+            setError("Actor not found");
+            return TRACEY_ERROR_NOT_FOUND;
+        }
+
+        const auto& instances = actor->instances();
+        if (instanceIndex >= instances.size()) {
+            setError("Instance index out of range");
+            return TRACEY_ERROR_INVALID_PARAMETER;
+        }
+
+        const auto& mat = instances[instanceIndex].material();
+        const auto* prop = mat.getProperty(propertyName);
+        if (!prop) {
+            setError("Property not found");
+            return TRACEY_ERROR_NOT_FOUND;
+        }
+
+        // Static storage for property name (valid until next call)
+        static thread_local std::string propNameStorage;
+        propNameStorage = propertyName;
+        outProperty->name = propNameStorage.c_str();
+
+        // Convert variant to TraceyMaterialProperty
+        std::visit([outProperty](const auto& val) {
+            using T = std::decay_t<decltype(val)>;
+            if constexpr (std::is_same_v<T, float>) {
+                outProperty->type = TRACEY_MATERIAL_PROP_FLOAT;
+                outProperty->value.floatValue = val;
+            } else if constexpr (std::is_same_v<T, tracey::Vec2>) {
+                outProperty->type = TRACEY_MATERIAL_PROP_VEC2;
+                outProperty->value.vec2Value = TraceyVec2{val.x, val.y};
+            } else if constexpr (std::is_same_v<T, tracey::Vec3>) {
+                outProperty->type = TRACEY_MATERIAL_PROP_VEC3;
+                outProperty->value.vec3Value = TraceyVec3{val.x, val.y, val.z};
+            } else if constexpr (std::is_same_v<T, tracey::Vec4>) {
+                outProperty->type = TRACEY_MATERIAL_PROP_VEC4;
+                outProperty->value.vec4Value = TraceyVec4{val.x, val.y, val.z, val.w};
+            } else if constexpr (std::is_same_v<T, int>) {
+                outProperty->type = TRACEY_MATERIAL_PROP_INT;
+                outProperty->value.intValue = val;
+            } else if constexpr (std::is_same_v<T, std::string>) {
+                outProperty->type = TRACEY_MATERIAL_PROP_TEXTURE;
+                // Store in thread-local for lifetime
+                static thread_local std::string textureStorage;
+                textureStorage = val;
+                outProperty->value.textureValue = textureStorage.c_str();
+            }
+        }, *prop);
+
+        return TRACEY_SUCCESS;
+    } catch (const std::exception& e) {
+        setError(std::string("Failed to get material property: ") + e.what());
+        return TRACEY_ERROR_UNKNOWN;
+    } catch (...) {
+        setError("Failed to get material property: unknown error");
+        return TRACEY_ERROR_UNKNOWN;
+    }
+}
+
+TraceyResult tracey_scene_set_instance_material_float(
+    TraceyScene* scene,
+    uint64_t actorUid,
+    uint32_t instanceIndex,
+    const char* propertyName,
+    float value)
+{
+    if (!scene || !propertyName) {
+        setError("Null pointer parameter");
+        return TRACEY_ERROR_NULL_POINTER;
+    }
+
+    try {
+        clearError();
+        auto* s = reinterpret_cast<tracey::Scene*>(scene);
+        auto* actor = s->getActor(actorUid);
+        if (!actor) {
+            setError("Actor not found");
+            return TRACEY_ERROR_NOT_FOUND;
+        }
+
+        auto& instances = actor->instances();
+        if (instanceIndex >= instances.size()) {
+            setError("Instance index out of range");
+            return TRACEY_ERROR_INVALID_PARAMETER;
+        }
+
+        instances[instanceIndex].material().setFloat(propertyName, value);
+        return TRACEY_SUCCESS;
+    } catch (const std::exception& e) {
+        setError(std::string("Failed to set material property: ") + e.what());
+        return TRACEY_ERROR_UNKNOWN;
+    } catch (...) {
+        setError("Failed to set material property: unknown error");
+        return TRACEY_ERROR_UNKNOWN;
+    }
+}
+
+TraceyResult tracey_scene_set_instance_material_vec3(
+    TraceyScene* scene,
+    uint64_t actorUid,
+    uint32_t instanceIndex,
+    const char* propertyName,
+    TraceyVec3 value)
+{
+    if (!scene || !propertyName) {
+        setError("Null pointer parameter");
+        return TRACEY_ERROR_NULL_POINTER;
+    }
+
+    try {
+        clearError();
+        auto* s = reinterpret_cast<tracey::Scene*>(scene);
+        auto* actor = s->getActor(actorUid);
+        if (!actor) {
+            setError("Actor not found");
+            return TRACEY_ERROR_NOT_FOUND;
+        }
+
+        auto& instances = actor->instances();
+        if (instanceIndex >= instances.size()) {
+            setError("Instance index out of range");
+            return TRACEY_ERROR_INVALID_PARAMETER;
+        }
+
+        instances[instanceIndex].material().setVec3(propertyName, toVec3(value));
+        return TRACEY_SUCCESS;
+    } catch (const std::exception& e) {
+        setError(std::string("Failed to set material property: ") + e.what());
+        return TRACEY_ERROR_UNKNOWN;
+    } catch (...) {
+        setError("Failed to set material property: unknown error");
+        return TRACEY_ERROR_UNKNOWN;
+    }
+}
+
+TraceyResult tracey_scene_set_instance_material_vec4(
+    TraceyScene* scene,
+    uint64_t actorUid,
+    uint32_t instanceIndex,
+    const char* propertyName,
+    TraceyVec4 value)
+{
+    if (!scene || !propertyName) {
+        setError("Null pointer parameter");
+        return TRACEY_ERROR_NULL_POINTER;
+    }
+
+    try {
+        clearError();
+        auto* s = reinterpret_cast<tracey::Scene*>(scene);
+        auto* actor = s->getActor(actorUid);
+        if (!actor) {
+            setError("Actor not found");
+            return TRACEY_ERROR_NOT_FOUND;
+        }
+
+        auto& instances = actor->instances();
+        if (instanceIndex >= instances.size()) {
+            setError("Instance index out of range");
+            return TRACEY_ERROR_INVALID_PARAMETER;
+        }
+
+        instances[instanceIndex].material().setVec4(propertyName, tracey::Vec4(value.x, value.y, value.z, value.w));
+        return TRACEY_SUCCESS;
+    } catch (const std::exception& e) {
+        setError(std::string("Failed to set material property: ") + e.what());
+        return TRACEY_ERROR_UNKNOWN;
+    } catch (...) {
+        setError("Failed to set material property: unknown error");
+        return TRACEY_ERROR_UNKNOWN;
+    }
+}
+
+TraceyResult tracey_scene_set_instance_material_texture(
+    TraceyScene* scene,
+    uint64_t actorUid,
+    uint32_t instanceIndex,
+    const char* propertyName,
+    const char* texturePath)
+{
+    if (!scene || !propertyName || !texturePath) {
+        setError("Null pointer parameter");
+        return TRACEY_ERROR_NULL_POINTER;
+    }
+
+    try {
+        clearError();
+        auto* s = reinterpret_cast<tracey::Scene*>(scene);
+        auto* actor = s->getActor(actorUid);
+        if (!actor) {
+            setError("Actor not found");
+            return TRACEY_ERROR_NOT_FOUND;
+        }
+
+        auto& instances = actor->instances();
+        if (instanceIndex >= instances.size()) {
+            setError("Instance index out of range");
+            return TRACEY_ERROR_INVALID_PARAMETER;
+        }
+
+        instances[instanceIndex].material().setTexture(propertyName, texturePath);
+        return TRACEY_SUCCESS;
+    } catch (const std::exception& e) {
+        setError(std::string("Failed to set material texture: ") + e.what());
+        return TRACEY_ERROR_UNKNOWN;
+    } catch (...) {
+        setError("Failed to set material texture: unknown error");
+        return TRACEY_ERROR_UNKNOWN;
+    }
+}
+
+const char* tracey_scene_get_instance_material_shader_id(
+    TraceyScene* scene,
+    uint64_t actorUid,
+    uint32_t instanceIndex)
+{
+    if (!scene) return nullptr;
+
+    try {
+        auto* s = reinterpret_cast<tracey::Scene*>(scene);
+        auto* actor = s->getActor(actorUid);
+        if (!actor) return nullptr;
+
+        const auto& instances = actor->instances();
+        if (instanceIndex >= instances.size()) return nullptr;
+
+        return instances[instanceIndex].material().shaderId().c_str();
+    } catch (...) {
+        return nullptr;
     }
 }
 
@@ -986,11 +1384,18 @@ static uint64_t addPrimitiveToScene(tracey::Scene* scene, const char* name, trac
         auto* actor = scene->createActor();
         actor->setName(objName);
 
-        // Create default material instance
+        // Create default material instance with all PBR properties
         tracey::MaterialInstance material("pbr");
-        material.setVec3("baseColor", tracey::Vec3(0.5f, 0.5f, 0.5f));
-        material.setFloat("metallic", 0.0f);
-        material.setFloat("roughness", 0.5f);
+        material.setAlbedo(tracey::Vec3(0.8f, 0.8f, 0.8f));
+        material.setMetallic(0.0f);
+        material.setRoughness(0.5f);
+        material.setEmission(tracey::Vec3(0.0f, 0.0f, 0.0f));
+        // Clearcoat layer (default: disabled)
+        material.setClearcoat(0.0f);
+        material.setClearcoatRoughness(0.1f);
+        // Sheen layer (default: disabled)
+        material.setSheenColor(tracey::Vec3(0.0f, 0.0f, 0.0f));
+        material.setSheenRoughness(0.5f);
 
         // Create scene instance referencing the object
         tracey::SceneInstance instance(objName, material);
@@ -1177,6 +1582,241 @@ uint64_t tracey_scene_add_cone(
 }
 
 // ============================================================================
+// Primitive Creation with Pre-assigned Actor ID
+// ============================================================================
+
+// Helper function to add a primitive to an actor with a specific UID
+// Creates the actor if it doesn't exist (for queue-based creation from Rust)
+static TraceyResult addPrimitiveToActorWithId(tracey::Scene* scene, uint64_t actorUid, const char* name, tracey::SceneObject&& obj) {
+    try {
+        // Try to find existing actor, or create one with the specified UID
+        auto* actor = scene->getActor(actorUid);
+        if (!actor) {
+            // Actor doesn't exist in C++ scene - create it with the specified UID
+            actor = scene->createActorWithUid(actorUid);
+            if (!actor) {
+                setError("Failed to create actor with specified UID");
+                return TRACEY_ERROR_UNKNOWN;
+            }
+        }
+
+        // Generate a unique object name based on provided name
+        std::string objName = name ? name : "primitive";
+
+        // Add the object to scene
+        scene->addObject(objName, std::move(obj));
+
+        // Update actor name to match
+        actor->setName(objName);
+
+        // Create default material instance with all PBR properties
+        tracey::MaterialInstance material("pbr");
+        material.setAlbedo(tracey::Vec3(0.8f, 0.8f, 0.8f));
+        material.setMetallic(0.0f);
+        material.setRoughness(0.5f);
+        material.setEmission(tracey::Vec3(0.0f, 0.0f, 0.0f));
+        // Clearcoat layer (default: disabled)
+        material.setClearcoat(0.0f);
+        material.setClearcoatRoughness(0.1f);
+        // Sheen layer (default: disabled)
+        material.setSheenColor(tracey::Vec3(0.0f, 0.0f, 0.0f));
+        material.setSheenRoughness(0.5f);
+
+        // Create scene instance referencing the object
+        tracey::SceneInstance instance(objName, material);
+        actor->addInstance(instance);
+
+        return TRACEY_SUCCESS;
+    } catch (const std::exception& e) {
+        setError(std::string("Failed to add primitive: ") + e.what());
+        return TRACEY_ERROR_UNKNOWN;
+    } catch (...) {
+        setError("Failed to add primitive: unknown error");
+        return TRACEY_ERROR_UNKNOWN;
+    }
+}
+
+TraceyResult tracey_scene_add_cube_with_id(
+    TraceyScene* scene,
+    uint64_t actorUid,
+    const char* name,
+    float size)
+{
+    if (!scene) {
+        setError("Scene pointer is null");
+        return TRACEY_ERROR_NULL_POINTER;
+    }
+
+    try {
+        clearError();
+        auto* s = reinterpret_cast<tracey::Scene*>(scene);
+        auto obj = tracey::SceneObject::createCube(size > 0 ? size : 1.0f);
+        return addPrimitiveToActorWithId(s, actorUid, name, std::move(obj));
+    } catch (const std::exception& e) {
+        setError(std::string("Failed to add cube: ") + e.what());
+        return TRACEY_ERROR_UNKNOWN;
+    } catch (...) {
+        setError("Failed to add cube: unknown error");
+        return TRACEY_ERROR_UNKNOWN;
+    }
+}
+
+TraceyResult tracey_scene_add_sphere_with_id(
+    TraceyScene* scene,
+    uint64_t actorUid,
+    const char* name,
+    float radius,
+    uint32_t segments,
+    uint32_t rings)
+{
+    if (!scene) {
+        setError("Scene pointer is null");
+        return TRACEY_ERROR_NULL_POINTER;
+    }
+
+    try {
+        clearError();
+        auto* s = reinterpret_cast<tracey::Scene*>(scene);
+        auto obj = tracey::SceneObject::createSphere(
+            radius > 0 ? radius : 1.0f,
+            segments > 0 ? segments : 16,
+            rings > 0 ? rings : 16
+        );
+        return addPrimitiveToActorWithId(s, actorUid, name, std::move(obj));
+    } catch (const std::exception& e) {
+        setError(std::string("Failed to add sphere: ") + e.what());
+        return TRACEY_ERROR_UNKNOWN;
+    } catch (...) {
+        setError("Failed to add sphere: unknown error");
+        return TRACEY_ERROR_UNKNOWN;
+    }
+}
+
+TraceyResult tracey_scene_add_torus_with_id(
+    TraceyScene* scene,
+    uint64_t actorUid,
+    const char* name,
+    float majorRadius,
+    float minorRadius,
+    uint32_t majorSegments,
+    uint32_t minorSegments)
+{
+    if (!scene) {
+        setError("Scene pointer is null");
+        return TRACEY_ERROR_NULL_POINTER;
+    }
+
+    try {
+        clearError();
+        auto* s = reinterpret_cast<tracey::Scene*>(scene);
+        auto obj = tracey::SceneObject::createTorus(
+            majorRadius > 0 ? majorRadius : 1.0f,
+            minorRadius > 0 ? minorRadius : 0.3f,
+            majorSegments > 0 ? majorSegments : 32,
+            minorSegments > 0 ? minorSegments : 16
+        );
+        return addPrimitiveToActorWithId(s, actorUid, name, std::move(obj));
+    } catch (const std::exception& e) {
+        setError(std::string("Failed to add torus: ") + e.what());
+        return TRACEY_ERROR_UNKNOWN;
+    } catch (...) {
+        setError("Failed to add torus: unknown error");
+        return TRACEY_ERROR_UNKNOWN;
+    }
+}
+
+TraceyResult tracey_scene_add_plane_with_id(
+    TraceyScene* scene,
+    uint64_t actorUid,
+    const char* name,
+    float width,
+    float depth)
+{
+    if (!scene) {
+        setError("Scene pointer is null");
+        return TRACEY_ERROR_NULL_POINTER;
+    }
+
+    try {
+        clearError();
+        auto* s = reinterpret_cast<tracey::Scene*>(scene);
+        auto obj = tracey::SceneObject::createPlane(
+            width > 0 ? width : 1.0f,
+            depth > 0 ? depth : 1.0f
+        );
+        return addPrimitiveToActorWithId(s, actorUid, name, std::move(obj));
+    } catch (const std::exception& e) {
+        setError(std::string("Failed to add plane: ") + e.what());
+        return TRACEY_ERROR_UNKNOWN;
+    } catch (...) {
+        setError("Failed to add plane: unknown error");
+        return TRACEY_ERROR_UNKNOWN;
+    }
+}
+
+TraceyResult tracey_scene_add_cylinder_with_id(
+    TraceyScene* scene,
+    uint64_t actorUid,
+    const char* name,
+    float radius,
+    float height,
+    uint32_t segments)
+{
+    if (!scene) {
+        setError("Scene pointer is null");
+        return TRACEY_ERROR_NULL_POINTER;
+    }
+
+    try {
+        clearError();
+        auto* s = reinterpret_cast<tracey::Scene*>(scene);
+        auto obj = tracey::SceneObject::createCylinder(
+            radius > 0 ? radius : 0.5f,
+            height > 0 ? height : 1.0f,
+            segments > 0 ? segments : 32
+        );
+        return addPrimitiveToActorWithId(s, actorUid, name, std::move(obj));
+    } catch (const std::exception& e) {
+        setError(std::string("Failed to add cylinder: ") + e.what());
+        return TRACEY_ERROR_UNKNOWN;
+    } catch (...) {
+        setError("Failed to add cylinder: unknown error");
+        return TRACEY_ERROR_UNKNOWN;
+    }
+}
+
+TraceyResult tracey_scene_add_cone_with_id(
+    TraceyScene* scene,
+    uint64_t actorUid,
+    const char* name,
+    float radius,
+    float height,
+    uint32_t segments)
+{
+    if (!scene) {
+        setError("Scene pointer is null");
+        return TRACEY_ERROR_NULL_POINTER;
+    }
+
+    try {
+        clearError();
+        auto* s = reinterpret_cast<tracey::Scene*>(scene);
+        auto obj = tracey::SceneObject::createCone(
+            radius > 0 ? radius : 0.5f,
+            height > 0 ? height : 1.0f,
+            segments > 0 ? segments : 32
+        );
+        return addPrimitiveToActorWithId(s, actorUid, name, std::move(obj));
+    } catch (const std::exception& e) {
+        setError(std::string("Failed to add cone: ") + e.what());
+        return TRACEY_ERROR_UNKNOWN;
+    } catch (...) {
+        setError("Failed to add cone: unknown error");
+        return TRACEY_ERROR_UNKNOWN;
+    }
+}
+
+// ============================================================================
 // Scene Compilation
 // ============================================================================
 
@@ -1240,6 +1880,34 @@ int tracey_update_scene_transforms(
         return -1;
     } catch (...) {
         setError("Transform update failed: unknown error");
+        return -1;
+    }
+}
+
+int tracey_update_scene_materials(
+    TraceyDevice* device,
+    TraceyScene* scene,
+    TraceyCompiledScene* compiledScene)
+{
+    if (!device || !scene || !compiledScene) {
+        setError("Null pointer parameter");
+        return -1;
+    }
+
+    try {
+        clearError();
+        auto* dev = reinterpret_cast<tracey::Device*>(device);
+        auto* s = reinterpret_cast<tracey::Scene*>(scene);
+        auto* compiled = reinterpret_cast<tracey::SceneCompiler::CompiledScene*>(compiledScene);
+
+        // Update materials only
+        tracey::SceneCompiler::updateMaterials(dev, *s, *compiled);
+        return 0;
+    } catch (const std::exception& e) {
+        setError(std::string("Material update failed: ") + e.what());
+        return -1;
+    } catch (...) {
+        setError("Material update failed: unknown error");
         return -1;
     }
 }

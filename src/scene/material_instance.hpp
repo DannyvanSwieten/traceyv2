@@ -58,6 +58,20 @@ namespace tracey
         std::optional<float> roughness() const { return getFloat("roughness"); }
         std::optional<Vec3> emission() const { return getVec3("emission"); }
 
+        // Clearcoat layer
+        void setClearcoat(float clearcoat) { setFloat("clearcoat", clearcoat); }
+        void setClearcoatRoughness(float roughness) { setFloat("clearcoatRoughness", roughness); }
+
+        std::optional<float> clearcoat() const { return getFloat("clearcoat"); }
+        std::optional<float> clearcoatRoughness() const { return getFloat("clearcoatRoughness"); }
+
+        // Sheen layer (for fabric/cloth materials)
+        void setSheenColor(const Vec3 &color) { setVec3("sheenColor", color); }
+        void setSheenRoughness(float roughness) { setFloat("sheenRoughness", roughness); }
+
+        std::optional<Vec3> sheenColor() const { return getVec3("sheenColor"); }
+        std::optional<float> sheenRoughness() const { return getFloat("sheenRoughness"); }
+
     private:
         std::string m_shaderId;
         std::unordered_map<std::string, MaterialValue> m_properties;

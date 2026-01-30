@@ -13,6 +13,46 @@ export interface InstanceInfo {
   };
 }
 
+// Material property types from Rust
+interface Vec3 {
+  x: number;
+  y: number;
+  z: number;
+}
+
+interface Vec4 {
+  x: number;
+  y: number;
+  z: number;
+  w: number;
+}
+
+type MaterialPropertyValue =
+  | { type: 'Float'; value: number }
+  | { type: 'Vec3'; value: Vec3 }
+  | { type: 'Vec4'; value: Vec4 }
+  | { type: 'Int'; value: number }
+  | { type: 'Texture'; value: string };
+
+interface MaterialProperty {
+  name: string;
+  value: MaterialPropertyValue;
+}
+
+// Common PBR property definitions for the UI
+const COMMON_MATERIAL_PROPERTIES = [
+  { name: 'albedo', displayName: 'Albedo', type: 'color' as const },
+  { name: 'metallic', displayName: 'Metallic', type: 'float' as const, min: 0, max: 1, step: 0.01 },
+  { name: 'roughness', displayName: 'Roughness', type: 'float' as const, min: 0, max: 1, step: 0.01 },
+  { name: 'emission', displayName: 'Emission', type: 'color' as const },
+  // Clearcoat layer (car paint, lacquered surfaces)
+  { name: 'clearcoat', displayName: 'Clearcoat', type: 'float' as const, min: 0, max: 1, step: 0.01 },
+  { name: 'clearcoatRoughness', displayName: 'Clearcoat Roughness', type: 'float' as const, min: 0, max: 1, step: 0.01 },
+  // Sheen layer (fabric, velvet, cloth)
+  { name: 'sheenColor', displayName: 'Sheen Color', type: 'color' as const },
+  { name: 'sheenRoughness', displayName: 'Sheen Roughness', type: 'float' as const, min: 0, max: 1, step: 0.01 },
+];
+
 export interface Transform {
   position: { x: number; y: number; z: number };
   rotation: { w: number; x: number; y: number; z: number };
@@ -31,6 +71,208 @@ interface ActorPropertiesProps {
   actors: Accessor<Actor[]>;
   onTransformChange?: (actorId: number, transform: Transform) => void;
 }
+
+// Helper to convert Vec3 to hex color
+const vec3ToHex = (v: Vec3): string => {
+  const r = Math.min(255, Math.max(0, Math.round(v.x * 255)));
+  const g = Math.min(255, Math.max(0, Math.round(v.y * 255)));
+  const b = Math.min(255, Math.max(0, Math.round(v.z * 255)));
+  return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
+};
+
+// Helper to convert hex color to Vec3
+const hexToVec3 = (hex: string): Vec3 => {
+  const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+  if (result) {
+    return {
+      x: parseInt(result[1], 16) / 255,
+      y: parseInt(result[2], 16) / 255,
+      z: parseInt(result[3], 16) / 255,
+    };
+  }
+  return { x: 1, y: 1, z: 1 };
+};
+
+// Material Editor Component for a single instance
+const MaterialEditor: Component<{
+  actorId: number;
+  instanceIndex: number;
+}> = (props) => {
+  const [expanded, setExpanded] = createSignal(false);
+  const [materialProps, setMaterialProps] = createSignal<Map<string, MaterialProperty>>(new Map());
+  const [loading, setLoading] = createSignal(false);
+  const [error, setError] = createSignal<string | null>(null);
+
+  // Load material properties when expanded
+  createEffect(async () => {
+    if (!expanded()) return;
+
+    setLoading(true);
+    setError(null);
+    const propsMap = new Map<string, MaterialProperty>();
+
+    // Try to load each common property
+    for (const propDef of COMMON_MATERIAL_PROPERTIES) {
+      try {
+        const prop = await invoke<MaterialProperty>('get_material_property', {
+          actorId: props.actorId,
+          instanceIndex: props.instanceIndex,
+          propertyName: propDef.name,
+        });
+        propsMap.set(propDef.name, prop);
+      } catch (e) {
+        // Property doesn't exist for this material - that's OK
+        console.debug(`Property ${propDef.name} not found:`, e);
+      }
+    }
+
+    setMaterialProps(propsMap);
+    setLoading(false);
+  });
+
+  const updateFloatProperty = async (name: string, value: number) => {
+    try {
+      await invoke('set_material_float', {
+        actorId: props.actorId,
+        instanceIndex: props.instanceIndex,
+        propertyName: name,
+        value,
+      });
+      // Update local state
+      const props_map = new Map(materialProps());
+      const existing = props_map.get(name);
+      if (existing) {
+        props_map.set(name, { ...existing, value: { type: 'Float', value } });
+        setMaterialProps(props_map);
+      }
+    } catch (e) {
+      console.error(`Failed to set ${name}:`, e);
+      setError(`Failed to set ${name}`);
+    }
+  };
+
+  const updateColorProperty = async (name: string, hexColor: string) => {
+    const vec3 = hexToVec3(hexColor);
+    try {
+      await invoke('set_material_vec3', {
+        actorId: props.actorId,
+        instanceIndex: props.instanceIndex,
+        propertyName: name,
+        value: vec3,
+      });
+      // Update local state
+      const props_map = new Map(materialProps());
+      const existing = props_map.get(name);
+      if (existing) {
+        props_map.set(name, { ...existing, value: { type: 'Vec3', value: vec3 } });
+        setMaterialProps(props_map);
+      }
+    } catch (e) {
+      console.error(`Failed to set ${name}:`, e);
+      setError(`Failed to set ${name}`);
+    }
+  };
+
+  const getFloatValue = (name: string): number | undefined => {
+    const prop = materialProps().get(name);
+    if (prop && prop.value.type === 'Float') {
+      return prop.value.value;
+    }
+    return undefined;
+  };
+
+  const getVec3Value = (name: string): Vec3 | undefined => {
+    const prop = materialProps().get(name);
+    if (prop && prop.value.type === 'Vec3') {
+      return prop.value.value;
+    }
+    return undefined;
+  };
+
+  return (
+    <div class="material-editor">
+      <button
+        type="button"
+        class="material-toggle"
+        onClick={() => setExpanded(!expanded())}
+      >
+        <span class="toggle-icon">{expanded() ? '▼' : '▶'}</span>
+        Material Properties
+      </button>
+      <Show when={expanded()}>
+        <div class="material-content">
+          <Show when={loading()}>
+            <div class="material-loading">Loading...</div>
+          </Show>
+          <Show when={error()}>
+            <div class="material-error">{error()}</div>
+          </Show>
+          <Show when={!loading() && materialProps().size === 0}>
+            <div class="material-empty">No editable material properties</div>
+          </Show>
+          <Show when={!loading() && materialProps().size > 0}>
+            <For each={COMMON_MATERIAL_PROPERTIES}>
+              {(propDef) => {
+                const floatVal = () => getFloatValue(propDef.name);
+                const vec3Val = () => getVec3Value(propDef.name);
+                const inputId = `mat-${props.actorId}-${props.instanceIndex}-${propDef.name}`;
+
+                return (
+                  <Show when={materialProps().has(propDef.name)}>
+                    <div class="material-property">
+                      <label class="material-label" for={inputId}>{propDef.displayName}</label>
+                      <Show when={propDef.type === 'float' && floatVal() !== undefined}>
+                        <div class="material-float-input">
+                          <input
+                            type="range"
+                            id={`${inputId}-slider`}
+                            title={propDef.displayName}
+                            min={propDef.min ?? 0}
+                            max={propDef.max ?? 1}
+                            step={propDef.step ?? 0.01}
+                            value={floatVal()}
+                            onInput={(e) => updateFloatProperty(propDef.name, parseFloat(e.currentTarget.value))}
+                          />
+                          <input
+                            type="number"
+                            id={inputId}
+                            title={propDef.displayName}
+                            min={propDef.min ?? 0}
+                            max={propDef.max ?? 1}
+                            step={propDef.step ?? 0.01}
+                            value={floatVal()?.toFixed(3)}
+                            onChange={(e) => {
+                              const val = parseFloat(e.currentTarget.value);
+                              if (!isNaN(val)) {
+                                updateFloatProperty(propDef.name, val);
+                              }
+                            }}
+                          />
+                        </div>
+                      </Show>
+                      <Show when={propDef.type === 'color' && vec3Val() !== undefined}>
+                        <div class="material-color-input">
+                          <input
+                            type="color"
+                            id={inputId}
+                            title={propDef.displayName}
+                            value={vec3ToHex(vec3Val()!)}
+                            onChange={(e) => updateColorProperty(propDef.name, e.currentTarget.value)}
+                          />
+                          <span class="color-value">{vec3ToHex(vec3Val()!)}</span>
+                        </div>
+                      </Show>
+                    </div>
+                  </Show>
+                );
+              }}
+            </For>
+          </Show>
+        </div>
+      </Show>
+    </div>
+  );
+};
 
 export const ActorProperties: Component<ActorPropertiesProps> = (props) => {
   const [instances, setInstances] = createSignal<InstanceInfo[]>([]);
@@ -356,6 +598,10 @@ export const ActorProperties: Component<ActorPropertiesProps> = (props) => {
                           <span class="instance-label">Shader</span>
                           <span class="instance-value">{instance.shader_id || 'Default'}</span>
                         </div>
+                        <MaterialEditor
+                          actorId={actor().id}
+                          instanceIndex={index()}
+                        />
                       </div>
                     )}
                   </For>

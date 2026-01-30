@@ -12,6 +12,9 @@ namespace tracey
 
         VkDevice vkDevice() const;
 
+        // Synchronization
+        void waitIdle() override;
+
         // Ray tracing
         RayTracingPipeline *createRayTracingPipeline(const RayTracingPipelineLayoutDescriptor &layout, const ShaderBindingTable *sbt) override;
         RayTracingPipeline *createWaveFrontRayTracingPipeline(const RayTracingPipelineLayoutDescriptor &layout, const ShaderBindingTable *sbt) override;

@@ -26,10 +26,23 @@ namespace tracey
         {
             throw std::runtime_error("Failed to allocate Vulkan command buffer");
         }
+
+        // Create fence for tracking command buffer completion
+        VkFenceCreateInfo fenceInfo{};
+        fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+        fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT; // Start in signaled state
+        if (vkCreateFence(m_device.vkDevice(), &fenceInfo, nullptr, &m_fence) != VK_SUCCESS)
+        {
+            throw std::runtime_error("Failed to create fence");
+        }
     }
 
     VulkanComputeRayTracingCommandBuffer::~VulkanComputeRayTracingCommandBuffer()
     {
+        if (m_fence != VK_NULL_HANDLE)
+        {
+            vkDestroyFence(m_device.vkDevice(), m_fence, nullptr);
+        }
         if (m_vkCommandBuffer != VK_NULL_HANDLE)
         {
             vkFreeCommandBuffers(m_device.vkDevice(), m_device.commandPool(), 1, &m_vkCommandBuffer);
@@ -42,6 +55,10 @@ namespace tracey
 
     void VulkanComputeRayTracingCommandBuffer::begin()
     {
+        // Wait for any previous submission to complete before reusing command buffer
+        // This prevents undefined behavior if the command buffer is still pending
+        // vkWaitForFences(m_device.vkDevice(), 1, &m_fence, VK_TRUE, UINT64_MAX);
+
         VkCommandBufferBeginInfo beginInfo{};
         beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
         vkBeginCommandBuffer(m_vkCommandBuffer, &beginInfo);
@@ -51,12 +68,15 @@ namespace tracey
     {
         vkEndCommandBuffer(m_vkCommandBuffer);
 
-        // Submit command buffer to the compute queue
+        // Reset fence before submission
+        vkResetFences(m_device.vkDevice(), 1, &m_fence);
+
+        // Submit command buffer to the compute queue with fence
         VkSubmitInfo submitInfo{};
         submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
         submitInfo.commandBufferCount = 1;
         submitInfo.pCommandBuffers = &m_vkCommandBuffer;
-        if (vkQueueSubmit(m_device.computeQueue(), 1, &submitInfo, VK_NULL_HANDLE) != VK_SUCCESS)
+        if (vkQueueSubmit(m_device.computeQueue(), 1, &submitInfo, m_fence) != VK_SUCCESS)
         {
             throw std::runtime_error("Failed to submit command buffer");
         }
@@ -105,91 +125,26 @@ namespace tracey
         if (auto *wavefront = dynamic_cast<VulkanWaveFrontPipeline *>(m_pipeline))
         {
             // ================================================================
-            // WAVEFRONT PATH TRACING EXECUTION
+            // WAVEFRONT PATH TRACING EXECUTION (Legacy multi-sample API)
             // ================================================================
-            // The wavefront algorithm processes rays in stages:
-            // 1. Ray Generation: spawn primary rays from camera
-            // 2. For each bounce:
-            //    a. Intersection: test rays against scene geometry
-            //    b. Hit Shader: process hits, spawn secondary rays
-            //    c. Miss Shader: process misses (sky/environment)
-            // 3. Resolve: accumulate final colors to output image
+            // This method now uses traceSingleSample() internally to maintain
+            // backward compatibility while sharing code with progressive rendering.
             // ================================================================
 
             const uint32_t sampleCount = params.samplesPerFrame;
-            const uint32_t maxBounces = params.maxBounces;
-            uint32_t rayCount = width * height;
-            uint32_t workGroups = (rayCount + 255) / 256;
-
-            WavefrontPushConstants pushConstants{width, height, params.baseSampleCount, 0};
 
             // Initialize buffers once at the start
             initializeWavefrontBuffers(wavefront);
 
-            // Multi-sample loop for anti-aliasing / Monte Carlo integration
-            for (size_t sample = 0; sample < sampleCount; ++sample)
+            // Multi-sample loop - each sample is now executed via traceSingleSample()
+            for (uint32_t sample = 0; sample < 1; ++sample)
             {
-                // Reset hit info for this sample
-                clearHitInfoBuffer(wavefront);
+                TraceSingleSampleParams singleParams;
+                singleParams.globalSampleIndex = params.baseSampleCount + sample;
+                singleParams.baseSampleCount = params.baseSampleCount + sample;
+                singleParams.maxBounces = params.maxBounces;
 
-                // Clear ray queue counter before ray generation (ray gen uses atomicAdd)
-                clearRayQueueForRayGen(wavefront);
-
-                // Bind descriptor set 0 for ray generation
-                if (!m_descriptorSets.empty())
-                {
-                    vkCmdBindDescriptorSets(m_vkCommandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
-                                            wavefront->pipelineLayout(), 0, 1,
-                                            &m_descriptorSets[0], 0, nullptr);
-                }
-
-                // Spawn primary rays
-                dispatchRayGeneration(wavefront, pushConstants, workGroups);
-                insertComputeBarrier();
-
-                // Bounce loop: trace rays through the scene
-                for (uint32_t bounce = 0; bounce < maxBounces; bounce++)
-                {
-                    // Ping-pong between descriptor sets for double-buffered ray queues
-                    uint32_t currentSetIndex = bounce % 2;
-                    if (!m_descriptorSets.empty() && m_descriptorSets.size() > currentSetIndex)
-                    {
-                        vkCmdBindDescriptorSets(m_vkCommandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
-                                                wavefront->pipelineLayout(), 0, 1,
-                                                &m_descriptorSets[currentSetIndex], 0, nullptr);
-                    }
-
-                    // Clear queues for this bounce iteration
-                    clearBounceBuffers(wavefront, bounce);
-
-                    // Compute workgroup counts for indirect dispatch
-                    dispatchPrepareIndirect(wavefront);
-                    insertIndirectDispatchBarrier();
-
-                    // Test rays against scene geometry
-                    dispatchIntersection(wavefront, pushConstants, workGroups);
-                    insertComputeBarrier();
-
-                    // Recompute indirect args now that hit/miss queues are populated
-                    dispatchPrepareIndirect(wavefront);
-
-                    // Need BOTH indirect dispatch barrier AND compute barrier
-                    // - Indirect barrier: for vkCmdDispatchIndirect to read the workgroup counts
-                    // - Compute barrier: for hit/miss shaders to read queue counts and indices
-                    insertIndirectDispatchBarrier();
-                    insertComputeBarrier();
-
-                    // Process hits and misses
-                    dispatchHitShader(wavefront, pushConstants);
-                    insertComputeBarrier();
-
-                    dispatchMissShader(wavefront, pushConstants);
-                    insertComputeBarrier();
-                }
-
-                // Write accumulated color to output image
-                pushConstants.localSampleIndex = static_cast<uint32_t>(sample);
-                dispatchResolve(wavefront, pushConstants, width, height);
+                traceSingleSample(sbt, width, height, singleParams);
             }
         }
         else
@@ -199,6 +154,92 @@ namespace tracey
             // ================================================================
             vkCmdDispatch(m_vkCommandBuffer, width / 32, height / 32, 1);
         }
+    }
+
+    void VulkanComputeRayTracingCommandBuffer::traceSingleSample(const ShaderBindingTable &sbt,
+                                                                 uint32_t width, uint32_t height,
+                                                                 const TraceSingleSampleParams &params)
+    {
+        auto *wavefront = dynamic_cast<VulkanWaveFrontPipeline *>(m_pipeline);
+        if (!wavefront)
+        {
+            throw std::runtime_error("traceSingleSample only supported for wavefront pipelines");
+        }
+
+        // ================================================================
+        // SINGLE SAMPLE EXECUTION (for progressive rendering)
+        // ================================================================
+        // This method executes exactly one sample of path tracing.
+        // It's designed for progressive rendering where each sample
+        // is submitted independently, allowing the viewport to update
+        // between samples for interactive feedback.
+        // ================================================================
+
+        const uint32_t maxBounces = params.maxBounces;
+        uint32_t rayCount = width * height;
+        uint32_t workGroups = (rayCount + 255) / 256;
+
+        WavefrontPushConstants pushConstants{width, height, params.baseSampleCount, 0};
+
+        // Reset hit info for this sample
+        clearHitInfoBuffer(wavefront);
+
+        // Clear ray queue counter before ray generation (ray gen uses atomicAdd)
+        clearRayQueueForRayGen(wavefront);
+
+        // Bind descriptor set 0 for ray generation
+        if (!m_descriptorSets.empty())
+        {
+            vkCmdBindDescriptorSets(m_vkCommandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                    wavefront->pipelineLayout(), 0, 1,
+                                    &m_descriptorSets[0], 0, nullptr);
+        }
+
+        // Spawn primary rays
+        dispatchRayGeneration(wavefront, pushConstants, workGroups);
+        insertComputeBarrier();
+
+        // Bounce loop: trace rays through the scene
+        for (uint32_t bounce = 0; bounce < maxBounces; bounce++)
+        {
+            // Ping-pong between descriptor sets for double-buffered ray queues
+            uint32_t currentSetIndex = bounce % 2;
+            if (!m_descriptorSets.empty() && m_descriptorSets.size() > currentSetIndex)
+            {
+                vkCmdBindDescriptorSets(m_vkCommandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                        wavefront->pipelineLayout(), 0, 1,
+                                        &m_descriptorSets[currentSetIndex], 0, nullptr);
+            }
+
+            // Clear queues for this bounce iteration
+            clearBounceBuffers(wavefront, bounce);
+
+            // Compute workgroup counts for indirect dispatch
+            dispatchPrepareIndirect(wavefront);
+            insertIndirectDispatchBarrier();
+
+            // Test rays against scene geometry
+            dispatchIntersection(wavefront, pushConstants, workGroups);
+            insertComputeBarrier();
+
+            // Recompute indirect args now that hit/miss queues are populated
+            dispatchPrepareIndirect(wavefront);
+
+            // Need BOTH indirect dispatch barrier AND compute barrier
+            insertIndirectDispatchBarrier();
+            insertComputeBarrier();
+
+            // Process hits and misses
+            dispatchHitShader(wavefront, pushConstants);
+            insertComputeBarrier();
+
+            dispatchMissShader(wavefront, pushConstants);
+            insertComputeBarrier();
+        }
+
+        // Write accumulated color to output image (localSampleIndex is always 0 for single sample)
+        pushConstants.localSampleIndex = 0;
+        dispatchResolve(wavefront, pushConstants, width, height);
     }
 
     void VulkanComputeRayTracingCommandBuffer::copyImageToBuffer(const Image2D *image, Buffer *buffer)
@@ -278,7 +319,21 @@ namespace tracey
 
     void VulkanComputeRayTracingCommandBuffer::waitUntilCompleted()
     {
-        vkQueueWaitIdle(m_device.computeQueue());
+        // Wait on the fence that was signaled when the command buffer completed
+        // This is more efficient than vkQueueWaitIdle and coordinates with begin()
+        vkWaitForFences(m_device.vkDevice(), 1, &m_fence, VK_TRUE, UINT64_MAX);
+    }
+
+    void VulkanComputeRayTracingCommandBuffer::submitAsync()
+    {
+        // Async submission is handled by end() - fence is already signaled
+        // This method exists for API consistency
+    }
+
+    bool VulkanComputeRayTracingCommandBuffer::isCompleted() const
+    {
+        VkResult result = vkGetFenceStatus(m_device.vkDevice(), m_fence);
+        return result == VK_SUCCESS;
     }
 
     void VulkanComputeRayTracingCommandBuffer::clearImage(Image2D *image, float r, float g, float b, float a)

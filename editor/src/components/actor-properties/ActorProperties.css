@@ -162,3 +162,140 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* Material Editor Styles */
+.material-editor {
+  margin-top: 8px;
+  border-top: 1px solid #3c3c3c;
+  padding-top: 8px;
+}
+
+.material-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  background: transparent;
+  border: none;
+  color: #cccccc;
+  font-size: 11px;
+  cursor: pointer;
+  padding: 4px 0;
+  text-align: left;
+}
+
+.material-toggle:hover {
+  color: #ffffff;
+}
+
+.toggle-icon {
+  font-size: 8px;
+  width: 10px;
+}
+
+.material-content {
+  padding: 8px 0 0 0;
+}
+
+.material-loading,
+.material-empty {
+  color: #858585;
+  font-size: 11px;
+  font-style: italic;
+}
+
+.material-error {
+  color: #f48771;
+  font-size: 11px;
+}
+
+.material-property {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+
+.material-property:last-child {
+  margin-bottom: 0;
+}
+
+.material-label {
+  font-size: 11px;
+  color: #858585;
+}
+
+.material-float-input {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.material-float-input input[type="range"] {
+  flex: 1;
+  height: 4px;
+  background: #3c3c3c;
+  border-radius: 2px;
+  appearance: none;
+  cursor: pointer;
+}
+
+.material-float-input input[type="range"]::-webkit-slider-thumb {
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  background: #0e639c;
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.material-float-input input[type="range"]::-webkit-slider-thumb:hover {
+  background: #1177bb;
+}
+
+.material-float-input input[type="number"] {
+  width: 60px;
+  background: #3c3c3c;
+  border: 1px solid #5a5a5a;
+  border-radius: 3px;
+  color: #cccccc;
+  font-size: 10px;
+  font-family: monospace;
+  padding: 2px 4px;
+  outline: none;
+}
+
+.material-float-input input[type="number"]:focus {
+  border-color: #0e639c;
+}
+
+.material-color-input {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.material-color-input input[type="color"] {
+  width: 32px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid #5a5a5a;
+  border-radius: 3px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.material-color-input input[type="color"]::-webkit-color-swatch-wrapper {
+  padding: 2px;
+}
+
+.material-color-input input[type="color"]::-webkit-color-swatch {
+  border: none;
+  border-radius: 2px;
+}
+
+.color-value {
+  font-size: 10px;
+  font-family: monospace;
+  color: #858585;
+}

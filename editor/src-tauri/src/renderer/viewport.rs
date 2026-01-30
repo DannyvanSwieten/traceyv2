@@ -36,7 +36,8 @@ impl Viewport {
         // Scene should be compiled explicitly via compile_scene command
         // Not on every camera movement - that would be very slow!
 
-        engine.render_frame(camera, clear_accumulation)
+        // Default to needing pixels for backwards compatibility
+        engine.render_frame(camera, clear_accumulation, true)
     }
 
     pub fn shared_memory_name(&self) -> &str {

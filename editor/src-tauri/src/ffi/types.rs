@@ -2,6 +2,7 @@
 //!
 //! These types provide RAII, error handling, and Rust-friendly APIs.
 
+use super::raw;
 use super::raw::*;
 use serde::{Deserialize, Serialize};
 use std::ffi::{CStr, CString};
@@ -79,6 +80,32 @@ impl From<Vec3> for TraceyVec3 {
 impl From<TraceyVec3> for Vec3 {
     fn from(v: TraceyVec3) -> Self {
         Vec3 { x: v.x, y: v.y, z: v.z }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct Vec4 {
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+    pub w: f32,
+}
+
+impl Vec4 {
+    pub fn new(x: f32, y: f32, z: f32, w: f32) -> Self {
+        Self { x, y, z, w }
+    }
+}
+
+impl From<Vec4> for TraceyVec4 {
+    fn from(v: Vec4) -> Self {
+        TraceyVec4 { x: v.x, y: v.y, z: v.z, w: v.w }
+    }
+}
+
+impl From<TraceyVec4> for Vec4 {
+    fn from(v: TraceyVec4) -> Self {
+        Vec4 { x: v.x, y: v.y, z: v.z, w: v.w }
     }
 }
 
@@ -306,6 +333,13 @@ impl Device {
     pub fn as_ptr(&self) -> *mut TraceyDevice {
         self.ptr
     }
+
+    /// Wait for all GPU operations to complete
+    pub fn wait_idle(&self) {
+        unsafe {
+            tracey_device_wait_idle(self.ptr);
+        }
+    }
 }
 
 impl Drop for Device {
@@ -386,6 +420,12 @@ impl Scene {
             } else {
                 Ok(uid)
             }
+        }
+    }
+
+    pub fn remove_actor(&mut self, actor_uid: u64) -> Result<()> {
+        unsafe {
+            check_result(tracey_scene_remove_actor(self.ptr, actor_uid))
         }
     }
 
@@ -551,6 +591,97 @@ impl Scene {
         }
     }
 
+    // Material editing methods
+
+    pub fn get_instance_material_property_count(&self, actor_uid: u64, instance_index: u32) -> u32 {
+        unsafe {
+            raw::tracey_scene_get_instance_material_property_count(self.ptr, actor_uid, instance_index)
+        }
+    }
+
+    pub fn get_instance_material_property(&self, actor_uid: u64, instance_index: u32, property_name: &str) -> Result<MaterialProperty> {
+        let c_name = CString::new(property_name).map_err(|_| TraceyError("Invalid property name".to_string()))?;
+        unsafe {
+            let mut prop = TraceyMaterialProperty {
+                name: ptr::null(),
+                prop_type: TraceyMaterialPropertyType::Float,
+                value: TraceyMaterialPropertyValue { float_value: 0.0 },
+            };
+            check_result(raw::tracey_scene_get_instance_material_property_by_name(
+                self.ptr,
+                actor_uid,
+                instance_index,
+                c_name.as_ptr(),
+                &mut prop,
+            ))?;
+            Ok(MaterialProperty::from_raw(&prop))
+        }
+    }
+
+    pub fn set_instance_material_float(&mut self, actor_uid: u64, instance_index: u32, property_name: &str, value: f32) -> Result<()> {
+        let c_name = CString::new(property_name).map_err(|_| TraceyError("Invalid property name".to_string()))?;
+        unsafe {
+            check_result(raw::tracey_scene_set_instance_material_float(
+                self.ptr,
+                actor_uid,
+                instance_index,
+                c_name.as_ptr(),
+                value,
+            ))
+        }
+    }
+
+    pub fn set_instance_material_vec3(&mut self, actor_uid: u64, instance_index: u32, property_name: &str, value: Vec3) -> Result<()> {
+        let c_name = CString::new(property_name).map_err(|_| TraceyError("Invalid property name".to_string()))?;
+        unsafe {
+            check_result(raw::tracey_scene_set_instance_material_vec3(
+                self.ptr,
+                actor_uid,
+                instance_index,
+                c_name.as_ptr(),
+                value.into(),
+            ))
+        }
+    }
+
+    pub fn set_instance_material_vec4(&mut self, actor_uid: u64, instance_index: u32, property_name: &str, value: Vec4) -> Result<()> {
+        let c_name = CString::new(property_name).map_err(|_| TraceyError("Invalid property name".to_string()))?;
+        unsafe {
+            check_result(raw::tracey_scene_set_instance_material_vec4(
+                self.ptr,
+                actor_uid,
+                instance_index,
+                c_name.as_ptr(),
+                value.into(),
+            ))
+        }
+    }
+
+    pub fn set_instance_material_texture(&mut self, actor_uid: u64, instance_index: u32, property_name: &str, texture_path: &str) -> Result<()> {
+        let c_name = CString::new(property_name).map_err(|_| TraceyError("Invalid property name".to_string()))?;
+        let c_path = CString::new(texture_path).map_err(|_| TraceyError("Invalid texture path".to_string()))?;
+        unsafe {
+            check_result(raw::tracey_scene_set_instance_material_texture(
+                self.ptr,
+                actor_uid,
+                instance_index,
+                c_name.as_ptr(),
+                c_path.as_ptr(),
+            ))
+        }
+    }
+
+    pub fn get_instance_material_shader_id(&self, actor_uid: u64, instance_index: u32) -> Option<String> {
+        unsafe {
+            let ptr = raw::tracey_scene_get_instance_material_shader_id(self.ptr, actor_uid, instance_index);
+            if ptr.is_null() {
+                None
+            } else {
+                Some(CStr::from_ptr(ptr).to_string_lossy().into_owned())
+            }
+        }
+    }
+
     pub fn get_mesh_count(&self) -> u32 {
         unsafe { tracey_scene_get_mesh_count(self.ptr) }
     }
@@ -710,6 +841,65 @@ impl Scene {
             }
         }
     }
+
+    // Primitive creation with pre-assigned actor ID (for queue-based creation)
+    pub fn add_cube_with_id(&mut self, actor_uid: u64, name: &str, size: f32) -> Result<()> {
+        let c_name = CString::new(name).map_err(|_| TraceyError("Invalid name".to_string()))?;
+        unsafe {
+            check_result(raw::tracey_scene_add_cube_with_id(self.ptr, actor_uid, c_name.as_ptr(), size))
+        }
+    }
+
+    pub fn add_sphere_with_id(&mut self, actor_uid: u64, name: &str, radius: f32, segments: u32, rings: u32) -> Result<()> {
+        let c_name = CString::new(name).map_err(|_| TraceyError("Invalid name".to_string()))?;
+        unsafe {
+            check_result(raw::tracey_scene_add_sphere_with_id(self.ptr, actor_uid, c_name.as_ptr(), radius, segments, rings))
+        }
+    }
+
+    pub fn add_torus_with_id(
+        &mut self,
+        actor_uid: u64,
+        name: &str,
+        major_radius: f32,
+        minor_radius: f32,
+        major_segments: u32,
+        minor_segments: u32,
+    ) -> Result<()> {
+        let c_name = CString::new(name).map_err(|_| TraceyError("Invalid name".to_string()))?;
+        unsafe {
+            check_result(raw::tracey_scene_add_torus_with_id(
+                self.ptr,
+                actor_uid,
+                c_name.as_ptr(),
+                major_radius,
+                minor_radius,
+                major_segments,
+                minor_segments,
+            ))
+        }
+    }
+
+    pub fn add_plane_with_id(&mut self, actor_uid: u64, name: &str, width: f32, depth: f32) -> Result<()> {
+        let c_name = CString::new(name).map_err(|_| TraceyError("Invalid name".to_string()))?;
+        unsafe {
+            check_result(raw::tracey_scene_add_plane_with_id(self.ptr, actor_uid, c_name.as_ptr(), width, depth))
+        }
+    }
+
+    pub fn add_cylinder_with_id(&mut self, actor_uid: u64, name: &str, radius: f32, height: f32, segments: u32) -> Result<()> {
+        let c_name = CString::new(name).map_err(|_| TraceyError("Invalid name".to_string()))?;
+        unsafe {
+            check_result(raw::tracey_scene_add_cylinder_with_id(self.ptr, actor_uid, c_name.as_ptr(), radius, height, segments))
+        }
+    }
+
+    pub fn add_cone_with_id(&mut self, actor_uid: u64, name: &str, radius: f32, height: f32, segments: u32) -> Result<()> {
+        let c_name = CString::new(name).map_err(|_| TraceyError("Invalid name".to_string()))?;
+        unsafe {
+            check_result(raw::tracey_scene_add_cone_with_id(self.ptr, actor_uid, c_name.as_ptr(), radius, height, segments))
+        }
+    }
 }
 
 impl Drop for Scene {
@@ -750,6 +940,17 @@ impl CompiledScene {
     pub fn update_transforms(&mut self, device: &Device, scene: &Scene) -> Result<()> {
         unsafe {
             let result = tracey_update_scene_transforms(device.as_ptr(), scene.as_ptr(), self.ptr);
+            if result < 0 {
+                Err(TraceyError(get_last_error()))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    pub fn update_materials(&mut self, device: &Device, scene: &Scene) -> Result<()> {
+        unsafe {
+            let result = raw::tracey_update_scene_materials(device.as_ptr(), scene.as_ptr(), self.ptr);
             if result < 0 {
                 Err(TraceyError(get_last_error()))
             } else {
@@ -1073,6 +1274,67 @@ impl From<TraceyInstanceInfo> for InstanceInfo {
                 local_transform,
             }
         }
+    }
+}
+
+// ============================================================================
+// Material Types
+// ============================================================================
+
+/// Material property value
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", content = "value")]
+pub enum MaterialPropertyValue {
+    Float(f32),
+    Vec3(Vec3),
+    Vec4(Vec4),
+    Int(i32),
+    Texture(String),
+}
+
+/// Material property with name and value
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MaterialProperty {
+    pub name: String,
+    pub value: MaterialPropertyValue,
+}
+
+impl MaterialProperty {
+    /// Convert from raw FFI type
+    pub unsafe fn from_raw(prop: &TraceyMaterialProperty) -> Self {
+        let name = if prop.name.is_null() {
+            String::new()
+        } else {
+            CStr::from_ptr(prop.name).to_string_lossy().into_owned()
+        };
+
+        let value = match prop.prop_type {
+            TraceyMaterialPropertyType::Float => {
+                MaterialPropertyValue::Float(prop.value.float_value)
+            }
+            TraceyMaterialPropertyType::Vec3 => {
+                let v = prop.value.vec3_value;
+                MaterialPropertyValue::Vec3(Vec3::new(v.x, v.y, v.z))
+            }
+            TraceyMaterialPropertyType::Vec4 => {
+                let v = prop.value.vec4_value;
+                MaterialPropertyValue::Vec4(Vec4::new(v.x, v.y, v.z, v.w))
+            }
+            TraceyMaterialPropertyType::Int => {
+                MaterialPropertyValue::Int(prop.value.int_value)
+            }
+            TraceyMaterialPropertyType::Texture => {
+                let s = if prop.value.texture_value.is_null() {
+                    String::new()
+                } else {
+                    CStr::from_ptr(prop.value.texture_value).to_string_lossy().into_owned()
+                };
+                MaterialPropertyValue::Texture(s)
+            }
+            _ => MaterialPropertyValue::Float(0.0), // Vec2 not commonly used
+        };
+
+        MaterialProperty { name, value }
     }
 }
 

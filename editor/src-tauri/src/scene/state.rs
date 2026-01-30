@@ -22,6 +22,18 @@ pub struct Actor {
     pub children: Vec<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent: Option<u64>,   // Parent actor ID
+    /// Cached instance info for this actor (populated when primitives are added)
+    #[serde(default)]
+    pub instances: Vec<ActorInstance>,
+}
+
+/// Instance info cached in Rust (avoids needing to query C++ engine)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActorInstance {
+    pub mesh_name: String,
+    pub shader_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub local_transform: Option<Transform>,
 }
 
 impl SceneState {
@@ -43,6 +55,7 @@ impl SceneState {
             transform: Transform::identity(),
             children: Vec::new(),
             parent: None,
+            instances: Vec::new(),
         };
 
         self.actors.insert(id, actor);
@@ -58,7 +71,22 @@ impl SceneState {
     }
 
     pub fn delete_actor(&mut self, id: u64) -> bool {
-        self.actors.remove(&id).is_some()
+        // Get the actor and its children before removing
+        if let Some(actor) = self.actors.get(&id) {
+            // Make a copy of children list since we'll be modifying the map
+            let children: Vec<u64> = actor.children.clone();
+
+            // Recursively delete all children first
+            for child_id in children {
+                self.delete_actor(child_id);
+            }
+
+            // Remove this actor
+            self.actors.remove(&id);
+            true
+        } else {
+            false
+        }
     }
 
     pub fn set_actor_transform(&mut self, id: u64, transform: Transform) -> bool {
@@ -289,7 +317,7 @@ impl SceneState {
             self.camera = camera;
         }
 
-        // Get actors - first pass: create/update actors with transforms and children
+        // Get actors - first pass: create/update actors with transforms, children, and instances
         let uids = cpp_scene.get_actor_uids();
         println!("sync_from_cpp: Found {} actors", uids.len());
 
@@ -299,13 +327,27 @@ impl SceneState {
                 let children = cpp_scene.get_actor_children(uid);
                 let name = cpp_scene.get_actor_name(uid).unwrap_or_else(|| format!("Actor_{}", uid));
 
-                println!("  Actor {}: name='{}', children={:?}", uid, name, children);
+                // Get instance info from C++ scene and cache in Rust
+                let mut instances = Vec::new();
+                let instance_count = cpp_scene.get_actor_instance_count(uid);
+                for i in 0..instance_count {
+                    if let Ok(info) = cpp_scene.get_actor_instance(uid, i) {
+                        instances.push(ActorInstance {
+                            mesh_name: info.object_ref,
+                            shader_id: info.shader_id,
+                            local_transform: info.local_transform,
+                        });
+                    }
+                }
+
+                println!("  Actor {}: name='{}', children={:?}, instances={}", uid, name, children, instances.len());
 
                 if let Some(actor) = self.actors.get_mut(&uid) {
                     actor.name = name;
                     actor.transform = transform;
                     actor.children = children.clone();
                     actor.parent = None; // Will set in second pass
+                    actor.instances = instances;
                 } else {
                     // Create new actor
                     let actor = Actor {
@@ -314,6 +356,7 @@ impl SceneState {
                         transform,
                         children: children.clone(),
                         parent: None, // Will set in second pass
+                        instances,
                     };
                     self.actors.insert(uid, actor);
 

@@ -199,4 +199,23 @@ namespace tracey
     void CpuRayTracingCommandBuffer::waitUntilCompleted()
     {
     }
+    void CpuRayTracingCommandBuffer::traceSingleSample(const ShaderBindingTable &sbt, uint32_t width, uint32_t height,
+                                                       const TraceSingleSampleParams &params)
+    {
+        // TODO: Implement single-sample tracing for CPU ray tracing
+        // For now, this is a stub to satisfy the interface
+        (void)sbt;
+        (void)width;
+        (void)height;
+        (void)params;
+    }
+    void CpuRayTracingCommandBuffer::submitAsync()
+    {
+        // CPU execution is synchronous, so this is a no-op
+    }
+    bool CpuRayTracingCommandBuffer::isCompleted() const
+    {
+        // CPU execution completes immediately
+        return true;
+    }
 }

@@ -85,6 +85,10 @@ namespace tracey
     {
     public:
         virtual ~Device() = default;
+
+        // Synchronization - wait for all GPU work to complete
+        virtual void waitIdle() = 0;
+
         // Ray tracing pipeline creation
         virtual RayTracingPipeline *createRayTracingPipeline(const RayTracingPipelineLayoutDescriptor &layout, const ShaderBindingTable *sbt) = 0;
         virtual RayTracingPipeline *createWaveFrontRayTracingPipeline(const RayTracingPipelineLayoutDescriptor &layout, const ShaderBindingTable *sbt) = 0;

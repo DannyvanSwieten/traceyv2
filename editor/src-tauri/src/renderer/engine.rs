@@ -1,12 +1,14 @@
 //! Rendering engine that orchestrates rendering (path tracing and rasterization)
 
 use crate::ffi::{
-    Camera, CompiledScene, Device, DeviceBackend, DeviceType, InstanceInfo, MeshInfo, PathTracer,
-    PathTracerConfig, Rasterizer, RasterizerConfig, Scene as CppScene, TextureInfo,
+    Camera, CompiledScene, Device, DeviceBackend, DeviceType, InstanceInfo, MaterialProperty,
+    MeshInfo, PathTracer, PathTracerConfig, Rasterizer, RasterizerConfig, Scene as CppScene,
+    TextureInfo, Vec3, Vec4,
 };
 use crate::scene::SceneState;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Rendering mode selection
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,6 +27,8 @@ pub struct RenderEngine {
     compiled_scene: Option<CompiledScene>,
     cpp_scene: Mutex<CppScene>,
     config: RenderConfig,
+    is_rendering: AtomicBool,
+    is_compiling: AtomicBool,
 }
 
 #[derive(Debug, Clone)]
@@ -52,6 +56,8 @@ impl RenderEngine {
             compiled_scene: None,
             cpp_scene: Mutex::new(cpp_scene),
             config,
+            is_rendering: AtomicBool::new(false),
+            is_compiling: AtomicBool::new(false),
         })
     }
 
@@ -109,57 +115,143 @@ impl RenderEngine {
 
     /// Compile the scene for rendering
     pub fn compile_scene(&mut self, scene: &SceneState) -> Result<(), String> {
-        let mut cpp_scene = self
-            .cpp_scene
-            .lock()
-            .map_err(|_| "Failed to lock scene".to_string())?;
+        // Check if already compiling or rendering - prevent concurrent GPU operations
+        if self.is_compiling.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+            return Err("Scene compilation already in progress".to_string());
+        }
+        if self.is_rendering.load(Ordering::SeqCst) {
+            self.is_compiling.store(false, Ordering::SeqCst);
+            return Err("Cannot compile while rendering".to_string());
+        }
 
-        // Sync Rust scene to C++ scene
-        scene.sync_to_cpp(&mut cpp_scene)?;
+        let result = (|| {
+            let mut cpp_scene = self
+                .cpp_scene
+                .lock()
+                .map_err(|_| "Failed to lock scene".to_string())?;
 
-        // Compile the C++ scene
-        let compiled = CompiledScene::compile(&self.device, &cpp_scene)
-            .map_err(|e| format!("Failed to compile scene: {}", e))?;
+            // Sync Rust scene to C++ scene
+            scene.sync_to_cpp(&mut cpp_scene)?;
 
-        self.compiled_scene = Some(compiled);
-        Ok(())
+            // Compile the C++ scene
+            let compiled = CompiledScene::compile(&self.device, &cpp_scene)
+                .map_err(|e| format!("Failed to compile scene: {}", e))?;
+
+            // CRITICAL: Wait for GPU to finish before dropping old CompiledScene
+            // This ensures no command buffers are still referencing old resources
+            if self.compiled_scene.is_some() {
+                self.device.wait_idle();
+            }
+
+            self.compiled_scene = Some(compiled);
+            Ok(())
+        })();
+
+        self.is_compiling.store(false, Ordering::SeqCst);
+        result
     }
 
     /// Compile the existing C++ scene without syncing from Rust
     /// Use this after loading GLTF directly into the C++ scene
     pub fn compile_scene_no_sync(&mut self) -> Result<(), String> {
-        let cpp_scene = self
-            .cpp_scene
-            .lock()
-            .map_err(|_| "Failed to lock scene".to_string())?;
+        // Check if already compiling or rendering - prevent concurrent GPU operations
+        if self.is_compiling.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+            return Err("Scene compilation already in progress".to_string());
+        }
+        if self.is_rendering.load(Ordering::SeqCst) {
+            self.is_compiling.store(false, Ordering::SeqCst);
+            return Err("Cannot compile while rendering".to_string());
+        }
 
-        // Compile the C++ scene as-is (don't clear/sync from Rust)
-        let compiled = CompiledScene::compile(&self.device, &cpp_scene)
-            .map_err(|e| format!("Failed to compile scene: {}", e))?;
+        let result = (|| {
+            let cpp_scene = self
+                .cpp_scene
+                .lock()
+                .map_err(|_| "Failed to lock scene".to_string())?;
 
-        self.compiled_scene = Some(compiled);
-        Ok(())
+            // Compile the C++ scene as-is (don't clear/sync from Rust)
+            let compiled = CompiledScene::compile(&self.device, &cpp_scene)
+                .map_err(|e| format!("Failed to compile scene: {}", e))?;
+
+            // CRITICAL: Wait for GPU to finish before dropping old CompiledScene
+            // This ensures no command buffers are still referencing old resources
+            if self.compiled_scene.is_some() {
+                self.device.wait_idle();
+            }
+
+            self.compiled_scene = Some(compiled);
+            Ok(())
+        })();
+
+        self.is_compiling.store(false, Ordering::SeqCst);
+        result
     }
 
     /// Update only transforms in the compiled scene (fast update for animations)
     /// This rebuilds the TLAS but keeps geometry, materials, and textures
     pub fn update_transforms(&mut self, scene: &SceneState) -> Result<(), String> {
-        let mut cpp_scene = self
-            .cpp_scene
-            .lock()
-            .map_err(|_| "Failed to lock scene".to_string())?;
+        // Check if already compiling or rendering - prevent concurrent GPU operations
+        if self.is_compiling.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+            return Err("Scene compilation already in progress".to_string());
+        }
+        if self.is_rendering.load(Ordering::SeqCst) {
+            self.is_compiling.store(false, Ordering::SeqCst);
+            return Err("Cannot update transforms while rendering".to_string());
+        }
 
-        // Sync transforms to C++ scene
-        scene.sync_to_cpp(&mut cpp_scene)?;
+        let result = (|| {
+            let mut cpp_scene = self
+                .cpp_scene
+                .lock()
+                .map_err(|_| "Failed to lock scene".to_string())?;
 
-        // Update transforms in the existing compiled scene
-        let compiled = self.compiled_scene.as_mut()
-            .ok_or("Scene not compiled - call compile_scene first".to_string())?;
+            // Sync transforms to C++ scene
+            scene.sync_to_cpp(&mut cpp_scene)?;
 
-        compiled.update_transforms(&self.device, &cpp_scene)
-            .map_err(|e| format!("Failed to update transforms: {}", e))?;
+            // Update transforms in the existing compiled scene
+            let compiled = self.compiled_scene.as_mut()
+                .ok_or("Scene not compiled - call compile_scene first".to_string())?;
 
-        Ok(())
+            compiled.update_transforms(&self.device, &cpp_scene)
+                .map_err(|e| format!("Failed to update transforms: {}", e))?;
+
+            Ok(())
+        })();
+
+        self.is_compiling.store(false, Ordering::SeqCst);
+        result
+    }
+
+    /// Update only materials in the compiled scene (fast update for material editing)
+    /// This re-uploads material data to GPU but keeps geometry and textures
+    pub fn update_materials(&mut self) -> Result<(), String> {
+        // Check if already compiling or rendering - prevent concurrent GPU operations
+        if self.is_compiling.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+            return Err("Scene compilation already in progress".to_string());
+        }
+        if self.is_rendering.load(Ordering::SeqCst) {
+            self.is_compiling.store(false, Ordering::SeqCst);
+            return Err("Cannot update materials while rendering".to_string());
+        }
+
+        let result = (|| {
+            let cpp_scene = self
+                .cpp_scene
+                .lock()
+                .map_err(|_| "Failed to lock scene".to_string())?;
+
+            // Update materials in the existing compiled scene
+            let compiled = self.compiled_scene.as_mut()
+                .ok_or("Scene not compiled - call compile_scene first".to_string())?;
+
+            compiled.update_materials(&self.device, &cpp_scene)
+                .map_err(|e| format!("Failed to update materials: {}", e))?;
+
+            Ok(())
+        })();
+
+        self.is_compiling.store(false, Ordering::SeqCst);
+        result
     }
 
     /// Render a frame using the active renderer (path tracer or rasterizer)
@@ -167,22 +259,41 @@ impl RenderEngine {
         &mut self,
         camera: &Camera,
         clear_accumulation: bool,
+        need_pixels: bool,
     ) -> Result<RenderResult, String> {
-        // Check scene is compiled before borrowing
-        if self.compiled_scene.is_none() {
-            return Err("Scene not compiled".to_string());
+        // Check if already rendering - prevent concurrent renders
+        if self.is_rendering.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+            return Err("Render already in progress".to_string());
+        }
+        // Check if compilation is in progress - prevent GPU resource conflicts
+        if self.is_compiling.load(Ordering::SeqCst) {
+            self.is_rendering.store(false, Ordering::SeqCst);
+            return Err("Cannot render while scene is being compiled".to_string());
         }
 
-        match self.render_mode {
-            RenderMode::PathTracer => {
-                println!("Rendering with path tracer");
-                self.render_with_path_tracer(camera, clear_accumulation)
+        // Ensure we reset the flag even if an error occurs
+        let result = (|| {
+            // Check scene is compiled before borrowing
+            if self.compiled_scene.is_none() {
+                return Err("Scene not compiled".to_string());
             }
-            RenderMode::Rasterizer => {
-                println!("Rendering with rasterizer");
-                self.render_with_rasterizer(camera)
+
+            match self.render_mode {
+                RenderMode::PathTracer => {
+                    println!("Rendering with path tracer");
+                    self.render_with_path_tracer(camera, clear_accumulation, need_pixels)
+                }
+                RenderMode::Rasterizer => {
+                    println!("Rendering with rasterizer");
+                    self.render_with_rasterizer(camera)
+                }
             }
-        }
+        })();
+
+        // Reset the rendering flag
+        self.is_rendering.store(false, Ordering::SeqCst);
+
+        result
     }
 
     /// Render using path tracer
@@ -190,6 +301,7 @@ impl RenderEngine {
         &mut self,
         camera: &Camera,
         clear_accumulation: bool,
+        need_pixels: bool,
     ) -> Result<RenderResult, String> {
         let compiled = self.compiled_scene.as_ref().ok_or("Scene not compiled")?;
         let tracer = self
@@ -202,20 +314,25 @@ impl RenderEngine {
             .map_err(|e| format!("Render failed: {}", e))?;
 
         let sample_count = tracer.get_sample_count();
-
-        let hdr_pixels = tracer
-            .readback()
-            .map_err(|e| format!("Readback failed: {}", e))?;
-
         let width = tracer.width();
         let height = tracer.height();
 
-        // Convert HDR to LDR for display
-        let hdr_output = self.config.hdr_output;
-        let pixels = if hdr_output {
-            Self::hdr_to_ldr_static(&hdr_pixels, sample_count, width, height)
+        // Only readback if needed (skip for native rendering)
+        let pixels = if need_pixels {
+            let hdr_pixels = tracer
+                .readback()
+                .map_err(|e| format!("Readback failed: {}", e))?;
+
+            // Convert HDR to LDR for display
+            let hdr_output = self.config.hdr_output;
+            if hdr_output {
+                Self::hdr_to_ldr_static(&hdr_pixels, sample_count, width, height)
+            } else {
+                hdr_pixels
+            }
         } else {
-            hdr_pixels
+            // Native rendering: don't readback, return empty vector
+            Vec::new()
         };
 
         Ok(RenderResult {
@@ -416,6 +533,27 @@ impl RenderEngine {
         Ok(())
     }
 
+    /// Remove an actor from the C++ scene and recompile
+    pub fn remove_actor(&mut self, actor_id: u64) -> Result<(), String> {
+        self.remove_actors(&[actor_id])
+    }
+
+    /// Remove multiple actors from C++ scene (does NOT recompile - caller must handle that)
+    pub fn remove_actors(&mut self, actor_ids: &[u64]) -> Result<(), String> {
+        let mut cpp_scene = self
+            .cpp_scene
+            .lock()
+            .map_err(|_| "Failed to lock scene".to_string())?;
+
+        // Remove all actors from C++ scene
+        for &actor_id in actor_ids {
+            // Ignore errors - actor might not exist in C++ scene yet
+            let _ = cpp_scene.remove_actor(actor_id);
+        }
+
+        Ok(())
+    }
+
     // Scene query methods
     pub fn get_actor_name(&self, actor_uid: u64) -> Option<String> {
         let cpp_scene = self.cpp_scene.lock().ok()?;
@@ -500,6 +638,99 @@ impl RenderEngine {
             .map_err(|e| format!("Failed to get texture info: {}", e))
     }
 
+    // Material editing methods
+    pub fn get_instance_material_shader_id(&self, actor_uid: u64, instance_index: u32) -> Option<String> {
+        let cpp_scene = self.cpp_scene.lock().ok()?;
+        cpp_scene.get_instance_material_shader_id(actor_uid, instance_index)
+    }
+
+    pub fn get_instance_material_property_count(&self, actor_uid: u64, instance_index: u32) -> u32 {
+        if let Ok(cpp_scene) = self.cpp_scene.lock() {
+            cpp_scene.get_instance_material_property_count(actor_uid, instance_index)
+        } else {
+            0
+        }
+    }
+
+    pub fn get_instance_material_property(
+        &self,
+        actor_uid: u64,
+        instance_index: u32,
+        property_name: &str,
+    ) -> Result<MaterialProperty, String> {
+        let cpp_scene = self
+            .cpp_scene
+            .lock()
+            .map_err(|_| "Failed to lock scene".to_string())?;
+        cpp_scene
+            .get_instance_material_property(actor_uid, instance_index, property_name)
+            .map_err(|e| format!("Failed to get material property: {}", e))
+    }
+
+    pub fn set_instance_material_float(
+        &mut self,
+        actor_uid: u64,
+        instance_index: u32,
+        property_name: &str,
+        value: f32,
+    ) -> Result<(), String> {
+        let mut cpp_scene = self
+            .cpp_scene
+            .lock()
+            .map_err(|_| "Failed to lock scene".to_string())?;
+        cpp_scene
+            .set_instance_material_float(actor_uid, instance_index, property_name, value)
+            .map_err(|e| format!("Failed to set material float: {}", e))
+    }
+
+    pub fn set_instance_material_vec3(
+        &mut self,
+        actor_uid: u64,
+        instance_index: u32,
+        property_name: &str,
+        value: Vec3,
+    ) -> Result<(), String> {
+        let mut cpp_scene = self
+            .cpp_scene
+            .lock()
+            .map_err(|_| "Failed to lock scene".to_string())?;
+        cpp_scene
+            .set_instance_material_vec3(actor_uid, instance_index, property_name, value)
+            .map_err(|e| format!("Failed to set material vec3: {}", e))
+    }
+
+    pub fn set_instance_material_vec4(
+        &mut self,
+        actor_uid: u64,
+        instance_index: u32,
+        property_name: &str,
+        value: Vec4,
+    ) -> Result<(), String> {
+        let mut cpp_scene = self
+            .cpp_scene
+            .lock()
+            .map_err(|_| "Failed to lock scene".to_string())?;
+        cpp_scene
+            .set_instance_material_vec4(actor_uid, instance_index, property_name, value)
+            .map_err(|e| format!("Failed to set material vec4: {}", e))
+    }
+
+    pub fn set_instance_material_texture(
+        &mut self,
+        actor_uid: u64,
+        instance_index: u32,
+        property_name: &str,
+        texture_path: &str,
+    ) -> Result<(), String> {
+        let mut cpp_scene = self
+            .cpp_scene
+            .lock()
+            .map_err(|_| "Failed to lock scene".to_string())?;
+        cpp_scene
+            .set_instance_material_texture(actor_uid, instance_index, property_name, texture_path)
+            .map_err(|e| format!("Failed to set material texture: {}", e))
+    }
+
     /// Update an actor's transform in the C++ scene
     pub fn set_actor_transform(
         &self,
@@ -580,6 +811,75 @@ impl RenderEngine {
             .map_err(|_| "Failed to lock scene".to_string())?;
         cpp_scene
             .add_cone(name, radius, height, segments)
+            .map_err(|e| format!("Failed to add cone: {}", e))
+    }
+
+    // Primitive creation with pre-assigned actor ID (for queue-based creation)
+    pub fn add_cube_with_id(&self, actor_uid: u64, name: &str, size: f32) -> Result<(), String> {
+        let mut cpp_scene = self
+            .cpp_scene
+            .lock()
+            .map_err(|_| "Failed to lock scene".to_string())?;
+        cpp_scene
+            .add_cube_with_id(actor_uid, name, size)
+            .map_err(|e| format!("Failed to add cube: {}", e))
+    }
+
+    pub fn add_sphere_with_id(&self, actor_uid: u64, name: &str, radius: f32, segments: u32, rings: u32) -> Result<(), String> {
+        let mut cpp_scene = self
+            .cpp_scene
+            .lock()
+            .map_err(|_| "Failed to lock scene".to_string())?;
+        cpp_scene
+            .add_sphere_with_id(actor_uid, name, radius, segments, rings)
+            .map_err(|e| format!("Failed to add sphere: {}", e))
+    }
+
+    pub fn add_torus_with_id(
+        &self,
+        actor_uid: u64,
+        name: &str,
+        major_radius: f32,
+        minor_radius: f32,
+        major_segments: u32,
+        minor_segments: u32,
+    ) -> Result<(), String> {
+        let mut cpp_scene = self
+            .cpp_scene
+            .lock()
+            .map_err(|_| "Failed to lock scene".to_string())?;
+        cpp_scene
+            .add_torus_with_id(actor_uid, name, major_radius, minor_radius, major_segments, minor_segments)
+            .map_err(|e| format!("Failed to add torus: {}", e))
+    }
+
+    pub fn add_plane_with_id(&self, actor_uid: u64, name: &str, width: f32, depth: f32) -> Result<(), String> {
+        let mut cpp_scene = self
+            .cpp_scene
+            .lock()
+            .map_err(|_| "Failed to lock scene".to_string())?;
+        cpp_scene
+            .add_plane_with_id(actor_uid, name, width, depth)
+            .map_err(|e| format!("Failed to add plane: {}", e))
+    }
+
+    pub fn add_cylinder_with_id(&self, actor_uid: u64, name: &str, radius: f32, height: f32, segments: u32) -> Result<(), String> {
+        let mut cpp_scene = self
+            .cpp_scene
+            .lock()
+            .map_err(|_| "Failed to lock scene".to_string())?;
+        cpp_scene
+            .add_cylinder_with_id(actor_uid, name, radius, height, segments)
+            .map_err(|e| format!("Failed to add cylinder: {}", e))
+    }
+
+    pub fn add_cone_with_id(&self, actor_uid: u64, name: &str, radius: f32, height: f32, segments: u32) -> Result<(), String> {
+        let mut cpp_scene = self
+            .cpp_scene
+            .lock()
+            .map_err(|_| "Failed to lock scene".to_string())?;
+        cpp_scene
+            .add_cone_with_id(actor_uid, name, radius, height, segments)
             .map_err(|e| format!("Failed to add cone: {}", e))
     }
 

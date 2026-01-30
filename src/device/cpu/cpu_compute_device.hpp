@@ -9,6 +9,9 @@ namespace tracey
         CpuComputeDevice();
         ~CpuComputeDevice();
 
+        // Synchronization (no-op for CPU)
+        void waitIdle() override {}
+
         // Ray tracing
         RayTracingPipeline *createRayTracingPipeline(const RayTracingPipelineLayoutDescriptor &layout, const ShaderBindingTable *sbt) override;
         RayTracingPipeline *createWaveFrontRayTracingPipeline(const RayTracingPipelineLayoutDescriptor &layout, const ShaderBindingTable *sbt) override;

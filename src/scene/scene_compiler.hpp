@@ -14,7 +14,7 @@
 namespace tracey
 {
     // GPU material structure for shader consumption
-    // Layout: 5 texture indices + 3 pad + 4 baseColor + 4 params + 4 emissive = 80 bytes
+    // Layout: 5 texture indices + 3 pad + baseColor + params + emissive + clearcoat/sheen = 96 bytes
     struct GPUMaterial
     {
         // Texture indices (-1 if no texture)
@@ -41,13 +41,19 @@ namespace tracey
         float emissiveR = 0.0f;
         float emissiveG = 0.0f;
 
-        // Emissive (continued) + padding
+        // Emissive (continued) + clearcoat parameters
         float emissiveB = 0.0f;
+        float clearcoat = 0.0f;           // Clearcoat strength [0, 1]
+        float clearcoatRoughness = 0.1f;  // Clearcoat roughness
         float _pad3 = 0.0f;
-        float _pad4 = 0.0f;
-        float _pad5 = 0.0f;
+
+        // Sheen parameters
+        float sheenColorR = 0.0f;
+        float sheenColorG = 0.0f;
+        float sheenColorB = 0.0f;
+        float sheenRoughness = 0.5f;
     };
-    static_assert(sizeof(GPUMaterial) == 80, "GPUMaterial must be 80 bytes");
+    static_assert(sizeof(GPUMaterial) == 96, "GPUMaterial must be 96 bytes");
 
     class SceneCompiler
     {
@@ -102,6 +108,14 @@ namespace tracey
         /// @param scene The updated scene with new transforms
         /// @param existing The existing compiled scene to update
         static void updateTransforms(Device *device, const Scene &scene, CompiledScene &existing);
+
+        /// Update only material properties in the GPU buffer (fast update for material editing)
+        /// Keeps existing BLASes, TLAS, vertex buffers, and textures
+        /// Note: Does NOT update textures - only scalar/vector material properties
+        /// @param device The device to use (for GPU sync)
+        /// @param scene The updated scene with new material values
+        /// @param existing The existing compiled scene to update
+        static void updateMaterials(Device *device, const Scene &scene, CompiledScene &existing);
 
     private:
         struct ObjectData
