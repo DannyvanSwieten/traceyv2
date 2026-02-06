@@ -31,12 +31,19 @@ namespace tracey
     class Scene
     {
     public:
-        Scene() = default;
+        Scene();  // Creates root actor automatically
         ~Scene() = default;
 
         // Actor management
-        Actor *createActor();
-        Actor *createActorWithUid(size_t uid);  // Create actor with specific UID (for Rust interop)
+        Actor *createActor();                            // Create actor under root
+        Actor *createActorUnderParent(size_t parentUid); // Create actor under specific parent
+        Actor *createActorWithUid(size_t uid);           // Create actor with specific UID (for Rust interop)
+
+        // Root access
+        Actor *getRoot() { return m_root >= 0 ? getActor(static_cast<size_t>(m_root)) : nullptr; }
+        const Actor *getRoot() const { return m_root >= 0 ? getActor(static_cast<size_t>(m_root)) : nullptr; }
+        size_t getRootUid() const { return m_root >= 0 ? static_cast<size_t>(m_root) : 0; }
+        bool hasRoot() const { return m_root >= 0; }
         Actor *getActor(size_t uid)
         {
             if (uid >= m_actors.size())
@@ -93,6 +100,16 @@ namespace tracey
             return m_embeddedTextures;
         }
 
+        // Environment map (HDR skybox) management
+        void setEnvironmentMap(const std::string &path) { m_envMapPath = path; }
+        const std::string &environmentMap() const { return m_envMapPath; }
+
+        void setEnvironmentIntensity(float intensity) { m_envIntensity = intensity; }
+        float environmentIntensity() const { return m_envIntensity; }
+
+        void setEnvironmentRotation(float rotation) { m_envRotation = rotation; }
+        float environmentRotation() const { return m_envRotation; }
+
     private:
         void addChildren(std::vector<SceneNode> &out, const Mat4 &parentTransform, size_t uid) const;
 
@@ -103,5 +120,10 @@ namespace tracey
         std::optional<Camera> m_camera;
         int64_t m_root = -1;
         NodeGraph m_nodeGraph{0, "SceneGraph"};  // Root node graph for the scene
+
+        // Environment map (HDR skybox)
+        std::string m_envMapPath;
+        float m_envIntensity = 1.0f;
+        float m_envRotation = 0.0f;
     };
 }

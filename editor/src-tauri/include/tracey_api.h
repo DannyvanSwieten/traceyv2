@@ -64,6 +64,17 @@ uint64_t tracey_scene_create_actor(
     const char* name
 );
 
+/// Create a new actor with a specific UID (for ActorNode synchronization)
+/// @param scene Scene handle
+/// @param actorUid Desired UID for the actor
+/// @param name Actor name (UTF-8 string, can be NULL for unnamed actor)
+/// @return TRACEY_SUCCESS or error code
+TraceyResult tracey_scene_create_actor_with_uid(
+    TraceyScene* scene,
+    uint64_t actorUid,
+    const char* name
+);
+
 /// Remove an actor from the scene
 /// @param scene Scene handle
 /// @param actorUid Actor unique identifier to remove
@@ -133,6 +144,34 @@ TraceyResult tracey_scene_set_camera(
 TraceyResult tracey_scene_get_camera(
     TraceyScene* scene,
     TraceyCamera* outCamera
+);
+
+/// Set an HDR environment map for the scene (skybox/IBL)
+/// @param scene Scene handle
+/// @param path Path to HDR file (.hdr or .exr), or NULL to clear
+/// @param intensity Brightness multiplier (default 1.0)
+/// @param rotation Horizontal rotation in radians (default 0.0)
+/// @return TRACEY_SUCCESS or error code
+TraceyResult tracey_scene_set_environment_map(
+    TraceyScene* scene,
+    const char* path,
+    float intensity,
+    float rotation
+);
+
+/// Get the current environment map settings
+/// @param scene Scene handle
+/// @param outPath Buffer to receive path (can be NULL if not needed)
+/// @param pathBufferSize Size of outPath buffer
+/// @param outIntensity Pointer to receive intensity (can be NULL)
+/// @param outRotation Pointer to receive rotation (can be NULL)
+/// @return TRACEY_SUCCESS or error code
+TraceyResult tracey_scene_get_environment_map(
+    TraceyScene* scene,
+    char* outPath,
+    size_t pathBufferSize,
+    float* outIntensity,
+    float* outRotation
 );
 
 /// Load a GLTF/GLB file into the scene
@@ -872,6 +911,15 @@ typedef enum TraceyNodeType {
     TRACEY_NODE_MATH_VECTOR = 11
 } TraceyNodeType;
 
+/// Node descriptor - metadata about a node type
+typedef struct TraceyNodeDescriptor {
+    TraceyNodeType type;     ///< Node type enum value
+    const char* name;        ///< Display name (e.g., "Cube Primitive")
+    const char* description; ///< User-facing description
+    int category;            ///< Category (0=Actor, 1=Primitive, 2=Geometry, 3=Math, 4=Utility)
+    const char* icon;        ///< Emoji or icon identifier
+} TraceyNodeDescriptor;
+
 /// Parameter type enumeration
 typedef enum TraceyParameterType {
     TRACEY_PARAM_FLOAT = 0,
@@ -919,6 +967,46 @@ TraceyResult tracey_node_graph_remove_node(
     uint64_t nodeUid
 );
 
+// ===== Node Registry Query API =====
+
+/// Ensure all node types are registered (call once at startup)
+void tracey_ensure_nodes_registered(void);
+
+/// Get all available node types
+/// @param out_descriptors Array to fill with node descriptors
+/// @param max_count Maximum number of descriptors to write
+/// @return Number of descriptors written, or 0 on error
+int tracey_get_node_types(
+    TraceyNodeDescriptor* out_descriptors,
+    int max_count
+);
+
+/// Get nodes by category
+/// @param category Category to filter by (0=Actor, 1=Primitive, 2=Geometry, 3=Math, 4=Utility)
+/// @param out_descriptors Array to fill with node descriptors
+/// @param max_count Maximum number of descriptors to write
+/// @return Number of descriptors written, or 0 on error
+int tracey_get_nodes_by_category(
+    int category,
+    TraceyNodeDescriptor* out_descriptors,
+    int max_count
+);
+
+/// Get single node descriptor
+/// @param type Node type to query
+/// @param out_descriptor Descriptor to fill
+/// @return true if found, false otherwise
+bool tracey_get_node_descriptor(
+    TraceyNodeType type,
+    TraceyNodeDescriptor* out_descriptor
+);
+
+/// Free descriptor strings allocated by query functions
+/// @param descriptor Descriptor to free
+void tracey_free_node_descriptor(TraceyNodeDescriptor* descriptor);
+
+// ===== End Node Registry Query API =====
+
 /// Get node type
 /// @param node Node handle
 /// @return Node type
@@ -953,6 +1041,12 @@ TraceyParameter* tracey_node_get_parameter(
 /// @param node Node handle
 /// @return Number of parameters on the node
 uint32_t tracey_node_get_parameter_count(TraceyNode* node);
+
+/// Get parameter name by index
+/// @param node Node handle
+/// @param index Parameter index
+/// @return Parameter name (valid until node is destroyed), or NULL if index is out of range
+const char* tracey_node_get_parameter_name(TraceyNode* node, uint32_t index);
 
 /// Get parameter type
 /// @param param Parameter handle
@@ -1011,6 +1105,180 @@ TraceyResult tracey_parameter_get_int(TraceyParameter* param, int* outValue);
 /// @param outValue Pointer to receive the value (0 = false, 1 = true)
 /// @return TRACEY_SUCCESS on success, error code on failure
 TraceyResult tracey_parameter_get_bool(TraceyParameter* param, int* outValue);
+
+// ============================================================================
+// Node Port Query API (Phase 2)
+// ============================================================================
+
+/// Get the number of ports on a node
+/// @param node Node handle
+/// @param portType Type of ports to count (input or output)
+/// @return Number of ports of the specified type
+uint32_t tracey_node_get_port_count(
+    TraceyNode* node,
+    TraceyPortType portType
+);
+
+/// Get port information by index
+/// @param node Node handle
+/// @param portType Type of port (input or output)
+/// @param index Port index (0 to count-1)
+/// @param outPortInfo Pointer to receive port information
+/// @return TRACEY_SUCCESS on success, error code on failure
+/// @note The returned port name is valid until the node is destroyed
+TraceyResult tracey_node_get_port(
+    TraceyNode* node,
+    TraceyPortType portType,
+    uint32_t index,
+    TraceyPortInfo* outPortInfo
+);
+
+// ============================================================================
+// Node Graph Connections and Evaluation
+// ============================================================================
+
+/// Connect two nodes together
+/// @param graph Node graph handle
+/// @param fromNodeUid Source node UID
+/// @param fromPort Source port name (can be NULL for default output)
+/// @param toNodeUid Destination node UID
+/// @param toPort Destination port name (can be NULL for default input)
+/// @return TRACEY_SUCCESS on success, error code on failure
+TraceyResult tracey_node_graph_connect(
+    TraceyNodeGraph* graph,
+    uint64_t fromNodeUid,
+    const char* fromPort,
+    uint64_t toNodeUid,
+    const char* toPort
+);
+
+/// Disconnect two nodes
+/// @param graph Node graph handle
+/// @param fromNodeUid Source node UID
+/// @param toNodeUid Destination node UID
+/// @return TRACEY_SUCCESS on success, error code on failure
+TraceyResult tracey_node_graph_disconnect(
+    TraceyNodeGraph* graph,
+    uint64_t fromNodeUid,
+    uint64_t toNodeUid
+);
+
+/// Set an output node for the graph
+/// @param graph Node graph handle
+/// @param outputName Name of the output (e.g., "geometry")
+/// @param nodeUid UID of the node to use as output
+/// @return TRACEY_SUCCESS on success, error code on failure
+TraceyResult tracey_node_graph_set_output(
+    TraceyNodeGraph* graph,
+    const char* outputName,
+    uint64_t nodeUid
+);
+
+/// Evaluate the node graph
+/// @param graph Node graph handle
+/// @param currentTime Current time for animation (seconds)
+/// @param currentFrame Current frame number
+/// @return TRACEY_SUCCESS on success, error code on failure
+TraceyResult tracey_node_graph_evaluate(
+    TraceyNodeGraph* graph,
+    double currentTime,
+    uint32_t currentFrame
+);
+
+/// Sync node graph output to the scene (evaluate and add output geometry to scene)
+/// @param scene Scene handle
+/// @return TRACEY_SUCCESS on success, error code on failure
+TraceyResult tracey_scene_sync_from_node_graph(TraceyScene* scene);
+
+// ============================================================================
+// Nested Graph Navigation (Phase 2)
+// ============================================================================
+
+/// Get the nested geometry network from an ActorNode
+/// @param node Node handle (must be an ActorNode)
+/// @return Nested NodeGraph handle, or NULL if node is not an ActorNode
+TraceyNodeGraph* tracey_actor_node_get_geometry_network(TraceyNode* node);
+
+/// Set the transform of an ActorNode
+/// @param node Node handle (must be an ActorNode)
+/// @param transform Transform to set
+/// @return TRACEY_SUCCESS on success, error code on failure
+TraceyResult tracey_actor_node_set_transform(TraceyNode* node, const TraceyTransform* transform);
+
+/// Get the transform of an ActorNode
+/// @param node Node handle (must be an ActorNode)
+/// @param outTransform Pointer to receive transform data
+/// @return TRACEY_SUCCESS on success, error code on failure
+TraceyResult tracey_actor_node_get_transform(TraceyNode* node, TraceyTransform* outTransform);
+
+/// Get the parent graph of a node graph (scene graph or parent ActorNode's nested graph)
+/// @param graph Node graph handle
+/// @return Parent graph handle, or NULL if this is the root scene graph
+TraceyNodeGraph* tracey_node_graph_get_parent(TraceyNodeGraph* graph);
+
+/// Get the owner node of a nested graph (the ActorNode that contains this graph)
+/// @param graph Node graph handle
+/// @return Owner node UID, or UINT64_MAX if this is a root scene graph
+uint64_t tracey_node_graph_get_owner_node(TraceyNodeGraph* graph);
+
+/// Check if a graph is a scene-level graph (vs nested geometry network)
+/// @param graph Node graph handle
+/// @return 1 if scene-level, 0 if nested
+int tracey_node_graph_is_scene_level(TraceyNodeGraph* graph);
+
+/// Graph context enumeration
+typedef enum TraceyGraphContext {
+    TRACEY_GRAPH_SCENE = 0,      ///< Scene-level graph (ActorNodes only)
+    TRACEY_GRAPH_GEOMETRY = 1    ///< Geometry network (SOP nodes only)
+} TraceyGraphContext;
+
+/// Get the graph type/context
+/// @param graph Node graph handle
+/// @return Graph context
+TraceyGraphContext tracey_node_graph_get_context(TraceyNodeGraph* graph);
+
+// ============================================================================
+// End Nested Graph Navigation
+// ============================================================================
+
+/// Get the number of connections in the graph
+/// @param graph Node graph handle
+/// @return Number of connections
+uint32_t tracey_node_graph_get_connection_count(TraceyNodeGraph* graph);
+
+/// Get connection information by index
+/// @param graph Node graph handle
+/// @param index Connection index (0 to count-1)
+/// @param outFromNode Pointer to receive source node UID
+/// @param outToNode Pointer to receive destination node UID
+/// @param outFromPort Pointer to receive source port name (can be NULL if not needed)
+/// @param outToPort Pointer to receive destination port name (can be NULL if not needed)
+/// @return TRACEY_SUCCESS on success, error code on failure
+/// @note Port name pointers are valid until the next call to this function or graph modification
+TraceyResult tracey_node_graph_get_connection(
+    TraceyNodeGraph* graph,
+    uint32_t index,
+    uint64_t* outFromNode,
+    uint64_t* outToNode,
+    const char** outFromPort,
+    const char** outToPort
+);
+
+/// Get the number of nodes in the graph
+/// @param graph Node graph handle
+/// @return Number of nodes
+uint32_t tracey_node_graph_get_node_count(TraceyNodeGraph* graph);
+
+/// Get all node UIDs in the graph
+/// @param graph Node graph handle
+/// @param outNodeUids Array to receive node UIDs (must be large enough)
+/// @param maxCount Maximum number of UIDs to write
+/// @return Number of UIDs written
+uint32_t tracey_node_graph_get_all_nodes(
+    TraceyNodeGraph* graph,
+    uint64_t* outNodeUids,
+    uint32_t maxCount
+);
 
 #ifdef __cplusplus
 }

@@ -6,6 +6,7 @@
 #include <fstream>
 #include <sstream>
 #include <regex>
+#include <unordered_set>
 #include <shaderc/shaderc.hpp>
 namespace tracey
 {
@@ -62,6 +63,7 @@ namespace tracey
     // Helper: Generate struct with proper std140 padding for uniform buffers
     static void generateStd140Struct(std::stringstream &ss, const std::string &structName, const std::vector<StructField> &fields)
     {
+        fprintf(stderr, "\n=== GLSL Struct '%s' Layout (std140) ===\n", structName.c_str());
         ss << "struct " << structName << " {\n";
 
         size_t currentOffset = 0;
@@ -85,11 +87,13 @@ namespace tracey
                 for (size_t i = 0; i < numFloats; ++i)
                 {
                     ss << "    float _pad" << paddingCounter++ << ";\n";
+                    fprintf(stderr, "  [offset %3zu] _pad%d (padding float)\n", currentOffset + i * 4, paddingCounter - 1);
                 }
             }
 
             // Write the actual field
             ss << "    " << field.type << " " << field.name;
+            fprintf(stderr, "  [offset %3zu] %s %s", alignedOffset, field.type.c_str(), field.name.c_str());
             if (field.isArray)
             {
                 ss << "[";
@@ -99,13 +103,26 @@ namespace tracey
                 }
                 ss << "]";
                 fieldSize *= field.elementCount > 0 ? field.elementCount : 1;
+                fprintf(stderr, "[%zu]", field.elementCount);
             }
             ss << ";\n";
+            fprintf(stderr, " (size=%zu, align=%zu)\n", fieldSize, alignment);
+
+            // For vec3 types, add explicit padding to ensure 16-byte consumption
+            // In std140, vec3 has 12 bytes of data but we need it to consume 16 bytes
+            // so that subsequent fields are placed at the correct offsets
+            if (field.type == "vec3" || field.type == "ivec3" || field.type == "uvec3")
+            {
+                ss << "    float _pad" << paddingCounter++ << "; // vec3 padding\n";
+                fprintf(stderr, "  [offset %3zu] _pad%d (vec3 padding float)\n", alignedOffset + 12, paddingCounter - 1);
+            }
 
             currentOffset = alignedOffset + fieldSize;
         }
 
         ss << "};\n";
+        fprintf(stderr, "  Total struct size: %zu bytes\n", currentOffset);
+        fprintf(stderr, "=====================================\n\n");
     }
 
     // Helper: Get alignment requirement for GLSL type in std430 layout
@@ -511,10 +528,31 @@ namespace tracey
             .resolveShaderSpirV = std::move(resolveSpirV)};
     }
     // Helper to generate user bindings code (shared by all shader compilation functions)
+    // Deduplicates bindings by name (for when same binding is added for multiple shader stages)
     static void generateUserBindings(std::stringstream &userParams, const RayTracingPipelineLayoutDescriptor &layout, size_t bindingStartOffset)
     {
+        std::unordered_set<std::string> emittedBindings;
+        std::unordered_set<std::string> emittedStructs; // Track struct names for uniform buffers
         for (const auto &binding : layout.bindings())
         {
+            // Skip if we've already emitted a binding with this name
+            if (emittedBindings.count(binding.name) > 0)
+            {
+                continue;
+            }
+            emittedBindings.insert(binding.name);
+
+            // For uniform buffers, also check if struct was already emitted
+            if (binding.type == RayTracingPipelineLayoutDescriptor::DescriptorType::UniformBuffer &&
+                binding.structure && emittedStructs.count(binding.structure->name()) > 0)
+            {
+                continue;
+            }
+            if (binding.structure)
+            {
+                emittedStructs.insert(binding.structure->name());
+            }
+
             const auto bindingIndex = layout.indexForBinding(binding.name) + bindingStartOffset;
             switch (binding.type)
             {
@@ -848,7 +886,7 @@ namespace tracey
             missShaderTemplate.replace(userSourcePosition, std::string("//___MISS_SHADER_FUNCTION___").length(), userSource);
         }
 
-        // printf("Vulkan Compute Ray Tracing Miss Shader Source:\n%s\n", missShaderTemplate.c_str());
+        fprintf(stderr, "Vulkan Compute Ray Tracing Miss Shader Source:\n%s\n", missShaderTemplate.c_str());
         // Compile finalShader using shaderc
         shaderc::Compiler compiler;
         shaderc::CompileOptions options;
@@ -907,9 +945,30 @@ namespace tracey
             userParams << "} rayPayloadBuffer;\n";
 
             // Add user-defined image/buffer bindings (starting at offset 8)
+            // Deduplicate bindings by name (same logic as generateUserBindings)
             const size_t bindingStartOffset = 8;
+            std::unordered_set<std::string> emittedBindings;
+            std::unordered_set<std::string> emittedStructs;
             for (const auto &binding : layout.bindings())
             {
+                // Skip if we've already emitted a binding with this name
+                if (emittedBindings.count(binding.name) > 0)
+                {
+                    continue;
+                }
+                emittedBindings.insert(binding.name);
+
+                // For uniform buffers, also check if struct was already emitted
+                if (binding.type == RayTracingPipelineLayoutDescriptor::DescriptorType::UniformBuffer &&
+                    binding.structure && emittedStructs.count(binding.structure->name()) > 0)
+                {
+                    continue;
+                }
+                if (binding.structure)
+                {
+                    emittedStructs.insert(binding.structure->name());
+                }
+
                 const size_t bindingIndex = layout.indexForBinding(binding.name);
                 switch (binding.type)
                 {
@@ -933,6 +992,8 @@ namespace tracey
                     break;
                 case RayTracingPipelineLayoutDescriptor::DescriptorType::RayPayload:
                     // Payload is already handled above
+                    break;
+                default:
                     break;
                 }
             }

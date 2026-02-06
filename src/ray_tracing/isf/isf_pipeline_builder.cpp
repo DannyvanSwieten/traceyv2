@@ -286,8 +286,11 @@ namespace tracey
         StructureLayout inputsLayout = mergeInputs();
         if (!inputsLayout.fields().empty())
         {
-            // Available to all shader stages
+            // Add to all shader stages that need access to inputs
+            // (Vulkan compute will deduplicate, CPU pipeline filters by stage)
             layout.addUniformBuffer("shaderInputs", ShaderStage::RayGeneration, inputsLayout);
+            layout.addUniformBuffer("shaderInputs", ShaderStage::ClosestHit, inputsLayout);
+            layout.addUniformBuffer("shaderInputs", ShaderStage::Miss, inputsLayout);
         }
 
         buildShaderModules();

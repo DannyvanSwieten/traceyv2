@@ -196,6 +196,40 @@ typedef struct {
     const char* mimeType;
 } TraceyTextureInfo;
 
+// ============================================================================
+// Port System Types (Phase 2)
+// ============================================================================
+
+/// Data types for port validation
+typedef enum {
+    TRACEY_DATA_TYPE_FLOAT = 0,
+    TRACEY_DATA_TYPE_VEC2 = 1,
+    TRACEY_DATA_TYPE_VEC3 = 2,
+    TRACEY_DATA_TYPE_VEC4 = 3,
+    TRACEY_DATA_TYPE_MAT3 = 4,
+    TRACEY_DATA_TYPE_MAT4 = 5,
+    TRACEY_DATA_TYPE_INT = 6,
+    TRACEY_DATA_TYPE_UINT = 7,
+    TRACEY_DATA_TYPE_BOOL = 8,
+    TRACEY_DATA_TYPE_SAMPLER2D = 9,
+    TRACEY_DATA_TYPE_GEOMETRY = 10,
+    TRACEY_DATA_TYPE_DATA_TYPE = 11,
+    TRACEY_DATA_TYPE_SCENE3D = 12
+} TraceyDataType;
+
+/// Port type enumeration
+typedef enum {
+    TRACEY_PORT_INPUT = 0,
+    TRACEY_PORT_OUTPUT = 1
+} TraceyPortType;
+
+/// Port information structure
+typedef struct {
+    const char* name;        ///< Port name
+    TraceyDataType dataType; ///< Data type of the port
+    TraceyPortType portType; ///< Input or output
+} TraceyPortInfo;
+
 #ifdef __cplusplus
 }
 #endif

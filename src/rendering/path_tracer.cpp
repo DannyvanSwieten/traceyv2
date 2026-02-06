@@ -50,6 +50,40 @@ namespace tracey
         m_shaderInputs = std::make_unique<ShaderInputsBuffer>(
             m_device, m_pipelineBuilder->getInputsLayout());
 
+        // Initialize environment map uniforms to safe defaults to avoid using uninitialized GPU buffer
+        // This ensures procedural sky is used until an HDR environment map is explicitly loaded
+        bool hasEnvMembers = false;
+        if (m_shaderInputs->hasMember("envMapIndex"))
+        {
+            m_shaderInputs->setInt("envMapIndex", -1);
+            hasEnvMembers = true;
+            fprintf(stderr, "PathTracer: Initialized envMapIndex to -1\n");
+        }
+        else
+        {
+            fprintf(stderr, "PathTracer: WARNING - envMapIndex member not found in shader inputs!\n");
+        }
+        if (m_shaderInputs->hasMember("envIntensity"))
+        {
+            m_shaderInputs->setFloat("envIntensity", 1.0f);
+            hasEnvMembers = true;
+            fprintf(stderr, "PathTracer: Initialized envIntensity to 1.0\n");
+        }
+        else
+        {
+            fprintf(stderr, "PathTracer: WARNING - envIntensity member not found in shader inputs!\n");
+        }
+        if (m_shaderInputs->hasMember("envRotation"))
+        {
+            m_shaderInputs->setFloat("envRotation", 0.0f);
+            hasEnvMembers = true;
+        }
+        if (hasEnvMembers)
+        {
+            m_shaderInputs->upload();
+            fprintf(stderr, "PathTracer: Uploaded initial environment uniforms\n");
+        }
+
         // Build pipeline layout with API-specified resources
         // ISF builder will add payload buffers from shader definitions
         // Layout must persist as a member variable so the pipeline can reference it
@@ -81,6 +115,11 @@ namespace tracey
         m_pipelineLayout->addSampler("linearSampler", ShaderStage::ClosestHit);
         m_pipelineLayout->addSampler("nearestSampler", ShaderStage::ClosestHit);
         m_pipelineLayout->addSampledImageArray("textures", ShaderStage::ClosestHit, 256);
+
+        // Also bind to Miss stage for environment map sampling in sky shader
+        // (CPU pipeline filters bindings by stage, Vulkan compute pipeline deduplicates by name)
+        m_pipelineLayout->addSampler("linearSampler", ShaderStage::Miss);
+        m_pipelineLayout->addSampledImageArray("textures", ShaderStage::Miss, 256);
 
         m_pipeline = m_pipelineBuilder->build(*m_pipelineLayout);
     }
@@ -159,6 +198,16 @@ namespace tracey
         m_shaderInputs->upload();
     }
 
+    void PathTracer::updateEnvironmentUniforms(const SceneCompiler::CompiledScene &scene)
+    {
+        fprintf(stderr, "PathTracer::updateEnvironmentUniforms: envMapIndex=%d, envIntensity=%f, envRotation=%f\n",
+                scene.envMapIndex, scene.envIntensity, scene.envRotation);
+        m_shaderInputs->setInt("envMapIndex", scene.envMapIndex);
+        m_shaderInputs->setFloat("envIntensity", scene.envIntensity);
+        m_shaderInputs->setFloat("envRotation", scene.envRotation);
+        m_shaderInputs->upload();
+    }
+
     double PathTracer::render(const SceneCompiler::CompiledScene &scene,
                               const Camera &camera,
                               bool clearAccumulation)
@@ -172,6 +221,9 @@ namespace tracey
 
             // Only update camera when starting new accumulation
             updateCameraUniforms(camera);
+
+            // Update environment map uniforms
+            updateEnvironmentUniforms(scene);
         }
 
         // Create/reset command buffer
@@ -185,6 +237,16 @@ namespace tracey
         if (clearAccumulation)
         {
             m_commandBuffer->clearImage(m_outputImage.get(), 0.0f, 0.0f, 0.0f, 0.0f);
+        }
+
+        // If scene has no geometry (no TLAS), skip ray tracing to avoid freeze
+        // Just show cleared image (sky rendering would require special handling)
+        if (!scene.tlas)
+        {
+            m_commandBuffer->end();
+            m_device->waitIdle();
+            m_sampleCount = 1; // Mark as having at least one sample
+            return 0.0; // No render time
         }
 
         m_commandBuffer->setPipeline(m_pipeline.get());

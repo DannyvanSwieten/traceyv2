@@ -8,6 +8,7 @@
 #include <fstream>
 #include <sstream>
 #include <algorithm>
+#include <unordered_set>
 #include <shaderc/shaderc.hpp>
 
 namespace tracey
@@ -100,11 +101,23 @@ namespace tracey
 
         // Add user-defined bindings (images, buffers, etc.)
         // User bindings start at offset 8 (after TLAS bindings 0-7)
+        // Track which binding indices have been added to avoid duplicates
+        // (same binding can be added for multiple shader stages, but Vulkan needs unique bindings)
+        std::unordered_set<uint32_t> addedBindingIndices;
         for (const auto &binding : layout.bindings())
         {
             const size_t bindingIndex = layout.indexForBinding(binding.name);
+            const uint32_t finalBindingIndex = static_cast<uint32_t>(bindingIndex + bindingStartOffset);
+
+            // Skip if this binding index was already added
+            if (addedBindingIndices.count(finalBindingIndex) > 0)
+            {
+                continue;
+            }
+            addedBindingIndices.insert(finalBindingIndex);
+
             VkDescriptorSetLayoutBinding vkBinding{};
-            vkBinding.binding = bindingIndex + bindingStartOffset; // Apply offset to ALL user bindings
+            vkBinding.binding = finalBindingIndex;
             vkBinding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
             vkBinding.descriptorCount = 1;
 

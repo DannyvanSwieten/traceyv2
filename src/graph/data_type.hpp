@@ -14,6 +14,7 @@ namespace tracey
         UInt,
         Bool,
         Sampler2D,
+        Geometry,      // Geometry data for SOP nodes
 
         DataType,
 

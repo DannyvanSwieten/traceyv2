@@ -33,6 +33,7 @@ namespace tracey
 
     private:
         void createImage(VulkanComputeDevice &device, ImageFormat format, bool forTexture);
+        void transitionToGeneral(VulkanComputeDevice &device);
         void createSampler(VulkanComputeDevice &device, SamplerFilter filter, SamplerAddressMode addressMode);
         void uploadData(VulkanComputeDevice &device, const void *data, size_t dataSize);
 

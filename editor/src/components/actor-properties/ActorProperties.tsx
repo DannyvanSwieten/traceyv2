@@ -277,6 +277,7 @@ const MaterialEditor: Component<{
 export const ActorProperties: Component<ActorPropertiesProps> = (props) => {
   const [instances, setInstances] = createSignal<InstanceInfo[]>([]);
   const [isLoading, setIsLoading] = createSignal(false);
+  const [uniformScale, setUniformScale] = createSignal(true); // Default to uniform scaling
 
   const selectedActor = () => {
     const id = props.selectedActorId();
@@ -429,6 +430,37 @@ export const ActorProperties: Component<ActorPropertiesProps> = (props) => {
     }
   };
 
+  const handleScaleChange = async (
+    actor: Actor,
+    axis: 'x' | 'y' | 'z',
+    inputValue: string
+  ) => {
+    const value = parseFloat(inputValue);
+    if (isNaN(value)) return;
+
+    if (uniformScale()) {
+      // Uniform scale: set all axes to the same value
+      const newTransform: Transform = {
+        position: { ...actor.transform.position },
+        rotation: { ...actor.transform.rotation },
+        scale: { x: value, y: value, z: value },
+      };
+
+      try {
+        await invoke('set_actor_transform', {
+          actorId: actor.id,
+          transform: newTransform,
+        });
+        props.onTransformChange?.(actor.id, newTransform);
+      } catch (error) {
+        console.error('Failed to update transform:', error);
+      }
+    } else {
+      // Individual scale: only set the specified axis
+      updateTransform(actor, 'scale', axis, value);
+    }
+  };
+
   return (
     <div class="actor-properties">
       <Show
@@ -534,45 +566,75 @@ export const ActorProperties: Component<ActorPropertiesProps> = (props) => {
                 </div>
               </div>
               <div class="transform-group">
-                <span class="transform-label">Scale</span>
-                <div class="transform-inputs">
-                  <div class="transform-input-row">
-                    <label for={`scale-x-${actor().id}`}>X</label>
-                    <input
-                      id={`scale-x-${actor().id}`}
-                      type="number"
-                      step="0.1"
-                      value={actor().transform.scale.x.toFixed(3)}
-                      onChange={(e) =>
-                        handleInputChange(actor(), 'scale', 'x', e.currentTarget.value)
-                      }
-                    />
-                  </div>
-                  <div class="transform-input-row">
-                    <label for={`scale-y-${actor().id}`}>Y</label>
-                    <input
-                      id={`scale-y-${actor().id}`}
-                      type="number"
-                      step="0.1"
-                      value={actor().transform.scale.y.toFixed(3)}
-                      onChange={(e) =>
-                        handleInputChange(actor(), 'scale', 'y', e.currentTarget.value)
-                      }
-                    />
-                  </div>
-                  <div class="transform-input-row">
-                    <label for={`scale-z-${actor().id}`}>Z</label>
-                    <input
-                      id={`scale-z-${actor().id}`}
-                      type="number"
-                      step="0.1"
-                      value={actor().transform.scale.z.toFixed(3)}
-                      onChange={(e) =>
-                        handleInputChange(actor(), 'scale', 'z', e.currentTarget.value)
-                      }
-                    />
-                  </div>
+                <div class="transform-label-row">
+                  <span class="transform-label">Scale</span>
+                  <button
+                    type="button"
+                    class={`uniform-toggle ${uniformScale() ? 'active' : ''}`}
+                    onClick={() => setUniformScale(!uniformScale())}
+                    title={uniformScale() ? 'Uniform scale (click to unlink)' : 'Individual scale (click to link)'}
+                  >
+                    {uniformScale() ? '🔗' : '⛓️‍💥'}
+                  </button>
                 </div>
+                <Show when={uniformScale()}>
+                  {/* Uniform scale mode - single input */}
+                  <div class="transform-inputs">
+                    <div class="transform-input-row uniform-scale-row">
+                      <label for={`scale-uniform-${actor().id}`}>XYZ</label>
+                      <input
+                        id={`scale-uniform-${actor().id}`}
+                        type="number"
+                        step="0.1"
+                        value={actor().transform.scale.x.toFixed(3)}
+                        onChange={(e) =>
+                          handleScaleChange(actor(), 'x', e.currentTarget.value)
+                        }
+                      />
+                    </div>
+                  </div>
+                </Show>
+                <Show when={!uniformScale()}>
+                  {/* Individual scale mode - XYZ inputs */}
+                  <div class="transform-inputs">
+                    <div class="transform-input-row">
+                      <label for={`scale-x-${actor().id}`}>X</label>
+                      <input
+                        id={`scale-x-${actor().id}`}
+                        type="number"
+                        step="0.1"
+                        value={actor().transform.scale.x.toFixed(3)}
+                        onChange={(e) =>
+                          handleScaleChange(actor(), 'x', e.currentTarget.value)
+                        }
+                      />
+                    </div>
+                    <div class="transform-input-row">
+                      <label for={`scale-y-${actor().id}`}>Y</label>
+                      <input
+                        id={`scale-y-${actor().id}`}
+                        type="number"
+                        step="0.1"
+                        value={actor().transform.scale.y.toFixed(3)}
+                        onChange={(e) =>
+                          handleScaleChange(actor(), 'y', e.currentTarget.value)
+                        }
+                      />
+                    </div>
+                    <div class="transform-input-row">
+                      <label for={`scale-z-${actor().id}`}>Z</label>
+                      <input
+                        id={`scale-z-${actor().id}`}
+                        type="number"
+                        step="0.1"
+                        value={actor().transform.scale.z.toFixed(3)}
+                        onChange={(e) =>
+                          handleScaleChange(actor(), 'z', e.currentTarget.value)
+                        }
+                      />
+                    </div>
+                  </div>
+                </Show>
               </div>
             </div>
 

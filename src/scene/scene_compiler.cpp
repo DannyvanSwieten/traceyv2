@@ -8,7 +8,7 @@
 
 namespace tracey
 {
-    int32_t SceneCompiler::loadTexture(Device *device, CompiledScene &result, const Scene &scene, const std::string &texturePath)
+    int32_t SceneCompiler::loadTexture(Device *device, CompiledScene &result, const Scene &scene, const std::string &texturePath, ImageFormat format)
     {
         // Check if texture is already loaded
         auto it = result.texturePathToIndex.find(texturePath);
@@ -101,11 +101,11 @@ namespace tracey
             std::cout << "Loaded texture: " << texturePath << " (" << width << "x" << height << ")" << std::endl;
         }
 
-        // Create GPU texture
+        // Create GPU texture with specified format
         Image2D *texture = device->createImage2DWithData(
             static_cast<uint32_t>(width),
             static_cast<uint32_t>(height),
-            ImageFormat::R8G8B8A8Srgb,
+            format,
             data,
             dataSize,
             SamplerFilter::Linear,
@@ -134,39 +134,88 @@ namespace tracey
         return index;
     }
 
+    int32_t SceneCompiler::loadHDRTexture(Device *device, CompiledScene &result, const std::string &texturePath)
+    {
+        // Check if texture is already loaded
+        auto it = result.texturePathToIndex.find(texturePath);
+        if (it != result.texturePathToIndex.end())
+        {
+            return static_cast<int32_t>(it->second);
+        }
+
+        // Load HDR image using stbi_loadf (returns float data)
+        int width, height, channels;
+        float *hdrData = stbi_loadf(texturePath.c_str(), &width, &height, &channels, 4); // Force RGBA
+
+        if (!hdrData)
+        {
+            std::cerr << "Warning: Failed to load HDR texture: " << texturePath << std::endl;
+            return -1;
+        }
+
+        std::cout << "Loaded HDR texture: " << texturePath << " (" << width << "x" << height << ")" << std::endl;
+
+        // Create GPU texture with HDR format (32-bit float per channel)
+        size_t dataSize = static_cast<size_t>(width) * static_cast<size_t>(height) * 4 * sizeof(float);
+        Image2D *texture = device->createImage2DWithData(
+            static_cast<uint32_t>(width),
+            static_cast<uint32_t>(height),
+            ImageFormat::R32G32B32A32Sfloat,
+            reinterpret_cast<const unsigned char *>(hdrData),
+            dataSize,
+            SamplerFilter::Linear,
+            SamplerAddressMode::Repeat);
+
+        stbi_image_free(hdrData);
+
+        if (!texture)
+        {
+            std::cerr << "Warning: Failed to create GPU texture for HDR: " << texturePath << std::endl;
+            return -1;
+        }
+
+        // Store texture and return index
+        int32_t index = static_cast<int32_t>(result.textures.size());
+        result.textures.push_back(std::unique_ptr<Image2D>(texture));
+        result.texturePathToIndex[texturePath] = static_cast<size_t>(index);
+
+        return index;
+    }
+
     GPUMaterial SceneCompiler::convertMaterial(Device *device, CompiledScene &result, const Scene &scene, const MaterialInstance &material)
     {
         GPUMaterial gpuMat;
 
-        // Load textures
+        // Load textures with appropriate formats
+        // Color textures (albedo, emissive) use sRGB, data textures (normal, metallic-roughness, occlusion) use linear
         auto albedoPath = material.getTexture(TEXTURE_ALBEDO);
         if (albedoPath)
         {
-            gpuMat.albedoTexIndex = loadTexture(device, result, scene, *albedoPath);
+            gpuMat.albedoTexIndex = loadTexture(device, result, scene, *albedoPath, ImageFormat::R8G8B8A8Srgb);
         }
 
         auto normalPath = material.getTexture(TEXTURE_NORMAL);
         if (normalPath)
         {
-            gpuMat.normalTexIndex = loadTexture(device, result, scene, *normalPath);
+            gpuMat.normalTexIndex = loadTexture(device, result, scene, *normalPath, ImageFormat::R8G8B8A8Unorm);
         }
 
         auto mrPath = material.getTexture(TEXTURE_METALLIC_ROUGHNESS);
         if (mrPath)
         {
-            gpuMat.metallicRoughnessTexIndex = loadTexture(device, result, scene, *mrPath);
+            gpuMat.metallicRoughnessTexIndex = loadTexture(device, result, scene, *mrPath, ImageFormat::R8G8B8A8Unorm);
         }
 
         auto emissivePath = material.getTexture(TEXTURE_EMISSIVE);
         if (emissivePath)
         {
-            gpuMat.emissiveTexIndex = loadTexture(device, result, scene, *emissivePath);
+            gpuMat.emissiveTexIndex = loadTexture(device, result, scene, *emissivePath, ImageFormat::R8G8B8A8Srgb);
         }
 
         auto occlusionPath = material.getTexture(TEXTURE_OCCLUSION);
         if (occlusionPath)
         {
-            gpuMat.occlusionTexIndex = loadTexture(device, result, scene, *occlusionPath);
+            gpuMat.occlusionTexIndex = loadTexture(device, result, scene, *occlusionPath, ImageFormat::R8G8B8A8Unorm);
         }
 
         // Set base color factor
@@ -459,6 +508,19 @@ namespace tracey
             std::cout << "Created vertex offset buffer with " << result.instanceVertexOffsets.size() << " offsets" << std::endl;
         }
 
+        // Step 6: Load environment map (HDR skybox) if set
+        if (!scene.environmentMap().empty())
+        {
+            result.envMapIndex = loadHDRTexture(device, result, scene.environmentMap());
+            result.envIntensity = scene.environmentIntensity();
+            result.envRotation = scene.environmentRotation();
+
+            if (result.envMapIndex >= 0)
+            {
+                std::cout << "Loaded HDR environment map: " << scene.environmentMap() << std::endl;
+            }
+        }
+
         // Output BVH statistics
         std::cout << "BVH Statistics: " << result.totalNodes << " nodes, "
                   << result.totalTriangles << " triangles" << std::endl;
@@ -539,18 +601,27 @@ namespace tracey
         // Any command buffers using the old TLAS must complete first
         device->waitIdle();
 
-        // Extract BLAS pointers from existing BLASes
-        std::vector<const BottomLevelAccelerationStructure *> blasPtrs;
-        blasPtrs.reserve(existing.blases.size());
-        for (const auto &blas : existing.blases)
+        // Handle empty scenes (no geometry)
+        if (existing.instances.empty())
         {
-            blasPtrs.push_back(blas.get());
+            std::cout << "Scene has no instances - will render sky only" << std::endl;
+            existing.tlas = nullptr;
         }
+        else
+        {
+            // Extract BLAS pointers from existing BLASes
+            std::vector<const BottomLevelAccelerationStructure *> blasPtrs;
+            blasPtrs.reserve(existing.blases.size());
+            for (const auto &blas : existing.blases)
+            {
+                blasPtrs.push_back(blas.get());
+            }
 
-        existing.tlas = std::unique_ptr<TopLevelAccelerationStructure>(
-            device->createTopLevelAccelerationStructure(
-                std::span<const BottomLevelAccelerationStructure *>(blasPtrs),
-                std::span<const Tlas::Instance>(existing.instances)));
+            existing.tlas = std::unique_ptr<TopLevelAccelerationStructure>(
+                device->createTopLevelAccelerationStructure(
+                    std::span<const BottomLevelAccelerationStructure *>(blasPtrs),
+                    std::span<const Tlas::Instance>(existing.instances)));
+        }
 
         // Update vertex offset buffer
         if (!existing.instanceVertexOffsets.empty() && existing.vertexOffsetBuffer)

@@ -258,6 +258,37 @@ uint64_t tracey_scene_create_actor(
     }
 }
 
+TraceyResult tracey_scene_create_actor_with_uid(
+    TraceyScene* scene,
+    uint64_t actorUid,
+    const char* name)
+{
+    if (!scene) {
+        setError("Scene pointer is null");
+        return TRACEY_ERROR_NULL_POINTER;
+    }
+
+    try {
+        clearError();
+        auto* s = reinterpret_cast<tracey::Scene*>(scene);
+        auto* actor = s->createActorWithUid(actorUid);
+        if (!actor) {
+            setError("Failed to create actor with specified UID (UID may already exist)");
+            return TRACEY_ERROR_UNKNOWN;
+        }
+        if (name) {
+            actor->setName(name);
+        }
+        return TRACEY_SUCCESS;
+    } catch (const std::exception& e) {
+        setError(std::string("Actor creation failed: ") + e.what());
+        return TRACEY_ERROR_UNKNOWN;
+    } catch (...) {
+        setError("Actor creation failed: unknown error");
+        return TRACEY_ERROR_UNKNOWN;
+    }
+}
+
 TraceyResult tracey_scene_remove_actor(
     TraceyScene* scene,
     uint64_t actorUid)
@@ -452,6 +483,74 @@ TraceyResult tracey_scene_get_camera(
     }
 }
 
+TraceyResult tracey_scene_set_environment_map(
+    TraceyScene* scene,
+    const char* path,
+    float intensity,
+    float rotation)
+{
+    if (!scene) {
+        setError("Null scene pointer");
+        return TRACEY_ERROR_NULL_POINTER;
+    }
+
+    try {
+        clearError();
+        auto* s = reinterpret_cast<tracey::Scene*>(scene);
+        s->setEnvironmentMap(path ? path : "");
+        s->setEnvironmentIntensity(intensity);
+        s->setEnvironmentRotation(rotation);
+        return TRACEY_SUCCESS;
+    } catch (const std::exception& e) {
+        setError(std::string("Failed to set environment map: ") + e.what());
+        return TRACEY_ERROR_UNKNOWN;
+    } catch (...) {
+        setError("Failed to set environment map: unknown error");
+        return TRACEY_ERROR_UNKNOWN;
+    }
+}
+
+TraceyResult tracey_scene_get_environment_map(
+    TraceyScene* scene,
+    char* outPath,
+    size_t pathBufferSize,
+    float* outIntensity,
+    float* outRotation)
+{
+    if (!scene) {
+        setError("Null scene pointer");
+        return TRACEY_ERROR_NULL_POINTER;
+    }
+
+    try {
+        clearError();
+        auto* s = reinterpret_cast<tracey::Scene*>(scene);
+
+        if (outPath && pathBufferSize > 0) {
+            const std::string& path = s->environmentMap();
+            size_t copyLen = std::min(path.size(), pathBufferSize - 1);
+            std::memcpy(outPath, path.c_str(), copyLen);
+            outPath[copyLen] = '\0';
+        }
+
+        if (outIntensity) {
+            *outIntensity = s->environmentIntensity();
+        }
+
+        if (outRotation) {
+            *outRotation = s->environmentRotation();
+        }
+
+        return TRACEY_SUCCESS;
+    } catch (const std::exception& e) {
+        setError(std::string("Failed to get environment map: ") + e.what());
+        return TRACEY_ERROR_UNKNOWN;
+    } catch (...) {
+        setError("Failed to get environment map: unknown error");
+        return TRACEY_ERROR_UNKNOWN;
+    }
+}
+
 TraceyResult tracey_scene_load_gltf_with_project(
     TraceyScene* scene,
     const char* filePath,
@@ -492,9 +591,12 @@ TraceyResult tracey_scene_load_gltf_with_project(
 
         // Copy loaded scene into cleared scene
         // First pass: Copy all actors and build UID mapping
+        // Skip the loaded scene's root actor (UID 0) - we use our own root
         std::unordered_map<size_t, size_t> uidMapping; // old UID -> new UID
+        size_t loadedRootUid = loadedScene->getRootUid();
         for (const auto& actor : loadedScene->actors()) {
             if (!actor) continue;  // Skip null actors
+            if (actor->getUid() == loadedRootUid) continue;  // Skip loaded scene's root
             auto* newActor = s->createActor();
             newActor->setName(actor->name());
             newActor->setTransform(actor->transform());
@@ -505,17 +607,23 @@ TraceyResult tracey_scene_load_gltf_with_project(
             uidMapping[actor->getUid()] = newActor->getUid();
         }
 
-        // Second pass: Copy parent-child relationships
+        // Second pass: Copy parent-child relationships (skip loaded root)
         for (const auto& actor : loadedScene->actors()) {
             if (!actor) continue;  // Skip null actors
-            size_t newActorUid = uidMapping[actor->getUid()];
+            if (actor->getUid() == loadedRootUid) continue;  // Skip loaded scene's root
+
+            auto it = uidMapping.find(actor->getUid());
+            if (it == uidMapping.end()) continue;  // Actor wasn't copied
+
+            size_t newActorUid = it->second;
             auto* newActor = s->getActor(newActorUid);
             if (!newActor) continue;
 
             // Copy children relationships
             for (size_t oldChildUid : actor->children()) {
-                if (uidMapping.count(oldChildUid)) {
-                    size_t newChildUid = uidMapping[oldChildUid];
+                auto childIt = uidMapping.find(oldChildUid);
+                if (childIt != uidMapping.end()) {
+                    size_t newChildUid = childIt->second;
                     auto* childActor = s->getActor(newChildUid);
                     if (childActor) {
                         newActor->addChild(childActor);
@@ -524,27 +632,20 @@ TraceyResult tracey_scene_load_gltf_with_project(
             }
         }
 
-        // If multiple top-level actors were imported, create a parent to group them
+        // Find actors that were direct children of the loaded scene's root
+        // These are the "top-level" actors from the GLTF's perspective
         std::vector<size_t> topLevelActors;
-        for (const auto& [oldUid, newUid] : uidMapping) {
-            auto* actor = s->getActor(newUid);
+        for (const auto& actor : loadedScene->actors()) {
             if (!actor) continue;
+            if (actor->getUid() == loadedRootUid) continue;
 
-            // Check if this actor has a parent
-            bool hasParent = false;
-            for (const auto& otherActor : s->actors()) {
-                if (!otherActor || otherActor->getUid() == newUid) continue;
-                for (size_t childUid : otherActor->children()) {
-                    if (childUid == newUid) {
-                        hasParent = true;
-                        break;
-                    }
+            // Check if this actor's parent was the loaded scene's root
+            // (meaning it's a top-level node in the GLTF)
+            if (actor->parent() == loadedRootUid) {
+                auto it = uidMapping.find(actor->getUid());
+                if (it != uidMapping.end()) {
+                    topLevelActors.push_back(it->second);
                 }
-                if (hasParent) break;
-            }
-
-            if (!hasParent) {
-                topLevelActors.push_back(newUid);
             }
         }
 
@@ -649,9 +750,12 @@ TraceyResult tracey_scene_add_gltf_with_project(
 
         // Copy loaded scene into existing scene (adding to current actors)
         // First pass: Copy all actors and build UID mapping
+        // Skip the loaded scene's root actor (UID 0) - we use our own root
         std::unordered_map<size_t, size_t> uidMapping; // old UID -> new UID
+        size_t loadedRootUid = loadedScene->getRootUid();
         for (const auto& actor : loadedScene->actors()) {
             if (!actor) continue;  // Skip null actors
+            if (actor->getUid() == loadedRootUid) continue;  // Skip loaded scene's root
             auto* newActor = s->createActor();
             newActor->setName(actor->name());
             newActor->setTransform(actor->transform());
@@ -707,17 +811,23 @@ TraceyResult tracey_scene_add_gltf_with_project(
             uidMapping[actor->getUid()] = newActor->getUid();
         }
 
-        // Second pass: Copy parent-child relationships
+        // Second pass: Copy parent-child relationships (skip loaded root)
         for (const auto& actor : loadedScene->actors()) {
             if (!actor) continue;  // Skip null actors
-            size_t newActorUid = uidMapping[actor->getUid()];
+            if (actor->getUid() == loadedRootUid) continue;  // Skip loaded scene's root
+
+            auto it = uidMapping.find(actor->getUid());
+            if (it == uidMapping.end()) continue;  // Actor wasn't copied
+
+            size_t newActorUid = it->second;
             auto* newActor = s->getActor(newActorUid);
             if (!newActor) continue;
 
             // Copy children relationships
             for (size_t oldChildUid : actor->children()) {
-                if (uidMapping.count(oldChildUid)) {
-                    size_t newChildUid = uidMapping[oldChildUid];
+                auto childIt = uidMapping.find(oldChildUid);
+                if (childIt != uidMapping.end()) {
+                    size_t newChildUid = childIt->second;
                     auto* childActor = s->getActor(newChildUid);
                     if (childActor) {
                         newActor->addChild(childActor);
@@ -726,27 +836,20 @@ TraceyResult tracey_scene_add_gltf_with_project(
             }
         }
 
-        // If multiple top-level actors were imported, create a parent to group them
+        // Find actors that were direct children of the loaded scene's root
+        // These are the "top-level" actors from the GLTF's perspective
         std::vector<size_t> topLevelActors;
-        for (const auto& [oldUid, newUid] : uidMapping) {
-            auto* actor = s->getActor(newUid);
+        for (const auto& actor : loadedScene->actors()) {
             if (!actor) continue;
+            if (actor->getUid() == loadedRootUid) continue;
 
-            // Check if this actor has a parent
-            bool hasParent = false;
-            for (const auto& otherActor : s->actors()) {
-                if (!otherActor || otherActor->getUid() == newUid) continue;
-                for (size_t childUid : otherActor->children()) {
-                    if (childUid == newUid) {
-                        hasParent = true;
-                        break;
-                    }
+            // Check if this actor's parent was the loaded scene's root
+            // (meaning it's a top-level node in the GLTF)
+            if (actor->parent() == loadedRootUid) {
+                auto it = uidMapping.find(actor->getUid());
+                if (it != uidMapping.end()) {
+                    topLevelActors.push_back(it->second);
                 }
-                if (hasParent) break;
-            }
-
-            if (!hasParent) {
-                topLevelActors.push_back(newUid);
             }
         }
 
@@ -1621,6 +1724,9 @@ static TraceyResult addPrimitiveToActorWithId(tracey::Scene* scene, uint64_t act
 
         // Update actor name to match
         actor->setName(objName);
+
+        // Clear existing instances (in case actor already had geometry)
+        actor->clearInstances();
 
         // Create default material instance with all PBR properties
         tracey::MaterialInstance material("pbr");
@@ -2652,8 +2758,11 @@ void tracey_presenter_wait_idle(TraceyPresenter* presenter)
 // ============================================================================
 
 #include "../scene/procedural/node_graph.hpp"
+#include "../scene/procedural/node_registry.hpp"
 #include "../scene/procedural/nodes/actor_node.hpp"
 #include "../scene/procedural/nodes/primitive_node.hpp"
+#include "../scene/procedural/nodes/merge_node.hpp"
+#include "../scene/procedural/nodes/transform_geo_node.hpp"
 extern "C" {
 
 TraceyNodeGraph* tracey_scene_get_node_graph(TraceyScene* scene)
@@ -2678,6 +2787,13 @@ uint64_t tracey_node_graph_create_node(
     TraceyNodeType type,
     const char* name)
 {
+    // Ensure all nodes are registered (only runs once)
+    static bool nodesRegistered = []() {
+        tracey::NodeRegistry::ensureAllNodesRegistered();
+        return true;
+    }();
+    (void)nodesRegistered;
+
     if (!graph) {
         setError("NodeGraph pointer is null");
         return UINT64_MAX;
@@ -2690,34 +2806,18 @@ uint64_t tracey_node_graph_create_node(
         std::string nodeName = name ? name : "Node";
         size_t uid = graphImpl->generateNodeUid();
 
-        // Create the appropriate node type
+        // Create the node using the registry
         std::unique_ptr<tracey::ProceduralNode> node;
+        try {
+            node = tracey::NodeRegistry::instance().createNode(type, uid, nodeName);
+        } catch (const std::exception& e) {
+            setError(std::string("Failed to create node: ") + e.what());
+            return UINT64_MAX;
+        }
 
-        switch (type) {
-            case TRACEY_NODE_ACTOR:
-                node = std::make_unique<tracey::ActorNode>(uid, nodeName);
-                break;
-            case TRACEY_NODE_PRIMITIVE_CUBE:
-                node = std::make_unique<tracey::CubeNode>(uid, nodeName);
-                break;
-            case TRACEY_NODE_PRIMITIVE_SPHERE:
-                node = std::make_unique<tracey::SphereNode>(uid, nodeName);
-                break;
-            case TRACEY_NODE_PRIMITIVE_TORUS:
-                node = std::make_unique<tracey::TorusNode>(uid, nodeName);
-                break;
-            case TRACEY_NODE_PRIMITIVE_PLANE:
-                node = std::make_unique<tracey::PlaneNode>(uid, nodeName);
-                break;
-            case TRACEY_NODE_PRIMITIVE_CYLINDER:
-                node = std::make_unique<tracey::CylinderNode>(uid, nodeName);
-                break;
-            case TRACEY_NODE_PRIMITIVE_CONE:
-                node = std::make_unique<tracey::ConeNode>(uid, nodeName);
-                break;
-            default:
-                setError("Unsupported node type");
-                return UINT64_MAX;
+        if (!node) {
+            setError("Node creation returned null");
+            return UINT64_MAX;
         }
 
         // Store the node in the graph - using const_cast workaround for Phase 1
@@ -2791,6 +2891,11 @@ TraceyNodeType tracey_node_get_type(TraceyNode* node)
             }
             return TRACEY_NODE_PRIMITIVE_CUBE;
         }
+        case tracey::NodeType::GeometryTransform: return TRACEY_NODE_GEOMETRY_TRANSFORM;
+        case tracey::NodeType::GeometryMerge: return TRACEY_NODE_GEOMETRY_MERGE;
+        case tracey::NodeType::Material: return TRACEY_NODE_MATERIAL;
+        case tracey::NodeType::MathFloat: return TRACEY_NODE_MATH_FLOAT;
+        case tracey::NodeType::MathVector: return TRACEY_NODE_MATH_VECTOR;
         default: return TRACEY_NODE_ACTOR;
     }
 }
@@ -2840,6 +2945,21 @@ uint32_t tracey_node_get_parameter_count(TraceyNode* node)
     if (!node) return 0;
     auto* nodeImpl = reinterpret_cast<tracey::ProceduralNode*>(node);
     return static_cast<uint32_t>(nodeImpl->parameters().size());
+}
+
+const char* tracey_node_get_parameter_name(TraceyNode* node, uint32_t index)
+{
+    if (!node) return nullptr;
+    auto* nodeImpl = reinterpret_cast<tracey::ProceduralNode*>(node);
+    const auto& params = nodeImpl->parameters();
+
+    if (index >= params.size()) return nullptr;
+
+    // Iterate to the index-th parameter (unordered_map doesn't have random access)
+    auto it = params.begin();
+    std::advance(it, index);
+
+    return it->first.c_str();
 }
 
 TraceyParameterType tracey_parameter_get_type(TraceyParameter* param)
@@ -3027,6 +3147,748 @@ TraceyResult tracey_parameter_get_bool(TraceyParameter* param, int* outValue)
     } catch (const std::exception& e) {
         setError(std::string("Failed to get bool parameter: ") + e.what());
         return TRACEY_ERROR_UNKNOWN;
+    }
+}
+
+// ============================================================================
+// Port Query Functions (Phase 2)
+// ============================================================================
+
+// Helper function to convert DataType to TraceyDataType
+static TraceyDataType convertDataType(tracey::DataType dataType)
+{
+    switch (dataType) {
+        case tracey::DataType::Float: return TRACEY_DATA_TYPE_FLOAT;
+        case tracey::DataType::Vec2: return TRACEY_DATA_TYPE_VEC2;
+        case tracey::DataType::Vec3: return TRACEY_DATA_TYPE_VEC3;
+        case tracey::DataType::Vec4: return TRACEY_DATA_TYPE_VEC4;
+        case tracey::DataType::Mat3: return TRACEY_DATA_TYPE_MAT3;
+        case tracey::DataType::Mat4: return TRACEY_DATA_TYPE_MAT4;
+        case tracey::DataType::Int: return TRACEY_DATA_TYPE_INT;
+        case tracey::DataType::UInt: return TRACEY_DATA_TYPE_UINT;
+        case tracey::DataType::Bool: return TRACEY_DATA_TYPE_BOOL;
+        case tracey::DataType::Sampler2D: return TRACEY_DATA_TYPE_SAMPLER2D;
+        case tracey::DataType::Geometry: return TRACEY_DATA_TYPE_GEOMETRY;
+        case tracey::DataType::DataType: return TRACEY_DATA_TYPE_DATA_TYPE;
+        case tracey::DataType::Scene3D: return TRACEY_DATA_TYPE_SCENE3D;
+        default: return TRACEY_DATA_TYPE_DATA_TYPE;
+    }
+}
+
+uint32_t tracey_node_get_port_count(TraceyNode* node, TraceyPortType portType)
+{
+    if (!node) return 0;
+
+    try {
+        auto* nodeImpl = reinterpret_cast<tracey::ProceduralNode*>(node);
+        const auto* ports = nodeImpl->ports();
+        if (!ports) return 0;
+
+        if (portType == TRACEY_PORT_INPUT) {
+            return static_cast<uint32_t>(ports->inputs().size());
+        } else {
+            return static_cast<uint32_t>(ports->outputs().size());
+        }
+    } catch (...) {
+        return 0;
+    }
+}
+
+TraceyResult tracey_node_get_port(
+    TraceyNode* node,
+    TraceyPortType portType,
+    uint32_t index,
+    TraceyPortInfo* outPortInfo)
+{
+    if (!node || !outPortInfo) {
+        setError("Null pointer parameter");
+        return TRACEY_ERROR_NULL_POINTER;
+    }
+
+    try {
+        clearError();
+        auto* nodeImpl = reinterpret_cast<tracey::ProceduralNode*>(node);
+        const auto* ports = nodeImpl->ports();
+        if (!ports) {
+            setError("Node does not have port information");
+            return TRACEY_ERROR_NOT_FOUND;
+        }
+
+        const auto& portList = (portType == TRACEY_PORT_INPUT) ? ports->inputs() : ports->outputs();
+
+        if (index >= portList.size()) {
+            setError("Port index out of range");
+            return TRACEY_ERROR_INVALID_PARAMETER;
+        }
+
+        const auto& port = portList[index];
+
+        // Convert port information
+        outPortInfo->name = port.name.data();
+        outPortInfo->dataType = convertDataType(port.dataType);
+        outPortInfo->portType = portType;
+
+        return TRACEY_SUCCESS;
+    } catch (const std::exception& e) {
+        setError(std::string("Failed to get port info: ") + e.what());
+        return TRACEY_ERROR_UNKNOWN;
+    }
+}
+
+// ============================================================================
+// End Port Query Functions
+// ============================================================================
+
+// Node graph connection and evaluation functions
+TraceyResult tracey_node_graph_connect(
+    TraceyNodeGraph* graph,
+    uint64_t fromNodeUid,
+    const char* fromPort,
+    uint64_t toNodeUid,
+    const char* toPort)
+{
+    if (!graph || !fromPort || !toPort) {
+        setError("Null pointer parameter");
+        return TRACEY_ERROR_NULL_POINTER;
+    }
+
+    try {
+        clearError();
+        auto* graphImpl = reinterpret_cast<tracey::NodeGraph*>(graph);
+
+        if (!graphImpl->connect(fromNodeUid, fromPort, toNodeUid, toPort)) {
+            setError("Failed to connect nodes - nodes or ports may not exist");
+            return TRACEY_ERROR_INVALID_ARGUMENT;
+        }
+
+        return TRACEY_SUCCESS;
+    } catch (const std::exception& e) {
+        setError(std::string("Failed to connect nodes: ") + e.what());
+        return TRACEY_ERROR_UNKNOWN;
+    }
+}
+
+TraceyResult tracey_node_graph_disconnect(
+    TraceyNodeGraph* graph,
+    uint64_t fromNodeUid,
+    uint64_t toNodeUid)
+{
+    if (!graph) {
+        setError("Null pointer parameter");
+        return TRACEY_ERROR_NULL_POINTER;
+    }
+
+    try {
+        clearError();
+        auto* graphImpl = reinterpret_cast<tracey::NodeGraph*>(graph);
+
+        // Find all connections between these two nodes and disconnect them
+        const auto& connections = graphImpl->connections();
+        bool found = false;
+
+        // Collect connections to disconnect (can't modify while iterating)
+        std::vector<std::pair<std::string, std::string>> toDisconnect;
+        for (const auto& conn : connections) {
+            if (conn.fromNode == fromNodeUid && conn.toNode == toNodeUid) {
+                toDisconnect.push_back({conn.fromPort, conn.toPort});
+                found = true;
+            }
+        }
+
+        if (!found) {
+            setError("No connection found between the specified nodes");
+            return TRACEY_ERROR_INVALID_ARGUMENT;
+        }
+
+        // Disconnect all found connections
+        for (const auto& [fromPort, toPort] : toDisconnect) {
+            graphImpl->disconnect(fromNodeUid, fromPort, toNodeUid, toPort);
+        }
+
+        return TRACEY_SUCCESS;
+    } catch (const std::exception& e) {
+        setError(std::string("Failed to disconnect nodes: ") + e.what());
+        return TRACEY_ERROR_UNKNOWN;
+    }
+}
+
+TraceyResult tracey_node_graph_set_output(
+    TraceyNodeGraph* graph,
+    const char* outputName,
+    uint64_t nodeUid)
+{
+    if (!graph || !outputName) {
+        setError("Null pointer parameter");
+        return TRACEY_ERROR_NULL_POINTER;
+    }
+
+    try {
+        clearError();
+        auto* graphImpl = reinterpret_cast<tracey::NodeGraph*>(graph);
+        graphImpl->setOutputNode(outputName, nodeUid);
+        return TRACEY_SUCCESS;
+    } catch (const std::exception& e) {
+        setError(std::string("Failed to set output node: ") + e.what());
+        return TRACEY_ERROR_UNKNOWN;
+    }
+}
+
+TraceyResult tracey_node_graph_evaluate(
+    TraceyNodeGraph* graph,
+    double currentTime,
+    uint32_t currentFrame)
+{
+    if (!graph) {
+        setError("Null pointer parameter");
+        return TRACEY_ERROR_NULL_POINTER;
+    }
+
+    try {
+        clearError();
+        auto* graphImpl = reinterpret_cast<tracey::NodeGraph*>(graph);
+
+        tracey::EvaluationContext ctx;
+        ctx.currentTime = currentTime;
+        ctx.currentFrame = currentFrame;
+
+        tracey::GraphEvaluationResult result = graphImpl->evaluate(ctx);
+
+        if (!result.success) {
+            setError(std::string("Graph evaluation failed: ") + result.error);
+            return TRACEY_ERROR_UNKNOWN;
+        }
+
+        return TRACEY_SUCCESS;
+    } catch (const std::exception& e) {
+        setError(std::string("Failed to evaluate graph: ") + e.what());
+        return TRACEY_ERROR_UNKNOWN;
+    }
+}
+
+TraceyResult tracey_scene_sync_from_node_graph(TraceyScene* scene)
+{
+    if (!scene) {
+        setError("Null pointer parameter");
+        return TRACEY_ERROR_NULL_POINTER;
+    }
+
+    try {
+        clearError();
+        auto* sceneImpl = reinterpret_cast<tracey::Scene*>(scene);
+        auto& graph = sceneImpl->nodeGraph();
+
+        // Mark all nodes dirty to force re-evaluation
+        // (they may have been marked clean by a previous evaluate call)
+        graph.markDirty();
+
+        // Evaluate the scene graph
+        tracey::EvaluationContext ctx;
+        ctx.currentTime = 0.0;
+        ctx.currentFrame = 0;
+
+        tracey::GraphEvaluationResult graphResult = graph.evaluate(ctx);
+
+        if (!graphResult.success) {
+            setError(std::string("Graph evaluation failed: ") + graphResult.error);
+            return TRACEY_ERROR_UNKNOWN;
+        }
+
+        // Phase 2: Iterate over all ActorNodes in scene graph
+        // Each ActorNode creates one Actor in the scene
+        for (const auto& [nodeUid, node] : graph.nodes()) {
+            // Cast to ActorNode
+            auto* actorNode = dynamic_cast<tracey::ActorNode*>(node.get());
+            if (!actorNode) {
+                // Skip non-ActorNodes (for Phase 1 backward compatibility)
+                continue;
+            }
+
+            // Get evaluation result for this ActorNode from graphResult.nodeResults
+            auto resultIt = graphResult.nodeResults.find(nodeUid);
+            if (resultIt == graphResult.nodeResults.end() || !resultIt->second.success) {
+                // ActorNode evaluation failed or not evaluated, skip
+                continue;
+            }
+
+            const auto& cachedResult = resultIt->second;
+
+            // Extract geometry from result
+            auto* geometry = std::get_if<std::shared_ptr<tracey::Geometry>>(&cachedResult.data);
+            if (!geometry || !*geometry) {
+                // No geometry output from this ActorNode, skip (valid for container-only actors)
+                continue;
+            }
+
+            // Skip empty geometry (no positions/vertices)
+            if ((*geometry)->positions().empty()) {
+                continue;
+            }
+
+            // Create SceneObject from geometry
+            std::string objName = "actor_" + std::to_string(nodeUid);
+            auto sceneObj = std::make_unique<tracey::SceneObject>();
+            sceneObj->setName(objName);
+            sceneObj->setPositions((*geometry)->positions());
+            sceneObj->setIndices((*geometry)->indices());
+            sceneObj->setNormals((*geometry)->normals());
+            sceneObj->setUvs((*geometry)->uvs());
+
+            sceneImpl->addObject(objName, std::move(sceneObj));
+
+            // Create Actor with ActorNode's UID so we can find it later
+            auto* actor = sceneImpl->createActorWithUid(nodeUid);
+            if (actor) {
+                actor->setName(actorNode->name());
+                actor->setTransform(actorNode->getTransform());
+
+                // Preserve existing material properties if actor already has instances
+                // This allows material edits to persist across geometry updates
+                tracey::MaterialInstance material("pbr");
+                bool hasExistingMaterial = false;
+
+                if (!actor->instances().empty()) {
+                    // Actor already has instances - preserve the existing material
+                    const auto& existingInstance = actor->instances()[0];
+                    material = existingInstance.material();
+                    hasExistingMaterial = true;
+                }
+
+                if (!hasExistingMaterial) {
+                    // New actor - create default material instance with PBR properties
+                    material.setAlbedo(tracey::Vec3(0.5f, 0.5f, 0.5f));
+                    material.setMetallic(0.0f);
+                    material.setRoughness(0.5f);
+                    material.setEmission(tracey::Vec3(0.0f, 0.0f, 0.0f));
+                    material.setClearcoat(0.0f);
+                    material.setClearcoatRoughness(0.1f);
+                    material.setSheenColor(tracey::Vec3(0.0f, 0.0f, 0.0f));
+                    material.setSheenRoughness(0.5f);
+                }
+
+                // Clear existing instances before adding new ones
+                // (this function may be called multiple times during evaluation)
+                actor->clearInstances();
+
+                // Create SceneInstance linking Actor to SceneObject with material
+                // (preserves material from before clearInstances if it existed)
+                tracey::SceneInstance instance(objName, material);
+                actor->addInstance(instance);
+
+                // Handle parent/child relationships (Phase 2 basic support)
+                for (size_t childUid : actorNode->children()) {
+                    if (auto* childActor = sceneImpl->getActor(childUid)) {
+                        actor->addChild(childActor);
+                    }
+                }
+            }
+        }
+
+        return TRACEY_SUCCESS;
+    } catch (const std::exception& e) {
+        setError(std::string("Failed to sync from node graph: ") + e.what());
+        return TRACEY_ERROR_UNKNOWN;
+    }
+}
+
+// ============================================================================
+// Node Registry Query API
+// ============================================================================
+
+int tracey_get_node_types(TraceyNodeDescriptor* out_descriptors, int max_count)
+{
+    if (!out_descriptors || max_count <= 0) {
+        setError("Invalid arguments to tracey_get_node_types");
+        return 0;
+    }
+
+    try {
+        clearError();
+        auto nodes = tracey::NodeRegistry::instance().getAllNodes();
+        int count = std::min(static_cast<int>(nodes.size()), max_count);
+
+        for (int i = 0; i < count; i++) {
+            out_descriptors[i].type = nodes[i].type;
+            out_descriptors[i].name = strdup(nodes[i].name.c_str());
+            out_descriptors[i].description = strdup(nodes[i].description.c_str());
+            out_descriptors[i].category = static_cast<int>(nodes[i].category);
+            out_descriptors[i].icon = strdup(nodes[i].icon.c_str());
+        }
+
+        return count;
+    } catch (const std::exception& e) {
+        setError(std::string("Failed to get node types: ") + e.what());
+        return 0;
+    }
+}
+
+int tracey_get_nodes_by_category(int category, TraceyNodeDescriptor* out_descriptors, int max_count)
+{
+    if (!out_descriptors || max_count <= 0) {
+        setError("Invalid arguments to tracey_get_nodes_by_category");
+        return 0;
+    }
+
+    try {
+        clearError();
+        auto nodes = tracey::NodeRegistry::instance().getNodesByCategory(
+            static_cast<tracey::NodeCategory>(category)
+        );
+        int count = std::min(static_cast<int>(nodes.size()), max_count);
+
+        for (int i = 0; i < count; i++) {
+            out_descriptors[i].type = nodes[i].type;
+            out_descriptors[i].name = strdup(nodes[i].name.c_str());
+            out_descriptors[i].description = strdup(nodes[i].description.c_str());
+            out_descriptors[i].category = static_cast<int>(nodes[i].category);
+            out_descriptors[i].icon = strdup(nodes[i].icon.c_str());
+        }
+
+        return count;
+    } catch (const std::exception& e) {
+        setError(std::string("Failed to get nodes by category: ") + e.what());
+        return 0;
+    }
+}
+
+bool tracey_get_node_descriptor(TraceyNodeType type, TraceyNodeDescriptor* out_descriptor)
+{
+    if (!out_descriptor) {
+        setError("Invalid argument to tracey_get_node_descriptor");
+        return false;
+    }
+
+    try {
+        clearError();
+        const auto* desc = tracey::NodeRegistry::instance().getDescriptor(type);
+        if (!desc) {
+            setError("Node type not found in registry");
+            return false;
+        }
+
+        out_descriptor->type = desc->type;
+        out_descriptor->name = strdup(desc->name.c_str());
+        out_descriptor->description = strdup(desc->description.c_str());
+        out_descriptor->category = static_cast<int>(desc->category);
+        out_descriptor->icon = strdup(desc->icon.c_str());
+
+        return true;
+    } catch (const std::exception& e) {
+        setError(std::string("Failed to get node descriptor: ") + e.what());
+        return false;
+    }
+}
+
+void tracey_free_node_descriptor(TraceyNodeDescriptor* descriptor)
+{
+    if (!descriptor) return;
+
+    // Free allocated strings
+    if (descriptor->name) {
+        free(const_cast<char*>(descriptor->name));
+        descriptor->name = nullptr;
+    }
+    if (descriptor->description) {
+        free(const_cast<char*>(descriptor->description));
+        descriptor->description = nullptr;
+    }
+    if (descriptor->icon) {
+        free(const_cast<char*>(descriptor->icon));
+        descriptor->icon = nullptr;
+    }
+}
+
+void tracey_ensure_nodes_registered()
+{
+    // Force all node types to register by calling the static initialization function
+    tracey::NodeRegistry::ensureAllNodesRegistered();
+}
+
+// ============================================================================
+// Nested Graph Navigation (Phase 2)
+// ============================================================================
+
+TraceyNodeGraph* tracey_actor_node_get_geometry_network(TraceyNode* node)
+{
+    if (!node) {
+        setError("Null pointer parameter");
+        return nullptr;
+    }
+
+    try {
+        clearError();
+        auto* nodeImpl = reinterpret_cast<tracey::ProceduralNode*>(node);
+
+        // Check if this is an ActorNode
+        auto* actorNode = dynamic_cast<tracey::ActorNode*>(nodeImpl);
+        if (!actorNode) {
+            setError("Node is not an ActorNode");
+            return nullptr;
+        }
+
+        // Return the geometry network
+        return reinterpret_cast<TraceyNodeGraph*>(&actorNode->geometryNetwork());
+
+    } catch (const std::exception& e) {
+        setError(std::string("Failed to get geometry network: ") + e.what());
+        return nullptr;
+    }
+}
+
+TraceyResult tracey_actor_node_set_transform(TraceyNode* node, const TraceyTransform* transform)
+{
+    if (!node || !transform) {
+        setError("Null pointer parameter");
+        return TRACEY_ERROR_NULL_POINTER;
+    }
+
+    try {
+        clearError();
+        auto* nodeImpl = reinterpret_cast<tracey::ProceduralNode*>(node);
+
+        // Check if this is an ActorNode
+        auto* actorNode = dynamic_cast<tracey::ActorNode*>(nodeImpl);
+        if (!actorNode) {
+            setError("Node is not an ActorNode");
+            return TRACEY_ERROR_INVALID_PARAMETER;
+        }
+
+        // Convert TraceyTransform to tracey::Transform
+        tracey::Transform t;
+        t.setPosition(glm::vec3(transform->position.x, transform->position.y, transform->position.z));
+        t.setRotation(glm::quat(transform->rotation.w, transform->rotation.x, transform->rotation.y, transform->rotation.z));
+        t.setScale(glm::vec3(transform->scale.x, transform->scale.y, transform->scale.z));
+
+        actorNode->setTransform(t);
+        return TRACEY_SUCCESS;
+
+    } catch (const std::exception& e) {
+        setError(std::string("Failed to set ActorNode transform: ") + e.what());
+        return TRACEY_ERROR_UNKNOWN;
+    }
+}
+
+TraceyResult tracey_actor_node_get_transform(TraceyNode* node, TraceyTransform* outTransform)
+{
+    if (!node || !outTransform) {
+        setError("Null pointer parameter");
+        return TRACEY_ERROR_NULL_POINTER;
+    }
+
+    try {
+        clearError();
+        auto* nodeImpl = reinterpret_cast<tracey::ProceduralNode*>(node);
+
+        // Check if this is an ActorNode
+        auto* actorNode = dynamic_cast<tracey::ActorNode*>(nodeImpl);
+        if (!actorNode) {
+            setError("Node is not an ActorNode");
+            return TRACEY_ERROR_INVALID_PARAMETER;
+        }
+
+        // Get transform from ActorNode
+        tracey::Transform t = actorNode->getTransform();
+
+        // Convert to TraceyTransform
+        glm::vec3 pos = t.position();
+        glm::quat rot = t.rotation();
+        glm::vec3 scale = t.scale();
+
+        outTransform->position = {pos.x, pos.y, pos.z};
+        outTransform->rotation = {rot.w, rot.x, rot.y, rot.z};
+        outTransform->scale = {scale.x, scale.y, scale.z};
+
+        return TRACEY_SUCCESS;
+
+    } catch (const std::exception& e) {
+        setError(std::string("Failed to get ActorNode transform: ") + e.what());
+        return TRACEY_ERROR_UNKNOWN;
+    }
+}
+
+TraceyNodeGraph* tracey_node_graph_get_parent(TraceyNodeGraph* graph)
+{
+    if (!graph) {
+        setError("Null pointer parameter");
+        return nullptr;
+    }
+
+    try {
+        clearError();
+        auto* graphImpl = reinterpret_cast<tracey::NodeGraph*>(graph);
+        auto* parent = graphImpl->parent();
+        return parent ? reinterpret_cast<TraceyNodeGraph*>(parent) : nullptr;
+
+    } catch (const std::exception& e) {
+        setError(std::string("Failed to get parent graph: ") + e.what());
+        return nullptr;
+    }
+}
+
+uint64_t tracey_node_graph_get_owner_node(TraceyNodeGraph* graph)
+{
+    if (!graph) {
+        setError("Null pointer parameter");
+        return UINT64_MAX;
+    }
+
+    try {
+        clearError();
+        auto* graphImpl = reinterpret_cast<tracey::NodeGraph*>(graph);
+        return graphImpl->ownerNodeUid();
+
+    } catch (const std::exception& e) {
+        setError(std::string("Failed to get owner node: ") + e.what());
+        return UINT64_MAX;
+    }
+}
+
+int tracey_node_graph_is_scene_level(TraceyNodeGraph* graph)
+{
+    if (!graph) {
+        setError("Null pointer parameter");
+        return 0;
+    }
+
+    try {
+        clearError();
+        auto* graphImpl = reinterpret_cast<tracey::NodeGraph*>(graph);
+        return graphImpl->isSceneLevelGraph() ? 1 : 0;
+
+    } catch (const std::exception& e) {
+        setError(std::string("Failed to check graph level: ") + e.what());
+        return 0;
+    }
+}
+
+TraceyGraphContext tracey_node_graph_get_context(TraceyNodeGraph* graph)
+{
+    if (!graph) {
+        setError("Null pointer parameter");
+        return TRACEY_GRAPH_SCENE;
+    }
+
+    try {
+        clearError();
+        auto* graphImpl = reinterpret_cast<tracey::NodeGraph*>(graph);
+        return graphImpl->isSceneLevelGraph() ? TRACEY_GRAPH_SCENE : TRACEY_GRAPH_GEOMETRY;
+
+    } catch (const std::exception& e) {
+        setError(std::string("Failed to get graph context: ") + e.what());
+        return TRACEY_GRAPH_SCENE;
+    }
+}
+
+// ============================================================================
+// End Nested Graph Navigation
+// ============================================================================
+
+uint32_t tracey_node_graph_get_connection_count(TraceyNodeGraph* graph)
+{
+    if (!graph) {
+        setError("Null pointer parameter");
+        return 0;
+    }
+
+    try {
+        clearError();
+        auto* graphImpl = reinterpret_cast<tracey::NodeGraph*>(graph);
+        return static_cast<uint32_t>(graphImpl->connections().size());
+    } catch (const std::exception& e) {
+        setError(std::string("Failed to get connection count: ") + e.what());
+        return 0;
+    }
+}
+
+TraceyResult tracey_node_graph_get_connection(
+    TraceyNodeGraph* graph,
+    uint32_t index,
+    uint64_t* outFromNode,
+    uint64_t* outToNode,
+    const char** outFromPort,
+    const char** outToPort)
+{
+    if (!graph || !outFromNode || !outToNode) {
+        setError("Null pointer parameter");
+        return TRACEY_ERROR_NULL_POINTER;
+    }
+
+    try {
+        clearError();
+        auto* graphImpl = reinterpret_cast<tracey::NodeGraph*>(graph);
+        const auto& connections = graphImpl->connections();
+
+        if (index >= connections.size()) {
+            setError("Connection index out of range");
+            return TRACEY_ERROR_INVALID_ARGUMENT;
+        }
+
+        const auto& conn = connections[index];
+        *outFromNode = conn.fromNode;
+        *outToNode = conn.toNode;
+
+        // Return port names using thread-local storage
+        if (outFromPort) {
+            static thread_local std::string fromPortStorage;
+            fromPortStorage = conn.fromPort;
+            *outFromPort = fromPortStorage.c_str();
+        }
+        if (outToPort) {
+            static thread_local std::string toPortStorage;
+            toPortStorage = conn.toPort;
+            *outToPort = toPortStorage.c_str();
+        }
+
+        return TRACEY_SUCCESS;
+    } catch (const std::exception& e) {
+        setError(std::string("Failed to get connection: ") + e.what());
+        return TRACEY_ERROR_UNKNOWN;
+    }
+}
+
+uint32_t tracey_node_graph_get_node_count(TraceyNodeGraph* graph)
+{
+    if (!graph) {
+        setError("Null pointer parameter");
+        return 0;
+    }
+
+    try {
+        clearError();
+        auto* graphImpl = reinterpret_cast<tracey::NodeGraph*>(graph);
+        return static_cast<uint32_t>(graphImpl->nodes().size());
+    } catch (const std::exception& e) {
+        setError(std::string("Failed to get node count: ") + e.what());
+        return 0;
+    }
+}
+
+uint32_t tracey_node_graph_get_all_nodes(
+    TraceyNodeGraph* graph,
+    uint64_t* outNodeUids,
+    uint32_t maxNodes)
+{
+    if (!graph || !outNodeUids) {
+        setError("Null pointer parameter");
+        return 0;
+    }
+
+    try {
+        clearError();
+        auto* graphImpl = reinterpret_cast<tracey::NodeGraph*>(graph);
+        const auto& nodes = graphImpl->nodes();
+
+        uint32_t count = 0;
+        for (const auto& [uid, node] : nodes) {
+            if (count >= maxNodes) {
+                break;
+            }
+            outNodeUids[count++] = uid;
+        }
+
+        return count;
+    } catch (const std::exception& e) {
+        setError(std::string("Failed to get all nodes: ") + e.what());
+        return 0;
     }
 }
 

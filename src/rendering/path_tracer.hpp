@@ -100,6 +100,7 @@ namespace tracey
         void allocateDescriptorSets();
         void bindSceneResources(const SceneCompiler::CompiledScene &scene);
         void updateCameraUniforms(const Camera &camera);
+        void updateEnvironmentUniforms(const SceneCompiler::CompiledScene &scene);
 
         // Not owned
         Device *m_device;

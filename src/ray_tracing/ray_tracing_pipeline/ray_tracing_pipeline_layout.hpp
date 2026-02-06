@@ -62,6 +62,7 @@ namespace tracey
         std::vector<PayloadBinding> payloadsForStage(ShaderStage stage) const;
 
     private:
+        bool hasBinding(const std::string &name) const;
         std::vector<DescriptorBinding> m_bindings;
         std::vector<PayloadBinding> m_payloads;
     };

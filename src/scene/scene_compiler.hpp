@@ -94,6 +94,11 @@ namespace tracey
             // BVH statistics
             size_t totalNodes = 0;
             size_t totalTriangles = 0;
+
+            // Environment map (HDR skybox)
+            int32_t envMapIndex = -1;
+            float envIntensity = 1.0f;
+            float envRotation = 0.0f;
         };
 
         /// Compile scene with default BVH configuration
@@ -131,7 +136,11 @@ namespace tracey
         static Mat4 computeWorldTransform(const Scene &scene, const Actor &actor);
 
         // Load a texture and return its index, or -1 if failed
-        static int32_t loadTexture(Device *device, CompiledScene &result, const Scene &scene, const std::string &texturePath);
+        // Use R8G8B8A8Srgb for color textures (albedo, emissive), R8G8B8A8Unorm for data textures (normal, metallic-roughness, occlusion)
+        static int32_t loadTexture(Device *device, CompiledScene &result, const Scene &scene, const std::string &texturePath, ImageFormat format);
+
+        // Load an HDR texture (for environment maps) and return its index, or -1 if failed
+        static int32_t loadHDRTexture(Device *device, CompiledScene &result, const std::string &texturePath);
 
         // Convert MaterialInstance to GPUMaterial, loading textures as needed
         static GPUMaterial convertMaterial(Device *device, CompiledScene &result, const Scene &scene, const MaterialInstance &material);

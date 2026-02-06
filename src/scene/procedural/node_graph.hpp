@@ -34,6 +34,10 @@ namespace tracey
         // Named outputs from the graph (e.g., "geometry" -> result)
         std::unordered_map<std::string, NodeEvaluationResult> outputs;
 
+        // All node evaluation results (keyed by node UID)
+        // This allows accessing any node's result, not just named outputs
+        std::unordered_map<size_t, NodeEvaluationResult> nodeResults;
+
         bool success = true;
         std::string error;
 
@@ -107,12 +111,28 @@ namespace tracey
         // UID generation for new nodes
         size_t generateNodeUid();
 
+        // Phase 2: Parent graph tracking (for nested graphs)
+        NodeGraph* parent() const { return m_parent; }
+        void setParent(NodeGraph* parent) { m_parent = parent; }
+
+        // Phase 2: Owner node tracking (ActorNode that owns this geometry network)
+        size_t ownerNodeUid() const { return m_ownerNodeUid; }
+        void setOwnerNodeUid(size_t uid) { m_ownerNodeUid = uid; }
+
+        // Phase 2: Graph context queries
+        bool isSceneLevelGraph() const { return m_parent == nullptr && m_ownerNodeUid == 0; }
+        bool isGeometryNetwork() const { return m_parent != nullptr || m_ownerNodeUid != 0; }
+
     private:
         std::string m_name;
         std::unordered_map<size_t, std::unique_ptr<ProceduralNode>> m_nodes;
         std::vector<NodeConnection> m_connections;
         std::unordered_map<std::string, size_t> m_outputNodes;  // output name -> node UID
         size_t m_nextNodeUid = 1;
+
+        // Phase 2: Parent tracking for nested graphs
+        NodeGraph* m_parent = nullptr;      // Parent graph (nullptr for scene graph)
+        size_t m_ownerNodeUid = 0;          // UID of ActorNode that owns this graph (0 for scene)
 
         // Phase 2: Topological sort for evaluation order
         std::vector<size_t> computeEvaluationOrder() const;

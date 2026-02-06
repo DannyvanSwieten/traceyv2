@@ -29,7 +29,6 @@ namespace tracey
             return PortInfo{name, PortType::Output, dataType};
         }
 
-    private:
         std::string_view name;
         PortType type;
         DataType dataType;

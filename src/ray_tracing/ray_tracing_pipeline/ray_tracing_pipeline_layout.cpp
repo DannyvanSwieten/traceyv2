@@ -1,9 +1,18 @@
 #include "ray_tracing_pipeline_layout.hpp"
 #include <stdexcept>
+#include <algorithm>
 namespace tracey
 {
+    // Helper to check if a binding with the given name already exists
+    bool RayTracingPipelineLayoutDescriptor::hasBinding(const std::string &name) const
+    {
+        return std::any_of(m_bindings.begin(), m_bindings.end(),
+                          [&name](const DescriptorBinding &b) { return b.name == name; });
+    }
+
     void RayTracingPipelineLayoutDescriptor::addImage2D(std::string name, ShaderStage stage, ImageLayoutFormat format)
     {
+        // Allow duplicates - CPU pipeline needs stage-specific bindings, Vulkan compute deduplicates at code gen
         m_bindings.emplace_back(DescriptorBinding{name, DescriptorType::Image2D, stage, std::nullopt, format});
     }
 

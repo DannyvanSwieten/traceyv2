@@ -65,6 +65,8 @@ add_library(tracey
     src/scene/procedural/node.cpp
     src/scene/procedural/node_graph.hpp
     src/scene/procedural/node_graph.cpp
+    src/scene/procedural/node_registry.hpp
+    src/scene/procedural/node_registry.cpp
     src/scene/procedural/nodes/actor_node.hpp
     src/scene/procedural/nodes/actor_node.cpp
     src/scene/procedural/nodes/primitive_node.hpp
@@ -187,6 +189,10 @@ add_library(tracey
     src/ray_tracing/isf/isf_pipeline_builder.cpp
     src/ray_tracing/isf/shader_inputs_buffer.hpp
     src/ray_tracing/isf/shader_inputs_buffer.cpp
+
+    # C API
+    src/c_api/tracey_api.h
+    src/c_api/tracey_api.cpp
 )
 
 # Define DEBUG for Debug builds, NDEBUG for non-Debug

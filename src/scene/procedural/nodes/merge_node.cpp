@@ -1,8 +1,28 @@
 #include "merge_node.hpp"
 #include "../node_graph.hpp"
+#include "../node_registry.hpp"
 
 namespace tracey
 {
+    // Static registration (called before main())
+    bool MergeNode::s_registered = MergeNode::registerNode();
+
+    bool MergeNode::registerNode()
+    {
+        NodeDescriptor desc;
+        desc.type = TRACEY_NODE_GEOMETRY_MERGE;
+        desc.name = "Merge";
+        desc.description = "Merge multiple geometries into one";
+        desc.category = NodeCategory::Geometry;
+        desc.icon = "⚙";
+        desc.factory = [](size_t uid, std::string name) -> std::unique_ptr<ProceduralNode> {
+            return std::make_unique<MergeNode>(uid, std::move(name));
+        };
+
+        NodeRegistry::instance().registerNode(desc);
+        return true;
+    }
+
     MergeNode::MergeNode(size_t uid, std::string name)
         : ProceduralNode(uid, NodeType::GeometryMerge, std::move(name))
     {
@@ -13,6 +33,22 @@ namespace tracey
     {
         // Merge node doesn't have parameters - it works purely through connections
         // All incoming geometry connections are automatically merged
+    }
+
+    const InputsAndOutputs* MergeNode::ports() const
+    {
+        static InputsAndOutputs portInfo;
+        static bool initialized = false;
+
+        if (!initialized) {
+            // Merge accepts multiple inputs (though only 2 primary ports are defined)
+            portInfo.addInput(PortInfo::createInput("input0", DataType::Geometry));
+            portInfo.addInput(PortInfo::createInput("input1", DataType::Geometry));
+            portInfo.addOutput(PortInfo::createOutput("geometry", DataType::Geometry));
+            initialized = true;
+        }
+
+        return &portInfo;
     }
 
     NodeEvaluationResult MergeNode::evaluate(const EvaluationContext& ctx)

@@ -27,6 +27,33 @@ use std::sync::{Arc, Mutex};
 use tauri::Manager;
 use tokio::sync::mpsc;
 
+/// Graph level in nested node graph hierarchy
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GraphLevel {
+    /// Scene-level graph (contains ActorNodes)
+    Scene,
+    /// Geometry network (contains SOP nodes like Cube, Sphere, Transform, Merge)
+    GeometryNetwork,
+}
+
+/// Current graph context for navigation
+#[derive(Debug, Clone)]
+pub struct GraphContext {
+    /// Current graph level (Scene or GeometryNetwork)
+    pub level: GraphLevel,
+    /// If viewing a geometry network, the UID of the ActorNode that owns it (None for scene level)
+    pub actor_node_uid: Option<u64>,
+}
+
+impl Default for GraphContext {
+    fn default() -> Self {
+        Self {
+            level: GraphLevel::Scene,
+            actor_node_uid: None,
+        }
+    }
+}
+
 /// Commands that can be queued for the render thread to process
 #[derive(Debug, Clone)]
 pub enum SceneCommand {
@@ -46,8 +73,12 @@ pub enum SceneCommand {
     SetSamplesPerFrame(u32),
     /// Set max bounces
     SetMaxBounces(u32),
+    /// Set max accumulated samples (stops rendering when reached)
+    SetMaxSamples(u32),
     /// Compile scene with Rust state sync
     CompileScene(SceneState),
+    /// Set HDR environment map (path, intensity, rotation)
+    SetEnvironmentMap(Option<String>, f32, f32),
 }
 
 pub struct AppState {
@@ -61,6 +92,10 @@ pub struct AppState {
     pub viewport_manager: Arc<Mutex<ViewportManager>>,
     /// MPSC channel sender for scene commands - lock-free sends from any thread
     pub scene_command_tx: mpsc::UnboundedSender<SceneCommand>,
+    /// Current graph navigation context (scene level vs nested geometry network)
+    pub current_graph_context: Arc<Mutex<GraphContext>>,
+    /// Maximum accumulated samples before stopping render (atomic for lock-free access)
+    pub max_samples: Arc<std::sync::atomic::AtomicU32>,
 }
 
 fn main() {
@@ -91,6 +126,9 @@ fn main() {
                 hdr_output: false, // LDR - tonemapping done in resolve shader
                 samples_per_frame: 4,
                 max_bounces: 2,
+                resolution_scale: 0.5,  // Default to 50% for good interactivity
+                max_width: 1920,        // Cap at 1080p by default
+                max_height: 1080,
             };
 
             let mut engine = RenderEngine::new(config).expect("Failed to create render engine");
@@ -125,6 +163,9 @@ fn main() {
             // Create viewport manager (shared between render loop and commands)
             let viewport_manager = Arc::new(Mutex::new(ViewportManager::new()));
 
+            // Create max_samples atomic (shared between render loop and AppState)
+            let max_samples = Arc::new(std::sync::atomic::AtomicU32::new(256));
+
             // Start the dedicated render loop thread
             render_loop::start_render_loop(
                 app.handle().clone(),
@@ -132,6 +173,7 @@ fn main() {
                 scene_command_rx,
                 Arc::clone(&last_render_pixels),
                 Arc::clone(&viewport_manager),
+                Arc::clone(&max_samples),
             );
 
             // Build app state
@@ -145,6 +187,8 @@ fn main() {
                 app_data_dir,
                 viewport_manager,
                 scene_command_tx,
+                current_graph_context: Arc::new(Mutex::new(GraphContext::default())),
+                max_samples,
             };
 
             app.manage(app_state);
@@ -199,8 +243,17 @@ fn main() {
             commands::set_samples_per_frame,
             commands::get_max_bounces,
             commands::set_max_bounces,
+            commands::get_max_samples,
+            commands::set_max_samples,
             commands::get_render_mode,
             commands::set_render_mode,
+            commands::set_environment_map,
+            // Resolution scaling commands
+            commands::get_resolution_scale,
+            commands::set_resolution_scale,
+            commands::get_max_resolution,
+            commands::set_max_resolution,
+            commands::update_viewport_size,
             // IO commands
             commands::save_scene,
             commands::load_scene,
@@ -222,6 +275,28 @@ fn main() {
             commands::destroy_native_viewport,
             commands::has_native_viewport,
             commands::present_pathtracer,
+            // Node graph commands
+            commands::create_node,
+            commands::remove_node,
+            commands::set_node_parameter,
+            commands::connect_nodes,
+            commands::disconnect_nodes,
+            commands::set_graph_output,
+            commands::evaluate_graph,
+            commands::get_all_nodes,
+            commands::get_all_connections,
+            commands::get_node_details,
+            commands::get_node_ports,
+            commands::duplicate_nodes,
+            // Node registry query commands
+            commands::get_available_node_types,
+            commands::get_nodes_by_category,
+            // Phase 2: Nested graph navigation
+            commands::navigate_to_actor_node,
+            commands::navigate_to_scene_graph,
+            commands::get_graph_context,
+            // Add Object Menu convenience command
+            commands::add_primitive_via_nodes,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -13,6 +13,8 @@ import { CameraControls } from './components/camera-controls/CameraControls';
 import { ActorProperties, Transform } from './components/actor-properties/ActorProperties';
 import { AddObjectMenu } from './components/add-object-menu/AddObjectMenu';
 import { ProjectManager } from './components/project-manager/ProjectManager';
+import { NodeGraph, NodeGraphHandle } from './components/node-graph/NodeGraph';
+import { ResizeHandle } from './components/resize-handle/ResizeHandle';
 import { getAssets, addAsset, removeAsset } from './stores/assets';
 import './App.css';
 
@@ -20,6 +22,7 @@ const App: Component = () => {
   const [currentScene, setCurrentScene] = createSignal<string | null>(null);
   const [isLoading, setIsLoading] = createSignal(false);
   const [actors, setActors] = createSignal<Actor[]>([]);
+  const [nodeGraphHandle, setNodeGraphHandle] = createSignal<NodeGraphHandle | undefined>();
   const [selectedActorId, setSelectedActorId] = createSignal<number | null>(
     null
   );
@@ -30,6 +33,13 @@ const App: Component = () => {
   });
   const [projectOpen, setProjectOpen] = createSignal(false);
   const [viewportRef, setViewportRef] = createSignal<ViewportHandle | undefined>();
+  // Panel sizes (resizable)
+  const [leftPanelWidth, setLeftPanelWidth] = createSignal(600);
+  const [middlePanelWidth, setMiddlePanelWidth] = createSignal(400);
+  const [rightPanelWidth, setRightPanelWidth] = createSignal(300);
+  const [hierarchyHeight, setHierarchyHeight] = createSignal(300);
+  const [bottomPanelHeight, setBottomPanelHeight] = createSignal(150);
+
   let unlistenImport: UnlistenFn | undefined;
   let unlistenExport: UnlistenFn | undefined;
   let unlistenSave: UnlistenFn | undefined;
@@ -158,8 +168,15 @@ const App: Component = () => {
   };
 
   const handleObjectAdded = async (actor: Actor) => {
-    // Add to local actors state
-    setActors((prev) => [...prev, actor]);
+    // Refresh all actors from backend to get updated parent-child relationships
+    // (the root's children list needs to include the new actor)
+    try {
+      const updated = await invoke<Actor[]>('get_all_actors');
+      setActors(updated);
+    } catch (error) {
+      // Fallback to just appending if refresh fails
+      setActors((prev) => [...prev, actor]);
+    }
 
     // Select the new actor
     setSelectedActorId(actor.id);
@@ -173,6 +190,12 @@ const App: Component = () => {
         // Mark scene as loaded so render will work (needed for first object in empty scene)
         viewport.markSceneLoaded();
         viewport.render();
+      }
+
+      // Refresh the NodeGraph to show the new actor
+      const handle = nodeGraphHandle();
+      if (handle) {
+        await handle.refresh();
       }
     } catch (error) {
       console.error('Failed to compile scene after adding object:', error);
@@ -198,6 +221,12 @@ const App: Component = () => {
         viewport.render();
       } else {
         console.error('handleAssetDropped: viewport is undefined!');
+      }
+
+      // Refresh the NodeGraph to show the new actors
+      const handle = nodeGraphHandle();
+      if (handle) {
+        await handle.refresh();
       }
     } catch (error) {
       console.error('Failed to load asset:', error);
@@ -230,6 +259,12 @@ const App: Component = () => {
         viewport.render();
       } else {
         console.error('handleActorRemove: viewport is undefined!');
+      }
+
+      // Refresh the NodeGraph to show the updated context
+      const handle = nodeGraphHandle();
+      if (handle) {
+        await handle.refresh();
       }
     } catch (error) {
       console.error('Failed to remove actor:', error);
@@ -269,14 +304,45 @@ const App: Component = () => {
       const updated = await invoke<Actor[]>('get_all_actors');
       setActors(updated);
 
-      // Recompile and render
-      await invoke('compile_scene_no_sync');
+      // Recompile and render (use compile_scene to sync Rust -> C++)
+      await invoke('compile_scene');
       const viewport = viewportRef();
       if (viewport) {
         viewport.render();
       }
     } catch (error) {
       console.error('Failed to set parent:', error);
+    }
+  };
+
+  const handleActorNodeCreated = async () => {
+    try {
+      // Refresh actors list to show newly created ActorNode
+      const updated = await invoke<Actor[]>('get_all_actors');
+      setActors(updated);
+
+      // Mark scene as loaded so camera controls work (same as handleObjectAdded)
+      const viewport = viewportRef();
+      if (viewport) {
+        viewport.markSceneLoaded();
+      }
+    } catch (error) {
+      console.error('Failed to refresh actors after ActorNode creation:', error);
+    }
+  };
+
+  const handleNavigateToActorNode = async (actorId: number) => {
+    try {
+      // Navigate to the ActorNode in the graph
+      await invoke('navigate_to_actor_node', { actorNodeUid: actorId });
+
+      // Refresh the NodeGraph to show the new context
+      const handle = nodeGraphHandle();
+      if (handle) {
+        await handle.refresh();
+      }
+    } catch (error) {
+      console.error('Failed to navigate to ActorNode:', error);
     }
   };
 
@@ -298,6 +364,15 @@ const App: Component = () => {
       handleSaveAs();
     });
     console.log('Menu event listeners set up');
+
+    // Load initial actors (including root) on startup
+    try {
+      const initialActors = await invoke<Actor[]>('get_all_actors');
+      setActors(initialActors);
+      console.log('Loaded initial actors:', initialActors.length);
+    } catch (error) {
+      console.error('Failed to load initial actors:', error);
+    }
 
     // Start shader hot reload polling (every 2 seconds)
     shaderCheckInterval = window.setInterval(async () => {
@@ -343,23 +418,10 @@ const App: Component = () => {
           <AddObjectMenu onObjectAdded={handleObjectAdded} />
         </div>
 
-        <div class="main-content">
-          <div class="left-panel panel">
-            <h3>Scene Hierarchy</h3>
-            <SceneHierarchy
-              actors={actors}
-              selectedActorId={selectedActorId}
-              onActorSelect={setSelectedActorId}
-              isLoading={isLoading}
-              onAssetDropped={handleAssetDropped}
-              onActorRemove={handleActorRemove}
-              onActorReorder={handleActorReorder}
-              onSetParent={handleSetParent}
-            />
-          </div>
-
-          <div class="center-area">
-            <div class="viewport-container">
+        <div class="main-content-wrapper">
+          <div class="main-content">
+            {/* Viewport */}
+            <div class="viewport-panel">
               <Viewport
                 ref={setViewportRef}
                 cameraPosition={cameraPosition}
@@ -367,31 +429,95 @@ const App: Component = () => {
                 onAssetDropped={handleAssetDropped}
               />
             </div>
+
+            <ResizeHandle
+              direction="horizontal"
+              onResize={(delta) => {
+                // Optional: can be used to adjust flex-basis if needed
+              }}
+            />
+
+            {/* Middle Panel - Scene Hierarchy + Node Graph */}
+            <div class="middle-panel-stack">
+              {/* Scene Hierarchy */}
+              <div class="hierarchy-panel panel" style={{ height: `${hierarchyHeight()}px` }}>
+                <h3>Scene Hierarchy</h3>
+                <div class="panel-scroll-content">
+                  <SceneHierarchy
+                    actors={actors}
+                    selectedActorId={selectedActorId}
+                    onActorSelect={setSelectedActorId}
+                    isLoading={isLoading}
+                    onAssetDropped={handleAssetDropped}
+                    onActorRemove={handleActorRemove}
+                    onActorReorder={handleActorReorder}
+                    onSetParent={handleSetParent}
+                    onNavigateToNode={handleNavigateToActorNode}
+                  />
+                </div>
+              </div>
+
+              <ResizeHandle
+                direction="vertical"
+                onResize={(delta) => setHierarchyHeight((h) => Math.max(100, Math.min(600, h - delta)))}
+              />
+
+              {/* Node Graph */}
+              <div class="node-graph-panel-flex">
+                <NodeGraph
+                  onEvaluate={async () => {
+                    await invoke('compile_scene_no_sync');
+                    const viewport = viewportRef();
+                    if (viewport) {
+                      viewport.render();
+                    }
+                  }}
+                  onActorNodeCreated={handleActorNodeCreated}
+                  onActorNodeSelected={setSelectedActorId}
+                  onReady={setNodeGraphHandle}
+                />
+              </div>
+            </div>
+
+            <ResizeHandle
+              direction="horizontal"
+              onResize={(delta) => setMiddlePanelWidth((w) => Math.max(250, Math.min(800, w + delta)))}
+            />
+
+            {/* Properties Panel */}
+            <div class="right-panel panel" style={{ width: `${rightPanelWidth()}px` }}>
+              <h3>Properties</h3>
+              <ActorProperties
+                selectedActorId={selectedActorId}
+                actors={actors}
+                onTransformChange={handleTransformChange}
+              />
+              <CameraControls
+                position={cameraPosition}
+                onPositionChange={setCameraPosition}
+              />
+              <RenderSettings
+                onSettingsChange={() => {
+                  const viewport = viewportRef();
+                  if (viewport) viewport.render();
+                }}
+                viewportHandle={viewportRef()}
+              />
+            </div>
+          </div>
+
+          {/* Bottom Resources Panel */}
+          <ResizeHandle
+            direction="vertical"
+            onResize={(delta) => setBottomPanelHeight((h) => Math.max(100, Math.min(400, h - delta)))}
+          />
+          <div class="bottom-resources-panel" style={{ height: `${bottomPanelHeight()}px` }}>
+            <h3>Resources</h3>
             <ResourcesBrowser
               assets={getAssets()}
               currentAssetPath={currentScene}
               onAssetSelect={(asset) => handleAssetDropped(asset.path)}
               onAssetRemove={removeAsset}
-            />
-          </div>
-
-          <div class="right-panel panel">
-            <h3>Properties</h3>
-            <ActorProperties
-              selectedActorId={selectedActorId}
-              actors={actors}
-              onTransformChange={handleTransformChange}
-            />
-            <CameraControls
-              position={cameraPosition}
-              onPositionChange={setCameraPosition}
-            />
-            <RenderSettings
-              onSettingsChange={() => {
-                const viewport = viewportRef();
-                if (viewport) viewport.render();
-              }}
-              viewportHandle={viewportRef()}
             />
           </div>
         </div>

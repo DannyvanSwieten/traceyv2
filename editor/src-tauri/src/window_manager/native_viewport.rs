@@ -50,6 +50,8 @@ pub enum ViewportState {
 pub struct NativeViewport {
     state: ViewportState,
     bounds: ViewportBounds,
+    /// Swapchain/window size (physical pixels)
+    window_size: (u32, u32),
 }
 
 impl NativeViewport {
@@ -62,6 +64,7 @@ impl NativeViewport {
                 width: 1280,
                 height: 720,
             },
+            window_size: (0, 0),
         }
     }
 
@@ -236,8 +239,116 @@ impl NativeViewport {
         }
 
         self.bounds = bounds;
+        self.window_size = (window_size.width, window_size.height);
 
         Ok(())
+    }
+
+    /// Resize the presenter/swapchain when window size changes
+    ///
+    /// Returns true if resize was performed
+    pub fn resize_if_needed(&mut self, new_width: u32, new_height: u32) -> Result<bool, String> {
+        if new_width == 0 || new_height == 0 {
+            return Ok(false);
+        }
+
+        // Check if size actually changed
+        let (current_w, current_h) = self.window_size;
+        if current_w == new_width && current_h == new_height {
+            return Ok(false);
+        }
+
+        match &self.state {
+            #[cfg(target_os = "macos")]
+            ViewportState::Ready { presenter, metal_view } => {
+                println!(
+                    "Resizing presenter from {}x{} to {}x{}",
+                    current_w, current_h, new_width, new_height
+                );
+
+                // Wait for any pending work
+                presenter.wait_idle();
+
+                // CRITICAL: Also resize the CAMetalLayer on macOS
+                // The surface capabilities are derived from the layer size
+                unsafe {
+                    use cocoa::base::id;
+                    use cocoa::foundation::{NSRect, NSPoint, NSSize};
+                    use std::sync::{Arc, Mutex, Condvar};
+
+                    let metal_layer = metal_view.0 as id;
+                    if !metal_layer.is_null() {
+                        let done = Arc::new((Mutex::new(false), Condvar::new()));
+                        let done_clone = done.clone();
+                        let w = new_width as f64;
+                        let h = new_height as f64;
+
+                        let main_queue: id = msg_send![class!(NSOperationQueue), mainQueue];
+                        let block = block::ConcreteBlock::new(move || {
+                            // Get current frame to preserve position
+                            let current_frame: NSRect = msg_send![metal_layer, frame];
+                            let new_frame = NSRect::new(
+                                current_frame.origin,
+                                NSSize::new(w, h),
+                            );
+                            let _: () = msg_send![metal_layer, setFrame: new_frame];
+                            println!("CAMetalLayer resized to {}x{}", w, h);
+
+                            let (lock, cvar) = &*done_clone;
+                            let mut finished = lock.lock().unwrap();
+                            *finished = true;
+                            cvar.notify_one();
+                        });
+                        let block = block.copy();
+                        let _: () = msg_send![main_queue, addOperationWithBlock: block];
+
+                        // Wait for resize to complete
+                        let (lock, cvar) = &*done;
+                        let mut finished = lock.lock().unwrap();
+                        while !*finished {
+                            finished = cvar.wait(finished).unwrap();
+                        }
+                    }
+                }
+
+                // Resize the swapchain
+                presenter
+                    .resize(new_width, new_height)
+                    .map_err(|e| format!("Failed to resize presenter: {}", e))?;
+
+                self.window_size = (new_width, new_height);
+                Ok(true)
+            }
+            #[cfg(not(target_os = "macos"))]
+            ViewportState::Ready { presenter } => {
+                println!(
+                    "Resizing presenter from {}x{} to {}x{}",
+                    current_w, current_h, new_width, new_height
+                );
+
+                // Wait for any pending work
+                presenter.wait_idle();
+
+                // Resize the swapchain
+                presenter
+                    .resize(new_width, new_height)
+                    .map_err(|e| format!("Failed to resize presenter: {}", e))?;
+
+                self.window_size = (new_width, new_height);
+                Ok(true)
+            }
+            ViewportState::Uninitialized => {
+                // Not yet initialized, just store the size
+                self.window_size = (new_width, new_height);
+                Ok(false)
+            }
+            ViewportState::Error(e) => Err(format!("Viewport in error state: {}", e)),
+        }
+    }
+
+    /// Get current window size
+    pub fn window_size(&self) -> (u32, u32) {
+        self.window_size
     }
 
     /// Update viewport bounds

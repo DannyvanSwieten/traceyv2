@@ -45,6 +45,9 @@ namespace tracey
         // For Phase 1, returns empty result
         NodeEvaluationResult evaluate(const EvaluationContext& ctx) override;
 
+        // Port information (Phase 2)
+        const InputsAndOutputs* ports() const override;
+
     private:
         PrimitiveType m_primitiveType;
 
@@ -59,6 +62,9 @@ namespace tracey
     public:
         CubeNode(size_t uid, std::string name)
             : PrimitiveNode(uid, std::move(name), PrimitiveType::Cube) {}
+
+        static bool registerNode();
+        static bool s_registered;
     };
 
     class SphereNode : public PrimitiveNode
@@ -66,6 +72,9 @@ namespace tracey
     public:
         SphereNode(size_t uid, std::string name)
             : PrimitiveNode(uid, std::move(name), PrimitiveType::Sphere) {}
+
+        static bool registerNode();
+        static bool s_registered;
     };
 
     class TorusNode : public PrimitiveNode
@@ -73,6 +82,9 @@ namespace tracey
     public:
         TorusNode(size_t uid, std::string name)
             : PrimitiveNode(uid, std::move(name), PrimitiveType::Torus) {}
+
+        static bool registerNode();
+        static bool s_registered;
     };
 
     class PlaneNode : public PrimitiveNode
@@ -80,6 +92,9 @@ namespace tracey
     public:
         PlaneNode(size_t uid, std::string name)
             : PrimitiveNode(uid, std::move(name), PrimitiveType::Plane) {}
+
+        static bool registerNode();
+        static bool s_registered;
     };
 
     class CylinderNode : public PrimitiveNode
@@ -87,6 +102,9 @@ namespace tracey
     public:
         CylinderNode(size_t uid, std::string name)
             : PrimitiveNode(uid, std::move(name), PrimitiveType::Cylinder) {}
+
+        static bool registerNode();
+        static bool s_registered;
     };
 
     class ConeNode : public PrimitiveNode
@@ -94,6 +112,9 @@ namespace tracey
     public:
         ConeNode(size_t uid, std::string name)
             : PrimitiveNode(uid, std::move(name), PrimitiveType::Cone) {}
+
+        static bool registerNode();
+        static bool s_registered;
     };
 
 } // namespace tracey

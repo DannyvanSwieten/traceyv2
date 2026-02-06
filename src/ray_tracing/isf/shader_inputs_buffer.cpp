@@ -97,6 +97,8 @@ void ShaderInputsBuffer::setInt(const std::string &name, int value) {
     if (info.type != "int") {
         throw std::runtime_error("ShaderInputsBuffer: Member '" + name + "' is not an int (is " + info.type + ")");
     }
+    fprintf(stderr, "ShaderInputsBuffer::setInt('%s', %d) at offset %zu\n",
+            name.c_str(), value, info.offset);
     std::memcpy(m_data.data() + info.offset, &value, sizeof(int));
 }
 

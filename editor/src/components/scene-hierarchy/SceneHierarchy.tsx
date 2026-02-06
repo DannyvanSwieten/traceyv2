@@ -27,6 +27,7 @@ interface SceneHierarchyProps {
   onActorRemove?: (id: number) => void;
   onActorReorder?: (actorId: number, parentId: number | null, newIndex: number) => void;
   onSetParent?: (actorId: number, newParentId: number | null) => void;
+  onNavigateToNode?: (actorId: number) => void;
 }
 
 function buildActorTree(actors: Actor[]): TreeNode[] {
@@ -100,6 +101,7 @@ const TreeItem: Component<{
   onRemove?: (id: number) => void;
   onReorder?: (actorId: number, parentId: number | null, newIndex: number) => void;
   onSetParent?: (actorId: number, newParentId: number | null) => void;
+  onNavigateToNode?: (actorId: number) => void;
 }> = (props) => {
   const [expanded, setExpanded] = createSignal(true);
   const [isParentDropTarget, setIsParentDropTarget] = createSignal(false);
@@ -157,6 +159,8 @@ const TreeItem: Component<{
           onDragLeave={() => setIsParentDropTarget(false)}
           onDrop={handleRowDrop}
           onClick={() => props.onSelect(props.node.actor.id)}
+          onDblClick={() => props.onNavigateToNode?.(props.node.actor.id)}
+          title="Double-click to navigate to ActorNode"
         >
           <Show when={hasChildren()}>
             <span
@@ -215,6 +219,7 @@ const TreeItem: Component<{
                   onRemove={props.onRemove}
                   onReorder={props.onReorder}
                   onSetParent={props.onSetParent}
+                  onNavigateToNode={props.onNavigateToNode}
                 />
               )}
             </For>
@@ -278,6 +283,7 @@ export const SceneHierarchy: Component<SceneHierarchyProps> = (props) => {
                 onRemove={props.onActorRemove}
                 onReorder={props.onActorReorder}
                 onSetParent={props.onSetParent}
+                onNavigateToNode={props.onNavigateToNode}
               />
             )}
           </For>

@@ -1,5 +1,6 @@
 #include "primitive_node.hpp"
 #include "../../geometry.hpp"
+#include "../node_registry.hpp"
 
 namespace tracey
 {
@@ -58,6 +59,20 @@ namespace tracey
         for (auto& [name, param] : parameters()) {
             param->setFlags(static_cast<uint32_t>(ParameterFlags::Animatable));
         }
+    }
+
+    const InputsAndOutputs* PrimitiveNode::ports() const
+    {
+        static InputsAndOutputs portInfo;
+        static bool initialized = false;
+
+        if (!initialized) {
+            // Primitives only output geometry (no inputs)
+            portInfo.addOutput(PortInfo::createOutput("geometry", DataType::Geometry));
+            initialized = true;
+        }
+
+        return &portInfo;
     }
 
     NodeEvaluationResult PrimitiveNode::evaluate(const EvaluationContext& ctx)
@@ -178,6 +193,116 @@ namespace tracey
         }
 
         return result;
+    }
+
+    // ===== Static Node Registrations =====
+
+    // CubeNode
+    bool CubeNode::s_registered = CubeNode::registerNode();
+
+    bool CubeNode::registerNode()
+    {
+        NodeDescriptor desc;
+        desc.type = TRACEY_NODE_PRIMITIVE_CUBE;
+        desc.name = "Cube";
+        desc.description = "Cube primitive with controllable size";
+        desc.category = NodeCategory::Primitive;
+        desc.icon = "🔲";
+        desc.factory = [](size_t uid, std::string name) -> std::unique_ptr<ProceduralNode> {
+            return std::make_unique<CubeNode>(uid, std::move(name));
+        };
+        NodeRegistry::instance().registerNode(desc);
+        return true;
+    }
+
+    // SphereNode
+    bool SphereNode::s_registered = SphereNode::registerNode();
+
+    bool SphereNode::registerNode()
+    {
+        NodeDescriptor desc;
+        desc.type = TRACEY_NODE_PRIMITIVE_SPHERE;
+        desc.name = "Sphere";
+        desc.description = "Sphere primitive with radius and subdivision control";
+        desc.category = NodeCategory::Primitive;
+        desc.icon = "⚪";
+        desc.factory = [](size_t uid, std::string name) -> std::unique_ptr<ProceduralNode> {
+            return std::make_unique<SphereNode>(uid, std::move(name));
+        };
+        NodeRegistry::instance().registerNode(desc);
+        return true;
+    }
+
+    // TorusNode
+    bool TorusNode::s_registered = TorusNode::registerNode();
+
+    bool TorusNode::registerNode()
+    {
+        NodeDescriptor desc;
+        desc.type = TRACEY_NODE_PRIMITIVE_TORUS;
+        desc.name = "Torus";
+        desc.description = "Torus primitive with major/minor radius control";
+        desc.category = NodeCategory::Primitive;
+        desc.icon = "🍩";
+        desc.factory = [](size_t uid, std::string name) -> std::unique_ptr<ProceduralNode> {
+            return std::make_unique<TorusNode>(uid, std::move(name));
+        };
+        NodeRegistry::instance().registerNode(desc);
+        return true;
+    }
+
+    // PlaneNode
+    bool PlaneNode::s_registered = PlaneNode::registerNode();
+
+    bool PlaneNode::registerNode()
+    {
+        NodeDescriptor desc;
+        desc.type = TRACEY_NODE_PRIMITIVE_PLANE;
+        desc.name = "Plane";
+        desc.description = "Flat plane primitive with width and depth";
+        desc.category = NodeCategory::Primitive;
+        desc.icon = "▭";
+        desc.factory = [](size_t uid, std::string name) -> std::unique_ptr<ProceduralNode> {
+            return std::make_unique<PlaneNode>(uid, std::move(name));
+        };
+        NodeRegistry::instance().registerNode(desc);
+        return true;
+    }
+
+    // CylinderNode
+    bool CylinderNode::s_registered = CylinderNode::registerNode();
+
+    bool CylinderNode::registerNode()
+    {
+        NodeDescriptor desc;
+        desc.type = TRACEY_NODE_PRIMITIVE_CYLINDER;
+        desc.name = "Cylinder";
+        desc.description = "Cylinder primitive with radius and height";
+        desc.category = NodeCategory::Primitive;
+        desc.icon = "🛢";
+        desc.factory = [](size_t uid, std::string name) -> std::unique_ptr<ProceduralNode> {
+            return std::make_unique<CylinderNode>(uid, std::move(name));
+        };
+        NodeRegistry::instance().registerNode(desc);
+        return true;
+    }
+
+    // ConeNode
+    bool ConeNode::s_registered = ConeNode::registerNode();
+
+    bool ConeNode::registerNode()
+    {
+        NodeDescriptor desc;
+        desc.type = TRACEY_NODE_PRIMITIVE_CONE;
+        desc.name = "Cone";
+        desc.description = "Cone primitive with base radius and height";
+        desc.category = NodeCategory::Primitive;
+        desc.icon = "🔺";
+        desc.factory = [](size_t uid, std::string name) -> std::unique_ptr<ProceduralNode> {
+            return std::make_unique<ConeNode>(uid, std::move(name));
+        };
+        NodeRegistry::instance().registerNode(desc);
+        return true;
     }
 
 } // namespace tracey

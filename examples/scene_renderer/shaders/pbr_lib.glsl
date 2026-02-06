@@ -150,14 +150,18 @@ vec2 getHitUV(HitInfo hitInfo) {
 // Random Number Generation
 // ============================================================================
 
-// Persistent random number generator (evolves the seed)
+// Hash function to decorrelate sequential seeds (use for initialization)
+uint hashSeed(uint x) {
+    x = ((x >> 16u) ^ x) * 0x45d9f3bu;
+    x = ((x >> 16u) ^ x) * 0x45d9f3bu;
+    x = (x >> 16u) ^ x;
+    return x;
+}
+
+// LCG for sequential random numbers (call hashSeed first to initialize)
 float nextRandom(inout uint seed) {
-    seed = (seed ^ 61u) ^ (seed >> 16u);
-    seed *= 9u;
-    seed = seed ^ (seed >> 4u);
-    seed *= 0x27d4eb2du;
-    seed = seed ^ (seed >> 15u);
-    return float(seed) / 4294967296.0;
+    seed = seed * 1664525u + 1013904223u;
+    return float(seed) * (1.0 / 4294967296.0);
 }
 
 // ============================================================================
@@ -422,17 +426,23 @@ struct PBRMaterial {
 vec4 getLobeProbabilities(PBRMaterial mat) {
     float sheenWeight = length(mat.sheenColor);
 
-    // Base diffuse probability (reduced by metallic and clearcoat)
-    float pDiffuse = (1.0 - mat.metallic) * (1.0 - mat.clearcoat * 0.5);
+    // Approximate Fresnel at normal incidence for dielectrics
+    float F0_dielectric = 0.04;
 
-    // Specular probability (metals are fully specular, dielectrics have some)
-    float pSpecular = mix(0.04, 1.0, mat.metallic);
+    // Diffuse probability: (1-F0) * (1-metallic), reduced by clearcoat
+    // This matches the energy conservation in the diffuse evaluation
+    float kD = (1.0 - F0_dielectric) * (1.0 - mat.metallic);
+    float pDiffuse = kD * (1.0 - mat.clearcoat * 0.5);
+
+    // Specular probability: higher for metals, includes Fresnel contribution for dielectrics
+    // Use a higher base for dielectrics (0.2) to account for grazing angle Fresnel boost
+    float pSpecular = mix(0.2, 1.0, mat.metallic);
 
     // Clearcoat probability
-    float pClearcoat = mat.clearcoat;
+    float pClearcoat = mat.clearcoat * 0.5;
 
     // Sheen probability (only if sheen color is present)
-    float pSheen = sheenWeight > 0.01 ? 0.3 * sheenWeight : 0.0;
+    float pSheen = sheenWeight > 0.01 ? 0.2 * sheenWeight : 0.0;
 
     // Normalize probabilities
     float total = pDiffuse + pSpecular + pClearcoat + pSheen;
@@ -453,6 +463,52 @@ int selectLobe(float r, vec4 probs) {
     if (r < cdf) return LOBE_CLEARCOAT;
 
     return LOBE_SHEEN;
+}
+
+// ============================================================================
+// Environment Mapping
+// ============================================================================
+
+// Convert direction to equirectangular UV coordinates
+vec2 directionToEquirectangular(vec3 dir, float rotation) {
+    // Spherical coordinates
+    float phi = atan(dir.z, dir.x) + rotation;
+    float theta = acos(clamp(-dir.y, -1.0, 1.0));
+
+    // Map to [0, 1]
+    vec2 uv;
+    uv.x = phi / (2.0 * PI) + 0.5;
+    uv.y = theta / PI;
+
+    return uv;
+}
+
+// Sample environment map with fallback to procedural sky
+// envMapIndex: index into textures array, -1 for procedural fallback
+// direction: world-space direction to sample
+// intensity: brightness multiplier for HDR
+// rotation: horizontal rotation in radians
+vec3 sampleEnvironment(int envMapIndex, vec3 direction, float intensity, float rotation) {
+    if (envMapIndex < 0) {
+        // Fallback: procedural sky gradient
+        float horizonBlend = clamp(direction.y * 2.0, 0.0, 1.0);
+        vec3 horizonColor = vec3(0.7, 0.75, 0.8);
+        vec3 zenithColor = vec3(0.3, 0.5, 0.9);
+        vec3 groundColor = vec3(0.2, 0.15, 0.1);
+
+        vec3 sky;
+        if (direction.y < 0.0) {
+            float t = (direction.y + 1.0);
+            sky = mix(groundColor, horizonColor, t);
+        } else {
+            sky = mix(horizonColor, zenithColor, horizonBlend);
+        }
+        return sky;
+    }
+
+    vec2 uv = directionToEquirectangular(direction, rotation);
+    vec3 color = texture(sampler2D(textures[envMapIndex], linearSampler), uv).rgb;
+    return color * intensity;
 }
 
 // ============================================================================

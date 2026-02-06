@@ -1,7 +1,41 @@
 /*{
     "STAGE": "Miss",
-    "DESCRIPTION": "Sky gradient background"
+    "DESCRIPTION": "HDR environment map sky background with procedural fallback",
+    "INPUTS": [
+        { "NAME": "envMapIndex", "TYPE": "int", "DEFAULT": -1 },
+        { "NAME": "envIntensity", "TYPE": "float", "DEFAULT": 1.0 },
+        { "NAME": "envRotation", "TYPE": "float", "DEFAULT": 0.0 }
+    ]
 }*/
+
+#define PI 3.14159265359
+
+// Convert direction to equirectangular UV coordinates
+vec2 directionToEquirectangular(vec3 dir, float rotation) {
+    float phi = atan(dir.z, dir.x) + rotation;
+    float theta = acos(clamp(-dir.y, -1.0, 1.0));
+    vec2 uv;
+    uv.x = phi / (2.0 * PI) + 0.5;
+    uv.y = 1.0 - (theta / PI);  // Flip V coordinate to fix upside-down texture
+    return uv;
+}
+
+// Procedural sky gradient (fallback when no HDR map)
+vec3 proceduralSky(vec3 direction) {
+    float horizonBlend = clamp(direction.y * 2.0, 0.0, 1.0);
+    vec3 horizonColor = vec3(0.7, 0.75, 0.8);
+    vec3 zenithColor = vec3(0.3, 0.5, 0.9);
+    vec3 groundColor = vec3(0.2, 0.15, 0.1);
+
+    vec3 sky;
+    if (direction.y < 0.0) {
+        float t = (direction.y + 1.0);
+        sky = mix(groundColor, horizonColor, t);
+    } else {
+        sky = mix(horizonColor, zenithColor, horizonBlend);
+    }
+    return sky;
+}
 
 void shader(inout RayPayloads payloads) {
     // Only process if ray is still alive
@@ -10,32 +44,26 @@ void shader(inout RayPayloads payloads) {
     vec3 throughput = payloads.rayPayload.color;
     vec3 dir = normalize(payloads.rayPayload.direction);
 
-    // Sky gradient from horizon to zenith
-    // Map dir.y from [-1, 1] to blend factor
-    float horizonBlend = clamp(dir.y * 2.0, 0.0, 1.0);  // Faster transition near horizon
-
-    vec3 horizonColor = vec3(0.7, 0.75, 0.8);   // Cooler, less yellow horizon
-    vec3 zenithColor = vec3(0.3, 0.5, 0.9);     // Blue sky
-    vec3 groundColor = vec3(0.2, 0.15, 0.1);    // Dark ground below horizon
-
-    // Blend from ground through horizon to zenith
     vec3 sky;
-    if (dir.y < 0.0) {
-        // Below horizon: blend from ground to horizon
-        float t = (dir.y + 1.0);  // [0 at bottom, 1 at horizon]
-        sky = mix(groundColor, horizonColor, t);
-    } else {
-        // Above horizon: blend from horizon to zenith
-        sky = mix(horizonColor, zenithColor, horizonBlend);
-    }
 
-    // Add sun
-    vec3 sunDir = normalize(vec3(0.3, 0.5, 0.2));  // Sun position
-    float sunDot = max(dot(dir, sunDir), 0.0);
-    float sun = pow(sunDot, 512.0) * 5.0;    // Smaller, less intense sun disk
-    sun += pow(sunDot, 64.0) * 0.5;          // Subtle sun glow
-    vec3 sunColor = vec3(1.0, 0.98, 0.9);
-    sky += sunColor * sun;
+    // Check for valid HDR environment map (index >= 0 means valid texture, -1 means no env map)
+    if (shaderInputs.envMapIndex >= 0 && shaderInputs.envMapIndex < 256) {
+        // Sample HDR environment map
+        vec2 uv = directionToEquirectangular(dir, shaderInputs.envRotation);
+        sky = texture(sampler2D(textures[shaderInputs.envMapIndex], linearSampler), uv).rgb;
+        sky *= shaderInputs.envIntensity;
+    } else {
+        // Procedural sky fallback (when no HDR map loaded, envMapIndex = -1)
+        sky = proceduralSky(dir);
+
+        // Add procedural sun
+        vec3 sunDir = normalize(vec3(0.3, 0.5, 0.2));
+        float sunDot = max(dot(dir, sunDir), 0.0);
+        float sun = pow(sunDot, 512.0) * 5.0;
+        sun += pow(sunDot, 64.0) * 0.5;
+        vec3 sunColor = vec3(1.0, 0.98, 0.9);
+        sky += sunColor * sun;
+    }
 
     // Sky contribution weighted by throughput
     payloads.rayPayload.color = throughput * sky;

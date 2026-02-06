@@ -69,12 +69,46 @@ namespace tracey
     bool NodeGraph::connect(size_t fromNode, const std::string& fromPort,
                            size_t toNode, const std::string& toPort)
     {
-        // Phase 2: Connection management
-        // For Phase 1, just store the connection
-
         // Verify nodes exist
-        if (!getNode(fromNode) || !getNode(toNode)) {
+        auto* fromNodePtr = getNode(fromNode);
+        auto* toNodePtr = getNode(toNode);
+        if (!fromNodePtr || !toNodePtr) {
             return false;
+        }
+
+        // Type validation: Check port compatibility
+        auto* fromPorts = fromNodePtr->ports();
+        auto* toPorts = toNodePtr->ports();
+
+        if (fromPorts && toPorts) {
+            // Find the output port on source node
+            DataType fromPortType = DataType::DataType;  // Invalid type by default
+            bool fromPortFound = false;
+            for (const auto& port : fromPorts->outputs()) {
+                if (std::string(port.name) == fromPort) {
+                    fromPortType = port.dataType;
+                    fromPortFound = true;
+                    break;
+                }
+            }
+
+            // Find the input port on destination node
+            DataType toPortType = DataType::DataType;  // Invalid type by default
+            bool toPortFound = false;
+            for (const auto& port : toPorts->inputs()) {
+                if (std::string(port.name) == toPort) {
+                    toPortType = port.dataType;
+                    toPortFound = true;
+                    break;
+                }
+            }
+
+            // Validate types match (for now, require exact match)
+            // Future: Allow implicit casts (Float->Vec3, Int->Float, etc.)
+            if (fromPortFound && toPortFound && fromPortType != toPortType) {
+                // Type mismatch - connection not allowed
+                return false;
+            }
         }
 
         // Check for duplicate connection
@@ -84,6 +118,16 @@ namespace tracey
                 return false;  // Already connected
             }
         }
+
+        // Connection cardinality: Input ports can only have ONE connection
+        // Remove any existing connection to the same input port
+        m_connections.erase(
+            std::remove_if(m_connections.begin(), m_connections.end(),
+                [toNode, &toPort](const NodeConnection& conn) {
+                    return conn.toNode == toNode && conn.toPort == toPort;
+                }),
+            m_connections.end()
+        );
 
         m_connections.emplace_back(fromNode, fromPort, toNode, toPort);
 
@@ -177,6 +221,9 @@ namespace tracey
                 );
             }
         }
+
+        // Copy all node results to the result (for sync_from_node_graph access)
+        result.nodeResults = mutableCtx.cache;
 
         // Gather output node results
         for (const auto& [outputName, nodeUid] : m_outputNodes) {

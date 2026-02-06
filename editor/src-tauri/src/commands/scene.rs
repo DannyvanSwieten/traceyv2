@@ -1,6 +1,6 @@
 //! Scene management Tauri commands
 
-use crate::ffi::{Camera, InstanceInfo, MeshInfo, TextureInfo, Transform, Vec3, Vec4, Quat, MaterialProperty, MaterialPropertyValue};
+use crate::ffi::{self, Camera, InstanceInfo, MeshInfo, TextureInfo, Transform, Vec3, Vec4, Quat, MaterialProperty, MaterialPropertyValue};
 use crate::scene::{Actor, ActorInstance};
 use crate::AppState;
 
@@ -76,15 +76,26 @@ pub async fn delete_actor(state: State<'_, AppState>, actor_id: u64) -> Result<b
     }
 
     if removed && !actors_to_delete.is_empty() {
-        // Delete from C++ scene synchronously (like add_primitive)
-        // This ensures the scene is consistent before returning
+        // Also remove corresponding ActorNodes from the scene-level node graph
+        // ActorNodes have the same UID as their corresponding Actors
         {
-            let mut engine = state.engine.lock().map_err(|_| "Failed to lock engine")?;
-            engine.remove_actors(&actors_to_delete).map_err(|e| e.to_string())?;
+            let engine = state.engine.lock().map_err(|_| "Failed to lock engine")?;
+            if let Some(scene_ptr) = engine.get_scene_ptr() {
+                unsafe {
+                    let graph = ffi::raw::tracey_scene_get_node_graph(scene_ptr);
+                    if !graph.is_null() {
+                        for &actor_uid in &actors_to_delete {
+                            // Remove the ActorNode (ignore errors - node might not exist)
+                            let _ = ffi::raw::tracey_node_graph_remove_node(graph, actor_uid);
+                        }
+                    }
+                }
+            }
         }
 
-        // Trigger recompile via channel (render loop will handle it)
-        let _ = state.scene_command_tx.send(crate::SceneCommand::Recompile);
+        // Send delete command through channel - render loop will handle it
+        // This ensures operations are queued and processed in order
+        let _ = state.scene_command_tx.send(crate::SceneCommand::DeleteActors(actors_to_delete));
     }
 
     Ok(removed)
@@ -148,6 +159,42 @@ pub async fn set_actor_transform(
             transforms_to_queue = transforms;
         } else {
             transforms_to_queue = Vec::new();
+        }
+    }
+
+    // Also update the ActorNode's transform in the node graph
+    // This ensures transforms survive tracey_scene_sync_from_node_graph
+    if updated {
+        let engine = state.engine.lock().map_err(|_| "Failed to lock engine")?;
+        if let Some(scene_ptr) = engine.get_scene_ptr() {
+            unsafe {
+                let scene_graph = crate::ffi::raw::tracey_scene_get_node_graph(scene_ptr);
+                if !scene_graph.is_null() {
+                    let actor_node = crate::ffi::raw::tracey_node_graph_get_node(scene_graph, actor_id);
+                    if !actor_node.is_null() {
+                        // Convert Transform to TraceyTransform
+                        let tracey_transform = crate::ffi::raw::TraceyTransform {
+                            position: crate::ffi::raw::TraceyVec3 {
+                                x: transform.position.x,
+                                y: transform.position.y,
+                                z: transform.position.z,
+                            },
+                            rotation: crate::ffi::raw::TraceyQuat {
+                                w: transform.rotation.w,
+                                x: transform.rotation.x,
+                                y: transform.rotation.y,
+                                z: transform.rotation.z,
+                            },
+                            scale: crate::ffi::raw::TraceyVec3 {
+                                x: transform.scale.x,
+                                y: transform.scale.y,
+                                z: transform.scale.z,
+                            },
+                        };
+                        crate::ffi::raw::tracey_actor_node_set_transform(actor_node, &tracey_transform);
+                    }
+                }
+            }
         }
     }
 
@@ -260,12 +307,34 @@ pub async fn get_actor_instances(
     state: State<'_, AppState>,
     actor_id: u64,
 ) -> Result<Vec<InstanceInfo>, String> {
-    // Read from Rust scene state - no engine lock needed!
-    let scene = state.scene.lock().map_err(|_| "Failed to lock scene")?;
-    if let Some(actor) = scene.actors.get(&actor_id) {
-        Ok(actor.instances.iter().map(instance_to_info).collect())
+    // Query from C++ scene to get instances created via node graph
+    let engine = state.engine.lock().map_err(|_| "Failed to lock engine")?;
+    if let Some(scene_ptr) = engine.get_scene_ptr() {
+        let mut instances = Vec::new();
+        unsafe {
+            let count = ffi::raw::tracey_scene_get_actor_instance_count(scene_ptr, actor_id);
+            for i in 0..count {
+                let mut info = std::mem::zeroed::<ffi::raw::TraceyInstanceInfo>();
+                let result = ffi::raw::tracey_scene_get_actor_instance(
+                    scene_ptr,
+                    actor_id,
+                    i,
+                    &mut info,
+                );
+                if result == ffi::raw::TraceyResult::Success {
+                    instances.push(InstanceInfo::from(info));
+                }
+            }
+        }
+        Ok(instances)
     } else {
-        Ok(Vec::new())
+        // Fallback to Rust state if engine not available
+        let scene = state.scene.lock().map_err(|_| "Failed to lock scene")?;
+        if let Some(actor) = scene.actors.get(&actor_id) {
+            Ok(actor.instances.iter().map(instance_to_info).collect())
+        } else {
+            Ok(Vec::new())
+        }
     }
 }
 

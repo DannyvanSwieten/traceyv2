@@ -122,6 +122,72 @@ pub async fn set_viewport_resolution(
     viewport.set_resolution(width, height)
 }
 
+/// Get resolution scale factor
+#[tauri::command]
+pub async fn get_resolution_scale(state: State<'_, AppState>) -> Result<f32, String> {
+    let engine = state.engine.try_lock().map_err(|_| "Engine busy")?;
+    Ok(engine.get_resolution_scale())
+}
+
+/// Set resolution scale factor (0.25, 0.5, 0.75, 1.0)
+/// Triggers recompile to apply new resolution
+#[tauri::command]
+pub async fn set_resolution_scale(state: State<'_, AppState>, scale: f32) -> Result<(), String> {
+    {
+        let mut engine = state.engine.lock().map_err(|_| "Failed to lock engine")?;
+        engine.set_resolution_scale(scale);
+    }
+    // Trigger recompile to apply new resolution
+    let _ = state.scene_command_tx.send(crate::SceneCommand::Recompile);
+    Ok(())
+}
+
+/// Get maximum render resolution
+#[tauri::command]
+pub async fn get_max_resolution(state: State<'_, AppState>) -> Result<(u32, u32), String> {
+    let engine = state.engine.try_lock().map_err(|_| "Engine busy")?;
+    Ok(engine.get_max_resolution())
+}
+
+/// Set maximum render resolution (0 = no limit)
+#[tauri::command]
+pub async fn set_max_resolution(
+    state: State<'_, AppState>,
+    width: u32,
+    height: u32,
+) -> Result<(), String> {
+    {
+        let mut engine = state.engine.lock().map_err(|_| "Failed to lock engine")?;
+        engine.set_max_resolution(width, height);
+    }
+    Ok(())
+}
+
+/// Update render resolution based on viewport size
+/// Returns the effective render resolution
+#[tauri::command]
+pub async fn update_viewport_size(
+    state: State<'_, AppState>,
+    viewport_width: u32,
+    viewport_height: u32,
+) -> Result<(u32, u32), String> {
+    let resolution_changed;
+    let effective_resolution;
+
+    {
+        let mut engine = state.engine.lock().map_err(|_| "Failed to lock engine")?;
+        resolution_changed = engine.update_resolution_for_viewport(viewport_width, viewport_height);
+        effective_resolution = engine.get_resolution();
+    }
+
+    // Trigger recompile if resolution changed
+    if resolution_changed {
+        let _ = state.scene_command_tx.send(crate::SceneCommand::Recompile);
+    }
+
+    Ok(effective_resolution)
+}
+
 /// Get samples per frame - uses try_lock to avoid blocking render loop
 #[tauri::command]
 pub async fn get_samples_per_frame(state: State<'_, AppState>) -> Result<u32, String> {
@@ -168,6 +234,28 @@ pub async fn set_max_bounces(
     Ok(())
 }
 
+/// Get max accumulated samples - reads from atomic (lock-free)
+#[tauri::command]
+pub async fn get_max_samples(state: State<'_, AppState>) -> Result<u32, String> {
+    Ok(state.max_samples.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+/// Set max accumulated samples - updates atomic and routes through render loop channel
+#[tauri::command]
+pub async fn set_max_samples(
+    state: State<'_, AppState>,
+    samples: u32,
+) -> Result<(), String> {
+    // Update the atomic directly for immediate effect
+    state.max_samples.store(samples.max(1), std::sync::atomic::Ordering::Relaxed);
+    // Also send command to render loop (for any additional handling like clearing)
+    state
+        .scene_command_tx
+        .send(SceneCommand::SetMaxSamples(samples))
+        .map_err(|_| "Failed to send command")?;
+    Ok(())
+}
+
 /// Get render mode - uses try_lock to avoid blocking render loop
 #[tauri::command]
 pub async fn get_render_mode(state: State<'_, AppState>) -> Result<String, String> {
@@ -202,4 +290,22 @@ pub async fn set_render_mode(
     };
 
     engine.set_render_mode(render_mode)
+}
+
+/// Set HDR environment map for the scene
+/// @param path Path to HDR file, or null/empty to clear
+/// @param intensity Brightness multiplier (default 1.0)
+/// @param rotation Horizontal rotation in radians (default 0.0)
+#[tauri::command]
+pub async fn set_environment_map(
+    state: State<'_, AppState>,
+    path: Option<String>,
+    intensity: f32,
+    rotation: f32,
+) -> Result<(), String> {
+    state
+        .scene_command_tx
+        .send(SceneCommand::SetEnvironmentMap(path, intensity, rotation))
+        .map_err(|_| "Failed to send environment map command")?;
+    Ok(())
 }

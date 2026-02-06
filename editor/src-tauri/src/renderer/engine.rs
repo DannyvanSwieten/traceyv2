@@ -7,8 +7,8 @@ use crate::ffi::{
 };
 use crate::scene::SceneState;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 /// Rendering mode selection
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,6 +39,12 @@ pub struct RenderConfig {
     pub hdr_output: bool,
     pub samples_per_frame: u32,
     pub max_bounces: u32,
+    /// Resolution scale factor (0.25, 0.5, 0.75, 1.0)
+    pub resolution_scale: f32,
+    /// Maximum render width (0 = no limit)
+    pub max_width: u32,
+    /// Maximum render height (0 = no limit)
+    pub max_height: u32,
 }
 
 impl RenderEngine {
@@ -92,8 +98,14 @@ impl RenderEngine {
     pub fn initialize_rasterizer(&mut self) -> Result<(), String> {
         // Use position-only shaders (compatible with our vertex buffer layout)
         // TODO: Replace with PBR shaders once normals/UVs are added to vertex buffers
-        let vertex_shader = self.config.shader_dir.join("rasterizer/position_only.vert.spv");
-        let fragment_shader = self.config.shader_dir.join("rasterizer/position_only.frag.spv");
+        let vertex_shader = self
+            .config
+            .shader_dir
+            .join("rasterizer/position_only.vert.spv");
+        let fragment_shader = self
+            .config
+            .shader_dir
+            .join("rasterizer/position_only.frag.spv");
 
         let rasterizer_config = RasterizerConfig {
             width: self.config.width,
@@ -116,7 +128,11 @@ impl RenderEngine {
     /// Compile the scene for rendering
     pub fn compile_scene(&mut self, scene: &SceneState) -> Result<(), String> {
         // Check if already compiling or rendering - prevent concurrent GPU operations
-        if self.is_compiling.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+        if self
+            .is_compiling
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
             return Err("Scene compilation already in progress".to_string());
         }
         if self.is_rendering.load(Ordering::SeqCst) {
@@ -155,7 +171,11 @@ impl RenderEngine {
     /// Use this after loading GLTF directly into the C++ scene
     pub fn compile_scene_no_sync(&mut self) -> Result<(), String> {
         // Check if already compiling or rendering - prevent concurrent GPU operations
-        if self.is_compiling.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+        if self
+            .is_compiling
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
             return Err("Scene compilation already in progress".to_string());
         }
         if self.is_rendering.load(Ordering::SeqCst) {
@@ -191,7 +211,11 @@ impl RenderEngine {
     /// This rebuilds the TLAS but keeps geometry, materials, and textures
     pub fn update_transforms(&mut self, scene: &SceneState) -> Result<(), String> {
         // Check if already compiling or rendering - prevent concurrent GPU operations
-        if self.is_compiling.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+        if self
+            .is_compiling
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
             return Err("Scene compilation already in progress".to_string());
         }
         if self.is_rendering.load(Ordering::SeqCst) {
@@ -209,10 +233,13 @@ impl RenderEngine {
             scene.sync_to_cpp(&mut cpp_scene)?;
 
             // Update transforms in the existing compiled scene
-            let compiled = self.compiled_scene.as_mut()
+            let compiled = self
+                .compiled_scene
+                .as_mut()
                 .ok_or("Scene not compiled - call compile_scene first".to_string())?;
 
-            compiled.update_transforms(&self.device, &cpp_scene)
+            compiled
+                .update_transforms(&self.device, &cpp_scene)
                 .map_err(|e| format!("Failed to update transforms: {}", e))?;
 
             Ok(())
@@ -226,7 +253,11 @@ impl RenderEngine {
     /// This re-uploads material data to GPU but keeps geometry and textures
     pub fn update_materials(&mut self) -> Result<(), String> {
         // Check if already compiling or rendering - prevent concurrent GPU operations
-        if self.is_compiling.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+        if self
+            .is_compiling
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
             return Err("Scene compilation already in progress".to_string());
         }
         if self.is_rendering.load(Ordering::SeqCst) {
@@ -241,10 +272,13 @@ impl RenderEngine {
                 .map_err(|_| "Failed to lock scene".to_string())?;
 
             // Update materials in the existing compiled scene
-            let compiled = self.compiled_scene.as_mut()
+            let compiled = self
+                .compiled_scene
+                .as_mut()
                 .ok_or("Scene not compiled - call compile_scene first".to_string())?;
 
-            compiled.update_materials(&self.device, &cpp_scene)
+            compiled
+                .update_materials(&self.device, &cpp_scene)
                 .map_err(|e| format!("Failed to update materials: {}", e))?;
 
             Ok(())
@@ -262,7 +296,11 @@ impl RenderEngine {
         need_pixels: bool,
     ) -> Result<RenderResult, String> {
         // Check if already rendering - prevent concurrent renders
-        if self.is_rendering.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+        if self
+            .is_rendering
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
             return Err("Render already in progress".to_string());
         }
         // Check if compilation is in progress - prevent GPU resource conflicts
@@ -278,13 +316,18 @@ impl RenderEngine {
                 return Err("Scene not compiled".to_string());
             }
 
+            // Ensure the active renderer is initialized (may have been cleared by resolution change)
             match self.render_mode {
                 RenderMode::PathTracer => {
-                    println!("Rendering with path tracer");
+                    if self.path_tracer.is_none() {
+                        self.initialize_path_tracer()?;
+                    }
                     self.render_with_path_tracer(camera, clear_accumulation, need_pixels)
                 }
                 RenderMode::Rasterizer => {
-                    println!("Rendering with rasterizer");
+                    if self.rasterizer.is_none() {
+                        self.initialize_rasterizer()?;
+                    }
                     self.render_with_rasterizer(camera)
                 }
             }
@@ -345,10 +388,7 @@ impl RenderEngine {
     }
 
     /// Render using rasterizer (realtime preview)
-    fn render_with_rasterizer(
-        &mut self,
-        camera: &Camera,
-    ) -> Result<RenderResult, String> {
+    fn render_with_rasterizer(&mut self, camera: &Camera) -> Result<RenderResult, String> {
         let compiled = self.compiled_scene.as_ref().ok_or("Scene not compiled")?;
 
         let rasterizer = self
@@ -462,6 +502,69 @@ impl RenderEngine {
         self.rasterizer = None;
     }
 
+    /// Get the current resolution scale factor
+    pub fn get_resolution_scale(&self) -> f32 {
+        self.config.resolution_scale
+    }
+
+    /// Set the resolution scale factor (0.25, 0.5, 0.75, 1.0)
+    pub fn set_resolution_scale(&mut self, scale: f32) {
+        self.config.resolution_scale = scale.clamp(0.1, 2.0);
+    }
+
+    /// Get the maximum render resolution
+    pub fn get_max_resolution(&self) -> (u32, u32) {
+        (self.config.max_width, self.config.max_height)
+    }
+
+    /// Set the maximum render resolution (0 = no limit)
+    pub fn set_max_resolution(&mut self, max_width: u32, max_height: u32) {
+        self.config.max_width = max_width;
+        self.config.max_height = max_height;
+    }
+
+    /// Calculate the effective render resolution for a given viewport size
+    pub fn calculate_render_resolution(
+        &self,
+        viewport_width: u32,
+        viewport_height: u32,
+    ) -> (u32, u32) {
+        // Apply scale factor
+        let scaled_w = (viewport_width as f32 * self.config.resolution_scale) as u32;
+        let scaled_h = (viewport_height as f32 * self.config.resolution_scale) as u32;
+
+        // Apply max limits (0 = no limit)
+        let final_w = if self.config.max_width > 0 {
+            scaled_w.min(self.config.max_width)
+        } else {
+            scaled_w
+        };
+        let final_h = if self.config.max_height > 0 {
+            scaled_h.min(self.config.max_height)
+        } else {
+            scaled_h
+        };
+
+        // Ensure minimum resolution of 64x64
+        (final_w.max(64), final_h.max(64))
+    }
+
+    /// Update resolution based on viewport size, returns true if resolution changed
+    pub fn update_resolution_for_viewport(
+        &mut self,
+        viewport_width: u32,
+        viewport_height: u32,
+    ) -> bool {
+        let (new_w, new_h) = self.calculate_render_resolution(viewport_width, viewport_height);
+
+        if new_w != self.config.width || new_h != self.config.height {
+            self.set_resolution(new_w, new_h);
+            true
+        } else {
+            false
+        }
+    }
+
     /// Get the current render mode
     pub fn get_render_mode(&self) -> RenderMode {
         self.render_mode
@@ -531,6 +634,17 @@ impl RenderEngine {
                 .map_err(|e| format!("Failed to set max bounces: {}", e))?;
         }
         Ok(())
+    }
+
+    /// Set HDR environment map for the scene
+    pub fn set_environment_map(&mut self, path: Option<&str>, intensity: f32, rotation: f32) -> Result<(), String> {
+        let mut cpp_scene = self
+            .cpp_scene
+            .lock()
+            .map_err(|_| "Failed to lock scene".to_string())?;
+        cpp_scene
+            .set_environment_map(path, intensity, rotation)
+            .map_err(|e| format!("Failed to set environment map: {}", e))
     }
 
     /// Remove an actor from the C++ scene and recompile
@@ -639,7 +753,11 @@ impl RenderEngine {
     }
 
     // Material editing methods
-    pub fn get_instance_material_shader_id(&self, actor_uid: u64, instance_index: u32) -> Option<String> {
+    pub fn get_instance_material_shader_id(
+        &self,
+        actor_uid: u64,
+        instance_index: u32,
+    ) -> Option<String> {
         let cpp_scene = self.cpp_scene.lock().ok()?;
         cpp_scene.get_instance_material_shader_id(actor_uid, instance_index)
     }
@@ -757,7 +875,13 @@ impl RenderEngine {
             .map_err(|e| format!("Failed to add cube: {}", e))
     }
 
-    pub fn add_sphere(&self, name: &str, radius: f32, segments: u32, rings: u32) -> Result<u64, String> {
+    pub fn add_sphere(
+        &self,
+        name: &str,
+        radius: f32,
+        segments: u32,
+        rings: u32,
+    ) -> Result<u64, String> {
         let mut cpp_scene = self
             .cpp_scene
             .lock()
@@ -780,7 +904,13 @@ impl RenderEngine {
             .lock()
             .map_err(|_| "Failed to lock scene".to_string())?;
         cpp_scene
-            .add_torus(name, major_radius, minor_radius, major_segments, minor_segments)
+            .add_torus(
+                name,
+                major_radius,
+                minor_radius,
+                major_segments,
+                minor_segments,
+            )
             .map_err(|e| format!("Failed to add torus: {}", e))
     }
 
@@ -794,7 +924,13 @@ impl RenderEngine {
             .map_err(|e| format!("Failed to add plane: {}", e))
     }
 
-    pub fn add_cylinder(&self, name: &str, radius: f32, height: f32, segments: u32) -> Result<u64, String> {
+    pub fn add_cylinder(
+        &self,
+        name: &str,
+        radius: f32,
+        height: f32,
+        segments: u32,
+    ) -> Result<u64, String> {
         let mut cpp_scene = self
             .cpp_scene
             .lock()
@@ -804,7 +940,13 @@ impl RenderEngine {
             .map_err(|e| format!("Failed to add cylinder: {}", e))
     }
 
-    pub fn add_cone(&self, name: &str, radius: f32, height: f32, segments: u32) -> Result<u64, String> {
+    pub fn add_cone(
+        &self,
+        name: &str,
+        radius: f32,
+        height: f32,
+        segments: u32,
+    ) -> Result<u64, String> {
         let mut cpp_scene = self
             .cpp_scene
             .lock()
@@ -825,7 +967,14 @@ impl RenderEngine {
             .map_err(|e| format!("Failed to add cube: {}", e))
     }
 
-    pub fn add_sphere_with_id(&self, actor_uid: u64, name: &str, radius: f32, segments: u32, rings: u32) -> Result<(), String> {
+    pub fn add_sphere_with_id(
+        &self,
+        actor_uid: u64,
+        name: &str,
+        radius: f32,
+        segments: u32,
+        rings: u32,
+    ) -> Result<(), String> {
         let mut cpp_scene = self
             .cpp_scene
             .lock()
@@ -849,11 +998,24 @@ impl RenderEngine {
             .lock()
             .map_err(|_| "Failed to lock scene".to_string())?;
         cpp_scene
-            .add_torus_with_id(actor_uid, name, major_radius, minor_radius, major_segments, minor_segments)
+            .add_torus_with_id(
+                actor_uid,
+                name,
+                major_radius,
+                minor_radius,
+                major_segments,
+                minor_segments,
+            )
             .map_err(|e| format!("Failed to add torus: {}", e))
     }
 
-    pub fn add_plane_with_id(&self, actor_uid: u64, name: &str, width: f32, depth: f32) -> Result<(), String> {
+    pub fn add_plane_with_id(
+        &self,
+        actor_uid: u64,
+        name: &str,
+        width: f32,
+        depth: f32,
+    ) -> Result<(), String> {
         let mut cpp_scene = self
             .cpp_scene
             .lock()
@@ -863,7 +1025,14 @@ impl RenderEngine {
             .map_err(|e| format!("Failed to add plane: {}", e))
     }
 
-    pub fn add_cylinder_with_id(&self, actor_uid: u64, name: &str, radius: f32, height: f32, segments: u32) -> Result<(), String> {
+    pub fn add_cylinder_with_id(
+        &self,
+        actor_uid: u64,
+        name: &str,
+        radius: f32,
+        height: f32,
+        segments: u32,
+    ) -> Result<(), String> {
         let mut cpp_scene = self
             .cpp_scene
             .lock()
@@ -873,7 +1042,14 @@ impl RenderEngine {
             .map_err(|e| format!("Failed to add cylinder: {}", e))
     }
 
-    pub fn add_cone_with_id(&self, actor_uid: u64, name: &str, radius: f32, height: f32, segments: u32) -> Result<(), String> {
+    pub fn add_cone_with_id(
+        &self,
+        actor_uid: u64,
+        name: &str,
+        radius: f32,
+        height: f32,
+        segments: u32,
+    ) -> Result<(), String> {
         let mut cpp_scene = self
             .cpp_scene
             .lock()
@@ -886,6 +1062,12 @@ impl RenderEngine {
     /// Get device reference (for presenter creation)
     pub fn device(&self) -> &Device {
         &self.device
+    }
+
+    /// Get the raw scene pointer for C API access
+    pub fn get_scene_ptr(&self) -> Option<*mut crate::ffi::raw::TraceyScene> {
+        let cpp_scene = self.cpp_scene.lock().ok()?;
+        Some(cpp_scene.as_ptr())
     }
 
     /// Get path tracer reference (for direct presentation)

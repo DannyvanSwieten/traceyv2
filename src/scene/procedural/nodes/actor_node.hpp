@@ -64,6 +64,13 @@ namespace tracey
         // For Phase 1, returns empty result
         NodeEvaluationResult evaluate(const EvaluationContext& ctx) override;
 
+        // Port information (Phase 2)
+        const InputsAndOutputs* ports() const override;
+
+        // Static node registry registration
+        static bool registerNode();
+        static bool s_registered;  // Static registration flag
+
     private:
         NodeGraph m_geometryNetwork;           // Internal geometry operations
         std::vector<size_t> m_children;        // Child actor UIDs
@@ -71,6 +78,9 @@ namespace tracey
         Actor* m_wrappedActor = nullptr;       // Optional: wrapped existing Actor
 
         void initializeParameters();
+
+        // Helper to apply ActorNode's transform to geometry
+        std::shared_ptr<Geometry> applyTransformToGeometry(const std::shared_ptr<Geometry>& inputGeometry);
     };
 
 } // namespace tracey

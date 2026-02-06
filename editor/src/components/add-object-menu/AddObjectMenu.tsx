@@ -13,6 +13,15 @@ interface Actor {
   children: number[];
 }
 
+// Primitive type for node graph based creation
+type PrimitiveType =
+  | { type: 'cube'; size?: number }
+  | { type: 'sphere'; radius?: number; segments?: number; rings?: number }
+  | { type: 'torus'; major_radius?: number; minor_radius?: number; major_segments?: number; minor_segments?: number }
+  | { type: 'plane'; width?: number; depth?: number }
+  | { type: 'cylinder'; radius?: number; height?: number; segments?: number }
+  | { type: 'cone'; radius?: number; height?: number; segments?: number };
+
 interface AddObjectMenuProps {
   onObjectAdded: (actor: Actor) => void;
 }
@@ -21,20 +30,18 @@ export const AddObjectMenu: Component<AddObjectMenuProps> = (props) => {
   const [isOpen, setIsOpen] = createSignal(false);
   const [isAdding, setIsAdding] = createSignal(false);
 
-  const addPrimitive = async (
-    type: string,
-    params: Record<string, unknown>
-  ) => {
+  const addPrimitive = async (primitive: PrimitiveType) => {
     if (isAdding()) return;
 
     setIsAdding(true);
     setIsOpen(false);
 
     try {
-      const name = `${type}_${Date.now()}`;
-      const actor = await invoke<Actor>('add_primitive', {
+      const name = `${primitive.type}_${Date.now()}`;
+      // Use node graph based command - creates ActorNode with geometry network
+      const actor = await invoke<Actor>('add_primitive_via_nodes', {
         name,
-        params: { type, ...params },
+        primitive,
       });
       props.onObjectAdded(actor);
     } catch (error) {
@@ -52,7 +59,11 @@ export const AddObjectMenu: Component<AddObjectMenuProps> = (props) => {
 
     try {
       const name = `Empty_${Date.now()}`;
-      const actorId = await invoke<number>('create_actor', { name });
+      // Use node graph command - creates ActorNode without geometry
+      const actorId = await invoke<number>('create_node', {
+        nodeType: 'actor',
+        name,
+      });
 
       // Create an Actor object for local state
       const actor: Actor = {
@@ -95,7 +106,7 @@ export const AddObjectMenu: Component<AddObjectMenuProps> = (props) => {
           </button>
           <button
             class="dropdown-item"
-            onClick={() => addPrimitive('cube', { size: 1.0 })}
+            onClick={() => addPrimitive({ type: 'cube', size: 1.0 })}
           >
             <span class="item-icon">&#x25A0;</span>
             Cube
@@ -103,7 +114,7 @@ export const AddObjectMenu: Component<AddObjectMenuProps> = (props) => {
           <button
             class="dropdown-item"
             onClick={() =>
-              addPrimitive('sphere', { radius: 1.0, segments: 16, rings: 16 })
+              addPrimitive({ type: 'sphere', radius: 1.0, segments: 16, rings: 16 })
             }
           >
             <span class="item-icon">&#x25CF;</span>
@@ -112,7 +123,8 @@ export const AddObjectMenu: Component<AddObjectMenuProps> = (props) => {
           <button
             class="dropdown-item"
             onClick={() =>
-              addPrimitive('torus', {
+              addPrimitive({
+                type: 'torus',
                 major_radius: 1.0,
                 minor_radius: 0.3,
                 major_segments: 32,
@@ -125,7 +137,7 @@ export const AddObjectMenu: Component<AddObjectMenuProps> = (props) => {
           </button>
           <button
             class="dropdown-item"
-            onClick={() => addPrimitive('plane', { width: 2.0, depth: 2.0 })}
+            onClick={() => addPrimitive({ type: 'plane', width: 2.0, depth: 2.0 })}
           >
             <span class="item-icon">&#x25AD;</span>
             Plane
@@ -133,7 +145,7 @@ export const AddObjectMenu: Component<AddObjectMenuProps> = (props) => {
           <button
             class="dropdown-item"
             onClick={() =>
-              addPrimitive('cylinder', { radius: 0.5, height: 1.0, segments: 32 })
+              addPrimitive({ type: 'cylinder', radius: 0.5, height: 1.0, segments: 32 })
             }
           >
             <span class="item-icon">&#x25AF;</span>
@@ -142,7 +154,7 @@ export const AddObjectMenu: Component<AddObjectMenuProps> = (props) => {
           <button
             class="dropdown-item"
             onClick={() =>
-              addPrimitive('cone', { radius: 0.5, height: 1.0, segments: 32 })
+              addPrimitive({ type: 'cone', radius: 0.5, height: 1.0, segments: 32 })
             }
           >
             <span class="item-icon">&#x25B2;</span>

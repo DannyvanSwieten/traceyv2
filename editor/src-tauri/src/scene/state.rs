@@ -38,14 +38,31 @@ pub struct ActorInstance {
 
 impl SceneState {
     pub fn new() -> Self {
+        // Create root actor at UID 0 to match C++ Scene constructor
+        let mut actors = HashMap::new();
+        let root = Actor {
+            id: 0,
+            name: "Root".to_string(),
+            transform: Transform::identity(),
+            children: Vec::new(),
+            parent: None,
+            instances: Vec::new(),
+        };
+        actors.insert(0, root);
+
         Self {
-            actors: HashMap::new(),
+            actors,
             camera: Camera::default(),
             next_actor_id: 1,
         }
     }
 
     pub fn create_actor(&mut self, name: String) -> u64 {
+        // Create actor under root (UID 0) to match C++ Scene::createActor()
+        self.create_actor_under_parent(name, Some(0))
+    }
+
+    pub fn create_actor_under_parent(&mut self, name: String, parent_id: Option<u64>) -> u64 {
         let id = self.next_actor_id;
         self.next_actor_id += 1;
 
@@ -54,11 +71,19 @@ impl SceneState {
             name,
             transform: Transform::identity(),
             children: Vec::new(),
-            parent: None,
+            parent: parent_id,
             instances: Vec::new(),
         };
 
         self.actors.insert(id, actor);
+
+        // Add to parent's children list
+        if let Some(parent_uid) = parent_id {
+            if let Some(parent) = self.actors.get_mut(&parent_uid) {
+                parent.children.push(id);
+            }
+        }
+
         id
     }
 

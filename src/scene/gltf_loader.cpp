@@ -596,6 +596,7 @@ namespace tracey
             int sceneIndex = model.defaultScene >= 0 ? model.defaultScene : 0;
             const auto &gltfScene = model.scenes[sceneIndex];
 
+            // Process all root nodes from the GLTF scene, preserving the original structure
             for (int nodeIndex : gltfScene.nodes)
             {
                 processNode(model, nodeIndex, *scene, meshToObjectName, options, baseDir, nullptr);

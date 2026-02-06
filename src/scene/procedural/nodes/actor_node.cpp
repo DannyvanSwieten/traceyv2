@@ -1,13 +1,38 @@
 #include "actor_node.hpp"
 #include "../../actor.hpp"
+#include "../../geometry.hpp"
+#include "../evaluation_context.hpp"
+#include "../node_registry.hpp"
 #include <algorithm>
 
 namespace tracey
 {
+    // Static registration (called before main())
+    bool ActorNode::s_registered = ActorNode::registerNode();
+
+    bool ActorNode::registerNode()
+    {
+        NodeDescriptor desc;
+        desc.type = TRACEY_NODE_ACTOR;
+        desc.name = "Actor";
+        desc.description = "Container node that holds geometry and child actors";
+        desc.category = NodeCategory::Actor;
+        desc.icon = "🎬";
+        desc.factory = [](size_t uid, std::string name) -> std::unique_ptr<ProceduralNode> {
+            return std::make_unique<ActorNode>(uid, std::move(name));
+        };
+
+        NodeRegistry::instance().registerNode(desc);
+        return true;
+    }
+
     ActorNode::ActorNode(size_t uid, std::string name)
         : ProceduralNode(uid, NodeType::Actor, std::move(name))
         , m_geometryNetwork(uid * 1000, "GeometryNetwork")  // Generate unique UID for nested graph
     {
+        // Set this ActorNode as the owner of the nested graph
+        m_geometryNetwork.setOwnerNodeUid(uid);
+
         initializeParameters();
     }
 
@@ -109,19 +134,105 @@ namespace tracey
         setDirty(true);
     }
 
+    const InputsAndOutputs* ActorNode::ports() const
+    {
+        static InputsAndOutputs portInfo;
+        static bool initialized = false;
+
+        if (!initialized) {
+            portInfo.addInput(PortInfo::createInput("geometry", DataType::Geometry));
+            portInfo.addOutput(PortInfo::createOutput("geometry", DataType::Geometry));
+            initialized = true;
+        }
+
+        return &portInfo;
+    }
+
     NodeEvaluationResult ActorNode::evaluate(const EvaluationContext& ctx)
     {
-        // Phase 2: Full evaluation implementation
-        // For Phase 1, return empty result
-        (void)ctx;
+        try {
+            // Step 1: Mark geometry network nodes dirty and evaluate
+            // This ensures nodes are re-evaluated even if they were marked clean previously
+            m_geometryNetwork.markDirty();
 
-        // TODO: Phase 2
-        // 1. Evaluate geometry network
-        // 2. Apply transform to geometry
-        // 3. Apply material (if connected)
-        // 4. Return result as SceneInstance(s)
+            EvaluationContext nestedCtx = ctx;
+            nestedCtx.graph = &m_geometryNetwork;
+            nestedCtx.cache.clear(); // Separate cache for nested evaluation
 
-        return NodeEvaluationResult();
+            GraphEvaluationResult graphResult = m_geometryNetwork.evaluate(nestedCtx);
+
+            if (!graphResult.success) {
+                return NodeEvaluationResult::makeError(
+                    "ActorNode '" + name() + "' geometry network failed: " + graphResult.error
+                );
+            }
+
+            // Step 2: Get "geometry" output from nested graph
+            auto outputIt = graphResult.outputs.find("geometry");
+            if (outputIt == graphResult.outputs.end()) {
+                // No geometry output - return empty (valid for container-only ActorNodes)
+                return NodeEvaluationResult();
+            }
+
+            const NodeEvaluationResult& outputResult = outputIt->second;
+
+            // Step 3: Extract geometry from output node result
+            auto* geometryPtr = std::get_if<std::shared_ptr<Geometry>>(&outputResult.data);
+            if (!geometryPtr || !*geometryPtr) {
+                return NodeEvaluationResult::makeError(
+                    "ActorNode '" + name() + "' output is not geometry"
+                );
+            }
+
+            // Step 4: Return geometry WITHOUT baking transform
+            // The transform is applied at the Actor/TLAS level during scene compilation
+            // This avoids double-application of transforms
+            return NodeEvaluationResult(*geometryPtr);
+
+        } catch (const std::exception& e) {
+            return NodeEvaluationResult::makeError(
+                std::string("ActorNode evaluation exception: ") + e.what()
+            );
+        }
+    }
+
+    std::shared_ptr<Geometry> ActorNode::applyTransformToGeometry(const std::shared_ptr<Geometry>& inputGeometry)
+    {
+        // Get transform from parameters
+        Transform transform = getTransform();
+        Mat4 matrix = transform.toMatrix();
+
+        // Create new geometry with transformed positions
+        auto outputGeometry = std::make_shared<Geometry>();
+
+        // Transform positions
+        std::vector<Vec3> transformedPositions;
+        transformedPositions.reserve(inputGeometry->positions().size());
+        for (const Vec3& pos : inputGeometry->positions()) {
+            Vec4 transformed = matrix * Vec4(pos, 1.0f);
+            transformedPositions.push_back(Vec3(transformed));
+        }
+        outputGeometry->setPositions(std::move(transformedPositions));
+
+        // Transform normals (use inverse transpose for normals)
+        if (inputGeometry->hasNormals()) {
+            Mat3 normalMatrix = glm::transpose(glm::inverse(Mat3(matrix)));
+            std::vector<Vec3> transformedNormals;
+            transformedNormals.reserve(inputGeometry->normals().size());
+            for (const Vec3& normal : inputGeometry->normals()) {
+                Vec3 transformed = glm::normalize(normalMatrix * normal);
+                transformedNormals.push_back(transformed);
+            }
+            outputGeometry->setNormals(std::move(transformedNormals));
+        }
+
+        // Copy indices and UVs unchanged
+        outputGeometry->setIndices(inputGeometry->indices());
+        if (inputGeometry->hasUvs()) {
+            outputGeometry->setUvs(inputGeometry->uvs());
+        }
+
+        return outputGeometry;
     }
 
 } // namespace tracey

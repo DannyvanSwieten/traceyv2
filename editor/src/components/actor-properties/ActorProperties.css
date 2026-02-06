@@ -55,6 +55,44 @@
   margin-bottom: 4px;
 }
 
+.transform-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+
+.transform-label-row .transform-label {
+  margin-bottom: 0;
+}
+
+.uniform-toggle {
+  background: transparent;
+  border: 1px solid #5a5a5a;
+  border-radius: 3px;
+  color: #858585;
+  font-size: 12px;
+  padding: 2px 6px;
+  cursor: pointer;
+  transition: all 0.15s;
+  line-height: 1;
+}
+
+.uniform-toggle:hover {
+  border-color: #0e639c;
+  color: #cccccc;
+}
+
+.uniform-toggle.active {
+  background: #0e639c;
+  border-color: #0e639c;
+  color: #ffffff;
+}
+
+.uniform-scale-row label {
+  width: 24px !important;
+}
+
 .transform-values {
   display: flex;
   gap: 8px;

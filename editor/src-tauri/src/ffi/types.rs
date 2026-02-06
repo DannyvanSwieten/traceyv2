@@ -470,6 +470,45 @@ impl Scene {
         }
     }
 
+    /// Set an HDR environment map for the scene (skybox/IBL)
+    /// Pass None or empty string to clear the environment map
+    pub fn set_environment_map(&mut self, path: Option<&str>, intensity: f32, rotation: f32) -> Result<()> {
+        unsafe {
+            let c_path = match path {
+                Some(p) if !p.is_empty() => {
+                    CString::new(p).map_err(|_| TraceyError("Invalid path".to_string()))?
+                }
+                _ => CString::new("").unwrap(),
+            };
+            check_result(tracey_scene_set_environment_map(
+                self.ptr,
+                c_path.as_ptr(),
+                intensity,
+                rotation,
+            ))
+        }
+    }
+
+    /// Get the current environment map settings
+    pub fn get_environment_map(&self) -> Result<(String, f32, f32)> {
+        unsafe {
+            let mut path_buf = vec![0i8; 1024];
+            let mut intensity: f32 = 1.0;
+            let mut rotation: f32 = 0.0;
+            check_result(tracey_scene_get_environment_map(
+                self.ptr,
+                path_buf.as_mut_ptr(),
+                path_buf.len(),
+                &mut intensity,
+                &mut rotation,
+            ))?;
+            let path = std::ffi::CStr::from_ptr(path_buf.as_ptr())
+                .to_string_lossy()
+                .to_string();
+            Ok((path, intensity, rotation))
+        }
+    }
+
     pub fn load_gltf(&mut self, path: &str) -> Result<()> {
         self.load_gltf_with_project(path, None)
     }

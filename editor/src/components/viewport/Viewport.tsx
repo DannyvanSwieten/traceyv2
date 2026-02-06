@@ -105,6 +105,7 @@ export const Viewport: Component<ViewportProps> = (props) => {
   const keysPressed = new Set<string>();
   let externalUpdate = false;
   let unlistenRenderComplete: UnlistenFn | null = null;
+  let windowResizeHandler: (() => void) | null = null;
 
   const MOUSE_SENSITIVITY = 0.003;
   const MOVE_SPEED = 0.1;
@@ -309,14 +310,23 @@ export const Viewport: Component<ViewportProps> = (props) => {
     if (renderMode() !== 'native' || !nativePlaceholderRef) return;
 
     const rect = nativePlaceholderRef.getBoundingClientRect();
+    // Scale CSS pixels to physical pixels for Retina displays
+    const dpr = window.devicePixelRatio || 1;
+
+    // Also get window size (physical pixels) for swapchain resize
+    const windowWidth = Math.floor(window.innerWidth * dpr);
+    const windowHeight = Math.floor(window.innerHeight * dpr);
+
     try {
       await invoke('sync_native_viewport', {
         bounds: {
-          x: Math.floor(rect.left),
-          y: Math.floor(rect.top),
-          width: Math.floor(rect.width),
-          height: Math.floor(rect.height),
+          x: Math.floor(rect.left * dpr),
+          y: Math.floor(rect.top * dpr),
+          width: Math.floor(rect.width * dpr),
+          height: Math.floor(rect.height * dpr),
         },
+        windowWidth,
+        windowHeight,
       });
     } catch (e) {
       console.error('Failed to sync native viewport bounds:', e);
@@ -330,13 +340,15 @@ export const Viewport: Component<ViewportProps> = (props) => {
 
     try {
       const rect = nativePlaceholderRef.getBoundingClientRect();
-      console.log('[Viewport] Creating native viewport with bounds:', rect);
+      // Scale CSS pixels to physical pixels for Retina displays
+      const dpr = window.devicePixelRatio || 1;
+      console.log('[Viewport] Creating native viewport with bounds:', rect, 'dpr:', dpr);
       await invoke('create_native_viewport', {
         bounds: {
-          x: Math.floor(rect.left),
-          y: Math.floor(rect.top),
-          width: Math.floor(rect.width),
-          height: Math.floor(rect.height),
+          x: Math.floor(rect.left * dpr),
+          y: Math.floor(rect.top * dpr),
+          width: Math.floor(rect.width * dpr),
+          height: Math.floor(rect.height * dpr),
         },
       });
       setNativeViewportReady(true);
@@ -439,6 +451,11 @@ export const Viewport: Component<ViewportProps> = (props) => {
         try {
           const pixels = new Uint8Array(await invoke('get_render_pixels'));
           if (canvasRef) {
+            // Resize canvas to match render resolution (CSS will scale to fill viewport)
+            if (canvasRef.width !== width || canvasRef.height !== height) {
+              canvasRef.width = width;
+              canvasRef.height = height;
+            }
             const ctx = canvasRef.getContext('2d');
             if (ctx) {
               const imageData = ctx.createImageData(width, height);
@@ -456,11 +473,24 @@ export const Viewport: Component<ViewportProps> = (props) => {
     // Add global mouse up listener to handle drag release outside canvas
     document.addEventListener('mouseup', handleMouseUp);
     document.addEventListener('mousemove', handleMouseMove);
+
+    // Listen for window resize events to resize swapchain when window is maximized/restored
+    windowResizeHandler = () => {
+      if (renderMode() === 'native') {
+        syncNativeViewportBounds();
+      }
+    };
+    window.addEventListener('resize', windowResizeHandler);
   });
 
   onCleanup(() => {
     document.removeEventListener('mouseup', handleMouseUp);
     document.removeEventListener('mousemove', handleMouseMove);
+
+    // Cleanup window resize listener
+    if (windowResizeHandler) {
+      window.removeEventListener('resize', windowResizeHandler);
+    }
 
     // Cleanup event listener
     if (unlistenRenderComplete) {

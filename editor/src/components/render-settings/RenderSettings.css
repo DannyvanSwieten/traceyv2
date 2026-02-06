@@ -120,3 +120,90 @@
 .setting-row:has(input:disabled) .setting-value {
   opacity: 0.6;
 }
+
+/* Environment map controls */
+.env-map-control {
+  display: flex;
+  gap: 4px;
+}
+
+.env-map-button {
+  flex: 1;
+  padding: 6px 12px;
+  font-size: 11px;
+  color: #cccccc;
+  background: #2d2d2d;
+  border: 1px solid #3c3c3c;
+  border-radius: 4px;
+  cursor: pointer;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: all 0.15s ease;
+}
+
+.env-map-button:hover {
+  background: #3c3c3c;
+  border-color: #4c4c4c;
+}
+
+.env-map-clear {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  font-size: 14px;
+  font-weight: bold;
+  color: #858585;
+  background: #2d2d2d;
+  border: 1px solid #3c3c3c;
+  border-radius: 4px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+}
+
+.env-map-clear:hover {
+  color: #e06c75;
+  background: #3c3c3c;
+  border-color: #4c4c4c;
+}
+
+/* Number input styling */
+.setting-control input[type="number"] {
+  width: 80px;
+  padding: 4px 8px;
+  font-size: 12px;
+  color: #cccccc;
+  background: #1e1e1e;
+  border: 1px solid #3c3c3c;
+  border-radius: 4px;
+  outline: none;
+}
+
+.setting-control input[type="number"]:focus {
+  border-color: #0e639c;
+}
+
+/* Select styling */
+.setting-control select {
+  flex: 1;
+  padding: 6px 8px;
+  font-size: 12px;
+  color: #cccccc;
+  background: #1e1e1e;
+  border: 1px solid #3c3c3c;
+  border-radius: 4px;
+  outline: none;
+  cursor: pointer;
+}
+
+.setting-control select:focus {
+  border-color: #0e639c;
+}
+
+.resolution-display {
+  font-family: monospace;
+}

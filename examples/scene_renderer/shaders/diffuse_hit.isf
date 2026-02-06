@@ -2,13 +2,11 @@
     "STAGE": "ClosestHit",
     "DESCRIPTION": "PBR path tracer with metallic-roughness workflow, clearcoat, sheen, and Russian roulette",
     "INPUTS": [
-        { "NAME": "albedo", "TYPE": "color", "DEFAULT": [0.5, 0.5, 0.5, 1.0] },
         { "NAME": "maxDepth", "TYPE": "uint", "DEFAULT": 8 },
         { "NAME": "rrMinDepth", "TYPE": "uint", "DEFAULT": 3 },
-        { "NAME": "clearcoat", "TYPE": "float", "DEFAULT": 0.0, "MIN": 0.0, "MAX": 1.0 },
-        { "NAME": "clearcoatRoughness", "TYPE": "float", "DEFAULT": 0.1, "MIN": 0.0, "MAX": 1.0 },
-        { "NAME": "sheenColor", "TYPE": "color", "DEFAULT": [0.0, 0.0, 0.0, 1.0] },
-        { "NAME": "sheenRoughness", "TYPE": "float", "DEFAULT": 0.5, "MIN": 0.0, "MAX": 1.0 }
+        { "NAME": "envMapIndex", "TYPE": "int", "DEFAULT": -1 },
+        { "NAME": "envIntensity", "TYPE": "float", "DEFAULT": 1.0 },
+        { "NAME": "envRotation", "TYPE": "float", "DEFAULT": 0.0 }
     ]
 }*/
 
@@ -20,8 +18,8 @@ void shader(HitInfo hitInfo, inout RayPayloads payloads) {
     if (!payloads.rayPayload.alive) return;
 
     // Check max depth - terminate
-    if (payloads.rayPayload.depth >= shaderInputs.maxDepth) {
-        payloads.rayPayload.color = vec3(0.0);
+    if (payloads.rayPayload.depth >= 8) {
+        payloads.rayPayload.color = vec3(0.0, 0.0, 0.0); 
         payloads.rayPayload.alive = false;
         return;
     }
@@ -29,6 +27,11 @@ void shader(HitInfo hitInfo, inout RayPayloads payloads) {
     // Geometric normal in world space
     vec3 geometricN = normalize(vec3(hitInfo.normalX, hitInfo.normalY, hitInfo.normalZ));
     vec3 V = -normalize(payloads.rayPayload.direction);
+
+    // Flip normal to face camera if needed (geometry has inverted normals)
+    if (dot(geometricN, V) < 0.0) {
+        geometricN = -geometricN;
+    }
 
     // Get hit position
     vec3 hitPos = getWorldHitPosition(g_CurrentRayIndex, hitInfo);
@@ -43,25 +46,14 @@ void shader(HitInfo hitInfo, inout RayPayloads payloads) {
     float metallic = mr.x;
     float roughness = clamp(mr.y, 0.04, 1.0);
 
-    // Get clearcoat from material buffer (per-object) with shader input as override
     vec2 clearcoatParams = getMaterialClearcoat(hitInfo.instanceIndex);
     float clearcoat = clearcoatParams.x;
     float clearcoatRoughness = clamp(clearcoatParams.y, 0.04, 1.0);
-    // Shader inputs can override if explicitly set (non-zero)
-    if (shaderInputs.clearcoat > 0.0) {
-        clearcoat = shaderInputs.clearcoat;
-        clearcoatRoughness = clamp(shaderInputs.clearcoatRoughness, 0.04, 1.0);
-    }
 
     // Get sheen from material buffer (per-object) with shader input as override
     vec4 sheenParams = getMaterialSheen(hitInfo.instanceIndex);
     vec3 sheenColor = sheenParams.rgb;
     float sheenRoughness = clamp(sheenParams.w, 0.04, 1.0);
-    // Shader inputs can override if explicitly set (non-zero sheen color)
-    if (length(shaderInputs.sheenColor.rgb) > 0.01) {
-        sheenColor = shaderInputs.sheenColor.rgb;
-        sheenRoughness = clamp(shaderInputs.sheenRoughness, 0.04, 1.0);
-    }
 
     // Build tangent frame from geometric normal
     vec3 T, B;
@@ -79,9 +71,13 @@ void shader(HitInfo hitInfo, inout RayPayloads payloads) {
     }
 
     // Generate random numbers for lobe selection and sampling
-    float r_lobe = nextRandom(payloads.rayPayload.rngSeed);
-    float r1 = nextRandom(payloads.rayPayload.rngSeed);
-    float r2 = nextRandom(payloads.rayPayload.rngSeed);
+    // Hash the payload seed (varies per pixel+sample) then use LCG
+    uint seed = hashSeed(payloads.rayPayload.rngSeed);
+    float r_lobe = nextRandom(seed);
+    float r1 = nextRandom(seed);
+    float r2 = nextRandom(seed);
+    // Store evolved seed back for next bounce
+    payloads.rayPayload.rngSeed = seed;
 
     vec3 L;
     vec3 throughput;
@@ -134,7 +130,7 @@ void shader(HitInfo hitInfo, inout RayPayloads payloads) {
         // Scale by lobe probability
         throughput = sheenWeight / max(lobePdf, 0.001);
     }
-    else if (selectedLobe == LOBE_SPECULAR || metallic > 0.5) {
+    else if (selectedLobe == LOBE_SPECULAR) {
         // Metallic/dielectric specular: sample GGX
         vec3 H_local = sampleGGX(r1, r2, roughness);
         vec3 H = normalize(tangentToWorld(H_local, N, T, B));
@@ -172,8 +168,14 @@ void shader(HitInfo hitInfo, inout RayPayloads payloads) {
         vec3 L_local = sampleCosineHemisphere(r1, r2);
         L = normalize(tangentToWorld(L_local, N, T, B));
 
-        // Diffuse throughput is albedo (Lambert)
-        vec3 diffuseWeight = albedo;
+        // Energy conservation: diffuse is attenuated by (1-F) and (1-metallic)
+        // F0 for dielectrics is 0.04
+        vec3 F0 = vec3(0.04);
+        vec3 F = fresnelSchlick(NdotV, F0);
+        vec3 kD = (1.0 - F) * (1.0 - metallic);
+
+        // Diffuse throughput with energy conservation
+        vec3 diffuseWeight = albedo * kD;
 
         // Apply clearcoat attenuation if clearcoat is present
         if (clearcoat > 0.0) {
@@ -186,7 +188,7 @@ void shader(HitInfo hitInfo, inout RayPayloads payloads) {
     // Clamp throughput to avoid fireflies
     throughput = clamp(throughput, vec3(0.0), vec3(10.0));
 
-    // Update color
+    // Apply throughput to accumulated color
     payloads.rayPayload.color *= throughput;
 
     // Increment depth
@@ -195,8 +197,8 @@ void shader(HitInfo hitInfo, inout RayPayloads payloads) {
     // Russian roulette termination (after minimum depth)
     if (payloads.rayPayload.depth >= shaderInputs.rrMinDepth) {
         // Calculate survival probability based on throughput luminance
-        float luminance = dot(throughput, vec3(0.2126, 0.7152, 0.0722));
-        float survivalProbability = min(luminance, 0.95); // Cap at 95% to avoid infinite paths
+        float luminance = dot(payloads.rayPayload.color, vec3(0.2126, 0.7152, 0.0722));
+        float survivalProbability = clamp(luminance, 0.05, 0.95);
 
         // Generate random number for Russian roulette
         float rrRandom = nextRandom(payloads.rayPayload.rngSeed);
@@ -204,7 +206,6 @@ void shader(HitInfo hitInfo, inout RayPayloads payloads) {
         if (rrRandom > survivalProbability) {
             // Terminate path
             payloads.rayPayload.alive = false;
-            payloads.rayPayload.color = vec3(0.0);
             return;
         }
 
@@ -214,5 +215,9 @@ void shader(HitInfo hitInfo, inout RayPayloads payloads) {
 
     // Set direction and spawn secondary ray
     payloads.rayPayload.direction = L;
-    traceRay(hitPos + N * 0.001, 0.01, L, 1000.0);
+
+    // Use geometric normal for offset (not shading normal) to avoid self-intersection
+    // Orient based on incoming ray direction V (which side we hit from), not outgoing L
+    vec3 offsetN = dot(geometricN, V) > 0.0 ? geometricN : -geometricN;
+    traceRay(hitPos + offsetN * 0.001, 0.01, L, 1000.0);
 }

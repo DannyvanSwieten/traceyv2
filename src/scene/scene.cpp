@@ -2,20 +2,42 @@
 
 namespace tracey
 {
+    Scene::Scene()
+    {
+        // Automatically create root actor
+        m_actors.emplace_back(std::make_unique<Actor>(this, 0));
+        m_actors[0]->setName("Root");
+        m_root = 0;
+    }
+
     Actor *Scene::createActor()
     {
-        if (m_root == -1)
-            m_root = 0;
+        // Create actor and parent it to root
+        return createActorUnderParent(static_cast<size_t>(m_root));
+    }
 
+    Actor *Scene::createActorUnderParent(size_t parentUid)
+    {
         m_actors.emplace_back(std::make_unique<Actor>(this, m_actors.size()));
-        return m_actors.back().get();
+        Actor *newActor = m_actors.back().get();
+
+        // Parent to specified actor (or root if invalid)
+        Actor *parent = getActor(parentUid);
+        if (parent)
+        {
+            parent->addChild(newActor);
+        }
+        else if (m_root >= 0)
+        {
+            // Fallback to root if invalid parent specified
+            getRoot()->addChild(newActor);
+        }
+
+        return newActor;
     }
 
     Actor *Scene::createActorWithUid(size_t uid)
     {
-        if (m_root == -1)
-            m_root = 0;
-
         // Ensure vector is large enough
         if (uid >= m_actors.size())
         {
@@ -30,12 +52,24 @@ namespace tracey
 
         // Create new actor at this specific UID
         m_actors[uid] = std::make_unique<Actor>(this, uid);
-        return m_actors[uid].get();
+        Actor *newActor = m_actors[uid].get();
+
+        // Parent to root (matching createActor behavior)
+        if (m_root >= 0)
+        {
+            getRoot()->addChild(newActor);
+        }
+
+        return newActor;
     }
 
     void Scene::removeActor(size_t uid)
     {
         if (uid >= m_actors.size())
+            return;
+
+        // Don't allow removing the root
+        if (static_cast<int64_t>(uid) == m_root)
             return;
 
         auto *actor = m_actors[uid].get();
@@ -51,12 +85,13 @@ namespace tracey
             removeActor(childUid);  // Recursive call
         }
 
-        // Remove from parent's children list if applicable
-        for (auto &actorPtr : m_actors)
+        // Remove from parent's children list using parent tracking (O(1) lookup)
+        if (actor->hasParent())
         {
-            if (actorPtr)  // Check for null - actors may have been removed
+            Actor *parent = getActor(actor->parent());
+            if (parent)
             {
-                actorPtr->removeChild(uid);
+                parent->removeChild(uid);
             }
         }
 
@@ -69,41 +104,22 @@ namespace tracey
         m_objects.clear();
         m_embeddedTextures.clear();
         m_camera.reset();
-        m_root = -1;
+
+        // Recreate root actor
+        m_actors.emplace_back(std::make_unique<Actor>(this, 0));
+        m_actors[0]->setName("Root");
+        m_root = 0;
     }
     std::vector<SceneNode> Scene::flatten() const
     {
         std::vector<SceneNode> out;
-        // Iterate over all actors directly
-        // This handles both hierarchical scenes (via children) and flat lists
+        // Only traverse from top-level actors (those without parents)
+        // Using the hasParent() method is O(1) instead of O(n²) child scan
         for (const auto &actorPtr : m_actors)
         {
-            if (actorPtr)
+            if (actorPtr && !actorPtr->hasParent())
             {
-                // Check if this actor has a parent - skip if it does (it will be visited via parent)
-                bool hasParent = false;
-                for (const auto &otherPtr : m_actors)
-                {
-                    if (otherPtr && otherPtr.get() != actorPtr.get())
-                    {
-                        for (auto childUid : otherPtr->children())
-                        {
-                            if (childUid == actorPtr->getUid())
-                            {
-                                hasParent = true;
-                                break;
-                            }
-                        }
-                    }
-                    if (hasParent)
-                        break;
-                }
-
-                // Only add top-level actors (those without parents)
-                if (!hasParent)
-                {
-                    addChildren(out, Mat4(1.0), actorPtr->getUid());
-                }
+                addChildren(out, Mat4(1.0), actorPtr->getUid());
             }
         }
         return out;

@@ -1,5 +1,6 @@
 #include "transform_geo_node.hpp"
 #include "../node_graph.hpp"
+#include "../node_registry.hpp"
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtx/euler_angles.hpp>
@@ -7,6 +8,25 @@
 
 namespace tracey
 {
+    // Static registration (called before main())
+    bool TransformGeoNode::s_registered = TransformGeoNode::registerNode();
+
+    bool TransformGeoNode::registerNode()
+    {
+        NodeDescriptor desc;
+        desc.type = TRACEY_NODE_GEOMETRY_TRANSFORM;
+        desc.name = "Transform";
+        desc.description = "Transform geometry with translate, rotate, and scale";
+        desc.category = NodeCategory::Geometry;
+        desc.icon = "↔️";
+        desc.factory = [](size_t uid, std::string name) -> std::unique_ptr<ProceduralNode> {
+            return std::make_unique<TransformGeoNode>(uid, std::move(name));
+        };
+
+        NodeRegistry::instance().registerNode(desc);
+        return true;
+    }
+
     TransformGeoNode::TransformGeoNode(size_t uid, std::string name)
         : ProceduralNode(uid, NodeType::GeometryTransform, std::move(name))
     {
@@ -42,6 +62,20 @@ namespace tracey
             ParameterType::Float,
             1.0f
         ));
+    }
+
+    const InputsAndOutputs* TransformGeoNode::ports() const
+    {
+        static InputsAndOutputs portInfo;
+        static bool initialized = false;
+
+        if (!initialized) {
+            portInfo.addInput(PortInfo::createInput("geometry", DataType::Geometry));
+            portInfo.addOutput(PortInfo::createOutput("geometry", DataType::Geometry));
+            initialized = true;
+        }
+
+        return &portInfo;
     }
 
     NodeEvaluationResult TransformGeoNode::evaluate(const EvaluationContext& ctx)

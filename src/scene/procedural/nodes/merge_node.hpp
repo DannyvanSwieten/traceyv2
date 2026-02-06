@@ -23,6 +23,13 @@ namespace tracey
         // Node evaluation
         NodeEvaluationResult evaluate(const EvaluationContext& ctx) override;
 
+        // Port information (Phase 2)
+        const InputsAndOutputs* ports() const override;
+
+        // Static node registry registration
+        static bool registerNode();
+        static bool s_registered;  // Static registration flag
+
     private:
         void initializeParameters();
 

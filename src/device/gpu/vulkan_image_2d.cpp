@@ -54,6 +54,8 @@ namespace tracey
         : m_device(device.vkDevice()), m_width(width), m_height(height)
     {
         createImage(device, format, false);
+        // Storage images need to be transitioned to GENERAL layout before use
+        transitionToGeneral(device);
     }
 
     VulkanImage2D::VulkanImage2D(VulkanComputeDevice &device, uint32_t width, uint32_t height, ImageFormat format,
@@ -136,6 +138,63 @@ namespace tracey
         {
             throw std::runtime_error("Failed to create Vulkan image view");
         }
+    }
+
+    void VulkanImage2D::transitionToGeneral(VulkanComputeDevice &device)
+    {
+        // Create command buffer for layout transition
+        VkCommandBufferAllocateInfo cmdAllocInfo{};
+        cmdAllocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        cmdAllocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        cmdAllocInfo.commandPool = device.commandPool();
+        cmdAllocInfo.commandBufferCount = 1;
+
+        VkCommandBuffer commandBuffer;
+        vkAllocateCommandBuffers(m_device, &cmdAllocInfo, &commandBuffer);
+
+        VkCommandBufferBeginInfo beginInfo{};
+        beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        vkBeginCommandBuffer(commandBuffer, &beginInfo);
+
+        // Transition image from UNDEFINED to GENERAL
+        VkImageMemoryBarrier barrier{};
+        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.image = m_image;
+        barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        barrier.subresourceRange.baseMipLevel = 0;
+        barrier.subresourceRange.levelCount = 1;
+        barrier.subresourceRange.baseArrayLayer = 0;
+        barrier.subresourceRange.layerCount = 1;
+        barrier.srcAccessMask = 0;
+        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+
+        vkCmdPipelineBarrier(
+            commandBuffer,
+            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            0,
+            0, nullptr,
+            0, nullptr,
+            1, &barrier);
+
+        vkEndCommandBuffer(commandBuffer);
+
+        // Submit and wait
+        VkSubmitInfo submitInfo{};
+        submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        submitInfo.commandBufferCount = 1;
+        submitInfo.pCommandBuffers = &commandBuffer;
+
+        vkQueueSubmit(device.computeQueue(), 1, &submitInfo, VK_NULL_HANDLE);
+        vkQueueWaitIdle(device.computeQueue());
+
+        // Cleanup
+        vkFreeCommandBuffers(m_device, device.commandPool(), 1, &commandBuffer);
     }
 
     void VulkanImage2D::createSampler(VulkanComputeDevice &device, SamplerFilter filter, SamplerAddressMode addressMode)

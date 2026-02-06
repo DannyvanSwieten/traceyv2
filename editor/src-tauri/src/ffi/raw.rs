@@ -144,10 +144,8 @@ pub enum TraceyNodeType {
     GeometryTransform = 7,
     GeometryMerge = 8,
     Material = 9,
-    Transform = 10,
-    Camera = 11,
-    MathFloat = 12,
-    MathVector = 13,
+    MathFloat = 10,
+    MathVector = 11,
 }
 
 #[repr(C)]
@@ -162,6 +160,46 @@ pub enum TraceyParameterType {
     String = 6,
     Color = 7,
     Texture = 8,
+}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum TraceyGraphContext {
+    Scene = 0,
+    Geometry = 1,
+}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum TraceyDataType {
+    Float = 0,
+    Vec2 = 1,
+    Vec3 = 2,
+    Vec4 = 3,
+    Mat3 = 4,
+    Mat4 = 5,
+    Int = 6,
+    UInt = 7,
+    Bool = 8,
+    Sampler2D = 9,
+    Geometry = 10,
+    DataType = 11,
+    Scene3D = 12,
+}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum TraceyPortType {
+    Input = 0,
+    Output = 1,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct TraceyPortInfo {
+    pub name: *const c_char,
+    pub data_type: TraceyDataType,
+    pub port_type: TraceyPortType,
 }
 
 #[repr(C)]
@@ -180,6 +218,17 @@ pub struct TraceyMaterialProperty {
     pub name: *const c_char,
     pub prop_type: TraceyMaterialPropertyType,
     pub value: TraceyMaterialPropertyValue,
+}
+
+/// Node descriptor - metadata about a node type
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct TraceyNodeDescriptor {
+    pub node_type: TraceyNodeType,
+    pub name: *const c_char,
+    pub description: *const c_char,
+    pub category: c_int,
+    pub icon: *const c_char,
 }
 
 #[repr(C)]
@@ -358,6 +407,11 @@ extern "C" {
     pub fn tracey_scene_destroy(scene: *mut TraceyScene);
     pub fn tracey_scene_clear(scene: *mut TraceyScene);
     pub fn tracey_scene_create_actor(scene: *mut TraceyScene, name: *const c_char) -> u64;
+    pub fn tracey_scene_create_actor_with_uid(
+        scene: *mut TraceyScene,
+        actor_uid: u64,
+        name: *const c_char,
+    ) -> TraceyResult;
     pub fn tracey_scene_remove_actor(scene: *mut TraceyScene, actor_uid: u64) -> TraceyResult;
     pub fn tracey_scene_get_actor_transform(
         scene: *mut TraceyScene,
@@ -386,6 +440,19 @@ extern "C" {
     pub fn tracey_scene_get_camera(
         scene: *mut TraceyScene,
         out_camera: *mut TraceyCamera,
+    ) -> TraceyResult;
+    pub fn tracey_scene_set_environment_map(
+        scene: *mut TraceyScene,
+        path: *const c_char,
+        intensity: c_float,
+        rotation: c_float,
+    ) -> TraceyResult;
+    pub fn tracey_scene_get_environment_map(
+        scene: *mut TraceyScene,
+        out_path: *mut c_char,
+        path_buffer_size: usize,
+        out_intensity: *mut c_float,
+        out_rotation: *mut c_float,
     ) -> TraceyResult;
     pub fn tracey_scene_load_gltf(scene: *mut TraceyScene, file_path: *const c_char)
         -> TraceyResult;
@@ -707,10 +774,31 @@ extern "C" {
         graph: *mut TraceyNodeGraph,
         node_uid: u64,
     ) -> TraceyResult;
+
+    // Node Registry Query API
+    pub fn tracey_get_node_types(
+        out_descriptors: *mut TraceyNodeDescriptor,
+        max_count: c_int,
+    ) -> c_int;
+    pub fn tracey_get_nodes_by_category(
+        category: c_int,
+        out_descriptors: *mut TraceyNodeDescriptor,
+        max_count: c_int,
+    ) -> c_int;
+    pub fn tracey_get_node_descriptor(
+        node_type: TraceyNodeType,
+        out_descriptor: *mut TraceyNodeDescriptor,
+    ) -> bool;
+    pub fn tracey_free_node_descriptor(descriptor: *mut TraceyNodeDescriptor);
+
     pub fn tracey_node_get_parameter(
         node: *mut TraceyNode,
         param_name: *const c_char,
     ) -> *mut TraceyParameter;
+    pub fn tracey_node_get_name(node: *mut TraceyNode) -> *const c_char;
+    pub fn tracey_node_get_type(node: *mut TraceyNode) -> TraceyNodeType;
+    pub fn tracey_node_get_parameter_count(node: *mut TraceyNode) -> c_uint;
+    pub fn tracey_node_get_parameter_name(node: *mut TraceyNode, index: c_uint) -> *const c_char;
     pub fn tracey_parameter_set_float(param: *mut TraceyParameter, value: c_float)
         -> TraceyResult;
     pub fn tracey_parameter_get_float(
@@ -735,6 +823,73 @@ extern "C" {
         param: *mut TraceyParameter,
         out_value: *mut bool,
     ) -> TraceyResult;
+
+    // Node Port Query API (Phase 2)
+    pub fn tracey_node_get_port_count(
+        node: *mut TraceyNode,
+        port_type: TraceyPortType,
+    ) -> c_uint;
+    pub fn tracey_node_get_port(
+        node: *mut TraceyNode,
+        port_type: TraceyPortType,
+        index: c_uint,
+        out_port_info: *mut TraceyPortInfo,
+    ) -> TraceyResult;
+
+    // Node Graph Connection and Evaluation (Phase 1)
+    pub fn tracey_node_graph_connect(
+        graph: *mut TraceyNodeGraph,
+        from_node_uid: u64,
+        from_port: *const c_char,
+        to_node_uid: u64,
+        to_port: *const c_char,
+    ) -> TraceyResult;
+    pub fn tracey_node_graph_disconnect(
+        graph: *mut TraceyNodeGraph,
+        from_node_uid: u64,
+        to_node_uid: u64,
+    ) -> TraceyResult;
+    pub fn tracey_node_graph_set_output(
+        graph: *mut TraceyNodeGraph,
+        output_name: *const c_char,
+        node_uid: u64,
+    ) -> TraceyResult;
+    pub fn tracey_node_graph_evaluate(
+        graph: *mut TraceyNodeGraph,
+        current_time: c_double,
+        current_frame: c_uint,
+    ) -> TraceyResult;
+    pub fn tracey_scene_sync_from_node_graph(scene: *mut TraceyScene) -> TraceyResult;
+    pub fn tracey_node_graph_get_connection_count(graph: *mut TraceyNodeGraph) -> c_uint;
+    pub fn tracey_node_graph_get_connection(
+        graph: *mut TraceyNodeGraph,
+        index: c_uint,
+        out_from_node: *mut u64,
+        out_to_node: *mut u64,
+        out_from_port: *mut *const c_char,
+        out_to_port: *mut *const c_char,
+    ) -> TraceyResult;
+    pub fn tracey_node_graph_get_node_count(graph: *mut TraceyNodeGraph) -> c_uint;
+    pub fn tracey_node_graph_get_all_nodes(
+        graph: *mut TraceyNodeGraph,
+        out_node_uids: *mut u64,
+        max_nodes: c_uint,
+    ) -> c_uint;
+
+    // Nested Graph Navigation (Phase 2)
+    pub fn tracey_actor_node_get_geometry_network(node: *mut TraceyNode) -> *mut TraceyNodeGraph;
+    pub fn tracey_actor_node_set_transform(
+        node: *mut TraceyNode,
+        transform: *const TraceyTransform,
+    ) -> TraceyResult;
+    pub fn tracey_actor_node_get_transform(
+        node: *mut TraceyNode,
+        out_transform: *mut TraceyTransform,
+    ) -> TraceyResult;
+    pub fn tracey_node_graph_get_parent(graph: *mut TraceyNodeGraph) -> *mut TraceyNodeGraph;
+    pub fn tracey_node_graph_get_owner_node(graph: *mut TraceyNodeGraph) -> u64;
+    pub fn tracey_node_graph_is_scene_level(graph: *mut TraceyNodeGraph) -> c_int;
+    pub fn tracey_node_graph_get_context(graph: *mut TraceyNodeGraph) -> TraceyGraphContext;
 
     // Error Handling
     pub fn tracey_get_last_error() -> *const c_char;
