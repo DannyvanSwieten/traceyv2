@@ -1,17 +1,8 @@
 import { Component, createSignal, Show } from 'solid-js';
-import { invoke } from '@tauri-apps/api/core';
+import * as api from '../../lib/api';
 import './AddObjectMenu.css';
 
-interface Actor {
-  id: number;
-  name: string;
-  transform: {
-    position: { x: number; y: number; z: number };
-    rotation: { w: number; x: number; y: number; z: number };
-    scale: { x: number; y: number; z: number };
-  };
-  children: number[];
-}
+type Actor = api.Actor;
 
 interface AddObjectMenuProps {
   onObjectAdded: (actor: Actor) => void;
@@ -21,21 +12,15 @@ export const AddObjectMenu: Component<AddObjectMenuProps> = (props) => {
   const [isOpen, setIsOpen] = createSignal(false);
   const [isAdding, setIsAdding] = createSignal(false);
 
-  const addPrimitive = async (
-    type: string,
-    params: Record<string, unknown>
-  ) => {
+  const addPrimitive = async (params: api.PrimitiveParams) => {
     if (isAdding()) return;
 
     setIsAdding(true);
     setIsOpen(false);
 
     try {
-      const name = `${type}_${Date.now()}`;
-      const actor = await invoke<Actor>('add_primitive', {
-        name,
-        params: { type, ...params },
-      });
+      const name = `${params.type}_${Date.now()}`;
+      const actor = await api.addPrimitive(name, params);
       props.onObjectAdded(actor);
     } catch (error) {
       console.error('Failed to add primitive:', error);
@@ -58,7 +43,7 @@ export const AddObjectMenu: Component<AddObjectMenuProps> = (props) => {
         <div class="add-object-dropdown">
           <button
             class="dropdown-item"
-            onClick={() => addPrimitive('cube', { size: 1.0 })}
+            onClick={() => addPrimitive({ type: 'cube', size: 1.0 })}
           >
             <span class="item-icon">&#x25A0;</span>
             Cube
@@ -66,7 +51,7 @@ export const AddObjectMenu: Component<AddObjectMenuProps> = (props) => {
           <button
             class="dropdown-item"
             onClick={() =>
-              addPrimitive('sphere', { radius: 1.0, segments: 16, rings: 16 })
+              addPrimitive({ type: 'sphere', radius: 1.0, segments: 16, rings: 16 })
             }
           >
             <span class="item-icon">&#x25CF;</span>
@@ -75,7 +60,8 @@ export const AddObjectMenu: Component<AddObjectMenuProps> = (props) => {
           <button
             class="dropdown-item"
             onClick={() =>
-              addPrimitive('torus', {
+              addPrimitive({
+                type: 'torus',
                 major_radius: 1.0,
                 minor_radius: 0.3,
                 major_segments: 32,
@@ -88,7 +74,7 @@ export const AddObjectMenu: Component<AddObjectMenuProps> = (props) => {
           </button>
           <button
             class="dropdown-item"
-            onClick={() => addPrimitive('plane', { width: 2.0, depth: 2.0 })}
+            onClick={() => addPrimitive({ type: 'plane', width: 2.0, depth: 2.0 })}
           >
             <span class="item-icon">&#x25AD;</span>
             Plane
@@ -96,7 +82,7 @@ export const AddObjectMenu: Component<AddObjectMenuProps> = (props) => {
           <button
             class="dropdown-item"
             onClick={() =>
-              addPrimitive('cylinder', { radius: 0.5, height: 1.0, segments: 32 })
+              addPrimitive({ type: 'cylinder', radius: 0.5, height: 1.0, segments: 32 })
             }
           >
             <span class="item-icon">&#x25AF;</span>
@@ -105,7 +91,7 @@ export const AddObjectMenu: Component<AddObjectMenuProps> = (props) => {
           <button
             class="dropdown-item"
             onClick={() =>
-              addPrimitive('cone', { radius: 0.5, height: 1.0, segments: 32 })
+              addPrimitive({ type: 'cone', radius: 0.5, height: 1.0, segments: 32 })
             }
           >
             <span class="item-icon">&#x25B2;</span>

@@ -1,30 +1,10 @@
 import { Component, createSignal, createEffect, For, Show, Accessor } from 'solid-js';
-import { invoke } from '@tauri-apps/api/core';
+import * as api from '../../lib/api';
 import './ActorProperties.css';
 
-export interface InstanceInfo {
-  object_ref: string;
-  shader_id: string;
-  has_local_transform: boolean;
-  local_transform?: {
-    position: { x: number; y: number; z: number };
-    rotation: { w: number; x: number; y: number; z: number };
-    scale: { x: number; y: number; z: number };
-  };
-}
-
-export interface Transform {
-  position: { x: number; y: number; z: number };
-  rotation: { w: number; x: number; y: number; z: number };
-  scale: { x: number; y: number; z: number };
-}
-
-export interface Actor {
-  id: number;
-  name: string;
-  transform: Transform;
-  children: number[];
-}
+export type InstanceInfo = api.InstanceInfo;
+export type Transform = api.Transform;
+export type Actor = api.Actor;
 
 interface ActorPropertiesProps {
   selectedActorId: Accessor<number | null>;
@@ -51,9 +31,7 @@ export const ActorProperties: Component<ActorPropertiesProps> = (props) => {
 
     setIsLoading(true);
     try {
-      const actorInstances = await invoke<InstanceInfo[]>('get_actor_instances', {
-        actorId: id,
-      });
+      const actorInstances = await api.getActorInstances(id);
       setInstances(actorInstances);
     } catch (error) {
       console.error('Failed to load actor instances:', error);
@@ -77,10 +55,7 @@ export const ActorProperties: Component<ActorPropertiesProps> = (props) => {
     newTransform[field][axis] = value;
 
     try {
-      await invoke('set_actor_transform', {
-        actorId: actor.id,
-        transform: newTransform,
-      });
+      await api.setActorTransform(actor.id, newTransform);
       props.onTransformChange?.(actor.id, newTransform);
     } catch (error) {
       console.error('Failed to update transform:', error);

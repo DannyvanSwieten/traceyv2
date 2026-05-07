@@ -1,24 +1,10 @@
 import { Component, For, Show, createSignal, createEffect, Accessor } from 'solid-js';
-import { invoke } from '@tauri-apps/api/core';
+import * as api from '../../lib/api';
 import { ImportedAsset } from '../../stores/assets';
 import './ResourcesBrowser.css';
 
-interface MeshInfo {
-  name: string;
-  vertex_count: number;
-  triangle_count: number;
-  has_indices: boolean;
-  has_normals: boolean;
-  has_uvs: boolean;
-}
-
-interface TextureInfo {
-  id: string;
-  width: number;
-  height: number;
-  channels: number;
-  mime_type: string;
-}
+type MeshInfo = api.MeshInfo;
+type TextureInfo = api.TextureInfo;
 
 type TabType = 'scenes' | 'meshes' | 'textures';
 
@@ -41,8 +27,8 @@ export const ResourcesBrowser: Component<ResourcesBrowserProps> = (props) => {
       setIsLoading(true);
       try {
         const [loadedMeshes, loadedTextures] = await Promise.all([
-          invoke<MeshInfo[]>('get_all_meshes'),
-          invoke<TextureInfo[]>('get_all_textures'),
+          api.getAllMeshes(),
+          api.getAllTextures(),
         ]);
         setMeshes(loadedMeshes);
         setTextures(loadedTextures);

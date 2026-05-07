@@ -1,0 +1,88 @@
+cmake_minimum_required(VERSION 3.16)
+
+set(TRACEY_EDITOR_FRONTEND_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../frontend")
+# During Phase 1 the frontend still lives at editor/ (root), not editor/frontend/.
+# We probe both — frontend/ takes precedence once Phase 5 reorganizes the tree.
+if(NOT EXISTS "${TRACEY_EDITOR_FRONTEND_DIR}/package.json")
+    set(TRACEY_EDITOR_FRONTEND_DIR "${CMAKE_CURRENT_SOURCE_DIR}/..")
+endif()
+
+# nlohmann::json single-header is bundled inside deps/tinygltf — reuse it
+# instead of pulling another copy.
+add_library(tracey_editor_json INTERFACE)
+target_include_directories(tracey_editor_json INTERFACE
+    "${CMAKE_SOURCE_DIR}/deps/tinygltf")
+
+# ─── Editor executable ──────────────────────────────────────────────────────
+set(TRACEY_EDITOR_SRCS
+    main.cpp
+    editor_server.cpp
+    render_engine.cpp
+    scene_state.cpp)
+
+if(APPLE)
+    add_executable(tracey_editor
+        ${TRACEY_EDITOR_SRCS}
+        platform/platform_macos.mm)
+
+    set_source_files_properties(platform/platform_macos.mm
+        PROPERTIES COMPILE_FLAGS "-x objective-c++")
+
+    target_link_libraries(tracey_editor PRIVATE
+        tracey
+        tracey_editor_json
+        glm::glm
+        "-framework Cocoa"
+        "-framework WebKit"
+        "-framework QuartzCore"
+    )
+
+    set_target_properties(tracey_editor PROPERTIES
+        MACOSX_BUNDLE TRUE
+        MACOSX_BUNDLE_BUNDLE_NAME "Tracey Editor"
+        MACOSX_BUNDLE_BUNDLE_VERSION "1.0.0"
+        MACOSX_BUNDLE_SHORT_VERSION_STRING "1.0"
+        MACOSX_BUNDLE_GUI_IDENTIFIER "com.tracey.editor")
+
+    if(EXISTS "${TRACEY_EDITOR_FRONTEND_DIR}/package.json")
+        add_custom_command(TARGET tracey_editor POST_BUILD
+            COMMAND npm install --silent
+            COMMAND npm run build
+            COMMAND ${CMAKE_COMMAND} -E rm -rf
+                "$<TARGET_BUNDLE_CONTENT_DIR:tracey_editor>/Resources/editor-dist"
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "${TRACEY_EDITOR_FRONTEND_DIR}/dist"
+                "$<TARGET_BUNDLE_CONTENT_DIR:tracey_editor>/Resources/editor-dist"
+            WORKING_DIRECTORY "${TRACEY_EDITOR_FRONTEND_DIR}"
+            COMMENT "Building frontend and bundling into Tracey Editor.app")
+    endif()
+
+elseif(WIN32)
+    add_executable(tracey_editor WIN32
+        ${TRACEY_EDITOR_SRCS}
+        platform/platform_windows.cpp)
+
+    target_link_libraries(tracey_editor PRIVATE
+        tracey
+        tracey_editor_json
+        glm::glm
+        # WebView2Loader, etc. — to be added when the Windows impl is ported.
+    )
+
+    if(EXISTS "${TRACEY_EDITOR_FRONTEND_DIR}/package.json")
+        add_custom_command(TARGET tracey_editor POST_BUILD
+            COMMAND npm install --silent
+            COMMAND npm run build
+            COMMAND ${CMAKE_COMMAND} -E rm -rf
+                "$<TARGET_FILE_DIR:tracey_editor>/editor-dist"
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "${TRACEY_EDITOR_FRONTEND_DIR}/dist"
+                "$<TARGET_FILE_DIR:tracey_editor>/editor-dist"
+            WORKING_DIRECTORY "${TRACEY_EDITOR_FRONTEND_DIR}"
+            COMMENT "Building frontend and copying alongside tracey_editor.exe")
+    endif()
+
+else()
+    message(WARNING
+        "tracey_editor: no native webview implementation for this platform yet.")
+endif()

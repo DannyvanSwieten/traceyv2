@@ -246,10 +246,16 @@ if(PKG_CONFIG_FOUND)
     )
 endif()
 
-# Optional: Build C API for FFI (Rust/Tauri editor)
+# Optional: Build C API for FFI (still available for external consumers)
 option(BUILD_C_API "Build C API shared library for FFI" ON)
 if(BUILD_C_API)
     add_subdirectory(src/c_api)
+endif()
+
+# Native C++ editor (replaces Rust+Tauri editor)
+option(BUILD_EDITOR "Build the native C++ editor" ON)
+if(BUILD_EDITOR)
+    add_subdirectory(editor/native)
 endif()
 
 add_subdirectory(./examples)

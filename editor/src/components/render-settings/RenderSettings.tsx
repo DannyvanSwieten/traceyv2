@@ -1,5 +1,5 @@
 import { Component, createSignal, onMount } from 'solid-js';
-import { invoke } from '@tauri-apps/api/core';
+import * as api from '../../lib/api';
 import './RenderSettings.css';
 
 interface RenderSettingsProps {
@@ -13,8 +13,8 @@ export const RenderSettings: Component<RenderSettingsProps> = (props) => {
 
   onMount(async () => {
     try {
-      const samples = await invoke<number>('get_samples_per_frame');
-      const bounces = await invoke<number>('get_max_bounces');
+      const samples = await api.getSamplesPerFrame();
+      const bounces = await api.getMaxBounces();
       setSamplesPerFrame(samples);
       setMaxBounces(bounces);
     } catch (error) {
@@ -27,7 +27,7 @@ export const RenderSettings: Component<RenderSettingsProps> = (props) => {
   const handleSamplesChange = async (value: number) => {
     setSamplesPerFrame(value);
     try {
-      await invoke('set_samples_per_frame', { samples: value });
+      await api.setSamplesPerFrame(value);
       props.onSettingsChange?.();
     } catch (error) {
       console.error('Failed to set samples per frame:', error);
@@ -37,7 +37,7 @@ export const RenderSettings: Component<RenderSettingsProps> = (props) => {
   const handleBouncesChange = async (value: number) => {
     setMaxBounces(value);
     try {
-      await invoke('set_max_bounces', { bounces: value });
+      await api.setMaxBounces(value);
       props.onSettingsChange?.();
     } catch (error) {
       console.error('Failed to set max bounces:', error);

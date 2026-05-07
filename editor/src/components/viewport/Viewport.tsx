@@ -1,5 +1,5 @@
 import { Component, createSignal, createEffect, onMount, onCleanup, Accessor } from 'solid-js';
-import { invoke } from '@tauri-apps/api/core';
+import * as api from '../../lib/api';
 import './Viewport.css';
 
 interface Camera {
@@ -9,13 +9,6 @@ interface Camera {
   near_plane: number;
   far_plane: number;
   aspect_ratio: number;
-}
-
-interface RenderResult {
-  width: number;
-  height: number;
-  sample_count: number;
-  render_time_ms: number;
 }
 
 export interface CameraPosition {
@@ -136,15 +129,12 @@ export const Viewport: Component<ViewportProps> = (props) => {
 
     isRendering = true;
     try {
-      const result = (await invoke('render_frame', {
-        camera,
-        clearAccumulation: clear,
-      })) as RenderResult;
+      const result = await api.renderFrame(camera, clear);
 
       setRenderTime(result.render_time_ms);
       setSampleCount(result.sample_count);
 
-      const pixels = new Uint8Array(await invoke('get_render_pixels'));
+      const pixels = await api.getRenderPixels();
 
       if (canvasRef) {
         const ctx = canvasRef.getContext('2d');
@@ -275,12 +265,12 @@ export const Viewport: Component<ViewportProps> = (props) => {
     try {
       setSceneLoaded(false);
       setStatus('Loading scene...');
-      await invoke('import_gltf', { path: scenePath });
+      await api.importGltf(scenePath);
 
       setStatus('Compiling scene...');
-      await invoke('compile_scene');
+      await api.compileScene();
 
-      const [width, height] = (await invoke('get_viewport_resolution')) as [number, number];
+      const [width, height] = await api.getViewportResolution();
 
       if (canvasRef) {
         canvasRef.width = width;

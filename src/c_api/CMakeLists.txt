@@ -27,22 +27,7 @@ set_target_properties(tracey_c_api PROPERTIES
     SOVERSION 1
 )
 
-# Install library and headers to editor directory for Rust FFI
-set(EDITOR_DIR "${CMAKE_SOURCE_DIR}/editor")
-
-install(TARGETS tracey_c_api
-    LIBRARY DESTINATION ${EDITOR_DIR}/src-tauri/libs
-    RUNTIME DESTINATION ${EDITOR_DIR}/src-tauri/libs
-    ARCHIVE DESTINATION ${EDITOR_DIR}/src-tauri/libs
-)
-
-install(FILES
-    tracey_api.h
-    tracey_types.h
-    DESTINATION ${EDITOR_DIR}/src-tauri/include
-)
-
-# Also install to system directories (optional, for standalone use)
+# Install to system directories (for external FFI consumers).
 install(TARGETS tracey_c_api
     LIBRARY DESTINATION lib
     RUNTIME DESTINATION bin

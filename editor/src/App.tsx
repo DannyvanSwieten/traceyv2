@@ -1,7 +1,5 @@
 import { Component, createSignal, onMount, onCleanup } from 'solid-js';
-import { invoke } from '@tauri-apps/api/core';
-import { listen, UnlistenFn } from '@tauri-apps/api/event';
-import { open } from '@tauri-apps/plugin-dialog';
+import * as api from './lib/api';
 import { Viewport, ViewportHandle, CameraPosition } from './components/viewport/Viewport';
 import {
   SceneHierarchy,
@@ -28,8 +26,8 @@ const App: Component = () => {
     z: 3,
   });
   let viewportRef: ViewportHandle | undefined;
-  let unlistenImport: UnlistenFn | undefined;
-  let unlistenExport: UnlistenFn | undefined;
+  let unlistenImport: (() => void) | undefined;
+  let unlistenExport: (() => void) | undefined;
 
   const loadScene = async (path: string) => {
     if (isLoading() || path === currentScene()) return;
@@ -44,7 +42,7 @@ const App: Component = () => {
         await viewportRef.loadScene(path);
       }
 
-      const loadedActors = await invoke<Actor[]>('get_all_actors');
+      const loadedActors = await api.getAllActors();
       setActors(loadedActors);
     } catch (error) {
       console.error('Failed to load scene:', error);
@@ -55,17 +53,11 @@ const App: Component = () => {
 
   const handleImport = async () => {
     try {
-      const selected = await open({
-        multiple: false,
-        filters: [
-          {
-            name: 'glTF',
-            extensions: ['gltf', 'glb'],
-          },
-        ],
-      });
+      const selected = await api.openFileDialog('Import glTF', [
+        { description: 'glTF', extensions: ['gltf', 'glb'] },
+      ]);
 
-      if (selected && typeof selected === 'string') {
+      if (selected) {
         addAsset(selected);
         await loadScene(selected);
       }
@@ -84,7 +76,7 @@ const App: Component = () => {
 
     // Recompile scene and re-render
     try {
-      await invoke('compile_scene');
+      await api.compileScene();
       if (viewportRef) {
         viewportRef.render();
       }
@@ -102,7 +94,7 @@ const App: Component = () => {
 
     // Compile scene and render
     try {
-      await invoke('compile_scene');
+      await api.compileScene();
       if (viewportRef) {
         viewportRef.render();
       }
@@ -111,13 +103,13 @@ const App: Component = () => {
     }
   };
 
-  onMount(async () => {
+  onMount(() => {
     console.log('Setting up menu event listeners...');
-    unlistenImport = await listen('menu-import', () => {
+    unlistenImport = api.listen('menu-import', () => {
       console.log('menu-import event received!');
       handleImport();
     });
-    unlistenExport = await listen('menu-export', () => {
+    unlistenExport = api.listen('menu-export', () => {
       console.log('menu-export event received!');
     });
     console.log('Menu event listeners set up');

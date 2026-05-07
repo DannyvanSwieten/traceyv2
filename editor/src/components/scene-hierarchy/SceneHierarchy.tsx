@@ -1,16 +1,8 @@
 import { Component, For, Show, createSignal } from 'solid-js';
+import type { Actor as ApiActor } from '../../lib/api';
 import './SceneHierarchy.css';
 
-export interface Actor {
-  id: number;
-  name: string;
-  transform: {
-    position: { x: number; y: number; z: number };
-    rotation: { x: number; y: number; z: number; w: number };
-    scale: { x: number; y: number; z: number };
-  };
-  children: number[];
-}
+export type Actor = ApiActor;
 
 interface TreeNode {
   actor: Actor;

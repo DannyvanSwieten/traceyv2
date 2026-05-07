@@ -1,5 +1,16 @@
+# C++/CMake build directories
 build/
-*ppm
+build-*/
+
+# Rust target dirs (kept in case examples or external consumers add Cargo)
 target/
-editor/src-tauri/target/
+
+# Per-image scratch output
+*ppm
+
+# macOS metadata
+.DS_Store
+
+# Frontend
 editor/node_modules/
+editor/dist/
