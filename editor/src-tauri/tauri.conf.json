@@ -1,0 +1,41 @@
+{
+  "productName": "Tracey Editor",
+  "version": "0.1.0",
+  "identifier": "com.tracey.editor",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:5173",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "macOS": {
+      "entitlements": "entitlements.plist",
+      "exceptionDomain": null,
+      "frameworks": [],
+      "providerShortName": null,
+      "signingIdentity": null,
+      "minimumSystemVersion": "10.13"
+    }
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Tracey Editor",
+        "width": 1280,
+        "height": 720,
+        "resizable": true,
+        "fullscreen": false,
+        "transparent": true,
+        "dragDropEnabled": false
+      }
+    ],
+    "macOSPrivateApi": true,
+    "security": {
+      "csp": null
+    }
+  }
+}
