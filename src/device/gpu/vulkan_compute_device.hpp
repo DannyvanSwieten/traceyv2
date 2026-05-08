@@ -33,6 +33,11 @@ namespace tracey
         VkCommandPool commandPool() const { return m_commandPool; }
         VkQueue computeQueue() const { return m_vulkanContext.computeQueue(); }
 
+        // Direct access to the underlying VulkanContext, needed by the editor
+        // to construct a VulkanPresenter against the same instance/device.
+        VulkanContext &context() { return m_vulkanContext; }
+        const VulkanContext &context() const { return m_vulkanContext; }
+
         // Get fixed samplers for bindless texture support
         VkSampler linearSampler() const { return m_linearSampler; }
         VkSampler nearestSampler() const { return m_nearestSampler; }

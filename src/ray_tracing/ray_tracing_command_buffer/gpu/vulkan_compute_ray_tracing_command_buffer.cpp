@@ -121,7 +121,7 @@ namespace tracey
             uint32_t rayCount = width * height;
             uint32_t workGroups = (rayCount + 255) / 256;
 
-            WavefrontPushConstants pushConstants{width, height};
+            WavefrontPushConstants pushConstants{width, height, 0u, sampleCount};
 
             // Initialize buffers once at the start
             initializeWavefrontBuffers(wavefront);
@@ -129,6 +129,8 @@ namespace tracey
             // Multi-sample loop for anti-aliasing / Monte Carlo integration
             for (size_t sample = 0; sample < sampleCount; ++sample)
             {
+                pushConstants.sampleIndex = static_cast<uint32_t>(sample);
+
                 // Reset hit info for this sample
                 clearHitInfoBuffer(wavefront);
 

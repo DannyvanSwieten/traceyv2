@@ -62,6 +62,9 @@ public:
     bool path_tracer_ready() const { return m_path_tracer != nullptr; }
     bool compiled_scene_ready() const { return m_compiled_scene != nullptr; }
 
+    tracey::Device& device() { return *m_device; }
+    tracey::PathTracer* path_tracer() { return m_path_tracer.get(); }
+
 private:
     RenderConfig m_config;
     std::unique_ptr<tracey::Device> m_device;

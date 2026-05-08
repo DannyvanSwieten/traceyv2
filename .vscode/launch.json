@@ -7,17 +7,29 @@
         {
             "type": "lldb",
             "request": "launch",
-            "name": "Blas Example",
-            "program": "${workspaceFolder}/build/Debug/examples/blas",
+            "name": "Tracey Editor",
+            "program": "${workspaceFolder}/build/editor/native/tracey_editor.app/Contents/MacOS/tracey_editor",
             "args": [],
             "cwd": "${workspaceFolder}",
-            "preLaunchTask": "CMake: build"
+            "preLaunchTask": "Build Tracey Editor"
         },
         {
             "type": "lldb",
             "request": "launch",
-            "name": "Blas Example Release",
-            "program": "${workspaceFolder}/build/Release/examples/blas",
+            "name": "Tracey Editor (Dev)",
+            "program": "${workspaceFolder}/build/editor/native/tracey_editor.app/Contents/MacOS/tracey_editor",
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "TRACEY_EDITOR_DEV_URL": "http://localhost:5173"
+            },
+            "preLaunchTask": "Build Tracey Editor and Start Dev Server"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Blas Example",
+            "program": "${workspaceFolder}/build/Debug/examples/blas",
             "args": [],
             "cwd": "${workspaceFolder}",
             "preLaunchTask": "CMake: build"
@@ -52,26 +64,8 @@
         {
             "type": "lldb",
             "request": "launch",
-            "name": "Path Tracer Example Release",
-            "program": "${workspaceFolder}/build/Release/examples/path_tracer",
-            "args": [],
-            "cwd": "${workspaceFolder}",
-            "preLaunchTask": "CMake: build"
-        },
-        {
-            "type": "lldb",
-            "request": "launch",
             "name": "Device Setup Example",
             "program": "${workspaceFolder}/build/Debug/examples/device_api",
-            "args": [],
-            "cwd": "${workspaceFolder}",
-            "preLaunchTask": "CMake: build"
-        },
-        {
-            "type": "lldb",
-            "request": "launch",
-            "name": "Device Setup Example Release",
-            "program": "${workspaceFolder}/build/Release/examples/device_api",
             "args": [],
             "cwd": "${workspaceFolder}",
             "preLaunchTask": "CMake: build"
@@ -102,19 +96,6 @@
             "args": [],
             "cwd": "${workspaceFolder}",
             "preLaunchTask": "CMake: build"
-        },
-        {
-            "type": "lldb",
-            "request": "launch",
-            "name": "Tracey Editor (Debug Rust + C++)",
-            "program": "${workspaceFolder}/editor/src-tauri/target/debug/tracey-editor",
-            "args": [],
-            "cwd": "${workspaceFolder}/editor",
-            "env": {
-                "DYLD_LIBRARY_PATH": "${workspaceFolder}/editor/src-tauri/libs:/usr/local/lib"
-            },
-            "sourceLanguages": ["rust", "cpp"],
-            "preLaunchTask": "Build and Start Editor"
-        },
+        }
     ]
 }

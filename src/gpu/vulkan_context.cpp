@@ -107,7 +107,9 @@ namespace tracey
             fn(instance, messenger, nullptr);
     }
 
-    VulkanContext::VulkanContext()
+    VulkanContext::VulkanContext() : VulkanContext(VulkanContextConfig{}) {}
+
+    VulkanContext::VulkanContext(VulkanContextConfig config) : m_config(config)
     {
 #ifndef NDEBUG
         m_enableValidation = true;
@@ -140,7 +142,8 @@ namespace tracey
         }
     }
 
-    VulkanContext::VulkanContext(VulkanContext &&other) : m_instance(other.m_instance),
+    VulkanContext::VulkanContext(VulkanContext &&other) : m_config(other.m_config),
+                                                          m_instance(other.m_instance),
                                                           m_physicalDevice(other.m_physicalDevice),
                                                           m_device(other.m_device),
                                                           m_computeQueueFamilyIndex(other.m_computeQueueFamilyIndex),
@@ -178,6 +181,25 @@ namespace tracey
         if (m_enableValidation && hasInstanceExtension(VK_EXT_DEBUG_UTILS_EXTENSION_NAME))
         {
             extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+        }
+
+        // Surface extensions for windowed presentation. Only enabled when the
+        // caller asked for a present-capable context. Extension name macros
+        // for platform-specific surfaces aren't defined by volk by default
+        // (they require VK_USE_PLATFORM_* before include), so use the stable
+        // string names directly.
+        if (m_config.enablePresentation)
+        {
+            if (hasInstanceExtension(VK_KHR_SURFACE_EXTENSION_NAME))
+                extensions.push_back(VK_KHR_SURFACE_EXTENSION_NAME);
+#ifdef __APPLE__
+            if (hasInstanceExtension("VK_EXT_metal_surface"))
+                extensions.push_back("VK_EXT_metal_surface");
+#endif
+#ifdef _WIN32
+            if (hasInstanceExtension("VK_KHR_win32_surface"))
+                extensions.push_back("VK_KHR_win32_surface");
+#endif
         }
 
         // Validation layer (only if present)
@@ -317,6 +339,11 @@ namespace tracey
         // MoltenVK exposes VK_KHR_portability_subset; some apps need to enable it explicitly.
         devExts.push_back("VK_KHR_portability_subset");
 #endif
+
+        if (m_config.enablePresentation)
+        {
+            devExts.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+        }
 
         createInfo.enabledExtensionCount = static_cast<uint32_t>(devExts.size());
         createInfo.ppEnabledExtensionNames = devExts.empty() ? nullptr : devExts.data();

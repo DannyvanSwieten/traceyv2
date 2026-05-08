@@ -3,6 +3,7 @@
 #include "render_engine.hpp"
 
 #include <cstdio>
+#include <cstdlib>
 #include <exception>
 #include <filesystem>
 #include <string>
@@ -28,6 +29,13 @@ static fs::path executable_dir() {
 }
 
 static std::string find_ui_path() {
+    // Dev override: TRACEY_EDITOR_DEV_URL skips the bundled UI lookup so frontend
+    // edits hot-reload via Vite without a C++ rebuild. The launch.json
+    // "Tracey Editor (Dev)" config sets this.
+    if (const char* dev_url = std::getenv("TRACEY_EDITOR_DEV_URL")) {
+        if (*dev_url) return dev_url;
+    }
+
     fs::path exe_dir = executable_dir();
 
     fs::path bundle = exe_dir / ".." / "Resources" / "editor-dist" / "index.html";
@@ -74,8 +82,11 @@ int main(int /*argc*/, char** /*argv*/) {
     config.width = 1280;
     config.height = 720;
     config.shader_dir = find_shader_dir();
+    // outputImage is the LDR tonemapped snapshot the resolve shader writes
+    // into; the linear running mean lives in the accumulator. We blit
+    // outputImage directly to the swapchain — no CPU tonemap needed.
     config.hdr_output = false;
-    config.samples_per_frame = 16;
+    config.samples_per_frame = 4;  // smaller batches; accumulator builds across frames
     config.max_bounces = 8;
 
     std::printf("Shader dir: %s\n", config.shader_dir.string().c_str());
@@ -97,14 +108,21 @@ int main(int /*argc*/, char** /*argv*/) {
         return server->handle_command(json);
     });
 
+    // Continuous render tick: CVDisplayLink fires this on the main thread once
+    // per refresh. The server short-circuits until the viewport is active and
+    // the scene is compiled.
+    window->set_render_tick([&server]() { server->render_tick(); });
+
     const std::string ui_path = find_ui_path();
     std::printf("Loading UI from: %s\n", ui_path.c_str());
     window->load_ui(ui_path);
     window->show();
+    window->start_render_tick();
 
     while (!window->should_close()) {
         window->poll_events();
     }
 
+    window->stop_render_tick();
     return 0;
 }

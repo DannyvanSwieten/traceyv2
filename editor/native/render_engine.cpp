@@ -8,7 +8,10 @@
 namespace tracey_editor {
 
 RenderEngine::RenderEngine(RenderConfig config) : m_config(std::move(config)) {
-    auto* dev = tracey::createDevice(tracey::DeviceType::Gpu, tracey::DeviceBackend::Compute);
+    // Present-capable device so the editor can construct a swapchain against
+    // the same VulkanContext used by the path tracer.
+    auto* dev = tracey::createDevice(tracey::DeviceType::Gpu, tracey::DeviceBackend::Compute,
+                                     /*enablePresentation=*/true);
     if (!dev)
         throw std::runtime_error("Failed to create rendering device");
     m_device.reset(dev);

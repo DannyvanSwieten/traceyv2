@@ -18,11 +18,19 @@ namespace tracey
 
     Device *createDevice(DeviceType type, DeviceBackend backend)
     {
+        return createDevice(type, backend, /*enablePresentation=*/false);
+    }
+
+    Device *createDevice(DeviceType type, DeviceBackend backend, bool enablePresentation)
+    {
+        (void)backend;
         if (type == DeviceType::Cpu)
         {
             return new CpuComputeDevice();
         }
 
-        return new VulkanComputeDevice(VulkanContext{});
+        VulkanContextConfig cfg;
+        cfg.enablePresentation = enablePresentation;
+        return new VulkanComputeDevice(VulkanContext{cfg});
     }
 }

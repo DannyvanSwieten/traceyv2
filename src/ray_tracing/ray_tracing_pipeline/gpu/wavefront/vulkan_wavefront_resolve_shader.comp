@@ -4,6 +4,8 @@ layout (local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 layout(push_constant) uniform PushConstants {
     uint width;
     uint height;
+    uint sampleIndex;
+    uint samplesPerFrame;
 } pc;
 
 uvec2 getResolution() {

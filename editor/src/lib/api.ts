@@ -199,6 +199,13 @@ export const importGltf = (path: string) => send<null>('import_gltf', { path });
 export const exportImage = (path: string, format: string) =>
   send<null>('export_image', { path, format });
 
+// ─── Viewport surface (native overlay) ─────────────────────────────────────
+
+export const setViewportRect = (x: number, y: number, width: number, height: number) =>
+  send<null>('set_viewport_rect', { x, y, width, height });
+export const setViewportVisible = (visible: boolean) =>
+  send<null>('set_viewport_visible', { visible });
+
 // ─── Native dialogs ────────────────────────────────────────────────────────
 
 export const openFileDialog = (title: string, filters?: FileFilter[]) =>

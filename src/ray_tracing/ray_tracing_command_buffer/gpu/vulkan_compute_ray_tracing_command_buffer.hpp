@@ -32,11 +32,19 @@ namespace tracey
         // Wavefront Pipeline Execution Helpers
         // ============================================================================
 
-        /// Push constants passed to all wavefront shader stages
+        /// Push constants passed to all wavefront shader stages.
+        ///
+        /// `sampleIndex` is the 0-based sample number within the current
+        /// `traceRays` batch (i.e. ranges 0..samplesPerFrame-1). The resolve
+        /// shader uses it together with `currentSample` (a uniform that holds
+        /// the 1-based render-call count) to compute the global sample number
+        /// for proper running-average accumulation across frames.
         struct WavefrontPushConstants
         {
             uint32_t width;
             uint32_t height;
+            uint32_t sampleIndex;
+            uint32_t samplesPerFrame;
         };
 
         /// Initializes payload and hit info buffers to their default values.

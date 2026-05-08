@@ -163,6 +163,54 @@ namespace tracey
         }
     }
 
+    void VulkanImage2D::uploadPixels(VulkanComputeDevice &device, const void *data, size_t dataSize,
+                                     VkImageLayout finalLayout)
+    {
+        // Reuse the construction-time staging path. This is a one-shot blocking
+        // upload — fine for occasional refresh of a small display image, not
+        // for high-throughput streaming.
+        uploadData(device, data, dataSize);
+        if (finalLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) return;
+
+        // Single-time transition to the requested final layout.
+        VkCommandBufferAllocateInfo cmdAllocInfo{};
+        cmdAllocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        cmdAllocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        cmdAllocInfo.commandPool = device.commandPool();
+        cmdAllocInfo.commandBufferCount = 1;
+        VkCommandBuffer cmd;
+        vkAllocateCommandBuffers(m_device, &cmdAllocInfo, &cmd);
+
+        VkCommandBufferBeginInfo begin{};
+        begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        vkBeginCommandBuffer(cmd, &begin);
+
+        VkImageMemoryBarrier b{};
+        b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        b.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        b.newLayout = finalLayout;
+        b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        b.image = m_image;
+        b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        b.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        b.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
+
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr, 1,
+                             &b);
+        vkEndCommandBuffer(cmd);
+
+        VkSubmitInfo s{};
+        s.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        s.commandBufferCount = 1;
+        s.pCommandBuffers = &cmd;
+        vkQueueSubmit(device.computeQueue(), 1, &s, VK_NULL_HANDLE);
+        vkQueueWaitIdle(device.computeQueue());
+        vkFreeCommandBuffers(m_device, device.commandPool(), 1, &cmd);
+    }
+
     void VulkanImage2D::uploadData(VulkanComputeDevice &device, const void *data, size_t dataSize)
     {
         // Create staging buffer

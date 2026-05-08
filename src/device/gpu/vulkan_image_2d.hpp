@@ -22,6 +22,13 @@ namespace tracey
 
         char *data() override;
 
+        // Re-upload pixel data into an existing image. Synchronous (blocks
+        // until upload completes). Leaves the image in `finalLayout` for the
+        // next consumer (default: VK_IMAGE_LAYOUT_GENERAL, matching what
+        // VulkanPresenter expects from a blit source).
+        void uploadPixels(VulkanComputeDevice &device, const void *data, size_t dataSize,
+                          VkImageLayout finalLayout = VK_IMAGE_LAYOUT_GENERAL);
+
         VkImage vkImage() const { return m_image; }
         VkDeviceMemory vkDeviceMemory() const { return m_memory; }
         VkImageView vkImageView() const { return m_imageView; }

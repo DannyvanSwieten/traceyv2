@@ -97,4 +97,5 @@ namespace tracey
     };
 
     Device *createDevice(DeviceType type, DeviceBackend backend);
+    Device *createDevice(DeviceType type, DeviceBackend backend, bool enablePresentation);
 }

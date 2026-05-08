@@ -76,6 +76,10 @@ add_library(tracey
 
     src/gpu/vulkan_context.hpp
     src/gpu/vulkan_context.cpp
+    src/gpu/vulkan_presenter.hpp
+    src/gpu/vulkan_presenter.cpp
+    src/gpu/vulkan_surface_factory.hpp
+    src/gpu/vulkan_surface_factory.cpp
     # src/gpu/shader_compiler.hpp
     # src/gpu/shader_compiler.cpp
 

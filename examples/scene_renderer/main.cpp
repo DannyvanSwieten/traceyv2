@@ -6,6 +6,7 @@
 #include "../../src/rendering/path_tracer.hpp"
 #include "../../src/rendering/post_processing.hpp"
 
+#include <algorithm>
 #include <iostream>
 #include <filesystem>
 #include <vector>
@@ -221,31 +222,19 @@ int main(int argc, char *argv[])
     double renderTime = pathTracer.render(compiledScene, camera);
     std::cout << "Ray tracing execution time: " << renderTime << " ms" << std::endl;
 
-    // Readback HDR image
+    // outputImage now holds the resolve shader's tonemap+gamma'd snapshot
+    // (already averaged across samples by the linear accumulator). With
+    // hdrOutput=true the readback is float in [0,1]; we just need to
+    // convert to uint8 for the PPM writer.
     std::vector<float> hdrData(config.width * config.height * 4);
     pathTracer.readback(hdrData.data());
 
-    // Divide by sample count to get average
-    const uint32_t numSamples = 16;
-    float invSamples = 1.0f / float(numSamples);
-    for (size_t i = 0; i < hdrData.size(); i += 4)
-    {
-        hdrData[i + 0] *= invSamples; // R
-        hdrData[i + 1] *= invSamples; // G
-        hdrData[i + 2] *= invSamples; // B
-        // Keep alpha as-is
-    }
-
-    // Tone map to LDR
     std::vector<uint8_t> ldrData(config.width * config.height * 4);
-    tracey::ToneMapSettings toneMapSettings;
-    toneMapSettings.exposure = 1.0f;
-    toneMapSettings.gamma = 2.2f;
-    toneMapSettings.toneMapOperator = tracey::ToneMapSettings::Operator::ACES;
-
-    tracey::PostProcessing::toneMap(hdrData.data(), ldrData.data(),
-                                    config.width, config.height,
-                                    toneMapSettings);
+    for (size_t i = 0; i < hdrData.size(); ++i)
+    {
+        float v = std::clamp(hdrData[i], 0.0f, 1.0f);
+        ldrData[i] = static_cast<uint8_t>(v * 255.0f + 0.5f);
+    }
 
     // Save output
     std::string outputFileName = scenePath.stem().string() + ".ppm";

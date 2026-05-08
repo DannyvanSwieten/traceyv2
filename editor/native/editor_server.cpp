@@ -11,8 +11,15 @@
 #include "scene/scene_object.hpp"
 #include "scene/transform.hpp"
 
+#include "rendering/path_tracer.hpp"
+
+#include <glm/gtc/quaternion.hpp>
+
 #include <json.hpp>
 
+#include <algorithm>
+#include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <exception>
 #include <fstream>
@@ -174,6 +181,141 @@ void EditorServer::broadcast(const std::string& message) {
     if (m_broadcast) m_broadcast(message);
 }
 
+void EditorServer::ensure_viewport_renderer(uint32_t pixel_w, uint32_t pixel_h) {
+    if (!m_window || pixel_w == 0 || pixel_h == 0) return;
+
+    if (!m_viewport) {
+        try {
+            m_viewport = std::make_unique<ViewportRenderer>(
+                m_engine->device(), m_window->gpu_surface(), m_window->gpu_display(),
+                pixel_w, pixel_h);
+            m_viewport_pixel_w = pixel_w;
+            m_viewport_pixel_h = pixel_h;
+        } catch (const std::exception& e) {
+            std::fprintf(stderr, "[viewport] failed to create renderer: %s\n", e.what());
+            m_viewport.reset();
+        }
+        return;
+    }
+
+    if (pixel_w != m_viewport_pixel_w || pixel_h != m_viewport_pixel_h) {
+        m_viewport->resize(pixel_w, pixel_h);
+        m_viewport_pixel_w = pixel_w;
+        m_viewport_pixel_h = pixel_h;
+    }
+}
+
+bool EditorServer::update_camera_from_input(double dt) {
+    if (!m_window) return false;
+    auto& input = m_window->input();
+
+    if (!m_engine->scene().hasCamera()) {
+        // Default camera if scene didn't ship one.
+        tracey::Camera cam;
+        cam.setPosition({0.0f, 0.0f, 3.0f});
+        m_engine->scene().setCamera(cam);
+    }
+    tracey::Camera cam = m_engine->scene().camera();
+
+    if (!m_camera_initialized) {
+        // Decompose existing rotation into yaw/pitch (assumes camera was set
+        // looking down -Z with no roll).
+        m_camera_yaw = 0.0f;
+        m_camera_pitch = 0.0f;
+        m_camera_initialized = true;
+    }
+
+    bool changed = false;
+
+    constexpr float MOUSE_SENSITIVITY = 0.005f;
+    if (input.mouse_left && (input.mouse_dx != 0.0f || input.mouse_dy != 0.0f)) {
+        m_camera_yaw -= input.mouse_dx * MOUSE_SENSITIVITY;
+        m_camera_pitch -= input.mouse_dy * MOUSE_SENSITIVITY;
+        m_camera_pitch = std::clamp(m_camera_pitch,
+                                    -1.5707f + 0.01f, 1.5707f - 0.01f);
+        // Compose yaw (around world Y) then pitch (around local X).
+        glm::quat qyaw = glm::angleAxis(m_camera_yaw, glm::vec3(0, 1, 0));
+        glm::quat qpitch = glm::angleAxis(m_camera_pitch, glm::vec3(1, 0, 0));
+        cam.setRotation(qyaw * qpitch);
+        changed = true;
+    }
+    input.mouse_dx = 0.0f;
+    input.mouse_dy = 0.0f;
+
+    constexpr float MOVE_SPEED = 4.0f;  // units / sec
+    const float step = MOVE_SPEED * static_cast<float>(dt);
+    glm::vec3 fwd = cam.forward();
+    glm::vec3 right = cam.right();
+    glm::vec3 pos = cam.position();
+    if (input.key_w) { pos += fwd * step; changed = true; }
+    if (input.key_s) { pos -= fwd * step; changed = true; }
+    if (input.key_d) { pos += right * step; changed = true; }
+    if (input.key_a) { pos -= right * step; changed = true; }
+    if (input.key_q || input.key_space) { pos += glm::vec3(0, 1, 0) * step; changed = true; }
+    if (input.key_e || input.key_shift) { pos += glm::vec3(0, -1, 0) * step; changed = true; }
+
+    if (input.scroll_dy != 0.0f) {
+        pos += fwd * (input.scroll_dy * 0.05f);
+        changed = true;
+    }
+    input.scroll_dx = 0.0f;
+    input.scroll_dy = 0.0f;
+
+    if (changed) {
+        cam.setPosition(pos);
+        if (m_viewport_pixel_h > 0)
+            cam.setAspectRatio(static_cast<float>(m_viewport_pixel_w) /
+                               static_cast<float>(m_viewport_pixel_h));
+        m_engine->scene().setCamera(cam);
+    }
+    return changed;
+}
+
+void EditorServer::render_tick() {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    if (!m_viewport_active || !m_window) return;
+    if (!m_engine->path_tracer_ready() || !m_engine->compiled_scene_ready()) return;
+
+    ensure_viewport_renderer(m_window->viewport_pixel_width(),
+                             m_window->viewport_pixel_height());
+    if (!m_viewport) return;
+
+    // dt for camera movement.
+    using clock = std::chrono::steady_clock;
+    const double now = std::chrono::duration<double>(clock::now().time_since_epoch()).count();
+    const double dt = m_last_tick_time > 0.0 ? std::min(now - m_last_tick_time, 0.1) : 1.0 / 60.0;
+    m_last_tick_time = now;
+
+    if (update_camera_from_input(dt)) m_clear_next_frame = true;
+
+    try {
+        const bool clear = m_clear_next_frame;
+        m_clear_next_frame = false;
+        auto result = m_engine->render_frame(clear);
+        m_last_render_width = result.width;
+        m_last_render_height = result.height;
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "[viewport] render failed: %s\n", e.what());
+        return;
+    }
+
+    auto* tracer = m_engine->path_tracer();
+    if (!tracer) return;
+    auto* output = tracer->outputImage();
+    if (!output) return;
+
+    // outputImage holds the linear HDR running average (resolve.isf writes
+    // pre-tonemap). The swapchain is created with an sRGB format, so the GPU
+    // does the linear→sRGB gamma encode on blit and the OS does final
+    // tonemap-by-clamp at display. No CPU step needed; values >1 saturate
+    // (acceptable for an editor preview).
+    if (!m_viewport->present(output)) {
+        // Swapchain became invalid (resize, occlusion, etc.) — recreate next tick.
+        m_viewport_pixel_w = 0;
+        m_viewport_pixel_h = 0;
+    }
+}
+
 std::string EditorServer::handle_command(const std::string& json_request) {
     json req;
     try {
@@ -218,6 +360,7 @@ std::string EditorServer::handle_command(const std::string& json_request) {
             auto* a = m_engine->scene().getActor(id);
             if (!a) return ok_response(false);
             a->setTransform(transform_from_json(req.at("transform")));
+            m_clear_next_frame = true;
             return ok_response(true);
         }
         if (cmd == "set_actor_name") {
@@ -398,6 +541,7 @@ std::string EditorServer::handle_command(const std::string& json_request) {
         }
         if (cmd == "compile_scene") {
             m_engine->compile_scene();
+            m_clear_next_frame = true;
             return ok_response_null();
         }
         if (cmd == "get_viewport_resolution") {
@@ -453,6 +597,41 @@ std::string EditorServer::handle_command(const std::string& json_request) {
             if (!out) return err_response("Failed to open file: " + path);
             out.write(reinterpret_cast<const char*>(m_last_render_pixels.data()),
                       static_cast<std::streamsize>(m_last_render_pixels.size()));
+            return ok_response_null();
+        }
+
+        // ── Viewport surface (native overlay) ──
+        if (cmd == "set_viewport_rect") {
+            if (!m_window) return err_response("No window");
+            const int32_t x = req.value("x", 0);
+            const int32_t y = req.value("y", 0);
+            const uint32_t w = req.value("width", 0u);
+            const uint32_t h = req.value("height", 0u);
+            m_window->set_viewport_rect(x, y, w, h);
+            m_viewport_active = (w > 0 && h > 0);
+            const uint32_t pw = m_window->viewport_pixel_width();
+            const uint32_t ph = m_window->viewport_pixel_height();
+            ensure_viewport_renderer(pw, ph);
+
+            // Push the new aspect ratio to the scene camera so the next
+            // render has correct projection. Reset accumulation since the
+            // aspect change invalidates the running mean.
+            if (ph > 0 && m_engine->scene().hasCamera()) {
+                tracey::Camera cam = m_engine->scene().camera();
+                const float new_aspect = static_cast<float>(pw) / static_cast<float>(ph);
+                if (std::abs(cam.aspectRatio() - new_aspect) > 1e-4f) {
+                    cam.setAspectRatio(new_aspect);
+                    m_engine->scene().setCamera(cam);
+                    m_clear_next_frame = true;
+                }
+            }
+            return ok_response_null();
+        }
+        if (cmd == "set_viewport_visible") {
+            if (!m_window) return err_response("No window");
+            const bool vis = req.value("visible", true);
+            m_window->set_viewport_visible(vis);
+            m_viewport_active = vis;
             return ok_response_null();
         }
 

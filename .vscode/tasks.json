@@ -2,14 +2,11 @@
     "version": "2.0.0",
     "tasks": [
         {
-            "label": "Build Editor",
+            "label": "Build Tracey Editor",
             "type": "shell",
-            "command": "cmake --build ${workspaceFolder}/build --target tracey_c_api -j8 && (cmake --install ${workspaceFolder}/build || true) && cd ${workspaceFolder}/editor && pnpm build && cd src-tauri && cargo build",
+            "command": "cmake --build ${workspaceFolder}/build --target tracey_editor -j8",
             "group": "build",
-            "problemMatcher": [
-                "$gcc",
-                "$rustc"
-            ],
+            "problemMatcher": "$gcc",
             "presentation": {
                 "reveal": "always",
                 "panel": "shared"
@@ -18,7 +15,7 @@
         {
             "label": "Start Frontend Dev Server",
             "type": "shell",
-            "command": "pnpm dev",
+            "command": "npm run dev",
             "options": {
                 "cwd": "${workspaceFolder}/editor"
             },
@@ -40,30 +37,13 @@
             }
         },
         {
-            "label": "Build and Start Editor",
+            "label": "Build Tracey Editor and Start Dev Server",
             "dependsOn": [
-                "Build Editor",
+                "Build Tracey Editor",
                 "Start Frontend Dev Server"
             ],
             "dependsOrder": "sequence",
             "problemMatcher": []
-        },
-        {
-            "label": "Build C++ Library",
-            "type": "shell",
-            "command": "cmake --build ${workspaceFolder}/build --target tracey_c_api -j8 && cmake --install ${workspaceFolder}/build",
-            "group": "build",
-            "problemMatcher": "$gcc"
-        },
-        {
-            "label": "Build Rust Editor",
-            "type": "shell",
-            "command": "cargo build",
-            "options": {
-                "cwd": "${workspaceFolder}/editor/src-tauri"
-            },
-            "group": "build",
-            "problemMatcher": "$rustc"
         }
     ]
 }

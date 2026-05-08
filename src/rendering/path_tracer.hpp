@@ -118,7 +118,15 @@ namespace tracey
 
         // Command buffer and output (owned)
         std::unique_ptr<RayTracingCommandBuffer> m_commandBuffer;
+        // outputImage: tonemapped+gamma display-ready image (RGBA8 unless
+        // hdrOutput, in which case RGBA32F clamped to [0,1]). What consumers
+        // (editor swapchain, scene_renderer PNG writer) read.
         std::unique_ptr<Image2D> m_outputImage;
+        // accumulatorImage: linear HDR running average across samples and
+        // frames. Persists across render() calls so each new dispatch can
+        // refine the estimate without losing prior contribution. Cleared when
+        // the caller asks for accumulation reset.
+        std::unique_ptr<Image2D> m_accumulatorImage;
         std::unique_ptr<Buffer> m_readbackBuffer;
 
         // Rendering state

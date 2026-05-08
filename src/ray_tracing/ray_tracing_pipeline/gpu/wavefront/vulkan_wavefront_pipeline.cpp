@@ -179,7 +179,7 @@ namespace tracey
         VkPushConstantRange pushConstantRange{};
         pushConstantRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
         pushConstantRange.offset = 0;
-        pushConstantRange.size = sizeof(uint32_t) * 2; // width, height
+        pushConstantRange.size = sizeof(uint32_t) * 4; // width, height, sampleIndex, samplesPerFrame
 
         VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
         pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;

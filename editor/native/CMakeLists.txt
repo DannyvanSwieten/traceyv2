@@ -18,7 +18,8 @@ set(TRACEY_EDITOR_SRCS
     main.cpp
     editor_server.cpp
     render_engine.cpp
-    scene_state.cpp)
+    scene_state.cpp
+    viewport_renderer.cpp)
 
 if(APPLE)
     add_executable(tracey_editor
@@ -32,9 +33,13 @@ if(APPLE)
         tracey
         tracey_editor_json
         glm::glm
+        volk::volk
+        Vulkan::Vulkan
         "-framework Cocoa"
         "-framework WebKit"
         "-framework QuartzCore"
+        "-framework Metal"
+        "-framework CoreVideo"
     )
 
     set_target_properties(tracey_editor PROPERTIES
@@ -53,8 +58,13 @@ if(APPLE)
             COMMAND ${CMAKE_COMMAND} -E copy_directory
                 "${TRACEY_EDITOR_FRONTEND_DIR}/dist"
                 "$<TARGET_BUNDLE_CONTENT_DIR:tracey_editor>/Resources/editor-dist"
+            COMMAND codesign --force --sign -
+                --entitlements "${CMAKE_CURRENT_SOURCE_DIR}/EditorEntitlements.plist"
+                "$<TARGET_BUNDLE_DIR:tracey_editor>"
+            COMMAND /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
+                -f "$<TARGET_BUNDLE_DIR:tracey_editor>"
             WORKING_DIRECTORY "${TRACEY_EDITOR_FRONTEND_DIR}"
-            COMMENT "Building frontend and bundling into Tracey Editor.app")
+            COMMENT "Building frontend, bundling, and signing Tracey Editor.app")
     endif()
 
 elseif(WIN32)

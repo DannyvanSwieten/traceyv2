@@ -30,6 +30,12 @@ namespace tracey
 
         m_outputImage.reset(m_device->createImage2D(m_config.width, m_config.height, format));
 
+        // Linear HDR accumulator: lives across frames so the running mean is
+        // numerically stable (the resolve shader reads/writes this, and only
+        // tonemaps into outputImage for display).
+        m_accumulatorImage.reset(m_device->createImage2D(m_config.width, m_config.height,
+                                                        ImageFormat::R32G32B32A32Sfloat));
+
         // Create readback buffer
         size_t pixelSize = m_config.hdrOutput ? 16 : 4; // 4 floats or 4 bytes
         size_t bufferSize = m_config.width * m_config.height * pixelSize;
@@ -57,6 +63,10 @@ namespace tracey
         m_pipelineLayout->addImage2D("outputImage", ShaderStage::RayGeneration,
                                      m_config.hdrOutput ? ImageLayoutFormat::RGBA32F
                                                         : ImageLayoutFormat::RGBA8);
+        // Linear HDR accumulator, written + read by the resolve shader for
+        // numerically stable cross-frame averaging.
+        m_pipelineLayout->addImage2D("accumulatorImage", ShaderStage::Resolve,
+                                     ImageLayoutFormat::RGBA32F);
         m_pipelineLayout->addAccelerationStructure("tlas", ShaderStage::RayGeneration);
 
         // Add API-specified buffers for scene data
@@ -98,6 +108,7 @@ namespace tracey
         for (auto &descriptorSet : m_descriptorSets)
         {
             descriptorSet->setImage2D("outputImage", m_outputImage.get());
+            descriptorSet->setImage2D("accumulatorImage", m_accumulatorImage.get());
             descriptorSet->setAccelerationStructure("tlas", scene.tlas.get());
 
             if (!scene.vertexBuffers.empty())
@@ -170,7 +181,11 @@ namespace tracey
 
         if (clearAccumulation)
         {
-            m_commandBuffer->clearImage(m_outputImage.get(), 0.0f, 0.0f, 0.0f, 0.0f);
+            // Clear the accumulator, not the display image. The resolve shader
+            // reads/writes the accumulator across samples; outputImage is just
+            // the latest tonemapped snapshot and is always overwritten by
+            // resolve, so clearing it is unnecessary.
+            m_commandBuffer->clearImage(m_accumulatorImage.get(), 0.0f, 0.0f, 0.0f, 0.0f);
         }
 
         m_commandBuffer->setPipeline(m_pipeline.get());

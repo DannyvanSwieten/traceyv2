@@ -1,6 +1,6 @@
 /*{
     "STAGE": "Resolve",
-    "DESCRIPTION": "Average samples and write to output image",
+    "DESCRIPTION": "Dual-image accumulator: linear running mean in accumulatorImage, tonemap+gamma snapshot in outputImage.",
     "INPUTS": [
         {
             "NAME": "currentSample",
@@ -10,24 +10,24 @@
 }*/
 
 void shader(uvec2 pixel, in RayPayloads payloads) {
-    // Read the final color from the payload (set by hit/miss shaders)
     vec3 sampleColor = payloads.rayPayload.color;
 
-    // Read previous accumulated value (stored as running average * sampleCount)
-    vec4 currentOutput = imageLoad(outputImage, ivec2(pixel));
+    // Total 1-based sample number this dispatch is folding into the mean.
+    //   currentSample      — 1-based count of render() calls since clear
+    //   pc.samplesPerFrame — samples per traceRays() batch
+    //   pc.sampleIndex     — 0-based position within the current batch
+    int n = (shaderInputs.currentSample - 1) * int(pc.samplesPerFrame)
+          + int(pc.sampleIndex) + 1;
 
-    // Running average: newAvg = oldAvg + (sample - oldAvg) / n
-    // This avoids overflow issues with pure accumulation
-    float n = float(shaderInputs.currentSample);
-    vec3 avgColor = currentOutput.rgb + (sampleColor - currentOutput.rgb) / n;
+    // Welford-style running mean, kept in linear HDR for numerical stability.
+    vec4 prev = imageLoad(accumulatorImage, ivec2(pixel));
+    vec3 avg = prev.rgb + (sampleColor - prev.rgb) / float(n);
+    imageStore(accumulatorImage, ivec2(pixel), vec4(avg, 1.0));
 
-    // Simple Reinhard tonemapping for display
-    vec3 tonemapped = avgColor / (avgColor + vec3(1.0));
-
-    // Gamma correction (linear to sRGB)
+    // Display snapshot: Reinhard tonemap + sRGB gamma, written into outputImage
+    // for direct blit-to-swapchain. This write is read-only as far as the
+    // shader is concerned — the LINEAR accumulator above is what survives.
+    vec3 tonemapped = avg / (avg + vec3(1.0));
     vec3 gammaCorrected = pow(tonemapped, vec3(1.0 / 2.2));
-
-    // Store tonemapped LDR value
     imageStore(outputImage, ivec2(pixel), vec4(gammaCorrected, 1.0));
 }
-    

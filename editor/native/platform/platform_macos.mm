@@ -3,8 +3,11 @@
 #include <json.hpp>
 
 #import <Cocoa/Cocoa.h>
+#import <CoreVideo/CoreVideo.h>
+#import <QuartzCore/CAMetalLayer.h>
 #import <WebKit/WebKit.h>
 
+#include <atomic>
 #include <cstdio>
 
 @interface TraceyNSWindow : NSWindow
@@ -41,6 +44,111 @@
 - (void)menuExport:(id)sender {
     [self broadcastMenuEvent:@"menu-export"];
 }
+@end
+
+// ─── Metal-backed viewport view ─────────────────────────────────────────────
+// Hosts the CAMetalLayer that the Vulkan presenter draws into via MoltenVK,
+// and forwards mouse / keyboard input into the editor's InputState.
+@interface TraceyMetalView : NSView
+@property(nonatomic, strong) CAMetalLayer* metalLayer;
+@property(nonatomic, assign) tracey_editor::InputState* inputState;
+@end
+
+@implementation TraceyMetalView
+
+- (instancetype)initWithFrame:(NSRect)frame {
+    self = [super initWithFrame:frame];
+    if (self) {
+        _metalLayer = [CAMetalLayer layer];
+        // Path tracer's resolve shader writes already tonemapped+gamma'd
+        // pixels into outputImage, which is what we blit. UNORM (not sRGB)
+        // matches the swapchain format.
+        _metalLayer.pixelFormat = MTLPixelFormatBGRA8Unorm;
+        _metalLayer.framebufferOnly = NO;
+        _metalLayer.displaySyncEnabled = YES;
+        self.wantsLayer = YES;
+        self.layer = _metalLayer;
+    }
+    return self;
+}
+
+- (BOOL)acceptsFirstResponder {
+    return YES;
+}
+- (BOOL)canBecomeKeyView {
+    return YES;
+}
+
+// ─── Mouse ──
+- (void)updateMousePosition:(NSEvent*)event {
+    if (!_inputState) return;
+    NSPoint loc = [self convertPoint:event.locationInWindow fromView:nil];
+    _inputState->mouse_x = loc.x;
+    _inputState->mouse_y = self.bounds.size.height - loc.y;
+    _inputState->mouse_dx += event.deltaX;
+    _inputState->mouse_dy += event.deltaY;
+}
+
+- (void)mouseMoved:(NSEvent*)event { [self updateMousePosition:event]; }
+- (void)mouseDragged:(NSEvent*)event { [self updateMousePosition:event]; }
+- (void)rightMouseDragged:(NSEvent*)event { [self updateMousePosition:event]; }
+- (void)otherMouseDragged:(NSEvent*)event { [self updateMousePosition:event]; }
+
+- (void)mouseDown:(NSEvent*)event {
+    if (_inputState) _inputState->mouse_left = true;
+    // Claim keyboard focus so WASD/QE/Shift/Space land here, not the WKWebView.
+    [self.window makeFirstResponder:self];
+}
+- (void)mouseUp:(NSEvent*)event {
+    if (_inputState) _inputState->mouse_left = false;
+}
+- (void)rightMouseDown:(NSEvent*)event {
+    if (_inputState) _inputState->mouse_right = true;
+}
+- (void)rightMouseUp:(NSEvent*)event {
+    if (_inputState) _inputState->mouse_right = false;
+}
+- (void)otherMouseDown:(NSEvent*)event {
+    if (_inputState) _inputState->mouse_middle = true;
+}
+- (void)otherMouseUp:(NSEvent*)event {
+    if (_inputState) _inputState->mouse_middle = false;
+}
+
+- (void)scrollWheel:(NSEvent*)event {
+    if (!_inputState) return;
+    _inputState->scroll_dx += event.scrollingDeltaX;
+    _inputState->scroll_dy += event.scrollingDeltaY;
+}
+
+// ─── Keyboard ──
+- (void)keyDown:(NSEvent*)event { [self handleKey:event pressed:YES]; }
+- (void)keyUp:(NSEvent*)event { [self handleKey:event pressed:NO]; }
+- (BOOL)performKeyEquivalent:(NSEvent*)event {
+    [self handleKey:event pressed:(event.type == NSEventTypeKeyDown)];
+    return YES;
+}
+
+- (void)handleKey:(NSEvent*)event pressed:(BOOL)pressed {
+    if (!_inputState) return;
+    if (event.modifierFlags & NSEventModifierFlagCommand) return;
+    switch (event.keyCode) {
+    case 13: _inputState->key_w = pressed; break;
+    case 0:  _inputState->key_a = pressed; break;
+    case 1:  _inputState->key_s = pressed; break;
+    case 2:  _inputState->key_d = pressed; break;
+    case 12: _inputState->key_q = pressed; break;
+    case 14: _inputState->key_e = pressed; break;
+    case 49: _inputState->key_space = pressed; break;
+    default: break;
+    }
+}
+
+- (void)flagsChanged:(NSEvent*)event {
+    if (!_inputState) return;
+    _inputState->key_shift = (event.modifierFlags & NSEventModifierFlagShift) != 0;
+}
+
 @end
 
 static NSString* js_escape_str(const std::string& str) {
@@ -143,16 +251,34 @@ namespace tracey_editor {
 struct MacEditorWindow : EditorWindow {
     TraceyNSWindow* window = nil;
     WKWebView* webview = nil;
+    TraceyMetalView* metalView = nil;
     TraceyMessageHandler* msg_handler = nil;
     TraceyNavigationDelegate* nav_delegate = nil;
 
+    InputState input_state{};
     MessageCallback message_cb;
     ResizeCallback resize_cb;
+    RenderTickCallback render_tick_cb;
 
+    CVDisplayLinkRef display_link = nullptr;
+    // Set to 1 by the display-link callback when a tick has been queued on the
+    // main queue and not yet drained — prevents tick backlog if the renderer
+    // is slower than the display refresh rate.
+    std::atomic<int> tick_in_flight{0};
+
+    uint32_t vp_w = 0;
+    uint32_t vp_h = 0;
+    uint32_t vp_pixel_w = 0;
+    uint32_t vp_pixel_h = 0;
     bool visible = false;
     bool close_requested = false;
 
     ~MacEditorWindow() override {
+        stop_render_tick();
+        if (display_link) {
+            CVDisplayLinkRelease(display_link);
+            display_link = nullptr;
+        }
         if (window) {
             [window close];
             window = nil;
@@ -284,6 +410,12 @@ struct MacEditorWindow : EditorWindow {
 
         [content addSubview:webview];
 
+        // Metal viewport overlay — hidden until the frontend reports its rect.
+        metalView = [[TraceyMetalView alloc] initWithFrame:NSMakeRect(0, 0, 100, 100)];
+        metalView.inputState = &input_state;
+        metalView.hidden = YES;
+        [content addSubview:metalView positioned:NSWindowAbove relativeTo:webview];
+
         [window setAcceptsMouseMovedEvents:YES];
         [window center];
 
@@ -315,6 +447,74 @@ struct MacEditorWindow : EditorWindow {
     void set_message_handler(MessageCallback cb) override { message_cb = std::move(cb); }
     void set_resize_callback(ResizeCallback cb) override { resize_cb = std::move(cb); }
 
+    // ── GPU viewport ──
+    void* gpu_surface() override { return (__bridge void*)metalView.metalLayer; }
+    uint32_t viewport_width() const override { return vp_w; }
+    uint32_t viewport_height() const override { return vp_h; }
+    uint32_t viewport_pixel_width() const override { return vp_pixel_w; }
+    uint32_t viewport_pixel_height() const override { return vp_pixel_h; }
+
+    void set_viewport_rect(int32_t x, int32_t y, uint32_t w, uint32_t h) override {
+        // Convert from top-left origin (web) to bottom-left origin (Cocoa)
+        NSRect contentBounds = [[window contentView] bounds];
+        CGFloat cocoa_y = contentBounds.size.height - y - h;
+        [metalView setFrame:NSMakeRect(x, cocoa_y, w, h)];
+        metalView.hidden = NO;
+
+        const CGFloat scale = window.backingScaleFactor;
+        const uint32_t pw = static_cast<uint32_t>(w * scale);
+        const uint32_t ph = static_cast<uint32_t>(h * scale);
+        const bool resized = (pw != vp_pixel_w) || (ph != vp_pixel_h);
+
+        vp_w = w;
+        vp_h = h;
+        vp_pixel_w = pw;
+        vp_pixel_h = ph;
+
+        metalView.metalLayer.drawableSize = CGSizeMake(pw, ph);
+        input_state.viewport_w = static_cast<float>(w);
+        input_state.viewport_h = static_cast<float>(h);
+
+        if (resized && resize_cb) resize_cb(pw, ph);
+    }
+
+    void set_viewport_visible(bool vis) override { metalView.hidden = !vis; }
+    void set_viewport_accepts_mouse(bool accept) override {
+        if (accept) [window makeFirstResponder:metalView];
+    }
+    InputState& input() override { return input_state; }
+
+    // ── Render tick (CVDisplayLink) ──
+    void set_render_tick(RenderTickCallback cb) override { render_tick_cb = std::move(cb); }
+
+    static CVReturn display_link_cb(CVDisplayLinkRef /*link*/, const CVTimeStamp* /*now*/,
+                                    const CVTimeStamp* /*outputTime*/, CVOptionFlags /*flagsIn*/,
+                                    CVOptionFlags* /*flagsOut*/, void* userInfo) {
+        auto* self = static_cast<MacEditorWindow*>(userInfo);
+        // Drop frames if a tick is already queued and not yet drained.
+        int expected = 0;
+        if (!self->tick_in_flight.compare_exchange_strong(expected, 1))
+            return kCVReturnSuccess;
+
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (self->render_tick_cb) self->render_tick_cb();
+            self->tick_in_flight.store(0);
+        });
+        return kCVReturnSuccess;
+    }
+
+    void start_render_tick() override {
+        if (display_link) return;
+        CVDisplayLinkCreateWithActiveCGDisplays(&display_link);
+        CVDisplayLinkSetOutputCallback(display_link, &display_link_cb, this);
+        CVDisplayLinkStart(display_link);
+    }
+
+    void stop_render_tick() override {
+        if (!display_link) return;
+        CVDisplayLinkStop(display_link);
+    }
+
     void show() override {
         [window makeKeyAndOrderFront:nil];
         [NSApp activateIgnoringOtherApps:YES];
@@ -330,12 +530,17 @@ struct MacEditorWindow : EditorWindow {
 
     void poll_events() override {
         @autoreleasepool {
+            // Block briefly so we yield CPU between display-link ticks. The
+            // CVDisplayLink dispatches its render callback to the main queue,
+            // which wakes this loop up via its scheduled-source side effect.
+            NSDate* until = [NSDate dateWithTimeIntervalSinceNow:1.0 / 240.0];
             NSEvent* event;
             while ((event = [NSApp nextEventMatchingMask:NSEventMaskAny
-                                               untilDate:nil
+                                               untilDate:until
                                                   inMode:NSDefaultRunLoopMode
                                                  dequeue:YES])) {
                 [NSApp sendEvent:event];
+                until = [NSDate distantPast];  // drain the queue, then return
             }
         }
     }
