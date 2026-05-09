@@ -1,16 +1,34 @@
 #pragma once
-
 #include "../../node.hpp"
-#include "instructions.hpp"
+#include "../../port_info.hpp"
 
 namespace tracey
 {
+    // Coarse classification of shader graph nodes; the compiler dispatches on
+    // this and downcasts to the concrete subclass to read its data.
+    enum class ShaderNodeKind
+    {
+        Constant,         // ConstantNode    — embedded vec4 literal (LoadConst)
+        Parameter,        // ParameterNode   — runtime-mutable slot   (LoadParam)
+        SurfaceAttribute, // SurfaceAttrNode — Position, Normal, ViewDir, UV0, ...
+        InputAttribute,   // InputAttrNode   — pre-fetched material albedo/metallic/...
+        BinaryOp,         // BinaryOpNode    — Add, Sub, Mul, Div, Dot3, Cross
+        UnaryOp,          // UnaryOpNode     — Neg, Saturate, Normalize3, Length3, Splat
+        TernaryOp,        // TernaryOpNode   — Mix, Clamp
+        Output,           // OutputNode      — WriteAlbedo, WriteMetallic, ...
+    };
+
     class ShaderGraphNode : public Node
     {
     public:
         ShaderGraphNode(size_t uid);
         ~ShaderGraphNode() override = default;
 
-        virtual ShaderGraphInstruction instruction() const = 0;
+        virtual ShaderNodeKind kind() const = 0;
+
+        // Port layout. Caller may use this to discover the number/types of
+        // inputs and outputs without dispatching on kind. Inputs are positional:
+        // input port index N maps to the Nth source operand of the emitted op.
+        virtual InputsAndOutputs ports() const = 0;
     };
 }

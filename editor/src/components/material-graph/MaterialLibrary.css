@@ -1,0 +1,169 @@
+.material-library {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 12px;
+  background: #181818;
+  border-bottom: 1px solid #2a2a2a;
+  font: 12px system-ui, -apple-system, sans-serif;
+  color: #ddd;
+  max-height: 160px;
+  overflow-y: auto;
+}
+
+.material-library-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.material-library-title {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #888;
+}
+
+.material-library-save {
+  background: #2a2a2a;
+  border: 1px solid #444;
+  border-radius: 3px;
+  padding: 4px 8px;
+  color: #ddd;
+  cursor: pointer;
+  font: 12px system-ui, -apple-system, sans-serif;
+}
+.material-library-save:hover:not(:disabled) {
+  background: #353535;
+  border-color: #5a8;
+}
+.material-library-save:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.material-library-error {
+  color: #f88;
+  font-size: 11px;
+}
+
+.material-library-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.material-library-empty {
+  color: #666;
+  font-style: italic;
+  padding: 4px 0;
+}
+
+.material-library-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.material-library-name {
+  flex: 1;
+  text-align: left;
+  background: #232323;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  padding: 4px 8px;
+  color: #ddd;
+  cursor: pointer;
+  font: 12px system-ui, -apple-system, sans-serif;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.material-library-name:hover:not(:disabled) {
+  background: #2c2c2c;
+  border-color: #5a8;
+}
+.material-library-name:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.material-library-delete {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  width: 22px;
+  height: 22px;
+  color: #888;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+}
+.material-library-delete:hover:not(:disabled) {
+  background: #3a1f1f;
+  border-color: #885;
+  color: #fbb;
+}
+
+.material-library-input-row {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+
+.material-library-input {
+  flex: 1;
+  background: #2a2a2a;
+  border: 1px solid #5a8;
+  border-radius: 3px;
+  padding: 4px 6px;
+  color: #ddd;
+  font: 12px system-ui, -apple-system, sans-serif;
+  min-width: 0;
+}
+.material-library-input:focus {
+  outline: none;
+  border-color: #6c9;
+}
+
+.material-library-input-ok,
+.material-library-input-cancel,
+.material-library-confirm-yes,
+.material-library-confirm-no {
+  background: #2a2a2a;
+  border: 1px solid #444;
+  border-radius: 3px;
+  padding: 4px 8px;
+  color: #ddd;
+  cursor: pointer;
+  font: 12px system-ui, -apple-system, sans-serif;
+}
+.material-library-input-ok:hover:not(:disabled),
+.material-library-confirm-yes:hover:not(:disabled) {
+  background: #2c4030;
+  border-color: #5a8;
+}
+.material-library-input-cancel:hover:not(:disabled),
+.material-library-confirm-no:hover:not(:disabled) {
+  background: #353535;
+  border-color: #666;
+}
+.material-library-input-ok:disabled,
+.material-library-input-cancel:disabled,
+.material-library-confirm-yes:disabled,
+.material-library-confirm-no:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.material-library-confirm-label {
+  flex: 1;
+  color: #ccc;
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

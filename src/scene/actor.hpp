@@ -38,6 +38,15 @@ namespace tracey
         std::vector<SceneInstance> &instances() { return m_instances; }
         void clearInstances() { m_instances.clear(); }
 
+        // ShaderGraph JSON attached to this actor. Empty string means
+        // "use the default passthrough program". SceneCompiler aggregates
+        // unique JSON strings across actors into the MaterialProgramBuffer
+        // and emits one program per unique graph. The editor populates this
+        // by reading from its per-user material library (a name -> file map
+        // editor-side); the engine itself doesn't know about that catalog.
+        const std::string &materialGraphJson() const { return m_materialGraphJson; }
+        void setMaterialGraphJson(const std::string &json) { m_materialGraphJson = json; }
+
         Actor(Scene *scene, size_t uid) : m_scene(scene), uid(uid) {}
 
     private:
@@ -47,5 +56,6 @@ namespace tracey
         Transform m_transform;
         std::vector<size_t> m_children;
         std::vector<SceneInstance> m_instances;
+        std::string m_materialGraphJson;
     };
 }

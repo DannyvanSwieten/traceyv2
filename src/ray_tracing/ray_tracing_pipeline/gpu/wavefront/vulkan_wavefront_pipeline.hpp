@@ -33,6 +33,15 @@ namespace tracey
         VkBuffer hitIndirectBuffer() const { return m_hitIndirectBuffer; }
         VkBuffer missIndirectBuffer() const { return m_missIndirectBuffer; }
         VkPipeline prepareIndirectPipeline() const { return m_prepareIndirectPipelineInfo.pipeline; }
+
+        // Material-ID sort: orders hitQueue entries by bin between intersect
+        // and the hit shader so a workgroup's lanes see the same material
+        // program (== same VM opcode stream).
+        VkBuffer sortedHitQueueBuffer() const { return m_sortedHitQueueBuffer; }
+        VkBuffer materialBinOffsetsBuffer() const { return m_materialBinOffsetsBuffer; }
+        VkBuffer materialBinCursorsBuffer() const { return m_materialBinCursorsBuffer; }
+        VkPipeline sortCountPipeline() const { return m_sortCountPipelineInfo.pipeline; }
+        VkPipeline sortScatterPipeline() const { return m_sortScatterPipelineInfo.pipeline; }
         uint32_t maxRayCount() const { return m_maxRayCount; }
 
         // Memory handles for CPU readback (debug)
@@ -61,6 +70,8 @@ namespace tracey
         std::vector<PipelineInfo> m_missPipelines;
         PipelineInfo m_resolvePipelineInfo;
         PipelineInfo m_prepareIndirectPipelineInfo;
+        PipelineInfo m_sortCountPipelineInfo;
+        PipelineInfo m_sortScatterPipelineInfo;
 
         // Wavefront internal buffers
         VkBuffer m_payloadBuffer = VK_NULL_HANDLE;
@@ -83,6 +94,15 @@ namespace tracey
         VkDeviceMemory m_hitIndirectMemory = VK_NULL_HANDLE;
         VkBuffer m_missIndirectBuffer = VK_NULL_HANDLE;
         VkDeviceMemory m_missIndirectMemory = VK_NULL_HANDLE;
+
+        // Material-ID sort scratch buffers.
+        VkBuffer m_sortedHitQueueBuffer = VK_NULL_HANDLE;
+        VkDeviceMemory m_sortedHitQueueMemory = VK_NULL_HANDLE;
+        VkBuffer m_materialBinOffsetsBuffer = VK_NULL_HANDLE;
+        VkDeviceMemory m_materialBinOffsetsMemory = VK_NULL_HANDLE;
+        VkBuffer m_materialBinCursorsBuffer = VK_NULL_HANDLE;
+        VkDeviceMemory m_materialBinCursorsMemory = VK_NULL_HANDLE;
+
         uint32_t m_maxRayCount = 0;
         size_t m_payloadSize = 0;
     };

@@ -79,6 +79,12 @@ namespace tracey
                                   const WavefrontPushConstants &pushConstants,
                                   uint32_t workGroups);
 
+        /// Material-ID sort: bins hitQueue entries by program ID and writes the
+        /// permuted indices into sortedHitQueue so workgroups in the hit shader
+        /// see lanes that share the same VM opcode stream. Two passes (count,
+        /// then scatter) with a barrier between them.
+        void dispatchSortHitQueue(VulkanWaveFrontPipeline *wavefront);
+
         /// Executes the closest hit shader for rays that hit geometry.
         /// Processes material shading and may spawn secondary rays.
         void dispatchHitShader(VulkanWaveFrontPipeline *wavefront,

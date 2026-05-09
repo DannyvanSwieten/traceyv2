@@ -27,9 +27,10 @@ namespace tracey
         // User bindings start at 8
         const size_t bindingStartOffset = 8;
 
-        // Add wavefront internal buffers at bindings 20 (payload), 50-52 (internal)
-        // Payload buffer at binding 20
-        bindings.push_back({.binding = 20,
+        // Add wavefront internal buffers: payload at 60, queues 50-58.
+        // Payload moved out of the user binding range (was 20) so user SSBOs
+        // (e.g. material program buffers) can extend past binding 19 safely.
+        bindings.push_back({.binding = 60,
                             .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                             .descriptorCount = 1,
                             .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT});
@@ -84,6 +85,24 @@ namespace tracey
 
         // Miss indirect dispatch buffer
         bindings.push_back({.binding = 58,
+                            .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                            .descriptorCount = 1,
+                            .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT});
+
+        // Sorted hit queue (output of the material-ID sort pass)
+        bindings.push_back({.binding = 59,
+                            .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                            .descriptorCount = 1,
+                            .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT});
+
+        // Material bin offsets (one uint per bin; written by sort_count, read by sort_scatter)
+        bindings.push_back({.binding = 61,
+                            .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                            .descriptorCount = 1,
+                            .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT});
+
+        // Material bin cursors (atomic write cursors used by sort_scatter, cleared per bounce)
+        bindings.push_back({.binding = 62,
                             .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                             .descriptorCount = 1,
                             .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT});
@@ -389,6 +408,72 @@ namespace tracey
             }
         }
 
+        // Material-ID sort kernels (sort_count + sort_scatter). Loaded inline
+        // exactly the same way prepare_indirect is -- they're internal to the
+        // wavefront pipeline and don't go through the user shader builder.
+        //
+        // The sort kernels need to read instanceProgramIndex (a user-side
+        // SSBO whose binding number depends on declaration order); we look it
+        // up here and inject as a #define so the kernel can declare a layout
+        // qualifier with the right number.
+        const uint32_t instanceProgramIndexBinding =
+            static_cast<uint32_t>(layout.indexForBinding("instanceProgramIndex") + 8);
+
+        auto compileInternal = [&](const char *fileName, PipelineInfo &info) {
+            std::filesystem::path path = std::filesystem::path(__FILE__).parent_path() / fileName;
+            std::ifstream file(path);
+            if (!file.is_open())
+                throw std::runtime_error(std::string("Failed to open shader file: ") + path.string());
+            std::stringstream stream;
+            stream << file.rdbuf();
+            std::string source = stream.str();
+
+            // Inject the dynamic binding number right after #version so the
+            // kernel can `layout(set = 0, binding = INSTANCE_PROGRAM_INDEX_BINDING) ...`.
+            const std::string define =
+                "\n#define INSTANCE_PROGRAM_INDEX_BINDING " +
+                std::to_string(instanceProgramIndexBinding) + "\n";
+            const size_t versionLineEnd = source.find('\n', source.find("#version"));
+            if (versionLineEnd != std::string::npos)
+                source.insert(versionLineEnd + 1, define);
+            else
+                source = define + source;
+
+            shaderc::Compiler compiler;
+            shaderc::CompileOptions options;
+            options.SetOptimizationLevel(shaderc_optimization_level_performance);
+            options.SetTargetEnvironment(shaderc_target_env_vulkan, shaderc_env_version_vulkan_1_2);
+
+            shaderc::SpvCompilationResult result = compiler.CompileGlslToSpv(
+                source, shaderc_glsl_compute_shader, fileName, options);
+            if (result.GetCompilationStatus() != shaderc_compilation_status_success)
+                throw std::runtime_error(std::string("Failed to compile ") + fileName + ": " + result.GetErrorMessage());
+
+            std::vector<uint32_t> spirv(result.cbegin(), result.cend());
+
+            VkShaderModuleCreateInfo moduleInfo{};
+            moduleInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+            moduleInfo.codeSize = spirv.size() * sizeof(uint32_t);
+            moduleInfo.pCode = spirv.data();
+            if (vkCreateShaderModule(m_device.vkDevice(), &moduleInfo, nullptr, &info.shaderModule) != VK_SUCCESS)
+                throw std::runtime_error(std::string("Failed to create shader module for ") + fileName);
+
+            info.pipelineLayout = pipelineLayout;
+            info.descriptorSetLayout = descriptorSetLayout;
+
+            VkComputePipelineCreateInfo pipelineInfo{};
+            pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+            pipelineInfo.layout = pipelineLayout;
+            pipelineInfo.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+            pipelineInfo.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+            pipelineInfo.stage.module = info.shaderModule;
+            pipelineInfo.stage.pName = "main";
+            if (vkCreateComputePipelines(m_device.vkDevice(), VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &info.pipeline) != VK_SUCCESS)
+                throw std::runtime_error(std::string("Failed to create pipeline for ") + fileName);
+        };
+        compileInternal("vulkan_wavefront_sort_count.comp", m_sortCountPipelineInfo);
+        compileInternal("vulkan_wavefront_sort_scatter.comp", m_sortScatterPipelineInfo);
+
         // Calculate payload size from layout
         m_payloadSize = 0;
         for (const auto &payload : layout.payloads())
@@ -448,6 +533,18 @@ namespace tracey
             vkDestroyBuffer(device, m_missIndirectBuffer, nullptr);
         if (m_missIndirectMemory != VK_NULL_HANDLE)
             vkFreeMemory(device, m_missIndirectMemory, nullptr);
+        if (m_sortedHitQueueBuffer != VK_NULL_HANDLE)
+            vkDestroyBuffer(device, m_sortedHitQueueBuffer, nullptr);
+        if (m_sortedHitQueueMemory != VK_NULL_HANDLE)
+            vkFreeMemory(device, m_sortedHitQueueMemory, nullptr);
+        if (m_materialBinOffsetsBuffer != VK_NULL_HANDLE)
+            vkDestroyBuffer(device, m_materialBinOffsetsBuffer, nullptr);
+        if (m_materialBinOffsetsMemory != VK_NULL_HANDLE)
+            vkFreeMemory(device, m_materialBinOffsetsMemory, nullptr);
+        if (m_materialBinCursorsBuffer != VK_NULL_HANDLE)
+            vkDestroyBuffer(device, m_materialBinCursorsBuffer, nullptr);
+        if (m_materialBinCursorsMemory != VK_NULL_HANDLE)
+            vkFreeMemory(device, m_materialBinCursorsMemory, nullptr);
 
         // Destroy pipelines
         if (m_rayGenPipelineInfo.pipeline)
@@ -471,6 +568,10 @@ namespace tracey
             vkDestroyPipeline(device, m_resolvePipelineInfo.pipeline, nullptr);
         if (m_prepareIndirectPipelineInfo.pipeline)
             vkDestroyPipeline(device, m_prepareIndirectPipelineInfo.pipeline, nullptr);
+        if (m_sortCountPipelineInfo.pipeline)
+            vkDestroyPipeline(device, m_sortCountPipelineInfo.pipeline, nullptr);
+        if (m_sortScatterPipelineInfo.pipeline)
+            vkDestroyPipeline(device, m_sortScatterPipelineInfo.pipeline, nullptr);
 
         // Destroy shader modules
         if (m_rayGenPipelineInfo.shaderModule)
@@ -494,6 +595,10 @@ namespace tracey
             vkDestroyShaderModule(device, m_resolvePipelineInfo.shaderModule, nullptr);
         if (m_prepareIndirectPipelineInfo.shaderModule)
             vkDestroyShaderModule(device, m_prepareIndirectPipelineInfo.shaderModule, nullptr);
+        if (m_sortCountPipelineInfo.shaderModule)
+            vkDestroyShaderModule(device, m_sortCountPipelineInfo.shaderModule, nullptr);
+        if (m_sortScatterPipelineInfo.shaderModule)
+            vkDestroyShaderModule(device, m_sortScatterPipelineInfo.shaderModule, nullptr);
 
         // Destroy pipeline layout (shared, so only destroy once)
         if (m_rayGenPipelineInfo.pipelineLayout)
@@ -861,13 +966,68 @@ namespace tracey
             throw std::runtime_error("Failed to allocate MissIndirect memory");
         }
         vkBindBufferMemory(device, m_missIndirectBuffer, m_missIndirectMemory, 0);
+
+        // Sorted hit queue: same layout as hitQueue (count + indices). Output of
+        // the material-ID sort, consumed by the hit shader.
+        VkBufferCreateInfo sortedHitQueueBufferInfo{};
+        sortedHitQueueBufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        sortedHitQueueBufferInfo.size = rayQueueSize;
+        sortedHitQueueBufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        sortedHitQueueBufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+        if (vkCreateBuffer(device, &sortedHitQueueBufferInfo, nullptr, &m_sortedHitQueueBuffer) != VK_SUCCESS)
+            throw std::runtime_error("Failed to create SortedHitQueue buffer");
+
+        VkMemoryRequirements sortedHitQueueMemReqs;
+        vkGetBufferMemoryRequirements(device, m_sortedHitQueueBuffer, &sortedHitQueueMemReqs);
+
+        VkMemoryAllocateInfo sortedHitQueueAllocInfo{};
+        sortedHitQueueAllocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        sortedHitQueueAllocInfo.allocationSize = sortedHitQueueMemReqs.size;
+        sortedHitQueueAllocInfo.memoryTypeIndex = m_device.findMemoryType(sortedHitQueueMemReqs.memoryTypeBits,
+                                                                          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+        if (vkAllocateMemory(device, &sortedHitQueueAllocInfo, nullptr, &m_sortedHitQueueMemory) != VK_SUCCESS)
+            throw std::runtime_error("Failed to allocate SortedHitQueue memory");
+        vkBindBufferMemory(device, m_sortedHitQueueBuffer, m_sortedHitQueueMemory, 0);
+
+        // Material bin offsets and cursors: NUM_BINS uints each. NUM_BINS is
+        // 64 in the kernels; size both arrays accordingly. The buffers are
+        // tiny (256 bytes each) so allocate a small fixed size regardless of
+        // ray count -- they don't scale with the framebuffer.
+        constexpr uint32_t kNumBins = 64;
+        VkDeviceSize binBufferSize = sizeof(uint32_t) * kNumBins;
+
+        auto allocateBinBuffer = [&](VkBuffer &buf, VkDeviceMemory &mem, const char *what) {
+            VkBufferCreateInfo info{};
+            info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+            info.size = binBufferSize;
+            info.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+            info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+            if (vkCreateBuffer(device, &info, nullptr, &buf) != VK_SUCCESS)
+                throw std::runtime_error(std::string("Failed to create buffer: ") + what);
+
+            VkMemoryRequirements reqs;
+            vkGetBufferMemoryRequirements(device, buf, &reqs);
+
+            VkMemoryAllocateInfo allocInfo{};
+            allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+            allocInfo.allocationSize = reqs.size;
+            allocInfo.memoryTypeIndex = m_device.findMemoryType(reqs.memoryTypeBits,
+                                                                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+            if (vkAllocateMemory(device, &allocInfo, nullptr, &mem) != VK_SUCCESS)
+                throw std::runtime_error(std::string("Failed to allocate memory: ") + what);
+            vkBindBufferMemory(device, buf, mem, 0);
+        };
+        allocateBinBuffer(m_materialBinOffsetsBuffer, m_materialBinOffsetsMemory, "MaterialBinOffsets");
+        allocateBinBuffer(m_materialBinCursorsBuffer, m_materialBinCursorsMemory, "MaterialBinCursors");
     }
 
     void VulkanWaveFrontPipeline::bindInternalBuffers(VkDescriptorSet descriptorSet, bool swapQueues)
     {
-        VkWriteDescriptorSet writes[10]{};
+        VkWriteDescriptorSet writes[13]{};
 
-        // Binding 20: Payload buffer
+        // Binding 60: Payload buffer
         VkDescriptorBufferInfo payloadInfo{};
         payloadInfo.buffer = m_payloadBuffer;
         payloadInfo.offset = 0;
@@ -875,7 +1035,7 @@ namespace tracey
 
         writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[0].dstSet = descriptorSet;
-        writes[0].dstBinding = 20;
+        writes[0].dstBinding = 60;
         writes[0].dstArrayElement = 0;
         writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         writes[0].descriptorCount = 1;
@@ -1007,6 +1167,48 @@ namespace tracey
         writes[9].descriptorCount = 1;
         writes[9].pBufferInfo = &missIndirectInfo;
 
-        vkUpdateDescriptorSets(m_device.vkDevice(), 10, writes, 0, nullptr);
+        // Binding 59: Sorted hit queue (output of the material-ID sort)
+        VkDescriptorBufferInfo sortedHitQueueInfo{};
+        sortedHitQueueInfo.buffer = m_sortedHitQueueBuffer;
+        sortedHitQueueInfo.offset = 0;
+        sortedHitQueueInfo.range = VK_WHOLE_SIZE;
+
+        writes[10].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[10].dstSet = descriptorSet;
+        writes[10].dstBinding = 59;
+        writes[10].dstArrayElement = 0;
+        writes[10].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        writes[10].descriptorCount = 1;
+        writes[10].pBufferInfo = &sortedHitQueueInfo;
+
+        // Binding 61: Material bin offsets
+        VkDescriptorBufferInfo materialBinOffsetsInfo{};
+        materialBinOffsetsInfo.buffer = m_materialBinOffsetsBuffer;
+        materialBinOffsetsInfo.offset = 0;
+        materialBinOffsetsInfo.range = VK_WHOLE_SIZE;
+
+        writes[11].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[11].dstSet = descriptorSet;
+        writes[11].dstBinding = 61;
+        writes[11].dstArrayElement = 0;
+        writes[11].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        writes[11].descriptorCount = 1;
+        writes[11].pBufferInfo = &materialBinOffsetsInfo;
+
+        // Binding 62: Material bin cursors
+        VkDescriptorBufferInfo materialBinCursorsInfo{};
+        materialBinCursorsInfo.buffer = m_materialBinCursorsBuffer;
+        materialBinCursorsInfo.offset = 0;
+        materialBinCursorsInfo.range = VK_WHOLE_SIZE;
+
+        writes[12].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[12].dstSet = descriptorSet;
+        writes[12].dstBinding = 62;
+        writes[12].dstArrayElement = 0;
+        writes[12].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        writes[12].descriptorCount = 1;
+        writes[12].pBufferInfo = &materialBinCursorsInfo;
+
+        vkUpdateDescriptorSets(m_device.vkDevice(), 13, writes, 0, nullptr);
     }
 }

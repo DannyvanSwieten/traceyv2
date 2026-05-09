@@ -2,6 +2,7 @@
 #include "../ray_tracing_pipeline_layout.hpp"
 #include "../cpu/cpu_shader_binding_table.hpp"
 #include "../../../ray_tracing/shader_module/cpu/cpu_shader_module.hpp"
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -9,6 +10,22 @@
 #include <shaderc/shaderc.hpp>
 namespace tracey
 {
+    // Helper: rename a user shader's entry point. Looks for the function
+    // *definition* (`void <entry>(`) rather than any bare occurrence, so the
+    // word can safely appear in comments or other identifiers without being
+    // accidentally renamed.
+    static void renameEntryPoint(std::string &src, std::string_view entryPoint, const std::string &newName)
+    {
+        const std::string needle = "void " + std::string(entryPoint) + "(";
+        const size_t hit = src.find(needle);
+        if (hit == std::string::npos) {
+            return;
+        }
+        // Position of the entry-point name within the matched needle.
+        const size_t namePos = hit + std::strlen("void ");
+        src.replace(namePos, entryPoint.size(), newName);
+    }
+
     // Helper: Convert ImageLayoutFormat to GLSL image format qualifier string
     static const char *imageFormatToGlsl(ImageLayoutFormat format)
     {
@@ -101,6 +118,21 @@ namespace tracey
                 fieldSize *= field.elementCount > 0 ? field.elementCount : 1;
             }
             ss << ";\n";
+
+            // std140's vec3-in-struct is the classic gotcha. The Khronos spec
+            // leaves room for two interpretations: a vec3 followed by a
+            // smaller-aligned member (e.g. uint) lands either at +12 or +16
+            // depending on the GLSL compiler's interpretation. Our host-side
+            // ShaderInputsBuffer treats vec3 as 16 bytes (matching alignment),
+            // so the next member sits at +16. Force the shader compiler to
+            // agree by emitting an explicit trailing float pad after each
+            // vec3-typed scalar member -- this fills the implicit 4-byte tail
+            // and makes the next member's offset unambiguous on both sides.
+            if ((field.type == "vec3" || field.type == "ivec3" || field.type == "uvec3")
+                && !field.isArray)
+            {
+                ss << "    float _pad" << paddingCounter++ << ";\n";
+            }
 
             currentOffset = alignedOffset + fieldSize;
         }
@@ -352,25 +384,14 @@ namespace tracey
             const auto hitModule = sbt.hitModules()[i];
             const auto cpuModule = dynamic_cast<const CpuShaderModule *>(hitModule);
             std::string userSource(cpuModule->source());
-            // replace user entry point with rayGenMain
-            size_t entryPointPos = userSource.find(cpuModule->entryPoint());
-            if (entryPointPos != std::string_view::npos)
-            {
-                userSource.replace(entryPointPos, cpuModule->entryPoint().size(), "HitShader" + std::to_string(i));
-            }
-
+            renameEntryPoint(userSource, cpuModule->entryPoint(), "HitShader" + std::to_string(i));
             ss << userSource << "\n";
         }
 
         const auto cpuModule = dynamic_cast<const CpuShaderModule *>(rayGenShader);
 
         std::string userSource(cpuModule->source());
-        // replace user entry point with rayGenMain
-        size_t entryPointPos = userSource.find(cpuModule->entryPoint());
-        if (entryPointPos != std::string_view::npos)
-        {
-            userSource.replace(entryPointPos, cpuModule->entryPoint().size(), "rayGenMain");
-        }
+        renameEntryPoint(userSource, cpuModule->entryPoint(), "rayGenMain");
         ss << userSource;
 
         std::stringstream missShaderCalls;
@@ -379,12 +400,7 @@ namespace tracey
             const auto missModule = sbt.missModules()[i];
             const auto cpuModule = dynamic_cast<const CpuShaderModule *>(missModule);
             std::string userSource(cpuModule->source());
-            // replace user entry point with MissShaderX
-            size_t entryPointPos = userSource.find(cpuModule->entryPoint());
-            if (entryPointPos != std::string_view::npos)
-            {
-                userSource.replace(entryPointPos, cpuModule->entryPoint().size(), "MissShader" + std::to_string(i));
-            }
+            renameEntryPoint(userSource, cpuModule->entryPoint(), "MissShader" + std::to_string(i));
             ss << userSource << "\n";
         }
 
@@ -602,8 +618,9 @@ namespace tracey
         }
         userParams << "};\n";
 
-        // Create a buffer for ray payloads at binding 20
-        userParams << "layout(std430, set = 0, binding = " << 20 << ") buffer RayPayloadBuffer {\n";
+        // Create a buffer for ray payloads at binding 60 (kept outside the user binding range,
+        // which can grow past the previous slot of 20 once material program SSBOs are bound).
+        userParams << "layout(std430, set = 0, binding = " << 60 << ") buffer RayPayloadBuffer {\n";
         userParams << "    RayPayloads payloads[];\n";
         userParams << "} rayPayloadBuffer;\n";
 
@@ -637,12 +654,7 @@ namespace tracey
         const auto rayGenShader = sbt.rayGen();
         const auto cpuModule = dynamic_cast<const CpuShaderModule *>(rayGenShader);
         std::string userSource(cpuModule->source());
-        // replace user entry point with ray_gen_main
-        size_t entryPointPos = userSource.find(cpuModule->entryPoint());
-        if (entryPointPos != std::string_view::npos)
-        {
-            userSource.replace(entryPointPos, cpuModule->entryPoint().size(), "ray_gen_main");
-        }
+        renameEntryPoint(userSource, cpuModule->entryPoint(), "ray_gen_main");
 
         const auto userSourcePosition = rayGenShaderTemplate.find("//___RAY_GENERATION_FUNCTION___");
         if (userSourcePosition != std::string::npos)
@@ -700,8 +712,9 @@ namespace tracey
         }
         userParams << "};\n";
 
-        // Create a buffer for ray payloads at binding 20
-        userParams << "layout(std430, set = 0, binding = " << 20 << ") buffer RayPayloadBuffer {\n";
+        // Create a buffer for ray payloads at binding 60 (kept outside the user binding range,
+        // which can grow past the previous slot of 20 once material program SSBOs are bound).
+        userParams << "layout(std430, set = 0, binding = " << 60 << ") buffer RayPayloadBuffer {\n";
         userParams << "    RayPayloads payloads[];\n";
         userParams << "} rayPayloadBuffer;\n";
 
@@ -800,8 +813,9 @@ namespace tracey
         }
         userParams << "};\n";
 
-        // Create a buffer for ray payloads at binding 20
-        userParams << "layout(std430, set = 0, binding = " << 20 << ") buffer RayPayloadBuffer {\n";
+        // Create a buffer for ray payloads at binding 60 (kept outside the user binding range,
+        // which can grow past the previous slot of 20 once material program SSBOs are bound).
+        userParams << "layout(std430, set = 0, binding = " << 60 << ") buffer RayPayloadBuffer {\n";
         userParams << "    RayPayloads payloads[];\n";
         userParams << "} rayPayloadBuffer;\n";
 
@@ -835,12 +849,7 @@ namespace tracey
         const auto missShader = sbt.missModules()[missShaderIndex];
         const auto cpuModule = dynamic_cast<const CpuShaderModule *>(missShader);
         std::string userSource(cpuModule->source());
-        // replace user entry point with miss_shader_main
-        size_t entryPointPos = userSource.find(cpuModule->entryPoint());
-        if (entryPointPos != std::string_view::npos)
-        {
-            userSource.replace(entryPointPos, cpuModule->entryPoint().size(), "miss_shader_main");
-        }
+        renameEntryPoint(userSource, cpuModule->entryPoint(), "miss_shader_main");
 
         const auto userSourcePosition = missShaderTemplate.find("//___MISS_SHADER_FUNCTION___");
         if (userSourcePosition != std::string::npos)
@@ -901,8 +910,8 @@ namespace tracey
             }
             userParams << "};\n";
 
-            // Create a buffer for ray payloads at binding 20
-            userParams << "layout(std430, set = 0, binding = " << 20 << ") readonly buffer RayPayloadBuffer {\n";
+            // Create a buffer for ray payloads at binding 60 (see compute pipeline compiler).
+            userParams << "layout(std430, set = 0, binding = " << 60 << ") readonly buffer RayPayloadBuffer {\n";
             userParams << "    RayPayloads payloads[];\n";
             userParams << "} rayPayloadBuffer;\n";
 
@@ -956,13 +965,7 @@ namespace tracey
 
             // Get user resolve shader code
             std::string userSource(cpuModule->source());
-
-            // Replace user entry point with resolve_shader_main
-            size_t entryPointPos = userSource.find(cpuModule->entryPoint());
-            if (entryPointPos != std::string_view::npos)
-            {
-                userSource.replace(entryPointPos, cpuModule->entryPoint().size(), "resolve_shader_main");
-            }
+            renameEntryPoint(userSource, cpuModule->entryPoint(), "resolve_shader_main");
 
             const auto userSourcePosition = resolveShaderTemplate.find("//___RESOLVE_SHADER_FUNCTION___");
             if (userSourcePosition != std::string::npos)

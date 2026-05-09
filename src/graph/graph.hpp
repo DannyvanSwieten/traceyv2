@@ -21,6 +21,9 @@ namespace tracey
 
         size_t uid() const;
 
+        const std::vector<std::unique_ptr<Node>> &nodes() const { return m_nodes; }
+        const std::vector<Connection> &connections() const { return m_connections; }
+
     private:
         size_t m_uid;
         std::vector<std::unique_ptr<Node>> m_nodes;

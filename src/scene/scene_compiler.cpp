@@ -1,7 +1,11 @@
 #include "scene_compiler.hpp"
 #include "material_instance.hpp"
+#include "../graph/graphs/shader_graph/compiler.hpp"
+#include "../graph/graphs/shader_graph/serialization.hpp"
+#include <cstring>
 #include <iostream>
 #include <stdexcept>
+#include <unordered_map>
 
 // stb_image header (implementation is in gltf_loader.cpp)
 #include <stb_image.h>
@@ -331,10 +335,49 @@ namespace tracey
         auto sceneNodes = scene.flatten();
         uint32_t materialIndex = 0;
 
+        // Material program aggregation: program 0 is always the passthrough
+        // (used by any actor without an attached graph). Subsequent programs
+        // are added on first encounter of a unique graph JSON. The lookup
+        // table keyed by JSON string lets us dedupe across actors.
+        result.materialPrograms.addProgram(makePassthroughProgram());
+        std::unordered_map<std::string, uint32_t> graphJsonToProgramId;
+
         for (const auto &node : sceneNodes)
         {
             const Actor *actor = node.actor;
             const Mat4 &worldTransform = node.worldTransform;
+
+            // Resolve this actor's program id once -- all instances under the
+            // actor share it. Empty graph -> passthrough at index 0.
+            uint32_t actorProgramId = 0;
+            const std::string &graphJson = actor->materialGraphJson();
+            if (!graphJson.empty())
+            {
+                auto cached = graphJsonToProgramId.find(graphJson);
+                if (cached != graphJsonToProgramId.end())
+                {
+                    actorProgramId = cached->second;
+                }
+                else
+                {
+                    try
+                    {
+                        auto graph = deserializeShaderGraph(graphJson);
+                        if (graph)
+                        {
+                            MaterialProgram program = compileShaderGraph(*graph);
+                            actorProgramId = result.materialPrograms.addProgram(program);
+                            graphJsonToProgramId.emplace(graphJson, actorProgramId);
+                        }
+                    }
+                    catch (const std::exception &e)
+                    {
+                        std::cerr << "SceneCompiler: failed to compile actor graph: "
+                                  << e.what() << " -- using passthrough" << std::endl;
+                        actorProgramId = 0;
+                    }
+                }
+            }
 
             for (const auto &sceneInstance : actor->instances())
             {
@@ -366,6 +409,7 @@ namespace tracey
 
                 result.instances.push_back(instance);
                 result.instanceToMaterialIndex.push_back(materialIndex);
+                result.instanceProgramIndex.push_back(actorProgramId);
 
                 // Convert material and load textures
                 GPUMaterial gpuMat = convertMaterial(device, result, scene, sceneInstance.material());
@@ -399,6 +443,22 @@ namespace tracey
 
             std::cout << "Created material buffer with " << result.materials.size() << " materials" << std::endl;
             std::cout << "Loaded " << result.textures.size() << " textures" << std::endl;
+        }
+
+        // Step 5: Create instance->program SSBO so the hit shader and the
+        // material-ID sort kernel can resolve programId from instanceIndex.
+        if (!result.instanceProgramIndex.empty())
+        {
+            const size_t bytes = result.instanceProgramIndex.size() * sizeof(uint32_t);
+            result.instanceProgramIndexBuffer = std::unique_ptr<Buffer>(
+                device->createBuffer(static_cast<uint32_t>(bytes), BufferUsage::StorageBuffer));
+            std::memcpy(result.instanceProgramIndexBuffer->mapForWriting(),
+                        result.instanceProgramIndex.data(), bytes);
+            result.instanceProgramIndexBuffer->flush();
+            std::cout << "Created instanceProgramIndex buffer for "
+                      << result.instanceProgramIndex.size() << " instances across "
+                      << result.materialPrograms.headers().size() << " program(s)"
+                      << std::endl;
         }
 
         // Output BVH statistics

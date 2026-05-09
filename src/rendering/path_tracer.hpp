@@ -4,16 +4,14 @@
 #include "../scene/camera.hpp"
 #include "../device/device.hpp"
 #include "../device/image_2d.hpp"
-#include "../ray_tracing/ray_tracing_pipeline/ray_tracing_pipeline.hpp"
-#include "../ray_tracing/ray_tracing_pipeline/ray_tracing_pipeline_layout.hpp"
-#include "../ray_tracing/ray_tracing_pipeline/descriptor_set.hpp"
-#include "../ray_tracing/ray_tracing_command_buffer/ray_tracing_command_buffer.hpp"
-#include "../ray_tracing/isf/isf_pipeline_builder.hpp"
-#include "../ray_tracing/isf/shader_inputs_buffer.hpp"
+#include "../device/buffer.hpp"
+#include "../ray_tracing/ray_tracing_pipeline/data_structure.hpp"
+#include "../ray_tracing/shader_inputs_buffer.hpp"
+#include "../shading/material_program/material_program.hpp"
+#include "path_tracer_backend.hpp"
 
 #include <memory>
 #include <filesystem>
-#include <array>
 
 namespace tracey
 {
@@ -36,9 +34,16 @@ namespace tracey
         // Render quality settings
         uint32_t samplesPerFrame = 16;
         uint32_t maxBounces = 8;
+
+        // If true, the pipeline binds the four MaterialProgram SSBOs and the
+        // hit shader is expected to be the uber-VM hit. Defaults to false so
+        // legacy hit shaders keep working unchanged.
+        bool useMaterialPrograms = false;
     };
 
-    /// High-level path tracing renderer that encapsulates the entire rendering pipeline
+    /// High-level path tracing renderer. Owns format-agnostic state (output
+    /// image, accumulator, sample counter, ShaderInputs uniform) and delegates
+    /// per-frame dispatch to a PathTracerBackend (today: wavefront compute).
     class PathTracer
     {
     public:
@@ -93,12 +98,19 @@ namespace tracey
         uint32_t maxBounces() const { return m_config.maxBounces; }
         void setMaxBounces(uint32_t bounces) { m_config.maxBounces = bounces; }
 
+        /// Replace the material program buffers with the given packed programs.
+        /// Only valid when config.useMaterialPrograms is true. Clears
+        /// accumulation on next render.
+        void setMaterialPrograms(const MaterialProgramBuffer &programs);
+
+        /// Update one parameter slot and re-upload the parameters buffer. The
+        /// programs themselves are unchanged; this is the animation path used
+        /// by the graph editor for sliders / keyframes.
+        void setMaterialParameter(uint32_t programId, uint32_t paramIdx, const Vec4 &value);
+
     private:
-        // Setup methods called from constructor
         void createOutputImage();
-        void buildPipeline();
-        void allocateDescriptorSets();
-        void bindSceneResources(const SceneCompiler::CompiledScene &scene);
+        void createShaderInputs();
         void updateCameraUniforms(const Camera &camera);
 
         // Not owned
@@ -107,27 +119,20 @@ namespace tracey
         // Configuration
         PathTracerConfig m_config;
 
-        // Pipeline resources (owned)
-        std::unique_ptr<ISFPipelineBuilder> m_pipelineBuilder;
-        std::unique_ptr<RayTracingPipelineLayoutDescriptor> m_pipelineLayout;
-        std::unique_ptr<RayTracingPipeline> m_pipeline;
-        std::unique_ptr<ShaderInputsBuffer> m_shaderInputs;
-
-        // Descriptor sets (owned)
-        std::array<std::unique_ptr<DescriptorSet>, 2> m_descriptorSets;
-
-        // Command buffer and output (owned)
-        std::unique_ptr<RayTracingCommandBuffer> m_commandBuffer;
-        // outputImage: tonemapped+gamma display-ready image (RGBA8 unless
-        // hdrOutput, in which case RGBA32F clamped to [0,1]). What consumers
-        // (editor swapchain, scene_renderer PNG writer) read.
+        // Format-agnostic resources owned by the façade. The backend gets
+        // pointers to these via PathTracerBackend::InitParams.
         std::unique_ptr<Image2D> m_outputImage;
-        // accumulatorImage: linear HDR running average across samples and
-        // frames. Persists across render() calls so each new dispatch can
-        // refine the estimate without losing prior contribution. Cleared when
-        // the caller asks for accumulation reset.
         std::unique_ptr<Image2D> m_accumulatorImage;
         std::unique_ptr<Buffer> m_readbackBuffer;
+        std::unique_ptr<ShaderInputsBuffer> m_shaderInputs;
+        StructureLayout m_shaderInputsLayout;
+
+        // CPU mirror of the program buffer so setMaterialParameter can resolve
+        // (programId, paramIdx) → absolute parameter slot before forwarding.
+        MaterialProgramBuffer m_currentPrograms;
+
+        // Backend that owns pipeline / descriptor / command-buffer state.
+        std::unique_ptr<PathTracerBackend> m_backend;
 
         // Rendering state
         uint32_t m_sampleCount = 0;

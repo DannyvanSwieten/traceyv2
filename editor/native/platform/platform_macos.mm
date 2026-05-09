@@ -271,6 +271,13 @@ struct MacEditorWindow : EditorWindow {
     uint32_t vp_pixel_w = 0;
     uint32_t vp_pixel_h = 0;
     bool visible = false;
+    // Frontend's last explicit wish for the Metal viewport overlay. Tracked
+    // separately because set_viewport_rect runs on every scroll/resize and
+    // must NOT override an explicit hide (e.g. while the material-graph modal
+    // is open above the WebView). Defaults to visible; the first rect report
+    // unhides the overlay (it starts hidden until layout is known).
+    bool viewport_visible = true;
+    bool viewport_rect_known = false;
     bool close_requested = false;
 
     ~MacEditorWindow() override {
@@ -459,7 +466,8 @@ struct MacEditorWindow : EditorWindow {
         NSRect contentBounds = [[window contentView] bounds];
         CGFloat cocoa_y = contentBounds.size.height - y - h;
         [metalView setFrame:NSMakeRect(x, cocoa_y, w, h)];
-        metalView.hidden = NO;
+        viewport_rect_known = true;
+        metalView.hidden = !viewport_visible;
 
         const CGFloat scale = window.backingScaleFactor;
         const uint32_t pw = static_cast<uint32_t>(w * scale);
@@ -478,7 +486,12 @@ struct MacEditorWindow : EditorWindow {
         if (resized && resize_cb) resize_cb(pw, ph);
     }
 
-    void set_viewport_visible(bool vis) override { metalView.hidden = !vis; }
+    void set_viewport_visible(bool vis) override {
+        viewport_visible = vis;
+        // Only apply once the frontend has reported a rect; otherwise we'd
+        // reveal a 100x100 stub at the origin during startup.
+        if (viewport_rect_known) metalView.hidden = !vis;
+    }
     void set_viewport_accepts_mouse(bool accept) override {
         if (accept) [window makeFirstResponder:metalView];
     }

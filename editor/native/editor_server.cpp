@@ -12,6 +12,7 @@
 #include "scene/transform.hpp"
 
 #include "rendering/path_tracer.hpp"
+#include "graph/graphs/shader_graph/serialization.hpp"
 
 #include <glm/gtc/quaternion.hpp>
 
@@ -21,8 +22,11 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <exception>
+#include <filesystem>
 #include <fstream>
+#include <sstream>
 #include <stdexcept>
 
 using nlohmann::json;
@@ -91,11 +95,15 @@ tracey::Camera camera_from_json(const json& j) {
 json actor_to_json(const tracey::Actor& a) {
     json children = json::array();
     for (size_t uid : a.children()) children.push_back(uid);
+    // material_assigned: true if this actor has a non-empty graph attached.
+    // The frontend doesn't need the full JSON for the actor inspector -- a
+    // boolean is enough to indicate "uses a library graph" vs "passthrough".
     return {
         {"id", a.getUid()},
         {"name", a.name()},
         {"transform", transform_to_json(a.transform())},
         {"children", std::move(children)},
+        {"material_assigned", !a.materialGraphJson().empty()},
     };
 }
 
@@ -144,9 +152,11 @@ uint64_t add_primitive_actor(tracey::Scene& scene, const std::string& name,
     actor->setName(name);
 
     tracey::MaterialInstance material("pbr");
-    material.setVec3("baseColor", tracey::Vec3(0.8f, 0.8f, 0.8f));
-    material.setFloat("metallic", 0.0f);
-    material.setFloat("roughness", 0.5f);
+    // Field names must match what scene_compiler reads -- it looks for "albedo"
+    // (via MaterialInstance::albedo()), not "baseColor".
+    material.setAlbedo(tracey::Vec3(0.8f, 0.8f, 0.8f));
+    material.setMetallic(0.0f);
+    material.setRoughness(0.5f);
 
     actor->addInstance(tracey::SceneInstance(name, material));
     return actor->getUid();
@@ -164,6 +174,41 @@ std::string ok_response_null() {
 
 std::string err_response(const std::string& message) {
     return json{{"ok", false}, {"error", message}}.dump();
+}
+
+// ─── Material library: persistent per-user store of saved graphs ────────────
+// Names keep the file format simple (one .json per graph) so the directory
+// stays git-diff-friendly. We sanitize names to keep paths bounded.
+
+std::filesystem::path material_library_dir() {
+#if defined(__APPLE__)
+    if (const char* home = std::getenv("HOME")) {
+        return std::filesystem::path(home) /
+               "Library/Application Support/Tracey/MaterialLibrary";
+    }
+#elif defined(_WIN32)
+    if (const char* appdata = std::getenv("APPDATA")) {
+        return std::filesystem::path(appdata) / "Tracey" / "MaterialLibrary";
+    }
+#else
+    if (const char* xdg = std::getenv("XDG_DATA_HOME")) {
+        return std::filesystem::path(xdg) / "tracey" / "material_library";
+    }
+    if (const char* home = std::getenv("HOME")) {
+        return std::filesystem::path(home) / ".local/share/tracey/material_library";
+    }
+#endif
+    return std::filesystem::current_path() / "material_library";
+}
+
+bool is_safe_library_name(const std::string& name) {
+    if (name.empty() || name.size() > 96) return false;
+    for (char c : name) {
+        const bool ok = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                        (c >= '0' && c <= '9') || c == '_' || c == '-' || c == ' ';
+        if (!ok) return false;
+    }
+    return true;
 }
 
 }  // namespace
@@ -567,6 +612,107 @@ std::string EditorServer::handle_command(const std::string& json_request) {
         }
         if (cmd == "set_max_bounces") {
             m_engine->set_max_bounces(req.at("bounces").get<uint32_t>());
+            return ok_response_null();
+        }
+
+        // ── Material graphs ──
+        if (cmd == "get_material_graph") {
+            return ok_response(m_engine->get_material_graph_json());
+        }
+        if (cmd == "set_material_graph") {
+            const auto graph_json = req.at("graph").get<std::string>();
+            m_engine->set_material_graph_json(graph_json);
+            m_clear_next_frame = true;  // accumulator invalid after material change
+            return ok_response_null();
+        }
+        if (cmd == "set_material_parameter") {
+            const uint32_t program_id = req.at("program_id").get<uint32_t>();
+            const uint32_t param_idx = req.at("param_idx").get<uint32_t>();
+            const auto& v = req.at("value");
+            m_engine->set_material_parameter(
+                program_id, param_idx,
+                v[0].get<float>(), v[1].get<float>(),
+                v[2].get<float>(), v[3].get<float>());
+            m_clear_next_frame = true;
+            return ok_response_null();
+        }
+
+        // ── Material library (per-user persistent graphs) ──
+        if (cmd == "list_material_library") {
+            std::filesystem::path dir = material_library_dir();
+            json arr = json::array();
+            std::error_code ec;
+            if (std::filesystem::exists(dir, ec)) {
+                for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
+                    if (!entry.is_regular_file()) continue;
+                    if (entry.path().extension() != ".json") continue;
+                    arr.push_back(entry.path().stem().string());
+                }
+            }
+            std::sort(arr.begin(), arr.end());
+            return ok_response(arr);
+        }
+        if (cmd == "save_material_graph_as") {
+            const auto name = req.at("name").get<std::string>();
+            const auto graph_json = req.at("graph").get<std::string>();
+            if (!is_safe_library_name(name)) return err_response("invalid library name");
+            // Pretty-print so the file is git-diff-friendly.
+            auto graph = tracey::deserializeShaderGraph(graph_json);
+            if (!graph) return err_response("could not parse graph json");
+            const std::string pretty = tracey::serializeShaderGraphPretty(*graph);
+
+            std::filesystem::path dir = material_library_dir();
+            std::filesystem::create_directories(dir);
+            std::ofstream out(dir / (name + ".json"));
+            if (!out) return err_response("could not open file for writing");
+            out << pretty;
+            return ok_response_null();
+        }
+        if (cmd == "load_material_graph_from_library") {
+            const auto name = req.at("name").get<std::string>();
+            if (!is_safe_library_name(name)) return err_response("invalid library name");
+            std::filesystem::path file = material_library_dir() / (name + ".json");
+            std::ifstream in(file);
+            if (!in) return err_response("graph not found in library");
+            std::stringstream ss;
+            ss << in.rdbuf();
+            return ok_response(ss.str());
+        }
+        if (cmd == "delete_material_graph_from_library") {
+            const auto name = req.at("name").get<std::string>();
+            if (!is_safe_library_name(name)) return err_response("invalid library name");
+            std::error_code ec;
+            std::filesystem::remove(material_library_dir() / (name + ".json"), ec);
+            return ok_response_null();
+        }
+
+        // ── Per-actor material assignment ──
+        // Resolve a library entry to a graph JSON server-side, attach it to
+        // the actor, recompile the scene so the new MaterialProgramBuffer +
+        // instanceProgramIndex SSBO take effect, and invalidate accumulation.
+        // An empty `library_name` clears the assignment back to passthrough.
+        if (cmd == "set_actor_material") {
+            const uint64_t id = req.at("actor_id").get<uint64_t>();
+            const auto name = req.value("library_name", std::string{});
+
+            auto* actor = m_engine->scene().getActor(id);
+            if (!actor) return err_response("actor not found");
+
+            std::string graph_json;
+            if (!name.empty()) {
+                if (!is_safe_library_name(name)) return err_response("invalid library name");
+                std::ifstream in(material_library_dir() / (name + ".json"));
+                if (!in) return err_response("library entry not found");
+                std::stringstream ss;
+                ss << in.rdbuf();
+                graph_json = ss.str();
+            }
+            actor->setMaterialGraphJson(graph_json);
+
+            if (m_engine->compiled_scene_ready()) {
+                m_engine->compile_scene();
+                m_clear_next_frame = true;
+            }
             return ok_response_null();
         }
 

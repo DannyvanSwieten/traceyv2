@@ -1,5 +1,6 @@
-import { Component, createSignal, createEffect, For, Show, Accessor } from 'solid-js';
+import { Component, createSignal, createEffect, For, Show, Accessor, onMount } from 'solid-js';
 import * as api from '../../lib/api';
+import { materialLibraryEntries, refreshMaterialLibrary } from '../../stores/materials';
 import './ActorProperties.css';
 
 export type InstanceInfo = api.InstanceInfo;
@@ -15,12 +16,18 @@ interface ActorPropertiesProps {
 export const ActorProperties: Component<ActorPropertiesProps> = (props) => {
   const [instances, setInstances] = createSignal<InstanceInfo[]>([]);
   const [isLoading, setIsLoading] = createSignal(false);
+  const [materialBusy, setMaterialBusy] = createSignal(false);
 
   const selectedActor = () => {
     const id = props.selectedActorId();
     if (id === null) return null;
     return props.actors().find((a) => a.id === id) || null;
   };
+
+  // The shared library signal is hydrated by whichever component mounts
+  // first; trigger a fetch here so the dropdown is populated even if the
+  // material modal hasn't been opened yet.
+  onMount(refreshMaterialLibrary);
 
   createEffect(async () => {
     const id = props.selectedActorId();
@@ -40,6 +47,22 @@ export const ActorProperties: Component<ActorPropertiesProps> = (props) => {
       setIsLoading(false);
     }
   });
+
+  const onMaterialPick = async (actorId: number, libraryName: string) => {
+    setMaterialBusy(true);
+    try {
+      await api.setActorMaterial(actorId, libraryName);
+      // Reflect the change in the local actors() list. The server already
+      // updated state and recompiled the scene; we just touch the cached
+      // material_assigned flag so the UI matches without a full refetch.
+      const actor = selectedActor();
+      if (actor) actor.material_assigned = libraryName.length > 0;
+    } catch (e) {
+      console.error('setActorMaterial failed:', e);
+    } finally {
+      setMaterialBusy(false);
+    }
+  };
 
   const updateTransform = async (
     actor: Actor,
@@ -178,6 +201,32 @@ export const ActorProperties: Component<ActorPropertiesProps> = (props) => {
                   </div>
                 </div>
               </div>
+            </div>
+
+            <div class="property-section">
+              <h4>Material</h4>
+              <div class="property-row">
+                <span class="property-label">Library</span>
+                <select
+                  class="material-picker"
+                  title="Material library graph"
+                  value={actor().material_assigned ? '__assigned__' : ''}
+                  disabled={materialBusy()}
+                  onChange={(e) => onMaterialPick(actor().id, e.currentTarget.value)}
+                  onFocus={refreshMaterialLibrary}
+                >
+                  <option value="">— passthrough —</option>
+                  <For each={materialLibraryEntries()}>
+                    {(name) => <option value={name}>{name}</option>}
+                  </For>
+                </select>
+              </div>
+              <Show when={actor().material_assigned}>
+                <div class="property-hint">
+                  Active library graph drives this actor's material program.
+                  Pick "passthrough" to revert.
+                </div>
+              </Show>
             </div>
 
             <div class="property-section">

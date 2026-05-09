@@ -1,8 +1,8 @@
 #pragma once
 
-#include "../ray_tracing_pipeline/data_structure.hpp"
-#include "../../device/buffer.hpp"
-#include "../../device/device.hpp"
+#include "ray_tracing_pipeline/data_structure.hpp"
+#include "../device/buffer.hpp"
+#include "../device/device.hpp"
 
 #include <memory>
 #include <string>
@@ -14,13 +14,13 @@
 
 namespace tracey {
 
-/// Manages a uniform buffer for ISF shader inputs with std140 layout.
-/// Allows setting individual members by name and handles offset/padding automatically.
+/// Manages a uniform buffer with std140 layout. Allows setting individual
+/// members by name and handles offset/padding automatically. The layout is
+/// supplied by the caller (typically the renderer's pipeline construction
+/// code, which mirrors the same StructureLayout it adds via
+/// RayTracingPipelineLayoutDescriptor::addUniformBuffer).
 class ShaderInputsBuffer {
   public:
-    /// Create a shader inputs buffer from a structure layout.
-    /// @param device The device to allocate the buffer on
-    /// @param layout The structure layout describing the inputs (typically from ISFPipelineBuilder::mergeInputs)
     ShaderInputsBuffer(Device *device, const StructureLayout &layout);
     ~ShaderInputsBuffer() = default;
 

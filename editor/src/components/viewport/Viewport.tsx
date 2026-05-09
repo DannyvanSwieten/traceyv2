@@ -33,6 +33,28 @@ export const Viewport: Component<ViewportProps> = (props) => {
   // Push the placeholder's current bounding box to the native side so the
   // metal-view overlay tracks it. Coordinates are in document logical pixels;
   // the host converts to its window-local Cocoa coords.
+  //
+  // Resolution updates are debounced because a window-edge drag fires
+  // ResizeObserver many times in quick succession and each setViewportResolution
+  // recreates the path tracer (image alloc + pipeline rebuild + program reupload).
+  let resolutionTimer: ReturnType<typeof setTimeout> | null = null;
+  let lastReportedPixelW = 0;
+  let lastReportedPixelH = 0;
+  const RESOLUTION_DEBOUNCE_MS = 250;
+
+  const scheduleResolutionUpdate = (pixelW: number, pixelH: number) => {
+    if (pixelW === lastReportedPixelW && pixelH === lastReportedPixelH) return;
+    if (resolutionTimer !== null) clearTimeout(resolutionTimer);
+    resolutionTimer = setTimeout(() => {
+      resolutionTimer = null;
+      lastReportedPixelW = pixelW;
+      lastReportedPixelH = pixelH;
+      api.setViewportResolution(pixelW, pixelH).catch((e) =>
+        console.error('setViewportResolution failed:', e)
+      );
+    }, RESOLUTION_DEBOUNCE_MS);
+  };
+
   const reportRect = () => {
     if (!placeholderRef) return;
     const r = placeholderRef.getBoundingClientRect();
@@ -43,6 +65,12 @@ export const Viewport: Component<ViewportProps> = (props) => {
     api.setViewportRect(x, y, w, h).catch((e) =>
       console.error('setViewportRect failed:', e)
     );
+    // Match the path tracer's render resolution to the viewport's actual
+    // device-pixel dimensions, otherwise the swapchain blit stretches.
+    const dpr = window.devicePixelRatio || 1;
+    if (w > 0 && h > 0) {
+      scheduleResolutionUpdate(Math.round(w * dpr), Math.round(h * dpr));
+    }
   };
 
   const loadScene = async (scenePath: string) => {

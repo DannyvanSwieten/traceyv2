@@ -199,6 +199,12 @@ namespace tracey
                     insertIndirectDispatchBarrier();
                     insertComputeBarrier();
 
+                    // Bin hitQueue by material program ID so each workgroup
+                    // in the hit shader runs lanes with the same VM opcode
+                    // stream (SIMT coherence on the interpreter).
+                    dispatchSortHitQueue(wavefront);
+                    insertComputeBarrier();
+
                     // Process hits and misses
                     dispatchHitShader(wavefront, pushConstants);
                     insertComputeBarrier();
@@ -428,6 +434,26 @@ namespace tracey
                            &pushConstants);
         // Use indirect dispatch based on rayQueue.count (computed by prepareIndirect)
         vkCmdDispatchIndirect(m_vkCommandBuffer, wavefront->indirectDispatchBuffer(), 0);
+    }
+
+    void VulkanComputeRayTracingCommandBuffer::dispatchSortHitQueue(VulkanWaveFrontPipeline *wavefront)
+    {
+        // Pass 1: count rays per bin and scan to offsets. Single 64-thread
+        // workgroup so the scan stays in shared memory. The kernel itself
+        // resets the materialBinCursors and writes sortedHitQueue.count, so
+        // we don't need a separate clear here.
+        vkCmdBindPipeline(m_vkCommandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+                          wavefront->sortCountPipeline());
+        vkCmdDispatch(m_vkCommandBuffer, 1, 1, 1);
+
+        insertComputeBarrier();
+
+        // Pass 2: scatter. Indirect dispatch using the hit indirect buffer
+        // (workgroup count == ceil(hitQueue.count / 256), which is exactly
+        // what prepareIndirect already wrote there).
+        vkCmdBindPipeline(m_vkCommandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+                          wavefront->sortScatterPipeline());
+        vkCmdDispatchIndirect(m_vkCommandBuffer, wavefront->hitIndirectBuffer(), 0);
     }
 
     void VulkanComputeRayTracingCommandBuffer::dispatchHitShader(VulkanWaveFrontPipeline *wavefront,

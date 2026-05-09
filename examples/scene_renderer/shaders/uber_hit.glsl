@@ -1,74 +1,78 @@
-/*{
-    "STAGE": "ClosestHit",
-    "DESCRIPTION": "PBR path tracer with metallic-roughness workflow",
-    "INPUTS": [
-        { "NAME": "albedo", "TYPE": "color", "DEFAULT": [0.5, 0.5, 0.5, 1.0] },
-        { "NAME": "maxDepth", "TYPE": "uint", "DEFAULT": 8 }
-    ]
-}*/
+// Tier 5: full PBR BSDF, but every per-shading-point attribute (albedo,
+// metallic, roughness, emission, normal) is sourced from the material VM.
+// The host fetches raw values from the materials SSBO and feeds them as
+// MatInputs; the VM program decides how to transform them and what to
+// emit. The default passthrough graph yields exactly the tier-4 output,
+// so this is a pure plumbing change at parity.
 
 #include "pbr_lib.glsl"
+#include "material_vm.glsl"
 
 void shader(HitInfo hitInfo, inout RayPayloads payloads) {
-
-    // Only process if ray is still alive
     if (!payloads.rayPayload.alive) return;
 
-    // Check max depth - terminate
     if (payloads.rayPayload.depth >= shaderInputs.maxDepth) {
         payloads.rayPayload.color = vec3(0.0);
         payloads.rayPayload.alive = false;
         return;
     }
 
-    // Normal in world space
     vec3 N = normalize(vec3(hitInfo.normalX, hitInfo.normalY, hitInfo.normalZ));
-    vec3 V = -normalize(payloads.rayPayload.direction);
+    vec3 incomingDir = normalize(payloads.rayPayload.direction);
+    vec3 V = -incomingDir;
+    if (dot(N, V) < 0.0) N = -N;
 
-    // Get hit position
     vec3 hitPos = getWorldHitPosition(g_CurrentRayIndex, hitInfo);
-
-    // Get UV coordinates
     vec2 uv = getHitUV(hitInfo);
 
-    // Get material properties
-    vec3 albedo = getMaterialAlbedo(hitInfo.instanceIndex, uv);
-    vec3 emission = getMaterialEmissive(hitInfo.instanceIndex, uv);
-    vec2 mr = getMaterialMetallicRoughness(hitInfo.instanceIndex, uv);
-    float metallic = mr.x;
-    float roughness = clamp(mr.y, 0.04, 1.0);
+    vec3 hostAlbedo = getMaterialAlbedo(hitInfo.instanceIndex, uv);
+    vec3 hostEmission = getMaterialEmissive(hitInfo.instanceIndex, uv);
+    vec2 hostMR = getMaterialMetallicRoughness(hitInfo.instanceIndex, uv);
 
-    // Hit a light source
+    vec3 T, B;
+    buildTangentFrame(N, T, B);
+
+    MatInputs vmIn;
+    vmIn.albedo = hostAlbedo;
+    vmIn.metallic = hostMR.x;
+    vmIn.roughness = hostMR.y;
+    vmIn.emission = hostEmission;
+    vmIn.normal = vec3(0.0, 0.0, 1.0);
+    vmIn.viewDir = V;
+    vmIn.worldPosition = hitPos;
+    vmIn.worldNormal = N;
+    vmIn.worldTangent = T;
+    vmIn.uv0 = uv;
+    vmIn.uv1 = uv;
+
+    uint programId = instanceProgramIndex.indices[hitInfo.instanceIndex];
+    MatResult mat = runMaterialProgram(programId, vmIn);
+
+    vec3 albedo = mat.albedo;
+    vec3 emission = mat.emission;
+    float metallic = mat.metallic;
+    float roughness = clamp(mat.roughness, 0.04, 1.0);
+
     if (length(emission) > 0.0) {
         payloads.rayPayload.color *= emission;
         payloads.rayPayload.alive = false;
         return;
     }
 
-    // Generate random numbers
     float r1 = nextRandom(payloads.rayPayload.rngSeed);
     float r2 = nextRandom(payloads.rayPayload.rngSeed);
     float r3 = nextRandom(payloads.rayPayload.rngSeed);
 
-    // Build tangent frame
-    vec3 T, B;
-    buildTangentFrame(N, T, B);
-
     vec3 L;
     vec3 throughput;
-
-    // Use metallic to decide between specular and diffuse
-    // Metals are purely specular, dielectrics mostly diffuse
     float NdotV = max(dot(N, V), 0.001);
 
     if (r3 < metallic) {
-        // Metallic specular: sample GGX, reflect albedo color
         vec3 H_local = sampleGGX(r1, r2, roughness);
         vec3 H = normalize(tangentToWorld(H_local, N, T, B));
         L = reflect(-V, H);
 
         float NdotL = dot(L, N);
-        // If below surface, use perfect reflection instead
         if (NdotL <= 0.0) {
             L = reflect(-V, N);
             NdotL = max(dot(L, N), 0.001);
@@ -79,30 +83,21 @@ void shader(HitInfo hitInfo, inout RayPayloads payloads) {
         float VdotH = max(dot(V, H), 0.001);
         float NdotH = max(dot(N, H), 0.001);
 
-        // For metals, F0 = albedo
         vec3 F = fresnelSchlick(VdotH, albedo);
         float G = geometrySmith(NdotV, NdotL, roughness);
 
-        // Full GGX importance sampling weight
         throughput = F * G * VdotH / (NdotV * NdotH);
     } else {
-        // Dielectric: always use diffuse sampling for simplicity
-        // This works well for most dielectric materials
         vec3 L_local = sampleCosineHemisphere(r1, r2);
         L = normalize(tangentToWorld(L_local, N, T, B));
         throughput = albedo;
     }
 
-    // Clamp throughput to avoid fireflies
     throughput = clamp(throughput, vec3(0.0), vec3(10.0));
 
-    // Update color
     payloads.rayPayload.color *= throughput;
-
-    // Increment depth and set direction
     payloads.rayPayload.depth += 1u;
     payloads.rayPayload.direction = L;
 
-    // Spawn secondary ray
     traceRay(hitPos + N * 0.001, 0.01, L, 1000.0);
 }

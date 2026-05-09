@@ -10,6 +10,7 @@ import { RenderSettings } from './components/render-settings/RenderSettings';
 import { CameraControls } from './components/camera-controls/CameraControls';
 import { ActorProperties, Transform } from './components/actor-properties/ActorProperties';
 import { AddObjectMenu } from './components/add-object-menu/AddObjectMenu';
+import { MaterialGraphEditor } from './components/material-graph/MaterialGraphEditor';
 import { getAssets, addAsset, removeAsset } from './stores/assets';
 import './App.css';
 
@@ -25,6 +26,7 @@ const App: Component = () => {
     y: 0,
     z: 3,
   });
+  const [materialEditorOpen, setMaterialEditorOpen] = createSignal(false);
   let viewportRef: ViewportHandle | undefined;
   let unlistenImport: (() => void) | undefined;
   let unlistenExport: (() => void) | undefined;
@@ -125,7 +127,24 @@ const App: Component = () => {
       <div class="toolbar">
         <h1>Tracey Editor</h1>
         <AddObjectMenu onObjectAdded={handleObjectAdded} />
+        <button
+          class="toolbar-button"
+          type="button"
+          onClick={() => setMaterialEditorOpen(true)}
+        >
+          Material Graph
+        </button>
       </div>
+
+      <MaterialGraphEditor
+        open={materialEditorOpen}
+        onClose={async () => {
+          setMaterialEditorOpen(false);
+          // Force a fresh frame: the engine cleared the accumulator on
+          // graph-set, but the viewport doesn't know to re-tick on its own.
+          if (viewportRef) viewportRef.render();
+        }}
+      />
 
       <div class="main-content">
         <div class="left-panel panel">

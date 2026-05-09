@@ -7,6 +7,7 @@
 #include "../device/top_level_acceleration_structure.hpp"
 #include "../core/tlas.hpp"
 #include "../core/blas.hpp"
+#include "../shading/material_program/material_program.hpp"
 #include <memory>
 #include <vector>
 #include <unordered_map>
@@ -76,6 +77,14 @@ namespace tracey
 
             // Instance data for reference
             std::vector<Tlas::Instance> instances;
+
+            // Per-instance material program lookup. instanceProgramIndex[i] is
+            // the index into materialPrograms.headers() (== the GPU programId)
+            // for TLAS instance i. instanceProgramIndexBuffer is the SSBO the
+            // hit shader and the sort kernel read from.
+            MaterialProgramBuffer materialPrograms;
+            std::vector<uint32_t> instanceProgramIndex;
+            std::unique_ptr<Buffer> instanceProgramIndexBuffer;
 
             // Maps object name to BLAS index
             std::unordered_map<std::string, size_t> objectToBlasIndex;

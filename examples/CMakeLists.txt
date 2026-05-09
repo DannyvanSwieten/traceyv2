@@ -22,12 +22,12 @@ add_executable(wavefront
     wavefront/wavefront.cpp
 )
 
-add_executable(wavefront_isf
-    wavefront/wavefront_isf.cpp
-)
-
 add_executable(scene_renderer
     scene_renderer/main.cpp
+)
+
+add_executable(material_program_test
+    material_program_test/main.cpp
 )
 
 target_link_libraries(blas
@@ -70,14 +70,6 @@ target_link_libraries(wavefront
     shaderc
 )
 
-target_link_libraries(wavefront_isf
-    PRIVATE
-    tracey
-    glm
-    Vulkan::Vulkan
-    shaderc
-)
-
 target_link_libraries(scene_renderer
     PRIVATE
     tracey
@@ -86,8 +78,14 @@ target_link_libraries(scene_renderer
     shaderc
 )
 
+target_link_libraries(material_program_test
+    PRIVATE
+    tracey
+    glm
+)
+
 # Set rpath for all executables that link against Vulkan and shaderc
-set_target_properties(device_api wavefront wavefront_isf scene_renderer PROPERTIES
+set_target_properties(device_api wavefront scene_renderer PROPERTIES
     MACOSX_RPATH ON
     BUILD_RPATH "/usr/local/lib"
     INSTALL_RPATH "/usr/local/lib"

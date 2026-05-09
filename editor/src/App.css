@@ -23,6 +23,19 @@
   margin-right: auto;
 }
 
+.toolbar-button {
+  padding: 5px 12px;
+  background: #2a2a2a;
+  color: #ddd;
+  border: 1px solid #444;
+  border-radius: 4px;
+  cursor: pointer;
+  font: 12px system-ui, -apple-system, sans-serif;
+}
+.toolbar-button:hover {
+  background: #353535;
+}
+
 .main-content {
   flex: 1;
   display: flex;

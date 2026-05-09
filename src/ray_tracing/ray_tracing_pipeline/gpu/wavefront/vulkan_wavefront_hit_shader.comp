@@ -41,11 +41,22 @@ layout (std430, binding = 50, set = 0) buffer PathHeaders {
     PathHeader headers[];
 } pathHeaders;
 
+// The hit kernel consumes the *sorted* hit queue produced by the
+// material-ID sort. hitQueue (binding 55) is still bound to satisfy the
+// descriptor set layout, but the kernel reads from sortedHitQueue so each
+// workgroup's lanes share the same material program -- the SIMT-coherence
+// win that makes the uber-VM interpreter viable on multi-material scenes.
 layout(std430, binding = 55, set = 0) readonly buffer HitQueue {
     uint count;
     uint padding[3];
     uint rayIndices[];
 } hitQueue;
+
+layout(std430, binding = 59, set = 0) readonly buffer SortedHitQueue {
+    uint count;
+    uint padding[3];
+    uint rayIndices[];
+} sortedHitQueue;
 
 layout(std430, binding = 52, set = 0) readonly buffer HitInfos {
     HitInfo hits[];
@@ -136,9 +147,9 @@ void traceRay(vec3 origin, float tMin, vec3 direction, float tMax) {
 
 void main() {
     uint workItemId = gl_GlobalInvocationID.x;
-    if (workItemId >= hitQueue.count) return;
+    if (workItemId >= sortedHitQueue.count) return;
 
-    uint rayIndex = hitQueue.rayIndices[workItemId];
+    uint rayIndex = sortedHitQueue.rayIndices[workItemId];
     g_CurrentRayIndex = rayIndex;
 
     // All rays in hitQueue are guaranteed to be hits - no need to check

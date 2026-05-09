@@ -1,32 +1,20 @@
-/*{
-    "STAGE": "Resolve",
-    "DESCRIPTION": "Dual-image accumulator: linear running mean in accumulatorImage, tonemap+gamma snapshot in outputImage.",
-    "INPUTS": [
-        {
-            "NAME": "currentSample",
-            "TYPE": "int"
-        }
-    ]
-}*/
+// Tier 2: Welford running mean into the linear-HDR accumulator, then
+// Reinhard tonemap + sRGB gamma into the display-ready output image.
 
 void shader(uvec2 pixel, in RayPayloads payloads) {
     vec3 sampleColor = payloads.rayPayload.color;
 
-    // Total 1-based sample number this dispatch is folding into the mean.
+    // 1-based sample number being folded into the running mean.
     //   currentSample      — 1-based count of render() calls since clear
     //   pc.samplesPerFrame — samples per traceRays() batch
     //   pc.sampleIndex     — 0-based position within the current batch
     int n = (shaderInputs.currentSample - 1) * int(pc.samplesPerFrame)
           + int(pc.sampleIndex) + 1;
 
-    // Welford-style running mean, kept in linear HDR for numerical stability.
     vec4 prev = imageLoad(accumulatorImage, ivec2(pixel));
     vec3 avg = prev.rgb + (sampleColor - prev.rgb) / float(n);
     imageStore(accumulatorImage, ivec2(pixel), vec4(avg, 1.0));
 
-    // Display snapshot: Reinhard tonemap + sRGB gamma, written into outputImage
-    // for direct blit-to-swapchain. This write is read-only as far as the
-    // shader is concerned — the LINEAR accumulator above is what survives.
     vec3 tonemapped = avg / (avg + vec3(1.0));
     vec3 gammaCorrected = pow(tonemapped, vec3(1.0 / 2.2));
     imageStore(outputImage, ivec2(pixel), vec4(gammaCorrected, 1.0));

@@ -65,12 +65,23 @@ public:
     tracey::Device& device() { return *m_device; }
     tracey::PathTracer* path_tracer() { return m_path_tracer.get(); }
 
+    // Material graph (single global graph for now -- shared by all instances).
+    // The editor stores the raw JSON so client-side metadata (node positions,
+    // etc.) survives a round-trip; the engine deserializes only when compiling.
+    const std::string& get_material_graph_json() const { return m_current_graph_json; }
+    void set_material_graph_json(const std::string& graph_json);
+    void set_material_parameter(uint32_t program_id, uint32_t param_idx, float x, float y, float z, float w);
+
 private:
     RenderConfig m_config;
     std::unique_ptr<tracey::Device> m_device;
     std::unique_ptr<tracey::Scene> m_scene;
     std::unique_ptr<tracey::PathTracer> m_path_tracer;
     std::unique_ptr<tracey::SceneCompiler::CompiledScene> m_compiled_scene;
+
+    // Raw JSON for the active material graph. Empty until first set or first
+    // initialise (which seeds a passthrough). Source of truth across IPC.
+    std::string m_current_graph_json;
 };
 
 }  // namespace tracey_editor

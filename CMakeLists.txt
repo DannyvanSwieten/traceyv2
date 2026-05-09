@@ -32,6 +32,11 @@ add_library(tracey
     src/shading/bsdf/pbr/pbr.hpp
     src/shading/bsdf/pbr/pbr_bsdf.hpp
     src/shading/bsdf/pbr/pbr_bsdf.cpp
+    src/shading/material_program/opcodes.hpp
+    src/shading/material_program/material_program.hpp
+    src/shading/material_program/material_program.cpp
+    src/shading/material_program/cpu_evaluator.hpp
+    src/shading/material_program/cpu_evaluator.cpp
 
     src/scene/actor.hpp
     src/scene/actor.cpp
@@ -54,6 +59,9 @@ add_library(tracey
 
     src/rendering/path_tracer.hpp
     src/rendering/path_tracer.cpp
+    src/rendering/path_tracer_backend.hpp
+    src/rendering/wavefront_compute_backend.hpp
+    src/rendering/wavefront_compute_backend.cpp
     src/rendering/post_processing.hpp
     src/rendering/post_processing.cpp
 
@@ -73,6 +81,11 @@ add_library(tracey
     src/graph/graphs/shader_graph/shader_graph.cpp
     src/graph/graphs/shader_graph/shader_graph_node.hpp
     src/graph/graphs/shader_graph/shader_graph_node.cpp
+    src/graph/graphs/shader_graph/nodes.hpp
+    src/graph/graphs/shader_graph/compiler.hpp
+    src/graph/graphs/shader_graph/compiler.cpp
+    src/graph/graphs/shader_graph/serialization.hpp
+    src/graph/graphs/shader_graph/serialization.cpp
 
     src/gpu/vulkan_context.hpp
     src/gpu/vulkan_context.cpp
@@ -149,12 +162,12 @@ add_library(tracey
     src/ray_tracing/shader_module/cpu/cpu_shader_module.hpp
     src/ray_tracing/shader_module/cpu/cpu_shader_module.cpp
 
-    src/ray_tracing/isf/isf_parser.hpp
-    src/ray_tracing/isf/isf_parser.cpp
-    src/ray_tracing/isf/isf_pipeline_builder.hpp
-    src/ray_tracing/isf/isf_pipeline_builder.cpp
-    src/ray_tracing/isf/shader_inputs_buffer.hpp
-    src/ray_tracing/isf/shader_inputs_buffer.cpp
+    src/ray_tracing/shader_builder/glsl_preprocessor.hpp
+    src/ray_tracing/shader_builder/glsl_preprocessor.cpp
+    src/ray_tracing/shader_builder/ray_tracing_shader_builder.hpp
+    src/ray_tracing/shader_builder/ray_tracing_shader_builder.cpp
+    src/ray_tracing/shader_inputs_buffer.hpp
+    src/ray_tracing/shader_inputs_buffer.cpp
 )
 
 # Define DEBUG for Debug builds, NDEBUG for non-Debug

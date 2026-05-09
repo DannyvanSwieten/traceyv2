@@ -5,6 +5,9 @@
 #include "../../src/scene/camera.hpp"
 #include "../../src/rendering/path_tracer.hpp"
 #include "../../src/rendering/post_processing.hpp"
+#include "../../src/graph/graphs/shader_graph/shader_graph.hpp"
+#include "../../src/graph/graphs/shader_graph/nodes.hpp"
+#include "../../src/graph/graphs/shader_graph/compiler.hpp"
 
 #include <algorithm>
 #include <iostream>
@@ -73,18 +76,52 @@ int main(int argc, char *argv[])
     config.width = 512;
     config.height = 512;
     config.hdrOutput = true;
+    config.useMaterialPrograms = true;
 
     // Get shader paths
     std::filesystem::path shaderDir = std::filesystem::path(__FILE__).parent_path() / "shaders";
-    config.rayGenShader = shaderDir / "ray_gen.isf";
-    config.hitShader = shaderDir / "diffuse_hit.isf";
-    config.missShader = shaderDir / "sky_miss.isf";
-    config.resolveShader = shaderDir / "resolve.isf";
+    config.rayGenShader = shaderDir / "ray_gen.glsl";
+    config.hitShader = shaderDir / "uber_hit.glsl";
+    config.missShader = shaderDir / "sky_miss.glsl";
+    config.resolveShader = shaderDir / "resolve.glsl";
 
     // Create path tracer
-    std::cout << "Building pipeline from ISF shader files..." << std::endl;
+    std::cout << "Building pipeline from GLSL shader files..." << std::endl;
     tracey::PathTracer pathTracer(computeDevice.get(), config);
     std::cout << "Pipeline built successfully!" << std::endl;
+
+    // Build a passthrough material graph and compile it. Replaces the
+    // hand-built passthrough that PathTracer seeded by default. Identical
+    // output is proof the graph -> bytecode -> GPU VM path works end-to-end.
+    {
+        tracey::ShaderGraph graph(0);
+        struct StagePair { tracey::Op input; tracey::Op output; };
+        const StagePair pairs[] = {
+            {tracey::Op::LoadInputAlbedo,    tracey::Op::WriteAlbedo},
+            {tracey::Op::LoadInputMetallic,  tracey::Op::WriteMetallic},
+            {tracey::Op::LoadInputRoughness, tracey::Op::WriteRoughness},
+            {tracey::Op::LoadInputEmission,  tracey::Op::WriteEmission},
+            {tracey::Op::LoadInputNormal,    tracey::Op::WriteNormal},
+        };
+        size_t uid = 1;
+        for (const auto &p : pairs)
+        {
+            const size_t inUid = uid++;
+            const size_t outUid = uid++;
+            graph.addNode(std::make_unique<tracey::InputAttributeNode>(inUid, p.input));
+            graph.addNode(std::make_unique<tracey::OutputNode>(outUid, p.output));
+            graph.createConnection(inUid, 0, outUid, 0);
+        }
+
+        tracey::MaterialProgram prog = tracey::compileShaderGraph(graph);
+        tracey::MaterialProgramBuffer programs;
+        programs.addProgram(prog);
+        pathTracer.setMaterialPrograms(programs);
+
+        std::cout << "Loaded graph-compiled material program ("
+                  << prog.code.size() << " instructions, "
+                  << prog.parameterCount << " parameters)" << std::endl;
+    }
 
     // Setup camera
     tracey::Camera camera;

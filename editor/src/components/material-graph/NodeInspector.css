@@ -1,0 +1,86 @@
+.node-inspector {
+  width: 240px;
+  padding: 12px;
+  background: #1f1f1f;
+  border-left: 1px solid #2a2a2a;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  font: 12px system-ui, -apple-system, sans-serif;
+  color: #ddd;
+}
+
+.node-inspector-header {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #888;
+}
+
+.node-inspector-empty {
+  color: #777;
+  font-style: italic;
+}
+
+.node-inspector-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.inspector-row,
+.inspector-vec4 {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.inspector-row-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #888;
+}
+
+.inspector-row-value {
+  color: #ccc;
+}
+
+.inspector-row-readonly .inspector-row-value {
+  color: #888;
+}
+
+.inspector-vec4-row {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 4px;
+}
+
+.inspector-vec4-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 10px;
+  color: #888;
+}
+
+.inspector-vec4-cell input,
+.inspector-text,
+.inspector-select {
+  background: #2a2a2a;
+  border: 1px solid #333;
+  border-radius: 3px;
+  padding: 4px 6px;
+  color: #ddd;
+  font: 12px system-ui, -apple-system, sans-serif;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.inspector-vec4-cell input:focus,
+.inspector-text:focus,
+.inspector-select:focus {
+  outline: none;
+  border-color: #5a8;
+}

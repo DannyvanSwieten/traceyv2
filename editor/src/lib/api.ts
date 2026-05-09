@@ -37,6 +37,10 @@ export interface Actor {
   name: string;
   transform: Transform;
   children: number[];
+  // True when the actor has a library graph attached (vs. the passthrough
+  // default). Backend doesn't ship the actual JSON — the frontend only needs
+  // to know "assigned vs not" + the library entry list to render the picker.
+  material_assigned?: boolean;
 }
 
 export interface InstanceInfo {
@@ -190,6 +194,53 @@ export const setSamplesPerFrame = (samples: number) =>
 export const getMaxBounces = () => send<number>('get_max_bounces');
 export const setMaxBounces = (bounces: number) =>
   send<null>('set_max_bounces', { bounces });
+
+// ─── Material graphs ───────────────────────────────────────────────────────
+
+// Returns the active material graph as a JSON string. The schema lives in
+// editor/src/lib/material_graph.ts (and is mirrored on the C++ side).
+export const getMaterialGraph = () => send<string>('get_material_graph');
+
+// Replace the active material graph. `graphJson` must be a JSON string
+// matching the ShaderGraph schema. Triggers recompile + reupload + accumulator
+// invalidation server-side.
+export const setMaterialGraph = (graphJson: string) =>
+  send<null>('set_material_graph', { graph: graphJson });
+
+// Mutate one parameter slot in the active material's parameter pool. Animation
+// path: no recompile, just an SSBO write.
+export const setMaterialParameter = (
+  programId: number,
+  paramIdx: number,
+  value: [number, number, number, number]
+) =>
+  send<null>('set_material_parameter', {
+    program_id: programId,
+    param_idx: paramIdx,
+    value,
+  });
+
+// ─── Material library (per-user persistent graphs) ─────────────────────────
+// Graphs are stored as one .json per name in a platform-specific user data
+// directory. Names are sanitized server-side (alphanumerics, ' ', '_', '-').
+
+export const listMaterialLibrary = () =>
+  send<string[]>('list_material_library');
+
+export const saveMaterialGraphAs = (name: string, graphJson: string) =>
+  send<null>('save_material_graph_as', { name, graph: graphJson });
+
+export const loadMaterialGraphFromLibrary = (name: string) =>
+  send<string>('load_material_graph_from_library', { name });
+
+export const deleteMaterialGraphFromLibrary = (name: string) =>
+  send<null>('delete_material_graph_from_library', { name });
+
+// Assign a library graph to an actor. Empty `libraryName` clears the
+// assignment back to the default passthrough. Triggers a scene recompile
+// server-side so the new MaterialProgramBuffer takes effect on next render.
+export const setActorMaterial = (actorId: number, libraryName: string) =>
+  send<null>('set_actor_material', { actor_id: actorId, library_name: libraryName });
 
 // ─── IO ────────────────────────────────────────────────────────────────────
 

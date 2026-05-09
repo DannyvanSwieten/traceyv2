@@ -1,0 +1,37 @@
+.node-palette {
+  width: 200px;
+  padding: 12px;
+  background: #1f1f1f;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  flex: 1;
+  min-height: 0;
+}
+
+.node-palette-group-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #888;
+  margin-bottom: 4px;
+}
+
+.node-palette-entry {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 6px 8px;
+  margin: 2px 0;
+  background: #2a2a2a;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: #ddd;
+  cursor: pointer;
+  font: 12px system-ui, -apple-system, sans-serif;
+}
+.node-palette-entry:hover {
+  background: #353535;
+  border-color: #555;
+}
