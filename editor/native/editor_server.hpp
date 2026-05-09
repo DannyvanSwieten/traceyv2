@@ -1,13 +1,21 @@
 #pragma once
 
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "render_engine.hpp"
 #include "viewport_renderer.hpp"
+
+namespace tracey {
+    namespace sops {
+        class SopGraph;
+    }
+}
 
 namespace tracey_editor {
 
@@ -62,6 +70,21 @@ private:
     uint32_t m_last_render_height = 0;
     std::mutex m_mutex;
     BroadcastCallback m_broadcast;
+
+    // Scene-level SOP graph. The Houdini-style /obj network: cooking it
+    // produces the list of actors the path tracer renders. All actor
+    // creation/edits flow through here.
+    std::unique_ptr<tracey::sops::SopGraph> m_sop_graph;
+
+    // Map from SOP object_output node uid → emitted actor uid in the scene
+    // (m_engine->scene().actors()). Lets `set_actor_transform` find the
+    // upstream SOP node to write back into.
+    std::unordered_map<size_t, uint64_t> m_object_output_to_actor;
+
+    // Cook the current SOP graph and rebuild the live scene from the result.
+    // Mutex must be held by the caller; main-thread only because it touches
+    // Vulkan resources (path tracer recompile).
+    void cook_and_apply();
 };
 
 }  // namespace tracey_editor

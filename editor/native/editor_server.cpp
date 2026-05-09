@@ -14,6 +14,12 @@
 #include "rendering/path_tracer.hpp"
 #include "graph/graphs/shader_graph/serialization.hpp"
 
+#include "geometry/geometry_converter.hpp"
+#include "sops/serialization.hpp"
+#include "sops/sop_graph.hpp"
+#include "sops/sop_node.hpp"
+#include "sops/sop_registry.hpp"
+
 #include <glm/gtc/quaternion.hpp>
 
 #include <json.hpp>
@@ -26,6 +32,7 @@
 #include <exception>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 
@@ -214,7 +221,18 @@ bool is_safe_library_name(const std::string& name) {
 }  // namespace
 
 EditorServer::EditorServer(std::unique_ptr<RenderEngine> engine, EditorWindow* window)
-    : m_engine(std::move(engine)), m_window(window) {}
+    : m_engine(std::move(engine)), m_window(window) {
+    // SOP framework setup. Register the v1 built-in nodes once per process
+    // before the first set_sop_graph / catalog query lands. Idempotent-ish:
+    // calling registerBuiltinSops() twice would duplicate entries, so it
+    // only runs the first time an EditorServer is constructed.
+    static bool s_sopsRegistered = false;
+    if (!s_sopsRegistered) {
+        tracey::sops::registerBuiltinSops();
+        s_sopsRegistered = true;
+    }
+    m_sop_graph = std::make_unique<tracey::sops::SopGraph>(0);
+}
 
 EditorServer::~EditorServer() = default;
 
@@ -247,6 +265,94 @@ void EditorServer::ensure_viewport_renderer(uint32_t pixel_w, uint32_t pixel_h) 
         m_viewport->resize(pixel_w, pixel_h);
         m_viewport_pixel_w = pixel_w;
         m_viewport_pixel_h = pixel_h;
+    }
+}
+
+// Cook the SOP graph and rebuild the live scene from the result. Must be
+// called with m_mutex held; runs on the main thread (touches Vulkan via the
+// final compile_scene() call).
+//
+// Strategy: replace all existing actors + scene objects with whatever the
+// cook emits. We don't try to incrementally update — even moderately complex
+// graphs can change topology arbitrarily, and the path tracer's recompile
+// already costs more than scene rebuild. Material assignments survive across
+// cooks because they're stored on the ObjectOutput SOP node's
+// `material_library_name` parameter and re-resolved here.
+void EditorServer::cook_and_apply() {
+    if (!m_sop_graph || !m_engine) return;
+
+    tracey::sops::CookDiagnostic diag;
+    auto emitted = m_sop_graph->cook(&diag);
+    if (!diag.ok) {
+        std::fprintf(stderr, "[sop] cook failed: %s (node uid=%zu)\n",
+                     diag.message.c_str(), diag.nodeUid);
+        return;
+    }
+
+    // Clear and rebuild the scene's actors + named SceneObjects. The camera
+    // state is independent of the SOP graph (driven by user fly-through) so
+    // we preserve it across cooks; otherwise every parameter tweak would
+    // snap the viewport back to the default angle.
+    auto& scene = m_engine->scene();
+    std::optional<tracey::Camera> savedCamera;
+    if (scene.hasCamera()) savedCamera = scene.camera();
+    scene.clear();
+    if (savedCamera) scene.setCamera(*savedCamera);
+    m_object_output_to_actor.clear();
+
+    for (const auto& ea : emitted) {
+        // Each emitted actor's geometry becomes a uniquely-named SceneObject.
+        const std::string objectName = ea.name.empty() ? "actor" : ea.name;
+        scene.addObject(objectName, tracey::GeometryConverter::toSceneObject(ea.geometry, objectName));
+
+        auto* actor = scene.createActor();
+        actor->setName(objectName);
+
+        tracey::Transform xform;
+        xform.setPosition(ea.translate);
+        // ea.rotation is a quaternion (wxyz); v1 cook emits identity but we
+        // honour it if the codegen path or a future TransformParam fills it in.
+        xform.setRotation(tracey::Quaternion(ea.rotation.x, ea.rotation.y,
+                                             ea.rotation.z, ea.rotation.w));
+        xform.setScale(ea.scale);
+        actor->setTransform(xform);
+
+        // If the user assigned a material library to this output, attach the
+        // graph JSON now so the next compile_scene picks it up.
+        if (!ea.materialLibraryName.empty() &&
+            is_safe_library_name(ea.materialLibraryName)) {
+            std::ifstream in(material_library_dir() / (ea.materialLibraryName + ".json"));
+            if (in) {
+                std::stringstream ss;
+                ss << in.rdbuf();
+                actor->setMaterialGraphJson(ss.str());
+            }
+        }
+
+        // Default material instance referencing the SceneObject by name.
+        tracey::MaterialInstance mat("pbr");
+        mat.setAlbedo(tracey::Vec3(0.8f));
+        mat.setMetallic(0.0f);
+        mat.setRoughness(0.5f);
+        actor->addInstance(tracey::SceneInstance(objectName, mat));
+
+        // Stable actor↔SOP mapping via the uid threaded through EmittedActor.
+        // The actor we just appended is at the back of scene.actors().
+        if (ea.sourceNodeUid != 0 && !scene.actors().empty()) {
+            m_object_output_to_actor[ea.sourceNodeUid] =
+                scene.actors().back()->getUid();
+        }
+    }
+
+    // Recompile so the path tracer picks up the new BLAS/TLAS + material
+    // programs, and reset accumulation.
+    if (m_engine->path_tracer_ready()) {
+        m_engine->compile_scene();
+        m_clear_next_frame = true;
+    }
+
+    if (m_broadcast) {
+        m_broadcast(R"({"event":"scene_changed"})");
     }
 }
 
@@ -404,8 +510,40 @@ std::string EditorServer::handle_command(const std::string& json_request) {
             const uint64_t id = req.at("actor_id").get<uint64_t>();
             auto* a = m_engine->scene().getActor(id);
             if (!a) return ok_response(false);
-            a->setTransform(transform_from_json(req.at("transform")));
+            const auto xform = transform_from_json(req.at("transform"));
+            a->setTransform(xform);
+
+            // If this actor was emitted by a SOP graph object_output node,
+            // write the transform back into that node's parameters so the
+            // edit survives the next cook (instead of getting clobbered).
+            // For v1 we only persist translate + scale; rotation passes
+            // through to the path tracer immediately but isn't round-tripped
+            // through the SOP node yet (object_output's rotation params are
+            // euler-deg and the wire here is a quaternion — quat→euler with
+            // gimbal handling is a deferral).
+            //
+            // Note: we don't trigger a re-cook here; the actor's transform is
+            // already what the user wants and a cook would replace it with
+            // the same value. The frontend's local SOP store IS now stale
+            // though, so we broadcast `sop_graph_changed` to nudge it to
+            // reload (sops.ts listens; race window with mid-edit pushes is
+            // small and accepted for v1).
+            bool sopMutated = false;
+            if (m_sop_graph) {
+                for (const auto& [outputUid, actorUid] : m_object_output_to_actor) {
+                    if (actorUid != id) continue;
+                    auto* node = m_sop_graph->findNode(outputUid);
+                    if (!node) break;
+                    node->setParamVec3("translate", xform.position());
+                    node->setParamVec3("scale", xform.scale());
+                    sopMutated = true;
+                    break;
+                }
+            }
             m_clear_next_frame = true;
+            if (sopMutated && m_broadcast) {
+                m_broadcast(R"({"event":"sop_graph_changed"})");
+            }
             return ok_response(true);
         }
         if (cmd == "set_actor_name") {
@@ -716,15 +854,125 @@ std::string EditorServer::handle_command(const std::string& json_request) {
             return ok_response_null();
         }
 
+        // ── SOP graph (scene-level Houdini-style /obj network) ──
+        // Mirrors the material-graph commands: catalog query + get/set the
+        // whole graph as JSON. Frontend mutates locally and debounce-pushes
+        // the full graph back; no fan-out of fine-grained sop_create_node /
+        // sop_connect commands.
+        if (cmd == "list_sop_node_catalog") {
+            json arr = json::array();
+            for (const auto& e : tracey::sops::SopRegistry::instance().catalog()) {
+                json inputs = json::array();
+                for (const auto& p : e.inputs) inputs.push_back({{"name", p.name}});
+                json outputs = json::array();
+                for (const auto& p : e.outputs) outputs.push_back({{"name", p.name}});
+                json params = json::array();
+                for (const auto& p : e.params) {
+                    params.push_back({
+                        {"name",     p.name},
+                        {"type",     tracey::sops::paramTypeName(p.type)},
+                        {"default",  p.defaultRepr},
+                    });
+                }
+                arr.push_back({
+                    {"kind",     e.kind},
+                    {"label",    e.label},
+                    {"category", e.category},
+                    {"inputs",   inputs},
+                    {"outputs",  outputs},
+                    {"params",   params},
+                });
+            }
+            return ok_response(arr);
+        }
+        if (cmd == "get_sop_graph") {
+            if (!m_sop_graph) return ok_response("");
+            return ok_response(tracey::sops::serializeSopGraph(*m_sop_graph));
+        }
+        if (cmd == "set_sop_graph") {
+            const auto graph_json = req.at("graph").get<std::string>();
+            std::unique_ptr<tracey::sops::SopGraph> parsed;
+            try {
+                parsed = tracey::sops::deserializeSopGraph(graph_json);
+            } catch (const std::exception& e) {
+                return err_response(std::string("sop graph parse error: ") + e.what());
+            }
+            m_sop_graph = std::move(parsed);
+            cook_and_apply();
+            return ok_response_null();
+        }
+
         // ── IO ──
+        // v2 schema:
+        //   { "version": 2, "scene": <scene_state v1 payload>, "sop_graph": "<serialized SopGraph>" }
+        // v1 (legacy) files load best-effort: actors + camera populate the
+        // scene, but no SOP graph is recovered (a v1 file predates the SOP
+        // backend by definition).
         if (cmd == "save_scene") {
             const auto path = req.at("path").get<std::string>();
-            save_scene_to_file(m_engine->scene(), path);
+            // Write a temp v1-payload to disk, read it back into json, embed.
+            const std::filesystem::path tmp =
+                std::filesystem::path(path).replace_extension(".__tmp__.json");
+            save_scene_to_file(m_engine->scene(), tmp.string());
+            json sceneJson;
+            {
+                std::ifstream in(tmp);
+                in >> sceneJson;
+            }
+            std::error_code ec;
+            std::filesystem::remove(tmp, ec);
+
+            json root;
+            root["version"] = 2;
+            root["scene"] = std::move(sceneJson);
+            root["sop_graph"] = m_sop_graph
+                ? tracey::sops::serializeSopGraphPretty(*m_sop_graph)
+                : std::string{};
+
+            std::ofstream out(path);
+            if (!out) return err_response("could not open file for writing: " + path);
+            out << root.dump(2);
             return ok_response_null();
         }
         if (cmd == "load_scene") {
             const auto path = req.at("path").get<std::string>();
-            load_scene_from_file(m_engine->scene(), path);
+            std::ifstream in(path);
+            if (!in) return err_response("could not open file for reading: " + path);
+            json root;
+            try { in >> root; }
+            catch (const std::exception& e) {
+                return err_response(std::string("scene parse error: ") + e.what());
+            }
+
+            const int version = root.value("version", 1);
+            if (version == 2) {
+                // Pull the inner "scene" payload out to a temp file the v1
+                // loader understands, then load.
+                const std::filesystem::path tmp =
+                    std::filesystem::path(path).replace_extension(".__tmp__.json");
+                {
+                    std::ofstream tout(tmp);
+                    tout << root.value("scene", json::object()).dump(2);
+                }
+                load_scene_from_file(m_engine->scene(), tmp.string());
+                std::error_code ec;
+                std::filesystem::remove(tmp, ec);
+
+                const auto sopJson = root.value("sop_graph", std::string{});
+                if (!sopJson.empty()) {
+                    try {
+                        m_sop_graph = tracey::sops::deserializeSopGraph(sopJson);
+                    } catch (const std::exception& e) {
+                        std::fprintf(stderr, "[sop] load failed: %s\n", e.what());
+                        m_sop_graph = std::make_unique<tracey::sops::SopGraph>(0);
+                    }
+                    cook_and_apply();
+                }
+            } else {
+                // Legacy v1 file: scene fields are at the root.
+                load_scene_from_file(m_engine->scene(), path);
+                m_sop_graph = std::make_unique<tracey::sops::SopGraph>(0);
+            }
             return ok_response_null();
         }
         if (cmd == "import_gltf") {

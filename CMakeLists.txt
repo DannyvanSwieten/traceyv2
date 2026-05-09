@@ -38,6 +38,16 @@ add_library(tracey
     src/shading/material_program/cpu_evaluator.hpp
     src/shading/material_program/cpu_evaluator.cpp
 
+    src/geometry/attribute_class.hpp
+    src/geometry/attribute.hpp
+    src/geometry/attribute.cpp
+    src/geometry/attribute_table.hpp
+    src/geometry/attribute_table.cpp
+    src/geometry/geometry.hpp
+    src/geometry/geometry.cpp
+    src/geometry/geometry_converter.hpp
+    src/geometry/geometry_converter.cpp
+
     src/scene/actor.hpp
     src/scene/actor.cpp
     src/scene/scene.hpp
@@ -76,6 +86,22 @@ add_library(tracey
     src/graph/port_info.hpp
     src/graph/template.hpp
     src/graph/prototype.hpp
+
+    src/sops/parameter.hpp
+    src/sops/sop_node.hpp
+    src/sops/sop_node.cpp
+    src/sops/sop_registry.hpp
+    src/sops/sop_registry.cpp
+    src/sops/sop_graph.hpp
+    src/sops/sop_graph.cpp
+    src/sops/serialization.hpp
+    src/sops/serialization.cpp
+    src/sops/register_builtins.cpp
+    src/sops/nodes/primitive_sops.cpp
+    src/sops/nodes/transform_sop.cpp
+    src/sops/nodes/merge_sop.cpp
+    src/sops/nodes/object_output_sop.cpp
+    src/sops/nodes/gltf_import_sop.cpp
 
     src/graph/graphs/shader_graph/shader_graph.hpp
     src/graph/graphs/shader_graph/shader_graph.cpp

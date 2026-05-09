@@ -30,6 +30,10 @@ add_executable(material_program_test
     material_program_test/main.cpp
 )
 
+add_executable(sop_eval_test
+    sop_eval_test/main.cpp
+)
+
 target_link_libraries(blas
     PRIVATE
     tracey
@@ -79,6 +83,12 @@ target_link_libraries(scene_renderer
 )
 
 target_link_libraries(material_program_test
+    PRIVATE
+    tracey
+    glm
+)
+
+target_link_libraries(sop_eval_test
     PRIVATE
     tracey
     glm

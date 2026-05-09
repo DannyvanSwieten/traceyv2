@@ -101,7 +101,11 @@ interface Envelope<T> {
 
 const transport: Transport = new WebViewTransport();
 
-async function send<T>(cmd: string, args: Record<string, unknown> = {}): Promise<T> {
+// Exported so feature modules (sop_graph.ts) can reuse the same envelope-
+// unwrapping behaviour without re-implementing it. Most call sites should
+// prefer the typed wrappers further down this file; `send` is the escape
+// hatch for commands not yet wrapped.
+export async function send<T>(cmd: string, args: Record<string, unknown> = {}): Promise<T> {
   const body = JSON.stringify({ cmd, ...args });
   const responseJson = await transport.send(body);
   const env: Envelope<T> = JSON.parse(responseJson);

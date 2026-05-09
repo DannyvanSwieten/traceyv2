@@ -11,6 +11,7 @@ import { CameraControls } from './components/camera-controls/CameraControls';
 import { ActorProperties, Transform } from './components/actor-properties/ActorProperties';
 import { AddObjectMenu } from './components/add-object-menu/AddObjectMenu';
 import { MaterialGraphEditor } from './components/material-graph/MaterialGraphEditor';
+import { SopGraphEditor } from './components/sop-graph/SopGraphEditor';
 import { getAssets, addAsset, removeAsset } from './stores/assets';
 import './App.css';
 
@@ -27,6 +28,7 @@ const App: Component = () => {
     z: 3,
   });
   const [materialEditorOpen, setMaterialEditorOpen] = createSignal(false);
+  const [sopEditorOpen, setSopEditorOpen] = createSignal(false);
   let viewportRef: ViewportHandle | undefined;
   let unlistenImport: (() => void) | undefined;
   let unlistenExport: (() => void) | undefined;
@@ -134,6 +136,13 @@ const App: Component = () => {
         >
           Material Graph
         </button>
+        <button
+          class="toolbar-button"
+          type="button"
+          onClick={() => setSopEditorOpen(true)}
+        >
+          SOP Graph
+        </button>
       </div>
 
       <MaterialGraphEditor
@@ -142,6 +151,22 @@ const App: Component = () => {
           setMaterialEditorOpen(false);
           // Force a fresh frame: the engine cleared the accumulator on
           // graph-set, but the viewport doesn't know to re-tick on its own.
+          if (viewportRef) viewportRef.render();
+        }}
+      />
+
+      <SopGraphEditor
+        open={sopEditorOpen}
+        onClose={async () => {
+          setSopEditorOpen(false);
+          // Refresh the actor list so the scene hierarchy panel reflects
+          // whatever cooks the SOP graph emitted while the editor was open.
+          try {
+            const fresh = await api.getAllActors();
+            setActors(fresh);
+          } catch (e) {
+            console.warn('actor refresh after SOP edit failed:', e);
+          }
           if (viewportRef) viewportRef.render();
         }}
       />
