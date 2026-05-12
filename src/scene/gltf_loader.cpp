@@ -7,6 +7,8 @@
 #include <iostream>
 #include <unordered_map>
 #include <cmath>
+#include <memory>
+#include <mutex>
 
 namespace tracey
 {
@@ -475,6 +477,60 @@ namespace tracey
         return loadFromFile(path, LoadOptions{});
     }
 
+    namespace
+    {
+        std::mutex &gltfCacheMutex()
+        {
+            static std::mutex m;
+            return m;
+        }
+        std::unordered_map<std::string, std::shared_ptr<const Scene>> &gltfCache()
+        {
+            static std::unordered_map<std::string, std::shared_ptr<const Scene>> c;
+            return c;
+        }
+    }
+
+    std::shared_ptr<const Scene> GltfLoader::loadFromFileCached(const std::string &path)
+    {
+        // Fast path: hit the cache first under the lock.
+        {
+            std::lock_guard<std::mutex> lk(gltfCacheMutex());
+            auto it = gltfCache().find(path);
+            if (it != gltfCache().end()) return it->second;
+        }
+        // Slow path: parse outside the lock so concurrent readers of other
+        // paths don't block on this one.
+        std::shared_ptr<const Scene> sh;
+        try
+        {
+            auto loaded = loadFromFile(path);
+            sh = std::shared_ptr<const Scene>(loaded.release());
+        }
+        catch (...)
+        {
+            // Cache a null result so a broken file doesn't get re-parsed on
+            // every cook; the SOP cook code treats null as "skip this prim".
+            // Callers that want a fresh re-try should call invalidateCache.
+            std::lock_guard<std::mutex> lk(gltfCacheMutex());
+            gltfCache()[path] = nullptr;
+            throw;
+        }
+        std::lock_guard<std::mutex> lk(gltfCacheMutex());
+        // Re-check after re-acquiring — another worker may have raced us.
+        auto &cache = gltfCache();
+        auto it = cache.find(path);
+        if (it != cache.end() && it->second) return it->second;
+        cache[path] = sh;
+        return sh;
+    }
+
+    void GltfLoader::invalidateCache(const std::string &path)
+    {
+        std::lock_guard<std::mutex> lk(gltfCacheMutex());
+        gltfCache().erase(path);
+    }
+
     std::unique_ptr<Scene> GltfLoader::loadFromFile(const std::string &path, const LoadOptions &options)
     {
         tinygltf::Model model;
@@ -735,5 +791,203 @@ namespace tracey
         }
 
         return scene;
+    }
+
+    // ── Hierarchy peek ─────────────────────────────────────────────────────
+    namespace
+    {
+        // Convert a quaternion to ZYX-intrinsic euler-degrees, matching the
+        // forward conversion used by transform_sop.cpp / sop_graph.cpp's
+        // eulerDegToQuatWxyz / set_actor_rotation_euler. Gimbal-locked near
+        // ±90° pitch (Houdini lives with this).
+        Vec3 quatToEulerDegZYX(const glm::quat &q)
+        {
+            // glm matrices are column-major: m[col][row]. Extract the ZYX
+            // intrinsic decomposition from m where R = Rz * Ry * Rx.
+            const glm::mat3 m = glm::mat3_cast(q);
+            const float r02 = m[0][2];   // R[2][0] in row-major → -sin(ry)
+            const float r00 = m[0][0];   // R[0][0]
+            const float r01 = m[0][1];   // R[1][0]
+            const float r12 = m[1][2];   // R[2][1]
+            const float r22 = m[2][2];   // R[2][2]
+
+            float sy = -r02;
+            float cy = std::sqrt(r00 * r00 + r01 * r01);
+
+            float rx, ry, rz;
+            if (cy > 1e-6f)
+            {
+                rx = std::atan2(r12, r22);
+                ry = std::atan2(sy, cy);
+                rz = std::atan2(r01, r00);
+            }
+            else
+            {
+                // Gimbal lock fallback: roll absorbed into yaw, pitch at ±π/2.
+                const float r11 = m[1][1];   // R[1][1]
+                const float r21 = m[2][1];   // R[1][2]
+                rx = std::atan2(-r21, r11);
+                ry = std::atan2(sy, cy);
+                rz = 0.0f;
+            }
+
+            constexpr float kRad2Deg = 180.0f / 3.1415926535f;
+            return Vec3(rx * kRad2Deg, ry * kRad2Deg, rz * kRad2Deg);
+        }
+
+        // Generate the SceneObject names that GltfLoader::loadFromFile assigns
+        // to every primitive of `meshIdx`. Naming must match loadFromFile's
+        // `<mesh.name>_prim_<primIdx>` scheme exactly so the runtime
+        // `gltf_import` lookup hits.
+        //
+        // Critically, we mirror loadFromFile's *gating* too: that loop skips
+        // non-triangle primitives and primitives without a POSITION accessor,
+        // so those `_prim_<i>` names never actually get registered as scene
+        // objects. If we emitted them here anyway, the frontend would build a
+        // gltf_import → object_output chain for a name the cook can't resolve,
+        // and the resulting subnet (often the leaf of a multi-primitive mesh)
+        // would render with no geometry. Matching the skip keeps peek and
+        // load in lockstep.
+        std::vector<std::string> sceneObjectNamesForMesh(const tinygltf::Model &model, int meshIdx)
+        {
+            std::vector<std::string> out;
+            if (meshIdx < 0 || meshIdx >= static_cast<int>(model.meshes.size()))
+                return out;
+            const auto &mesh = model.meshes[meshIdx];
+            const std::string base = mesh.name.empty()
+                ? ("mesh_" + std::to_string(meshIdx))
+                : mesh.name;
+            out.reserve(mesh.primitives.size());
+            for (size_t p = 0; p < mesh.primitives.size(); ++p)
+            {
+                const auto &prim = mesh.primitives[p];
+                // Same gate as processPrimitive's loop in loadFromFile.
+                if (prim.mode != TINYGLTF_MODE_TRIANGLES && prim.mode != -1)
+                    continue;
+                if (prim.attributes.find("POSITION") == prim.attributes.end())
+                    continue;
+                out.push_back(base + "_prim_" + std::to_string(p));
+            }
+            return out;
+        }
+
+        GltfLoader::HierarchyNode buildPeekNode(const tinygltf::Model &model, int nodeIndex)
+        {
+            GltfLoader::HierarchyNode out;
+            if (nodeIndex < 0 || nodeIndex >= static_cast<int>(model.nodes.size())) return out;
+            const auto &node = model.nodes[nodeIndex];
+
+            out.name = node.name.empty() ? ("node_" + std::to_string(nodeIndex)) : node.name;
+
+            // glTF nodes may carry either a 4x4 matrix OR a TRS triple. When
+            // the matrix is present, decompose to TRS — peek throws away the
+            // last-row perspective (always 0,0,0,1 for glTF nodes).
+            glm::quat q(1, 0, 0, 0);
+            if (!node.matrix.empty())
+            {
+                glm::mat4 m(1.0f);
+                for (int c = 0; c < 4; ++c)
+                    for (int r = 0; r < 4; ++r)
+                        m[c][r] = static_cast<float>(node.matrix[c * 4 + r]);
+                Vec3 t(m[3][0], m[3][1], m[3][2]);
+                Vec3 s(glm::length(glm::vec3(m[0])),
+                       glm::length(glm::vec3(m[1])),
+                       glm::length(glm::vec3(m[2])));
+                glm::mat3 rotM(
+                    glm::vec3(m[0]) / std::max(s.x, 1e-8f),
+                    glm::vec3(m[1]) / std::max(s.y, 1e-8f),
+                    glm::vec3(m[2]) / std::max(s.z, 1e-8f));
+                q = glm::quat_cast(rotM);
+                out.translate = t;
+                out.scale = s;
+            }
+            else
+            {
+                if (node.translation.size() == 3)
+                    out.translate = Vec3(static_cast<float>(node.translation[0]),
+                                         static_cast<float>(node.translation[1]),
+                                         static_cast<float>(node.translation[2]));
+                if (node.rotation.size() == 4)
+                {
+                    // glTF stores quaternion as (x, y, z, w); glm::quat is (w, x, y, z).
+                    q = glm::quat(static_cast<float>(node.rotation[3]),
+                                  static_cast<float>(node.rotation[0]),
+                                  static_cast<float>(node.rotation[1]),
+                                  static_cast<float>(node.rotation[2]));
+                }
+                if (node.scale.size() == 3)
+                    out.scale = Vec3(static_cast<float>(node.scale[0]),
+                                     static_cast<float>(node.scale[1]),
+                                     static_cast<float>(node.scale[2]));
+            }
+            out.rotateEulerDeg = quatToEulerDegZYX(q);
+
+            if (node.mesh >= 0)
+                out.meshObjectNames = sceneObjectNamesForMesh(model, node.mesh);
+
+            out.children.reserve(node.children.size());
+            for (int childIdx : node.children)
+                out.children.push_back(buildPeekNode(model, childIdx));
+
+            return out;
+        }
+    } // anon
+
+    std::vector<GltfLoader::HierarchyNode> GltfLoader::peekHierarchy(const std::string &path)
+    {
+        tinygltf::Model model;
+        tinygltf::TinyGLTF loader;
+        std::string err, warn;
+
+        // Bypass image decoding for the peek. tinygltf's default loader runs
+        // stb_image on every embedded texture, which on a Sponza-scale file
+        // (69× 1024² RGBA) takes seconds on whatever thread parses the JSON
+        // — and the WKWebView message handler runs on the main thread, so
+        // the editor beachballs while peekGltf returns. Returning true from
+        // the no-op signals "image accepted" without writing pixel data;
+        // the peek only walks nodes/meshes/primitives, so empty Image
+        // entries are harmless. Buffer loading still happens (needed for
+        // mesh references) but the dominant cost was the image decode.
+        loader.SetImageLoader(
+            [](tinygltf::Image* /*image*/, const int /*image_idx*/,
+               std::string* /*err*/, std::string* /*warn*/,
+               int /*req_width*/, int /*req_height*/,
+               const unsigned char* /*bytes*/, int /*size*/,
+               void* /*user_data*/) -> bool {
+                return true;
+            },
+            nullptr);
+
+        bool success;
+        if (path.ends_with(".glb"))
+            success = loader.LoadBinaryFromFile(&model, &err, &warn, path);
+        else
+            success = loader.LoadASCIIFromFile(&model, &err, &warn, path);
+
+        if (!success)
+            throw std::runtime_error("Failed to peek glTF: " + path + (err.empty() ? "" : " — " + err));
+
+        std::vector<HierarchyNode> roots;
+        if (!model.scenes.empty())
+        {
+            const int sceneIndex = model.defaultScene >= 0 ? model.defaultScene : 0;
+            const auto &gltfScene = model.scenes[sceneIndex];
+            roots.reserve(gltfScene.nodes.size());
+            for (int idx : gltfScene.nodes)
+                roots.push_back(buildPeekNode(model, idx));
+        }
+        else
+        {
+            // No scene declaration — find nodes that aren't anyone's child.
+            std::vector<bool> isChild(model.nodes.size(), false);
+            for (const auto &n : model.nodes)
+                for (int c : n.children)
+                    if (c >= 0 && c < static_cast<int>(model.nodes.size()))
+                        isChild[c] = true;
+            for (size_t i = 0; i < model.nodes.size(); ++i)
+                if (!isChild[i])
+                    roots.push_back(buildPeekNode(model, static_cast<int>(i)));
+        }
+        return roots;
     }
 }

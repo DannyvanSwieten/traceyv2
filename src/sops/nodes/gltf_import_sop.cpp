@@ -5,24 +5,31 @@
 #include "../sop_node.hpp"
 #include "../sop_registry.hpp"
 
+#include <cstdio>
+#include <memory>
+
 namespace tracey
 {
     namespace sops
     {
         namespace
         {
-            // glTF importer SOP. Calls into the existing GltfLoader, then
-            // either picks the first SceneObject or merges them all (the v1
-            // behaviour is "merge all" so a multi-mesh glb produces one
-            // Geometry — single Object Output downstream gets all of it.
-            // A future ForEachObject SOP could split the Scene's objects
-            // into independent Geometries via ports).
+            // glTF importer SOP. Calls into the existing GltfLoader and
+            // returns one of two things:
+            //   • `mesh_name` set → exactly that SceneObject's geometry
+            //     (used by the recursive-subnet importer in editor_server,
+            //     which builds one gltf_import per glTF node).
+            //   • `mesh_name` empty → merge of all SceneObjects in the file
+            //     (the original single-output behaviour, kept for back-compat
+            //     with scenes that drop a bare gltf_import → object_output
+            //     pair).
             class GltfImportSop : public SopNode
             {
             public:
                 explicit GltfImportSop(size_t uid) : SopNode(uid)
                 {
                     declareParam(Parameter::makeString("path", ""));
+                    declareParam(Parameter::makeString("mesh_name", ""));
                 }
 
                 std::string kind() const override { return "gltf_import"; }
@@ -39,8 +46,51 @@ namespace tracey
                     const std::string path = paramString("path", "");
                     if (path.empty()) return Geometry{};
 
-                    auto scene = GltfLoader::loadFromFile(path);
+                    // Cached load shared with apply_emitted's material
+                    // lookup. Without this, a single cook of a 103-primitive
+                    // import re-parses the file 103× and re-decodes every
+                    // embedded texture each time — enough memory churn to
+                    // stall the worker long enough that the hierarchy
+                    // appears to never populate.
+                    std::shared_ptr<const Scene> scene;
+                    try { scene = GltfLoader::loadFromFileCached(path); }
+                    catch (const std::exception& e) {
+                        std::fprintf(stderr,
+                            "[gltf_import] load failed for %s: %s\n",
+                            path.c_str(), e.what());
+                        return Geometry{};
+                    }
                     if (!scene) return Geometry{};
+
+                    const std::string meshName = paramString("mesh_name", "");
+                    if (!meshName.empty())
+                    {
+                        if (const auto *obj = scene->getObject(meshName))
+                        {
+                            Geometry g = GeometryConverter::fromSceneObject(*obj);
+                            // Stamp source-of-truth pointers on the geometry's
+                            // Detail attributes so the editor's apply_emitted
+                            // can look the source glTF up again and apply its
+                            // MaterialInstance (base color, factors, textures)
+                            // to the live actor's SceneInstance. Without this
+                            // the cook strips materials and every imported
+                            // actor renders flat-grey.
+                            g.detail().add<std::string>("_gltf_source_path", path);
+                            g.detail().add<std::string>("_gltf_source_mesh", meshName);
+                            return g;
+                        }
+                        // Loud failure: silent empty-geometry results in a
+                        // mysterious "no actor" downstream. The most common
+                        // cause is a peek/load name mismatch (e.g. non-
+                        // triangle primitive in the source mesh that was
+                        // skipped at load time). Dumping the path + name
+                        // makes this trivial to diagnose without re-running
+                        // with a debugger.
+                        std::fprintf(stderr,
+                            "[gltf_import] mesh '%s' not found in %s — emitting empty geometry\n",
+                            meshName.c_str(), path.c_str());
+                        return Geometry{};
+                    }
 
                     Geometry merged;
                     bool first = true;
@@ -74,7 +124,9 @@ namespace tracey
             SopRegistry::instance().registerType(
                 {"gltf_import", "glTF Import", "Generators",
                  /*inputs*/ {}, /*outputs*/ {{"out"}},
-                 /*params*/ {{"path", ParamType::String, "\"\""}}},
+                 /*params*/ {
+                     {"path",      ParamType::String, "\"\""},
+                     {"mesh_name", ParamType::String, "\"\""}}},
                 [](size_t uid) -> std::unique_ptr<SopNode> {
                     return std::make_unique<GltfImportSop>(uid);
                 });
