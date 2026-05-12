@@ -84,9 +84,10 @@ export const GraphCanvas: Component = () => {
   const [zoom, setZoom] = createSignal(1);
   const [pendingFrom, setPendingFrom] = createSignal<PortRef | null>(null);
   const [mouseWorld, setMouseWorld] = createSignal<[number, number]>([0, 0]);
-  // Houdini-style: hold Space to pan; empty-canvas drag without Space starts
-  // a rubber-band selection.
-  const [spaceDown, setSpaceDown] = createSignal(false);
+  // Houdini-style: hold Alt to pan; empty-canvas drag without Alt starts a
+  // rubber-band selection. Alt was picked over Space because the editor's
+  // timeline owns Space for play/pause.
+  const [panKeyDown, setPanKeyDown] = createSignal(false);
   const [marquee, setMarquee] = createSignal<MarqueeRect | null>(null);
 
   let svgRef: SVGSVGElement | undefined;
@@ -107,7 +108,9 @@ export const GraphCanvas: Component = () => {
   function onSvgPointerDown(e: PointerEvent) {
     if (e.button !== 0) return;
     e.preventDefault();
-    if (spaceDown()) { startCanvasPan(e); return; }
+    // Alt-held drag pans (e.altKey covers a "first click before keydown fired"
+    // race when focus was elsewhere).
+    if (panKeyDown() || e.altKey) { startCanvasPan(e); return; }
     const targetEl = e.target as Element;
     if (targetEl.closest?.('[data-port-kind]')) {
       // Ports use the click event for connection creation; skip drag setup.
@@ -271,15 +274,25 @@ export const GraphCanvas: Component = () => {
       return el.isContentEditable === true;
     };
     const onDown = (e: KeyboardEvent) => {
-      if ((e.key === ' ' || e.code === 'Space') && !isTextEditing(e.target)) {
+      if (isTextEditing(e.target)) return;
+      if (e.key === ' ' || e.code === 'Space') {
         e.preventDefault();
-        if (!e.repeat) setSpaceDown(true);
+        if (!e.repeat) setPanKeyDown(true);
+        return;
+      }
+      // Delete on window (not SVG focus) — same rationale as SopGraphCanvas.
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        const uids = [...selectedNodes()];
+        if (uids.length === 0) return;
+        e.preventDefault();
+        for (const u of uids) removeNode(u);
+        setSelectedNode(null);
       }
     };
     const onUp = (e: KeyboardEvent) => {
-      if (e.key === ' ' || e.code === 'Space') setSpaceDown(false);
+      if (e.key === ' ' || e.code === 'Space') setPanKeyDown(false);
     };
-    const onBlur = () => setSpaceDown(false);
+    const onBlur = () => setPanKeyDown(false);
     window.addEventListener('keydown', onDown);
     window.addEventListener('keyup', onUp);
     window.addEventListener('blur', onBlur);
@@ -290,27 +303,14 @@ export const GraphCanvas: Component = () => {
     });
   });
 
-  function onNodeKeyDown(e: KeyboardEvent) {
-    if (e.key === 'Delete' || e.key === 'Backspace') {
-      const uids = [...selectedNodes()];
-      if (uids.length > 0) {
-        e.preventDefault();
-        for (const u of uids) removeNode(u);
-        setSelectedNode(null);
-      }
-    }
-  }
-
   return (
     <svg
       class="graph-canvas"
-      classList={{ 'graph-canvas--panning': spaceDown() }}
+      classList={{ 'graph-canvas--panning': panKeyDown() }}
       ref={svgRef}
       onPointerDown={onSvgPointerDown}
       onPointerMove={onSvgPointerMove}
       onWheel={onWheel}
-      onKeyDown={onNodeKeyDown}
-      tabIndex={0}
     >
       <defs>
         <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
