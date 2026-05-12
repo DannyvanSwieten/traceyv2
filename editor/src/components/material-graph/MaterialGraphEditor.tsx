@@ -1,11 +1,22 @@
+// Docked material-graph editor. Mirrors the SOP dock's shell so the two
+// editors share screen real-estate via a single dock slot in App.tsx —
+// the user picks which one is live via toolbar / tab strip, never both
+// at once. Previously a full-screen modal; the modal version hid the
+// viewport via setViewportVisible, but a docked panel sits next to it
+// so the viewport stays live and material edits show their effect
+// immediately on the path-traced view.
+
 import { Component, createEffect, onMount, createSignal, Show } from 'solid-js';
 import { GraphCanvas } from './GraphCanvas';
-import { NodePalette } from './NodePalette';
+import { MaterialNodePalette } from './MaterialNodePalette';
 import { NodeInspector } from './NodeInspector';
 import { MaterialLibrary } from './MaterialLibrary';
 import { loadMaterialGraphFromEngine, flushMaterialGraph, materialGraph } from '../../stores/materials';
-import * as api from '../../lib/api';
 import './MaterialGraphEditor.css';
+// Pull in the .sop-palette-toolbar / .sop-palette-select rules used by
+// MaterialNodePalette. Shared with the SOP/VOP editors so all three node
+// pickers look identical.
+import '../sop-graph/SopGraphPanel.css';
 
 interface MaterialGraphEditorProps {
   open: () => boolean;
@@ -15,22 +26,27 @@ interface MaterialGraphEditorProps {
 export const MaterialGraphEditor: Component<MaterialGraphEditorProps> = (props) => {
   const [loaded, setLoaded] = createSignal(false);
 
-  // Load the active graph once when first opened.
-  onMount(async () => {
-    if (!loaded()) {
+  // Load the active graph the first time the dock opens, then keep it
+  // in sync with the engine for the rest of the session.
+  createEffect(async () => {
+    if (props.open() && !loaded()) {
       await loadMaterialGraphFromEngine();
       setLoaded(true);
     }
   });
 
-  // The native Metal viewport overlay sits on top of the WebView and would
-  // otherwise swallow clicks in the canvas region. Hide it while the modal is
-  // open and restore it on close.
-  createEffect(() => {
-    const isOpen = props.open();
-    api.setViewportVisible(!isOpen).catch((e) => {
-      console.warn('setViewportVisible failed:', e);
-    });
+  // Eager load: even before the dock is opened the user may have other
+  // UI (e.g. an actor-properties Materials picker) that benefits from a
+  // populated store. Cheap one-shot at mount.
+  onMount(async () => {
+    if (!loaded()) {
+      try {
+        await loadMaterialGraphFromEngine();
+        setLoaded(true);
+      } catch {
+        /* engine may not be ready yet — recovers on first dock open */
+      }
+    }
   });
 
   const close = async () => {
@@ -38,32 +54,31 @@ export const MaterialGraphEditor: Component<MaterialGraphEditorProps> = (props) 
     props.onClose();
   };
 
-  // New nodes spawn near the centre of the visible canvas. We don't have
-  // direct access to canvas pan/zoom from here, so use a fixed world-space
-  // anchor; in practice users pan/drag right after.
-  const spawnPoint = (): [number, number] => [240, 200];
-
   return (
     <Show when={props.open()}>
-      <div class="material-graph-modal" role="dialog" aria-modal="true">
-        <div class="material-graph-toolbar">
-          <span class="material-graph-title">Material Graph</span>
-          <span class="material-graph-stats">
+      <div class="material-graph-dock" role="region" aria-label="Material Graph">
+        <div class="material-graph-dock-header">
+          <span class="material-graph-dock-title">Material Graph</span>
+          <span class="material-graph-dock-stats">
             {materialGraph().nodes.length} nodes · {materialGraph().connections.length} connections
           </span>
-          <button class="material-graph-close" onClick={close} type="button">
+          <button class="material-graph-dock-close" onClick={close} type="button">
             Close
           </button>
         </div>
-        <div class="material-graph-body">
-          <div class="material-graph-left-pane">
-            <MaterialLibrary />
-            <NodePalette spawnPoint={spawnPoint} />
+        {/* Inspector on top, canvas+toolbar below — mirrors SopGraphPanel /
+            VopGraphPanel so the three editors all read the same. */}
+        <div class="material-graph-dock-body">
+          <div class="material-graph-inspector-row">
+            <NodeInspector />
           </div>
-          <div class="material-graph-canvas-host">
+          <div class="material-graph-canvas-col">
+            <div class="sop-palette-toolbar">
+              <MaterialNodePalette />
+              <MaterialLibrary />
+            </div>
             <GraphCanvas />
           </div>
-          <NodeInspector />
         </div>
       </div>
     </Show>

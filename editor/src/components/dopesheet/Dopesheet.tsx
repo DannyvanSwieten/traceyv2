@@ -1,4 +1,4 @@
-import { Component, For, Index, Show, createEffect, createMemo } from 'solid-js';
+import { Component, For, Index, Show, createEffect, createMemo, createSignal, onCleanup } from 'solid-js';
 import * as api from '../../lib/api';
 import { AnimatedChannel, listAnimatedChannels } from '../../lib/animated_channels';
 import { sopGraph } from '../../stores/sops';
@@ -11,6 +11,17 @@ import {
   timeline,
 } from '../../stores/timeline';
 import './Dopesheet.css';
+
+// Module-local clipboard for key copy/paste. Lives outside the component so
+// the same value survives unmount/remount of the dopesheet and is shared
+// across right-click menus on different keys / channels.
+interface CopiedKey {
+  v: number;
+  in: number;
+  out: number;
+  i: api.Interp;
+}
+const [copiedKey, setCopiedKey] = createSignal<CopiedKey | null>(null);
 
 // Pixels reserved for the channel-list column on the left. Mirrored in CSS.
 const CHANNEL_LIST_WIDTH = 180;
@@ -147,6 +158,122 @@ export const Dopesheet: Component = () => {
     }
   };
 
+  // ── Right-click context menu ─────────────────────────────────────────
+  // Per-key actions: change interpolation, copy/paste, delete. The menu
+  // captures the channel + key snapshot at open time, so subsequent actions
+  // don't race with a graph reload mid-menu.
+  interface ContextState {
+    x: number;
+    y: number;
+    channel: AnimatedChannel;
+    key: AnimatedChannel['keys'][number];
+  }
+  const [ctxMenu, setCtxMenu] = createSignal<ContextState | null>(null);
+  let ctxMenuEl: HTMLDivElement | undefined;
+  // Reactively write the menu position to CSS variables (mirrors the
+  // playhead-position / dopesheet-height pattern, avoids inline-style lint).
+  createEffect(() => {
+    const m = ctxMenu();
+    if (!m || !ctxMenuEl) return;
+    ctxMenuEl.style.setProperty('--menu-x', `${m.x}px`);
+    ctxMenuEl.style.setProperty('--menu-y', `${m.y}px`);
+  });
+
+  const onKeyContextMenu = (
+    e: MouseEvent,
+    channel: AnimatedChannel,
+    key: AnimatedChannel['keys'][number],
+  ) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setCtxMenu({ x: e.clientX, y: e.clientY, channel, key });
+  };
+
+  const closeCtxMenu = () => setCtxMenu(null);
+
+  // Dismiss the menu on outside click or Escape. Listeners attach only
+  // while the menu is open so we don't keep dead handlers on the window.
+  createEffect(() => {
+    if (!ctxMenu()) return;
+    const onDocPointerDown = (e: PointerEvent) => {
+      const t = e.target as Node;
+      if (ctxMenuEl && ctxMenuEl.contains(t)) return;
+      closeCtxMenu();
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') closeCtxMenu();
+    };
+    window.addEventListener('pointerdown', onDocPointerDown, true);
+    window.addEventListener('keydown', onKey);
+    onCleanup(() => {
+      window.removeEventListener('pointerdown', onDocPointerDown, true);
+      window.removeEventListener('keydown', onKey);
+    });
+  });
+
+  // Replace the key at its current time with the same value/tangents but a
+  // new interp. setKey on the C++ side matches by time and overwrites.
+  const setKeyInterp = async (m: ContextState, interp: api.Interp) => {
+    closeCtxMenu();
+    try {
+      await api.paramSetKeyframe({
+        nodeUid: m.channel.nodeUid,
+        paramName: m.channel.paramName,
+        component: m.channel.component,
+        time: m.key.t,
+        value: m.key.v,
+        interp,
+        inTangent: m.key.in,
+        outTangent: m.key.out,
+      });
+    } catch (err) {
+      console.warn('change interp failed:', err);
+    }
+  };
+
+  const copyKey = (m: ContextState) => {
+    setCopiedKey({ v: m.key.v, in: m.key.in, out: m.key.out, i: m.key.i as api.Interp });
+    closeCtxMenu();
+  };
+
+  // Paste replaces the right-clicked key's properties with the copied
+  // ones (time stays put — "make this key look like that one"). For
+  // "insert a fresh key at the playhead", the keyframe dot in the
+  // inspector still works.
+  const pasteKey = async (m: ContextState) => {
+    const buf = copiedKey();
+    if (!buf) return;
+    closeCtxMenu();
+    try {
+      await api.paramSetKeyframe({
+        nodeUid: m.channel.nodeUid,
+        paramName: m.channel.paramName,
+        component: m.channel.component,
+        time: m.key.t,
+        value: buf.v,
+        interp: buf.i,
+        inTangent: buf.in,
+        outTangent: buf.out,
+      });
+    } catch (err) {
+      console.warn('paste key failed:', err);
+    }
+  };
+
+  const deleteKeyMenu = async (m: ContextState) => {
+    closeCtxMenu();
+    try {
+      await api.paramDeleteKeyframe({
+        nodeUid: m.channel.nodeUid,
+        paramName: m.channel.paramName,
+        component: m.channel.component,
+        time: m.key.t,
+      });
+    } catch (err) {
+      console.warn('delete keyframe failed:', err);
+    }
+  };
+
   // Scrub on the frame ruler (and on track rows that aren't being key-dragged).
   const onRulerPointerDown = (e: PointerEvent) => {
     if (drag) return;
@@ -253,6 +380,7 @@ export const Dopesheet: Component = () => {
                       }
                       onPointerDown={(e) => onKeyPointerDown(e, ch, k.t)}
                       onDblClick={(e) => onKeyDoubleClick(e, ch, k.t)}
+                      onContextMenu={(e) => onKeyContextMenu(e, ch, k)}
                     >
                       <span class="dopesheet-key-diamond" />
                     </button>
@@ -266,6 +394,68 @@ export const Dopesheet: Component = () => {
           <div ref={dragGhost} class="dopesheet-drag-ghost" />
         </div>
       </div>
+
+      <Show when={ctxMenu()}>
+        {(m) => (
+          <div
+            ref={ctxMenuEl}
+            class="dopesheet-ctx-menu"
+          >
+            <div class="dopesheet-ctx-section-label">Interpolation</div>
+            <button
+              type="button"
+              class={'dopesheet-ctx-item' + (m().key.i === 'step' ? ' is-current' : '')}
+              onClick={() => setKeyInterp(m(), 'step')}
+            >
+              <span class="dopesheet-ctx-mark">{m().key.i === 'step' ? '✓' : ''}</span>
+              Step
+            </button>
+            <button
+              type="button"
+              class={'dopesheet-ctx-item' + (m().key.i === 'linear' ? ' is-current' : '')}
+              onClick={() => setKeyInterp(m(), 'linear')}
+            >
+              <span class="dopesheet-ctx-mark">{m().key.i === 'linear' ? '✓' : ''}</span>
+              Linear
+            </button>
+            <button
+              type="button"
+              class={'dopesheet-ctx-item' + (m().key.i === 'bezier' ? ' is-current' : '')}
+              onClick={() => setKeyInterp(m(), 'bezier')}
+            >
+              <span class="dopesheet-ctx-mark">{m().key.i === 'bezier' ? '✓' : ''}</span>
+              Bezier
+            </button>
+            <div class="dopesheet-ctx-separator" />
+            <button
+              type="button"
+              class="dopesheet-ctx-item"
+              onClick={() => copyKey(m())}
+            >
+              <span class="dopesheet-ctx-mark" />
+              Copy
+            </button>
+            <button
+              type="button"
+              class="dopesheet-ctx-item"
+              disabled={!copiedKey()}
+              onClick={() => pasteKey(m())}
+            >
+              <span class="dopesheet-ctx-mark" />
+              Paste
+            </button>
+            <div class="dopesheet-ctx-separator" />
+            <button
+              type="button"
+              class="dopesheet-ctx-item dopesheet-ctx-danger"
+              onClick={() => deleteKeyMenu(m())}
+            >
+              <span class="dopesheet-ctx-mark" />
+              Delete
+            </button>
+          </div>
+        )}
+      </Show>
     </div>
   );
 };

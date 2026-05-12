@@ -36,6 +36,7 @@ import {
 import { buildSubnetsFromGltf } from './lib/gltf_import';
 import { fetchCatalog as fetchSopCatalog, findNodeRecursive } from './lib/sop_graph';
 import { isVopEditorOpen } from './stores/vops';
+import { isMaterialEditorOpen, setMaterialEditorOpen } from './stores/materials';
 import {
   currentFrame,
   seekFrame,
@@ -86,8 +87,13 @@ const App: Component = () => {
     y: 0,
     z: 3,
   });
-  const [materialEditorOpen, setMaterialEditorOpen] = createSignal(false);
-  const [sopEditorOpen, setSopEditorOpen] = createSignal(false);
+  // Material dock visibility lives in the materials store so the
+  // actor-inspector's "New Material" flow can open it without prop
+  // drilling. App just reads the signal for layout decisions.
+  const materialEditorOpen = isMaterialEditorOpen;
+  // SOP dock defaults to open — it's the primary editing surface, so
+  // there's no reason to hide it on first launch.
+  const [sopEditorOpen, setSopEditorOpen] = createSignal(true);
   const [exportVideoOpen, setExportVideoOpen] = createSignal(false);
   // Resizable panel sizes — seeded from localStorage so the layout survives
   // across sessions. Min/max stay loose enough for laptop displays.
@@ -323,6 +329,16 @@ const App: Component = () => {
         .then(setActors)
         .catch((e) => console.warn('actor refresh after scene_changed failed:', e));
     });
+    // Engine-side cook of the default SOP graph completes during native
+    // startup — typically before this JS bundle has had a chance to
+    // attach the `scene_changed` listener above, so the initial actor
+    // emission is missed. Pull the current list once at mount so the
+    // hierarchy panel (which now opens by default along with the SOP
+    // dock) renders the seeded actors instead of staying empty until the
+    // user pokes the graph.
+    api.getAllActors()
+      .then(setActors)
+      .catch((e) => console.warn('initial actor fetch failed:', e));
 
     // Hydrate the SOP node catalog eagerly. The catalog is what `makeNode`
     // resolves kinds against; any code path that constructs SOP nodes
@@ -468,18 +484,30 @@ const App: Component = () => {
         <h1>Tracey Editor</h1>
         <button
           class="toolbar-button"
+          classList={{ 'toolbar-button--active': materialEditorOpen() }}
           type="button"
-          onClick={() => setMaterialEditorOpen(true)}
+          onClick={() => {
+            // The dock hosts at most one editor at a time — opening
+            // Material takes the slot from SOP/VOP. Toggling off closes
+            // the dock entirely.
+            if (materialEditorOpen()) {
+              setMaterialEditorOpen(false);
+            } else {
+              setSopEditorOpen(false);
+              setMaterialEditorOpen(true);
+            }
+          }}
         >
           Material Graph
         </button>
         <button
           class="toolbar-button"
+          classList={{ 'toolbar-button--active': sopEditorOpen() && !materialEditorOpen() }}
           type="button"
           onClick={async () => {
             // Closing flushes any pending edits and refreshes the hierarchy,
             // matching the behaviour of the in-dock Close button.
-            if (sopEditorOpen()) {
+            if (sopEditorOpen() && !materialEditorOpen()) {
               setSopEditorOpen(false);
               try {
                 const fresh = await api.getAllActors();
@@ -489,6 +517,7 @@ const App: Component = () => {
               }
               if (viewportRef) viewportRef.render();
             } else {
+              setMaterialEditorOpen(false);
               setSopEditorOpen(true);
             }
           }}
@@ -509,16 +538,6 @@ const App: Component = () => {
           </div>
         </Show>
       </div>
-
-      <MaterialGraphEditor
-        open={materialEditorOpen}
-        onClose={async () => {
-          setMaterialEditorOpen(false);
-          // Force a fresh frame: the engine cleared the accumulator on
-          // graph-set, but the viewport doesn't know to re-tick on its own.
-          if (viewportRef) viewportRef.render();
-        }}
-      />
 
       <ExportVideoDialog
         open={exportVideoOpen}
@@ -555,8 +574,28 @@ const App: Component = () => {
             }
             onActorDelete={async (id) => {
               const a = actors().find((x) => x.id === id);
-              if (!a || a.sop_node_uid == null) return;
-              if (!removeNodeAnywhere(a.sop_node_uid)) return;
+              if (!a) {
+                console.warn('[delete] actor not found in store:', id);
+                return;
+              }
+              if (a.sop_node_uid == null) {
+                console.warn('[delete] actor has no sop_node_uid — it was not produced by the cook (manually created or stale state); nothing to remove from the SOP graph', a);
+                return;
+              }
+              // The SOP graph store can drift from the backend after some
+              // edits (load_scene, undo, third-party broadcasts), and the
+              // delete looks like a silent no-op. Refresh the store first
+              // when the uid isn't in our local copy, then retry.
+              let removed = removeNodeAnywhere(a.sop_node_uid);
+              if (!removed) {
+                console.info('[delete] node uid not in local SOP graph store; re-fetching from engine and retrying', a.sop_node_uid);
+                await loadSopGraphFromEngine();
+                removed = removeNodeAnywhere(a.sop_node_uid);
+              }
+              if (!removed) {
+                console.warn('[delete] node uid still not found after re-fetch; backend state may be inconsistent', a.sop_node_uid);
+                return;
+              }
               if (selectedActorId() === id) setSelectedActorId(null);
               await flushSopGraph();
               try {
@@ -615,25 +654,46 @@ const App: Component = () => {
           </div>
         </div>
 
-        <Show when={sopEditorOpen() || isVopEditorOpen()}>
+        {/* Single dock slot, shared between the SOP/VOP and Material
+            editors. They're mutually exclusive — opening one closes the
+            other so the splitter handle doesn't have to know about
+            multiple docks. The width state (sopDockW) belongs to the
+            slot, not the editor, so the size persists across switches. */}
+        <Show when={sopEditorOpen() || isVopEditorOpen() || materialEditorOpen()}>
           <Splitter
             orientation="vertical"
             onDrag={(dx) => setSopDockW((w) => clamp(w - dx, 380, 1400))}
           />
-          <SopGraphEditor
-            onClose={async () => {
-              setSopEditorOpen(false);
-              // Refresh the actor list so the hierarchy reflects whatever
-              // the last SOP cook emitted before the dock closed.
-              try {
-                const fresh = await api.getAllActors();
-                setActors(fresh);
-              } catch (e) {
-                console.warn('actor refresh after SOP edit failed:', e);
-              }
-              if (viewportRef) viewportRef.render();
-            }}
-          />
+          <Show
+            when={materialEditorOpen()}
+            fallback={
+              <SopGraphEditor
+                onClose={async () => {
+                  setSopEditorOpen(false);
+                  // Refresh the actor list so the hierarchy reflects whatever
+                  // the last SOP cook emitted before the dock closed.
+                  try {
+                    const fresh = await api.getAllActors();
+                    setActors(fresh);
+                  } catch (e) {
+                    console.warn('actor refresh after SOP edit failed:', e);
+                  }
+                  if (viewportRef) viewportRef.render();
+                }}
+              />
+            }
+          >
+            <MaterialGraphEditor
+              open={materialEditorOpen}
+              onClose={async () => {
+                setMaterialEditorOpen(false);
+                // Force a fresh frame: the engine cleared the accumulator
+                // on graph-set, but the viewport doesn't know to re-tick
+                // on its own.
+                if (viewportRef) viewportRef.render();
+              }}
+            />
+          </Show>
         </Show>
 
         <Splitter

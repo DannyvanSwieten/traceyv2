@@ -46,6 +46,17 @@
 .toolbar-button:hover {
   background: #353535;
 }
+/* Pressed-in look for the toolbar toggle that owns the dock right now.
+   Used by the SOP / Material Graph buttons so the user can see which
+   editor is currently mounted in the shared dock slot. */
+.toolbar-button--active {
+  background: #3a4a5e;
+  border-color: #6cf;
+  color: #fff;
+}
+.toolbar-button--active:hover {
+  background: #455a72;
+}
 
 /* Cooking status — surfaces while the native SOP cook worker is parsing or
    decoding. Right-aligned so it sits at the trailing edge of the toolbar

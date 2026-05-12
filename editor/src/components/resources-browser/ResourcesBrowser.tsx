@@ -1,12 +1,13 @@
-import { Component, For, Show, createSignal, createEffect, Accessor } from 'solid-js';
+import { Component, For, Show, createSignal, createEffect, createMemo, Accessor } from 'solid-js';
 import * as api from '../../lib/api';
 import { ImportedAsset } from '../../stores/assets';
+import { cookProfile, NodeCookTimingRow } from '../../stores/cook_profiler';
 import './ResourcesBrowser.css';
 
 type MeshInfo = api.MeshInfo;
 type TextureInfo = api.TextureInfo;
 
-type TabType = 'scenes' | 'meshes' | 'textures';
+type TabType = 'scenes' | 'meshes' | 'textures' | 'profiler';
 
 interface ResourcesBrowserProps {
   assets: () => ImportedAsset[];
@@ -25,6 +26,16 @@ export const ResourcesBrowser: Component<ResourcesBrowserProps> = (props) => {
   const [meshes, setMeshes] = createSignal<MeshInfo[]>([]);
   const [textures, setTextures] = createSignal<TextureInfo[]>([]);
   const [isLoading, setIsLoading] = createSignal(false);
+
+  // Per-node cook timings from the most recent cook, sorted by ms desc.
+  // Rows expose their source uid so a future "click to focus the offender
+  // in the canvas" affordance has the information it needs.
+  const profilerRows = createMemo<NodeCookTimingRow[]>(() => {
+    const p = cookProfile();
+    if (!p) return [];
+    return p.rows.slice().sort((a, b) => b.ms - a.ms);
+  });
+  const profilerTotalMs = createMemo(() => cookProfile()?.totalMs ?? 0);
 
   createEffect(async () => {
     const currentPath = props.currentAssetPath();
@@ -74,6 +85,14 @@ export const ResourcesBrowser: Component<ResourcesBrowserProps> = (props) => {
             onClick={() => setActiveTab('textures')}
           >
             Textures ({textures().length})
+          </button>
+          <button
+            class="resources-tab"
+            classList={{ 'resources-tab--active': activeTab() === 'profiler' }}
+            onClick={() => setActiveTab('profiler')}
+            title="Per-node cook times from the most recent cook"
+          >
+            Profiler{cookProfile() ? ` (${cookProfile()!.totalMs.toFixed(1)}ms)` : ''}
           </button>
         </div>
       </div>
@@ -179,6 +198,54 @@ export const ResourcesBrowser: Component<ResourcesBrowserProps> = (props) => {
                 </For>
               </div>
             </Show>
+          </Show>
+        </Show>
+
+        <Show when={activeTab() === 'profiler'}>
+          <Show
+            when={profilerRows().length > 0}
+            fallback={
+              <div class="resources-empty">
+                No cook has finished yet. Trigger one by editing the SOP graph
+                or loading an asset; this tab fills with per-node timings as
+                soon as the worker reports back.
+              </div>
+            }
+          >
+            <div class="profiler-summary">
+              Total cook: <strong>{profilerTotalMs().toFixed(2)} ms</strong>
+              <span class="profiler-summary-rows">
+                {profilerRows().length} nodes
+              </span>
+            </div>
+            <div class="profiler-table">
+              <div class="profiler-row profiler-row--header">
+                <span class="profiler-cell profiler-cell-bar"></span>
+                <span class="profiler-cell profiler-cell-ms">ms</span>
+                <span class="profiler-cell profiler-cell-name">node</span>
+                <span class="profiler-cell profiler-cell-kind">kind</span>
+              </div>
+              <For each={profilerRows()}>
+                {(row) => {
+                  const pct = () =>
+                    profilerTotalMs() > 0 ? (row.ms / profilerTotalMs()) * 100 : 0;
+                  const label = () => row.name || `#${row.node_uid}`;
+                  return (
+                    <div class="profiler-row" title={`uid ${row.node_uid}${row.parent_node_uid ? ` (inside #${row.parent_node_uid})` : ''}`}>
+                      <span class="profiler-cell profiler-cell-bar">
+                        <span
+                          class="profiler-bar-fill"
+                          ref={(el) => el.style.setProperty('--pct', `${pct().toFixed(1)}%`)}
+                        />
+                      </span>
+                      <span class="profiler-cell profiler-cell-ms">{row.ms.toFixed(2)}</span>
+                      <span class="profiler-cell profiler-cell-name">{label()}</span>
+                      <span class="profiler-cell profiler-cell-kind">{row.kind}</span>
+                    </div>
+                  );
+                }}
+              </For>
+            </div>
           </Show>
         </Show>
       </div>

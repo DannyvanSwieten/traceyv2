@@ -181,3 +181,71 @@
   background: rgba(255, 156, 51, 0.5);
   pointer-events: none;
 }
+
+/* ── Right-click context menu ────────────────────────────────────────── */
+/* Positioned via CSS variables set on the element by a createEffect in
+ * Dopesheet.tsx (same pattern the playhead/dopesheet height use). */
+.dopesheet-ctx-menu {
+  position: fixed;
+  top: var(--menu-y, 0);
+  left: var(--menu-x, 0);
+  z-index: 1000;
+  min-width: 180px;
+  background: #2a2a2a;
+  border: 1px solid #3c3c3c;
+  border-radius: 4px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5);
+  padding: 4px 0;
+  font: 12px system-ui, -apple-system, sans-serif;
+  color: #ddd;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.dopesheet-ctx-section-label {
+  padding: 4px 12px 2px;
+  font-size: 10px;
+  color: #808080;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.dopesheet-ctx-item {
+  width: 100%;
+  background: transparent;
+  border: none;
+  color: inherit;
+  padding: 4px 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+.dopesheet-ctx-item:hover:not(:disabled) {
+  background: #0e639c;
+  color: #fff;
+}
+.dopesheet-ctx-item:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.dopesheet-ctx-item.is-current {
+  color: #ff9c33;
+}
+.dopesheet-ctx-item.dopesheet-ctx-danger:hover {
+  background: #a52121;
+}
+.dopesheet-ctx-mark {
+  width: 12px;
+  display: inline-block;
+  text-align: center;
+  color: #ff9c33;
+}
+
+.dopesheet-ctx-separator {
+  height: 1px;
+  margin: 4px 8px;
+  background: #3c3c3c;
+}

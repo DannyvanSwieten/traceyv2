@@ -74,12 +74,76 @@ export function isNodeSelected(uid: number): boolean {
 const [libraryEntries, setLibraryEntries] = createSignal<string[]>([]);
 export const materialLibraryEntries = libraryEntries;
 
+// Name of the library entry the active graph is currently associated with,
+// or null when the graph isn't tied to a saved entry yet. Used by the
+// toolbar's "Save" button so the user can iterate without being re-prompted
+// for a name each time. Set whenever a graph is loaded from the library or
+// freshly saved via "Save As".
+const [currentMaterialName, setCurrentMaterialNameInternal] =
+  createSignal<string | null>(null);
+export const materialCurrentName = currentMaterialName;
+export function setMaterialCurrentName(name: string | null): void {
+  setCurrentMaterialNameInternal(name);
+}
+
 export async function refreshMaterialLibrary(): Promise<void> {
   try {
     setLibraryEntries(await api.listMaterialLibrary());
   } catch (e) {
     console.warn('listMaterialLibrary failed:', e);
   }
+}
+
+// Dock visibility lives in the store rather than in App.tsx so deeply
+// nested components (e.g. the actor-inspector's New Material flow) can
+// open the editor without prop-drilling a setter through three layers.
+const [materialEditorOpen, setMaterialEditorOpenInternal] = createSignal(false);
+export const isMaterialEditorOpen = materialEditorOpen;
+export function setMaterialEditorOpen(v: boolean): void {
+  setMaterialEditorOpenInternal(v);
+}
+
+// Build a minimal "blank" material — a white Constant feeding into
+// WriteAlbedo — save it under a unique auto-name, refresh the library,
+// and load it as the active editor graph. Caller is responsible for
+// assigning it to an actor (setActorMaterial) if that's the entry
+// point. Returns the new library name so the caller can chain.
+//
+// Two-Vec4 graph (vs an empty one) because the path tracer's default
+// material isn't visible until *something* writes albedo: a zero-node
+// graph compiles to a single Halt op and the actor renders as the
+// engine fallback, which is confusing right after "New Material".
+export async function createBlankMaterialInLibrary(): Promise<string> {
+  const existing = new Set(libraryEntries());
+  let n = 1;
+  let name = `Material ${n}`;
+  while (existing.has(name)) { n++; name = `Material ${n}`; }
+
+  const blank: ShaderGraph = {
+    version: 1,
+    uid: 0,
+    nodes: [
+      { uid: 1, kind: 'Constant', value: [1, 1, 1, 1], position: [180, 200] },
+      { uid: 2, kind: 'Output',   op: 'WriteAlbedo',  position: [420, 200] },
+    ] as Node[],
+    connections: [
+      { from_node: 1, from_port: 0, to_node: 2, to_port: 0 },
+    ],
+  };
+  await api.saveMaterialGraphAs(name, JSON.stringify(blank));
+  await refreshMaterialLibrary();
+  // Make this graph the active editor target so opening the dock
+  // lands directly on the new material.
+  try {
+    const json = await api.loadMaterialGraphFromLibrary(name);
+    const parsed = JSON.parse(json) as ShaderGraph;
+    reseedUidsFrom(parsed);
+    setGraphInternal(parsed);
+    setSelectedNode(null);
+  } catch (e) {
+    console.warn('loadMaterialGraphFromLibrary failed for fresh material:', e);
+  }
+  return name;
 }
 
 let pushTimer: ReturnType<typeof setTimeout> | null = null;

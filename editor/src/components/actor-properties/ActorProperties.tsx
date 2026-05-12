@@ -1,6 +1,11 @@
 import { Component, createSignal, createEffect, For, Show, Accessor, onMount } from 'solid-js';
 import * as api from '../../lib/api';
-import { materialLibraryEntries, refreshMaterialLibrary } from '../../stores/materials';
+import {
+  createBlankMaterialInLibrary,
+  materialLibraryEntries,
+  refreshMaterialLibrary,
+  setMaterialEditorOpen,
+} from '../../stores/materials';
 import { KeyframeDot } from '../keyframe-dot/KeyframeDot';
 import { sopGraph } from '../../stores/sops';
 import { findNodeRecursive } from '../../lib/sop_graph';
@@ -53,6 +58,26 @@ export const ActorProperties: Component<ActorPropertiesProps> = (props) => {
   });
 
   const onMaterialPick = async (actorId: number, libraryName: string) => {
+    // Sentinel: "+ New Material…" branch creates a fresh blank graph
+    // in the library, assigns it to the actor, and pops the dock open
+    // so the user lands in the editor ready to tweak. Auto-named to
+    // skip the inline name input — the user can rename in the library
+    // panel afterwards.
+    if (libraryName === '__new__') {
+      setMaterialBusy(true);
+      try {
+        const name = await createBlankMaterialInLibrary();
+        await api.setActorMaterial(actorId, name);
+        const actor = selectedActor();
+        if (actor) actor.material_assigned = true;
+        setMaterialEditorOpen(true);
+      } catch (e) {
+        console.error('createBlankMaterialInLibrary failed:', e);
+      } finally {
+        setMaterialBusy(false);
+      }
+      return;
+    }
     setMaterialBusy(true);
     try {
       await api.setActorMaterial(actorId, libraryName);
@@ -368,6 +393,7 @@ export const ActorProperties: Component<ActorPropertiesProps> = (props) => {
                   onChange={(e) => onMaterialPick(actor().id, e.currentTarget.value)}
                   onFocus={refreshMaterialLibrary}
                 >
+                  <option value="__new__">+ New Material…</option>
                   <option value="">— passthrough —</option>
                   <For each={materialLibraryEntries()}>
                     {(name) => <option value={name}>{name}</option>}
