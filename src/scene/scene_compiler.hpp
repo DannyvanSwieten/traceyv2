@@ -117,6 +117,15 @@ namespace tracey
             std::vector<uint32_t> instanceProgramIndex;
             std::unique_ptr<Buffer> instanceProgramIndexBuffer;
 
+            // Per-instance UV-buffer base offset, in *per-vertex* slot
+            // counts. The hit shader's `hitInfo.triangleIndex` is local to
+            // the BLAS that was hit, so we add this offset before stepping
+            // into the global uvBuffer — otherwise every instance's UV
+            // lookups would alias to BLAS 0's UVs and produce visibly
+            // scrambled texturing on multi-object scenes (e.g. glTF Sponza).
+            std::vector<uint32_t> instanceUvOffset;
+            std::unique_ptr<Buffer> instanceUvOffsetBuffer;
+
             // Maps object name to BLAS index
             std::unordered_map<std::string, size_t> objectToBlasIndex;
 

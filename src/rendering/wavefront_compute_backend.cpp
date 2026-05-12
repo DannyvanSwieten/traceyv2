@@ -103,6 +103,14 @@ namespace tracey
         instanceProgramIndexStructure.addMember({"indices", "uint", 0, true, 0});
         m_pipelineLayout->addStorageBuffer("instanceProgramIndex", ShaderStage::ClosestHit, instanceProgramIndexStructure);
 
+        // Per-instance UV base offset (in per-vertex slot counts) — translates
+        // the intersection's BLAS-local triangleIndex into the right slice of
+        // the global uvBuffer. Without this, every instance reads BLAS 0's
+        // UVs and multi-object scenes show scrambled texture coordinates.
+        StructureLayout instanceUvOffsetStructure("InstanceUvOffset");
+        instanceUvOffsetStructure.addMember({"offsets", "uint", 0, true, 0});
+        m_pipelineLayout->addStorageBuffer("instanceUvOffset", ShaderStage::ClosestHit, instanceUvOffsetStructure);
+
         // Scene lights. The hit shader iterates `shaderInputs.lightCount`
         // entries and samples each (point: 1/r² falloff, distant: parallel
         // ray). Single unbounded vec4 array indexed in groups of 3 — see
@@ -186,6 +194,11 @@ namespace tracey
             if (scene.instanceProgramIndexBuffer)
             {
                 descriptorSet->setBuffer("instanceProgramIndex", scene.instanceProgramIndexBuffer.get());
+            }
+
+            if (scene.instanceUvOffsetBuffer)
+            {
+                descriptorSet->setBuffer("instanceUvOffset", scene.instanceUvOffsetBuffer.get());
             }
 
             if (scene.lightBuffer)

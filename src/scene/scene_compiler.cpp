@@ -331,6 +331,12 @@ namespace tracey
         std::vector<const BottomLevelAccelerationStructure *> blasPtrs;
         std::vector<Vec2> allUVs; // Collect all UVs across all objects
         bool anyObjectHasUVs = false;
+        // Per-BLAS start offset into allUVs, in per-vertex slot counts.
+        // The hit shader's triangleIndex is BLAS-local, so each instance
+        // needs to translate it through this offset to read the right
+        // slice of the global uvBuffer. Pads every object (even those
+        // without UVs) with allUVs.size() to keep parallel indexing.
+        std::vector<uint32_t> blasUvStart;
 
         for (const auto &[name, objPtr] : objects)
         {
@@ -351,12 +357,15 @@ namespace tracey
                 result.totalNodes += objData.nodeCount;
                 result.totalTriangles += objData.vertexCount / 3;
 
-                // Collect UVs (per vertex -> per triangle vertices)
-                if (!objData.uvs.empty())
-                {
-                    anyObjectHasUVs = true;
-                    allUVs.insert(allUVs.end(), objData.uvs.begin(), objData.uvs.end());
-                }
+                // Snapshot the offset *before* appending — that's where this
+                // BLAS's UVs begin in allUVs. compileObject always pads
+                // objData.uvs to vertexCount (zeros for UV-less objects), so
+                // the stride here is always vertexCount and per-instance
+                // arithmetic stays valid even when some BLASes are UV-less.
+                blasUvStart.push_back(static_cast<uint32_t>(allUVs.size()));
+
+                anyObjectHasUVs = anyObjectHasUVs || objPtr->hasUvs();
+                allUVs.insert(allUVs.end(), objData.uvs.begin(), objData.uvs.end());
             }
         }
 
@@ -467,6 +476,7 @@ namespace tracey
                 result.instances.push_back(instance);
                 result.instanceToMaterialIndex.push_back(materialIndex);
                 result.instanceProgramIndex.push_back(actorProgramId);
+                result.instanceUvOffset.push_back(blasUvStart[blasIndex]);
 
                 // Convert material and load textures
                 GPUMaterial gpuMat = convertMaterial(device, result, scene, sceneInstance.material());
@@ -579,6 +589,19 @@ namespace tracey
                       << result.instanceProgramIndex.size() << " instances across "
                       << result.materialPrograms.headers().size() << " program(s)"
                       << std::endl;
+        }
+
+        // Step 5b: Per-instance UV start offset SSBO. Parallel to
+        // instanceProgramIndex — same length, same indexing scheme. Shader
+        // does `uvBuffer.uvs[instanceUvOffset[instanceIndex] + triIdx*3 + i]`.
+        if (!result.instanceUvOffset.empty())
+        {
+            const size_t bytes = result.instanceUvOffset.size() * sizeof(uint32_t);
+            result.instanceUvOffsetBuffer = std::unique_ptr<Buffer>(
+                device->createBuffer(static_cast<uint32_t>(bytes), BufferUsage::StorageBuffer));
+            std::memcpy(result.instanceUvOffsetBuffer->mapForWriting(),
+                        result.instanceUvOffset.data(), bytes);
+            result.instanceUvOffsetBuffer->flush();
         }
 
         // Output BVH statistics
