@@ -71,6 +71,11 @@ export interface SopNode {
   // subgraph-bearing nodes as containers — double-click enters them, the
   // current-path nav resolves through them, etc.
   subgraph?: SopGraph;
+  // Bypass: when true, the node's cook is skipped and its first input
+  // passes straight through to its output. Honoured server-side in
+  // SopGraph::cook. Omitted from the JSON when false to keep clean
+  // graphs compact.
+  bypass?: boolean;
 }
 
 export interface SopConnection {
@@ -92,7 +97,19 @@ export interface SopGraph {
 // ── Catalog (fetched from the C++ side) ────────────────────────────────────
 
 export interface PortSpec   { name: string }
-export interface ParamSpec  { name: string; type: ParamType; default: string }
+// Optional numeric range hint. When `min !== max`, the inspector renders
+// a slider instead of a plain number input.
+export interface ParamRange { min: number; max: number; step: number }
+export interface ParamSpec  {
+  name: string;
+  type: ParamType;
+  default: string;
+  range?: ParamRange;
+  // Named dropdown options. When non-empty, the inspector renders a select
+  // for string/int params. For int, the value is the entry's 0-based index;
+  // for string, the entry's text.
+  options?: string[];
+}
 
 export interface CatalogEntry {
   kind: string;
@@ -132,6 +149,16 @@ export function inputPortCount(kind: string): number {
 }
 export function outputPortCount(kind: string): number {
   return lookupCatalog(kind)?.outputs.length ?? 1;
+}
+
+// Port name lookups for canvas labels / tooltips. Empty string if the
+// catalog hasn't arrived yet or the index is out of range — callers
+// (the SVG canvas) skip rendering when empty.
+export function inputPortName(kind: string, idx: number): string {
+  return lookupCatalog(kind)?.inputs[idx]?.name ?? '';
+}
+export function outputPortName(kind: string, idx: number): string {
+  return lookupCatalog(kind)?.outputs[idx]?.name ?? '';
 }
 
 // ── Factories ──────────────────────────────────────────────────────────────

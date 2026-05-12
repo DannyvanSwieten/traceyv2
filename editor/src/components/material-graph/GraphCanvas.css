@@ -19,6 +19,27 @@
   cursor: grabbing;
 }
 
+/* Cut mode (hold Y): swap the cursor to a scissors glyph rendered into
+   a small inline SVG. The hotspot (3, 14) lands near the tip of the
+   blades so the user sees exactly where the cut would happen. Falls
+   back to `crosshair` on browsers that don't accept inline data URLs. */
+.graph-canvas--cutting {
+  cursor: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 20 20"><text x="0" y="15" font-size="15">%E2%9C%82</text></svg>') 3 14, crosshair;
+}
+
+/* Polyline drawn under the cursor while cutting. Pure visual feedback —
+   pointer-events are disabled so it can't intercept clicks. */
+.graph-cut-path {
+  fill: none;
+  stroke: #ff6b6b;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-dasharray: 6 4;
+  pointer-events: none;
+  opacity: 0.9;
+}
+
 /* Rubber-band selection rectangle. Drawn inside the pan/zoom group so it
    lives in world space; pointer-events:none lets clicks fall through to
    nodes / canvas while it's visible (it's only ever shown during a drag
@@ -37,9 +58,28 @@
   stroke-width: 2;
   pointer-events: none;
 }
+/* Invisible wide stroke overlaying every visible edge — gives right-click
+   a generous hit region (the visible 2px stroke is too thin to target
+   reliably) without affecting how the wire looks. Carries data-edge so the
+   context-menu handler can identify which connection was clicked. */
+.graph-edge-hit {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 12;
+  pointer-events: stroke;
+  cursor: context-menu;
+}
 .graph-edge-pending {
   stroke: #6cf;
   stroke-dasharray: 4 4;
+}
+/* While the rubber-band is magnetically attached to a snap target,
+   thicken and brighten the stroke + drop the dash so the user gets a
+   strong "release here will connect" cue. */
+.graph-edge-pending-snapped {
+  stroke: #aef;
+  stroke-width: 2.5;
+  stroke-dasharray: none;
 }
 
 .graph-node-body {
@@ -70,6 +110,20 @@
   stroke-width: 2;
 }
 
+/* Bypassed nodes: dim the body, recolour the header amber, and
+   strike-through the title. The actual cook is skipped server-side; this
+   is just the at-a-glance "this node is disabled" cue. */
+.graph-node-bypassed .graph-node-body {
+  opacity: 0.55;
+}
+.graph-node-bypassed .graph-node-header {
+  fill: #5a4a1a;
+}
+.graph-node-bypassed .graph-node-title {
+  fill: #c8a040;
+  text-decoration: line-through;
+}
+
 .graph-node {
   cursor: move;
 }
@@ -83,3 +137,25 @@
 .graph-port:hover { fill: #6cf; }
 .graph-port-input  { fill: #88c; }
 .graph-port-output { fill: #c88; }
+/* Snap target highlight — the port the rubber-band will land on if the
+   user releases now. Same colour as hover so it reads as the "active"
+   target, plus a halo via stroke so it's visible at zoom-out where the
+   fill alone is too small to notice. */
+.graph-port-snap {
+  fill: #6cf;
+  stroke: #aef;
+  stroke-width: 2;
+}
+
+/* Port-name labels — small light text sitting just outside the port dot
+   so multi-input nodes (mix's a/b/t, fit's value/src_min/src_max/...)
+   stay readable at any zoom. pointer-events:none on the <text> in the
+   JSX keeps clicks falling through to the underlying circle. */
+.graph-port-label {
+  font: 9px system-ui, -apple-system, sans-serif;
+  fill: #aaa;
+  -webkit-user-select: none;
+  user-select: none;
+}
+.graph-port-label-input  { fill: #aab8d6; }
+.graph-port-label-output { fill: #d6aaaa; }

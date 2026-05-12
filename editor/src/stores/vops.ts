@@ -14,8 +14,11 @@ import {
   VopNode,
   VopConnection,
   ParamValue,
+  InputDefault,
   emptyGraph,
   syncNextUid,
+  makeNode,
+  lookupCatalog,
 } from '../lib/vop_graph';
 
 const [graph, setGraphInternal] = createSignal<VopGraph>(emptyGraph());
@@ -250,13 +253,75 @@ export function addNode(node: VopNode): void {
 }
 
 export function removeNode(uid: number): void {
-  setGraphInternal((g) => ({
-    ...g,
-    nodes: g.nodes.filter((n) => n.uid !== uid),
-    connections: g.connections.filter(
+  setGraphInternal((g) => {
+    // Houdini-style passthrough: bridge to_port=0 → from_port=0 so a node
+    // removed mid-chain leaves its neighbours connected.
+    const upstream = g.connections.find(
+      (c) => c.to_node === uid && c.to_port === 0,
+    );
+    const remaining = g.connections.filter(
       (c) => c.from_node !== uid && c.to_node !== uid,
-    ),
-  }));
+    );
+    const bridged: VopConnection[] = [];
+    if (upstream) {
+      for (const c of g.connections) {
+        if (c.from_node === uid && c.from_port === 0) {
+          bridged.push({
+            from_node: upstream.from_node,
+            from_port: upstream.from_port,
+            to_node: c.to_node,
+            to_port: c.to_port,
+          });
+        }
+      }
+    }
+    return {
+      ...g,
+      nodes: g.nodes.filter((n) => n.uid !== uid),
+      connections: [...remaining, ...bridged],
+    };
+  });
+  schedulePush();
+}
+
+// In-place node-kind swap. Mirrors stores/sops.ts:replaceNode.
+export function replaceNode(uid: number, newKind: string): void {
+  const entry = lookupCatalog(newKind);
+  if (!entry) return;
+  setGraphInternal((g) => {
+    const oldNode = g.nodes.find((n) => n.uid === uid);
+    if (!oldNode) return g;
+    const fresh = makeNode(newKind, oldNode.pos);
+    if (!fresh) return g;
+    for (const [pname, pval] of Object.entries(oldNode.params)) {
+      const target = fresh.params[pname];
+      if (target && target.type === pval.type) fresh.params[pname] = pval;
+    }
+    const nIn = entry.inputs.length;
+    const nOut = entry.outputs.length;
+    const conns: VopConnection[] = [];
+    for (const c of g.connections) {
+      if (c.from_node !== uid && c.to_node !== uid) {
+        conns.push(c);
+        continue;
+      }
+      let nc = { ...c };
+      if (nc.from_node === uid) {
+        if (nc.from_port >= nOut) continue;
+        nc.from_node = fresh.uid;
+      }
+      if (nc.to_node === uid) {
+        if (nc.to_port >= nIn) continue;
+        nc.to_node = fresh.uid;
+      }
+      conns.push(nc);
+    }
+    return {
+      ...g,
+      nodes: g.nodes.map((n) => (n.uid === uid ? fresh : n)),
+      connections: conns,
+    };
+  });
   schedulePush();
 }
 
@@ -295,6 +360,30 @@ export function addConnection(c: VopConnection): void {
     );
     return { ...g, connections: [...filtered, c] };
   });
+  schedulePush();
+}
+
+// Per-input constant editor. Updates the node's `input_defaults` map
+// keyed by port index (string), then pushes through the regular
+// schedulePush() debounce so the constant rides along with whatever
+// other edit the user is making. Pass undefined to clear the slot.
+export function setInputDefault(uid: number, port: number,
+                                value: InputDefault | undefined): void {
+  setGraphInternal((g) => ({
+    ...g,
+    nodes: g.nodes.map((n) => {
+      if (n.uid !== uid) return n;
+      const key = String(port);
+      const next: Record<string, InputDefault> = { ...(n.input_defaults ?? {}) };
+      if (value === undefined) delete next[key];
+      else                     next[key] = value;
+      const hasAny = Object.keys(next).length > 0;
+      const out: VopNode = { ...n };
+      if (hasAny) out.input_defaults = next;
+      else        delete (out as Partial<VopNode>).input_defaults;
+      return out;
+    }),
+  }));
   schedulePush();
 }
 

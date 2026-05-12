@@ -20,6 +20,8 @@ import {
   ParamValue,
   emptyGraph,
   syncNextUidRecursive,
+  makeNode,
+  lookupCatalog,
 } from '../lib/sop_graph';
 
 const [graph, setGraphInternal] = createSignal<SopGraph>(emptyGraph());
@@ -347,13 +349,83 @@ export function addNode(node: SopNode): void {
 
 export function removeNode(uid: number): void {
   setGraphInternal((g) =>
-    updateAtPath(g, currentPathInternal(), (sg) => ({
-      ...sg,
-      nodes: sg.nodes.filter((n) => n.uid !== uid),
-      connections: sg.connections.filter(
+    updateAtPath(g, currentPathInternal(), (sg) => {
+      // Houdini-style passthrough: when a node is removed mid-chain, bridge
+      // its primary input (to_port=0) to every consumer of its primary
+      // output (from_port=0) so the surrounding chain stays connected.
+      const upstream = sg.connections.find(
+        (c) => c.to_node === uid && c.to_port === 0,
+      );
+      const remaining = sg.connections.filter(
         (c) => c.from_node !== uid && c.to_node !== uid,
-      ),
-    })),
+      );
+      const bridged: SopConnection[] = [];
+      if (upstream) {
+        for (const c of sg.connections) {
+          if (c.from_node === uid && c.from_port === 0) {
+            bridged.push({
+              from_node: upstream.from_node,
+              from_port: upstream.from_port,
+              to_node: c.to_node,
+              to_port: c.to_port,
+            });
+          }
+        }
+      }
+      return {
+        ...sg,
+        nodes: sg.nodes.filter((n) => n.uid !== uid),
+        connections: [...remaining, ...bridged],
+      };
+    }),
+  );
+  schedulePush();
+}
+
+// Swap a node in place for one of a different kind, keeping its position,
+// bypass state, params (where name + type match the new catalog entry),
+// and connections (where the new node has enough ports to accept them).
+// Edges that don't fit — i.e. their port index is past the new node's
+// input/output count — are silently dropped.
+export function replaceNode(uid: number, newKind: string): void {
+  const entry = lookupCatalog(newKind);
+  if (!entry) return;
+  setGraphInternal((g) =>
+    updateAtPath(g, currentPathInternal(), (sg) => {
+      const oldNode = sg.nodes.find((n) => n.uid === uid);
+      if (!oldNode) return sg;
+      const fresh = makeNode(newKind, oldNode.pos);
+      if (!fresh) return sg;
+      for (const [pname, pval] of Object.entries(oldNode.params)) {
+        const target = fresh.params[pname];
+        if (target && target.type === pval.type) fresh.params[pname] = pval;
+      }
+      if (oldNode.bypass) fresh.bypass = true;
+      const nIn = entry.inputs.length;
+      const nOut = entry.outputs.length;
+      const conns: SopConnection[] = [];
+      for (const c of sg.connections) {
+        if (c.from_node !== uid && c.to_node !== uid) {
+          conns.push(c);
+          continue;
+        }
+        let nc = { ...c };
+        if (nc.from_node === uid) {
+          if (nc.from_port >= nOut) continue;
+          nc.from_node = fresh.uid;
+        }
+        if (nc.to_node === uid) {
+          if (nc.to_port >= nIn) continue;
+          nc.to_node = fresh.uid;
+        }
+        conns.push(nc);
+      }
+      return {
+        ...sg,
+        nodes: sg.nodes.map((n) => (n.uid === uid ? fresh : n)),
+        connections: conns,
+      };
+    }),
   );
   schedulePush();
 }
@@ -366,6 +438,25 @@ export function moveNode(uid: number, x: number, y: number): void {
     })),
   );
   schedulePush();
+}
+
+// Toggle (or explicitly set) a node's bypass flag. The C++ side respects
+// the flag in SopGraph::cook — bypassed nodes forward their first input
+// to the output rather than running their own cook.
+export function setNodeBypass(uid: number, bypass: boolean): void {
+  setGraphInternal((g) =>
+    updateAtPath(g, currentPathInternal(), (sg) => ({
+      ...sg,
+      nodes: sg.nodes.map((n) => (n.uid === uid ? { ...n, bypass } : n)),
+    })),
+  );
+  schedulePush();
+}
+export function toggleNodeBypass(uid: number): void {
+  const g = resolveGraph(graph(), currentPathInternal());
+  const node = g.nodes.find((n) => n.uid === uid);
+  if (!node) return;
+  setNodeBypass(uid, !node.bypass);
 }
 
 export function setParam(uid: number, paramName: string, value: ParamValue): void {

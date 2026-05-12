@@ -8,6 +8,7 @@ import {
   ShaderGraph,
   Node,
   Connection,
+  Vec4Tuple,
   reseedUidsFrom,
 } from '../lib/material_graph';
 
@@ -132,13 +133,34 @@ export function addNode(node: Node): void {
 }
 
 export function removeNode(uid: number): void {
-  setGraphInternal((g) => ({
-    ...g,
-    nodes: g.nodes.filter((n) => n.uid !== uid),
-    connections: g.connections.filter(
+  setGraphInternal((g) => {
+    // Houdini-style passthrough: bridge to_port=0 → from_port=0 so a node
+    // removed mid-chain leaves its neighbours connected.
+    const upstream = g.connections.find(
+      (c) => c.to_node === uid && c.to_port === 0,
+    );
+    const remaining = g.connections.filter(
       (c) => c.from_node !== uid && c.to_node !== uid
-    ),
-  }));
+    );
+    const bridged: Connection[] = [];
+    if (upstream) {
+      for (const c of g.connections) {
+        if (c.from_node === uid && c.from_port === 0) {
+          bridged.push({
+            from_node: upstream.from_node,
+            from_port: upstream.from_port,
+            to_node: c.to_node,
+            to_port: c.to_port,
+          });
+        }
+      }
+    }
+    return {
+      ...g,
+      nodes: g.nodes.filter((n) => n.uid !== uid),
+      connections: [...remaining, ...bridged],
+    };
+  });
   schedulePush();
 }
 
@@ -159,6 +181,30 @@ export function updateNode<T extends Node>(uid: number, patch: Partial<T>): void
   setGraphInternal((g) => ({
     ...g,
     nodes: g.nodes.map((n) => (n.uid === uid ? ({ ...n, ...patch } as Node) : n)),
+  }));
+  schedulePush();
+}
+
+// Per-input constant editor for unconnected inputs. Writes through the
+// node's `input_defaults` map (string-keyed port index → vec4) and
+// schedules a push so the compiler picks it up on the next set_material_graph.
+// Pass undefined to clear the slot.
+export function setInputDefault(uid: number, port: number,
+                                value: Vec4Tuple | undefined): void {
+  setGraphInternal((g) => ({
+    ...g,
+    nodes: g.nodes.map((n) => {
+      if (n.uid !== uid) return n;
+      const key = String(port);
+      const next: Record<string, Vec4Tuple> = { ...(n.input_defaults ?? {}) };
+      if (value === undefined) delete next[key];
+      else                     next[key] = value;
+      const hasAny = Object.keys(next).length > 0;
+      const out = { ...n } as Node;
+      if (hasAny) out.input_defaults = next;
+      else        delete (out as { input_defaults?: Record<string, Vec4Tuple> }).input_defaults;
+      return out;
+    }),
   }));
   schedulePush();
 }

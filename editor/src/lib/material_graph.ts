@@ -29,6 +29,12 @@ export interface BaseNode {
   uid: number;
   kind: NodeKind;
   position?: PositionTuple;
+  // Per-input vec4 default — used by the compiler when an input has no
+  // wire. Key is the input port index as a string (JSON-object key
+  // convention from the C++ side); value is a 4-tuple. Missing key →
+  // compiler errors as before, so the inspector only ever writes here
+  // when the user types into the per-input editor.
+  input_defaults?: Record<string, Vec4Tuple>;
 }
 
 export interface ConstantNode extends BaseNode {
@@ -110,12 +116,29 @@ export function outputPortCount(kind: NodeKind): number {
   return kind === 'Output' ? 0 : 1;
 }
 
+// Input port name per kind/index. Mirrors the names returned by the
+// C++ ports() implementations (see src/graph/graphs/shader_graph/nodes.hpp).
+// Used by the inspector to label per-input default editors.
+export function inputPortName(kind: NodeKind, idx: number): string {
+  switch (kind) {
+    case 'BinaryOp':  return ['a', 'b'][idx] ?? '';
+    case 'UnaryOp':   return ['a'][idx] ?? '';
+    case 'TernaryOp': return ['a', 'b', 'c'][idx] ?? '';
+    case 'Output':    return ['value'][idx] ?? '';
+    default:          return '';
+  }
+}
+
 // ── Node factories with sensible defaults ────────────────────────────────
 
 let _nextUid = 1000;
 function nextUid(): number {
   return _nextUid++;
 }
+// Public allocator used by paste/duplicate helpers that need to mint a
+// fresh uid for a cloned node without going through one of the factory
+// helpers (which want to construct a full default node from scratch).
+export function allocNodeUid(): number { return nextUid(); }
 
 export function makeConstantNode(value: Vec4Tuple = [1, 1, 1, 1], position?: PositionTuple): ConstantNode {
   return { uid: nextUid(), kind: 'Constant', value, position };
@@ -159,10 +182,11 @@ export const PALETTE: { group: string; entries: PaletteEntry[] }[] = [
   {
     group: 'Surface',
     entries: [
-      { label: 'World Position', factory: (p) => makeOpNode('SurfaceAttribute', 'LoadPosition', p) },
-      { label: 'World Normal',   factory: (p) => makeOpNode('SurfaceAttribute', 'LoadNormal',   p) },
-      { label: 'View Direction', factory: (p) => makeOpNode('SurfaceAttribute', 'LoadViewDir',  p) },
-      { label: 'UV0',            factory: (p) => makeOpNode('SurfaceAttribute', 'LoadUV0',      p) },
+      { label: 'World Position', factory: (p) => makeOpNode('SurfaceAttribute', 'LoadPosition',      p) },
+      { label: 'World Normal',   factory: (p) => makeOpNode('SurfaceAttribute', 'LoadNormal',        p) },
+      { label: 'View Direction', factory: (p) => makeOpNode('SurfaceAttribute', 'LoadViewDir',       p) },
+      { label: 'UV0',            factory: (p) => makeOpNode('SurfaceAttribute', 'LoadUV0',           p) },
+      { label: 'Instance ID',    factory: (p) => makeOpNode('SurfaceAttribute', 'LoadInstanceIndex', p) },
     ],
   },
   {

@@ -19,11 +19,25 @@ export { paramChannels, isAnimated };
 
 // ── Wire types ────────────────────────────────────────────────────────────
 
+// Subset of ParamValue that can land in an input default slot. Strings
+// aren't piped through input ports (no string-typed inputs in the v1 VOP
+// set), so they're excluded by the wire encoder; bools could come later
+// but no node currently exposes a bool input.
+export type InputDefault =
+  | { type: 'float'; value: number }
+  | { type: 'int';   value: number }
+  | { type: 'vec3';  value: [number, number, number] };
+
 export interface VopNode {
   uid: number;
   kind: string;
   pos: [number, number];
   params: Record<string, ParamValue>;
+  // Per-port input constants used when the input has no incoming wire.
+  // Key is the input port index as a *string* (JSON-object convention on
+  // the C++ side); value is a typed scalar/vec3. Missing key → fall back
+  // to the node's built-in zero default.
+  input_defaults?: Record<string, InputDefault>;
   // VOPs do not nest in v1 (no `subgraph` field). When VOP-of-VOP composition
   // lands later, mirror the SOP `subgraph` pattern.
 }
@@ -46,8 +60,20 @@ export interface VopGraph {
 
 // ── Catalog (fetched from the C++ side) ────────────────────────────────────
 
-export interface PortSpec   { name: string }
-export interface ParamSpec  { name: string; type: ParamType; default: string }
+// `data_type` is the wire-format string for the port's runtime type
+// (float / int / vec3 / vec2 / vec4 / bool / unknown). Drives the
+// inspector's input-default widget choice. Missing when the catalog
+// emitter couldn't probe — treat as 'unknown' and skip the editor.
+export interface PortSpec   { name: string; data_type?: string }
+// See lib/sop_graph.ts ParamRange / ParamSpec — same shape, same semantics.
+export interface ParamRange { min: number; max: number; step: number }
+export interface ParamSpec  {
+  name: string;
+  type: ParamType;
+  default: string;
+  range?: ParamRange;
+  options?: string[];
+}
 
 export interface CatalogEntry {
   kind: string;
@@ -84,6 +110,23 @@ export function inputPortCount(kind: string): number {
 }
 export function outputPortCount(kind: string): number {
   return lookupCatalog(kind)?.outputs.length ?? 1;
+}
+
+// Port name lookups for canvas labels / tooltips. Mirrors the SOP-side
+// helpers — empty string when the catalog hasn't loaded or the index is
+// out of range so the canvas can omit the <text> cleanly.
+export function inputPortName(kind: string, idx: number): string {
+  return lookupCatalog(kind)?.inputs[idx]?.name ?? '';
+}
+export function outputPortName(kind: string, idx: number): string {
+  return lookupCatalog(kind)?.outputs[idx]?.name ?? '';
+}
+// Wire-format data type for the input at `idx`. Used by the inspector
+// to decide between a number / vec3 / etc. editor for unconnected
+// inputs. Returns 'unknown' if the catalog hasn't loaded or the port
+// has no data_type tag (older catalog payload).
+export function inputPortDataType(kind: string, idx: number): string {
+  return lookupCatalog(kind)?.inputs[idx]?.data_type ?? 'unknown';
 }
 
 // ── Factories ──────────────────────────────────────────────────────────────

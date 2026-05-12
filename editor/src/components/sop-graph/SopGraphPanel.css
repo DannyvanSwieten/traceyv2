@@ -98,6 +98,17 @@
   flex-direction: column;
   gap: 6px;
 }
+/* Sub-section header inside the inspector — currently used to mark the
+   "Inputs" block (per-port constant editors for unconnected inputs). */
+.sop-inspector-section-label {
+  margin-top: 10px;
+  padding-top: 6px;
+  border-top: 1px solid #2c2c2c;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #888;
+}
 .sop-param-row {
   display: flex;
   flex-direction: column;
@@ -162,6 +173,56 @@
   display: grid;
   grid-template-columns: 1fr 1fr 1fr;
   gap: 4px;
+}
+
+/* Slider + numeric readout row — used when the catalog declares a
+ * `range` hint for a float / int param. The slider takes most of the
+ * row width; the readout is a compact spinner so the user can keyboard
+ * the exact value as well as drag. */
+.sop-param-slider-group {
+  display: grid;
+  grid-template-columns: 1fr 64px;
+  gap: 6px;
+  align-items: center;
+}
+.sop-param-slider {
+  width: 100%;
+  margin: 0;
+  accent-color: #5a8;
+}
+.sop-param-slider-readout {
+  /* Inherit the .sop-param-row input styling, just narrower. */
+  background: #1a1a1a;
+  border: 1px solid #3a3a3a;
+  color: #eee;
+  padding: 4px 6px;
+  font-size: 11px;
+  border-radius: 2px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  text-align: right;
+  width: 100%;
+  box-sizing: border-box;
+}
+.sop-param-slider-readout:focus {
+  outline: 1px solid #5a8;
+  border-color: #5a8;
+}
+
+/* Dropdown / select reuses the same look as text inputs so the row
+ * heights stay consistent across plain / slider / dropdown variants. */
+.sop-param-row select {
+  background: #1a1a1a;
+  border: 1px solid #3a3a3a;
+  color: #eee;
+  padding: 4px 6px;
+  font-size: 12px;
+  border-radius: 2px;
+  font-family: inherit;
+  width: 100%;
+}
+.sop-param-row select:focus {
+  outline: 1px solid #5a8;
+  border-color: #5a8;
 }
 
 /* SOP-specific node category tints (the canvas reuses material-graph's
