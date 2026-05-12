@@ -16,6 +16,15 @@
         {
             "type": "lldb",
             "request": "launch",
+            "name": "Tracey Editor (Release)",
+            "program": "${workspaceFolder}/build/Release/editor/native/tracey_editor.app/Contents/MacOS/tracey_editor",
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "Build Tracey Editor (Release)"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
             "name": "Tracey Editor (Dev)",
             "program": "${workspaceFolder}/build/editor/native/tracey_editor.app/Contents/MacOS/tracey_editor",
             "args": [],

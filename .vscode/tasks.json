@@ -13,6 +13,17 @@
             }
         },
         {
+            "label": "Build Tracey Editor (Release)",
+            "type": "shell",
+            "command": "cmake --preset Release && cmake --build ${workspaceFolder}/build/Release --target tracey_editor -j8",
+            "group": "build",
+            "problemMatcher": "$gcc",
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            }
+        },
+        {
             "label": "Start Frontend Dev Server",
             "type": "shell",
             "command": "npm run dev",

@@ -14,3 +14,6 @@ target/
 # Frontend
 editor/node_modules/
 editor/dist/
+
+# Vite dependency-prebundle cache
+editor/.vite/
