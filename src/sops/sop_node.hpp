@@ -66,6 +66,26 @@ namespace tracey
             Vec4 rotation{1.0f, 0.0f, 0.0f, 0.0f};
             Vec3 scale{1.0f};
             std::string materialLibraryName;
+            // Distinguishes multiple emitted actors that share the same
+            // sourceNodeUid (the `instance` SOP emits N of these per cook,
+            // one per template point, each carrying the same stamp Geometry
+            // but its own transform). 0 for normal one-actor-per-uid emits.
+            // Combined with sourceNodeUid into a 64-bit composite key by the
+            // editor host so per-actor tracking maps don't collide.
+            uint32_t instanceIndex = 0;
+            // Per-instance albedo tint pulled from the template's `Cd`
+            // attribute (or anywhere upstream that wants to vary shading
+            // per instance). White (1,1,1) means "no override" — the slow
+            // path passes through the default / glTF-source material.
+            // Path tracer + rasterizer already index `materials[]` by
+            // `instanceCustomIndex`, so each TLAS instance picks up its
+            // own tint without shader changes.
+            Vec3 tint{1.0f, 1.0f, 1.0f};
+            // `true` when `tint` is meaningful (set by upstream). Lets the
+            // editor distinguish "actor explicitly wants white" from
+            // "actor doesn't care" so a Cd-less template doesn't clobber
+            // a user-assigned material library.
+            bool hasTint = false;
         };
 
         // Abstract base for all SOP nodes.

@@ -69,7 +69,16 @@ namespace tracey
             class CopyToPointsSop : public SopNode
             {
             public:
-                explicit CopyToPointsSop(size_t uid) : SopNode(uid) {}
+                explicit CopyToPointsSop(size_t uid) : SopNode(uid)
+                {
+                    // Default true so existing scenes keep their previous
+                    // behaviour (orient each clone's +Z to the template
+                    // point's N). Toggle off to ignore N and only apply
+                    // translation + pscale — useful for things like grass
+                    // blades that should stay axis-aligned regardless of
+                    // the underlying terrain's surface normal.
+                    declareParam(Parameter::makeBool("orient_to_normal", true));
+                }
 
                 std::string kind() const override { return "copy_to_points"; }
 
@@ -94,6 +103,7 @@ namespace tracey
                     const auto *tplPs = tmpl.points().get<float>("pscale");
                     const auto *tplN  = tmpl.points().get<Vec3>("N");
                     const auto *tplCd = tmpl.points().get<Vec3>("Cd");
+                    const bool useNormal = paramBool("orient_to_normal", true);
 
                     // If the template carries Cd, ensure the output destination
                     // declares the per-vertex Cd attribute *before* the first
@@ -113,7 +123,7 @@ namespace tracey
                                             ? tplPs->data()[i]
                                             : 1.0f;
                         glm::mat3 R(1.0f);
-                        if (tplN && i < tplN->data().size())
+                        if (useNormal && tplN && i < tplN->data().size())
                         {
                             R = orientFromNormal(tplN->data()[i]);
                         }
@@ -165,7 +175,8 @@ namespace tracey
                 {"copy_to_points", "Copy to Points", "Cloners",
                  /*inputs*/ {{"stamp"}, {"template"}},
                  /*outputs*/ {{"out"}},
-                 /*params*/ {}},
+                 /*params*/ {
+                     {"orient_to_normal", ParamType::Bool, "true"}}},
                 [](size_t uid) -> std::unique_ptr<SopNode> {
                     return std::make_unique<CopyToPointsSop>(uid);
                 });

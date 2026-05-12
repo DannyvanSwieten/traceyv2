@@ -146,5 +146,12 @@ namespace tracey
         const char *extrapName(ScalarChannel::Extrap e);
         ScalarChannel::Extrap extrapFromName(std::string_view name,
                                              ScalarChannel::Extrap def = ScalarChannel::Extrap::Hold);
+
+        // 64-bit fingerprint of a parameter's name + type + constant value +
+        // channel keyframes. Used by the per-node cook cache to detect
+        // "params unchanged since last cook" without comparing each field
+        // pairwise. Stable within a single process run; not for on-disk.
+        uint64_t hashParameter(const Parameter &p);
+        uint64_t hashParameters(const std::vector<Parameter> &params);
     }
 }

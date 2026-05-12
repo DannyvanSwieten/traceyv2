@@ -176,45 +176,55 @@ namespace tracey
         void registerPrimitiveSops()
         {
             auto &reg = SopRegistry::instance();
+            // Aggregate-init order for ParamSpec is:
+            //   {name, type, defaultRepr, rangeMin, rangeMax, rangeStep, options}
+            // Numeric ranges turn the inspector input into a slider; the
+            // options vector turns it into a dropdown. Skip both for params
+            // that should stay as plain inputs.
             reg.registerType(
                 {"primitive_cube", "Cube", "Generators",
                  /*inputs*/ {}, /*outputs*/ {{"out"}},
-                 /*params*/ {{"size", ParamType::Float, "1.0"}}},
+                 /*params*/ {{"size", ParamType::Float, "1.0", 0.05, 10.0, 0.01}}},
                 makeFactory<PrimitiveCubeSop>());
             reg.registerType(
                 {"primitive_sphere", "Sphere", "Generators",
                  {}, {{"out"}},
-                 {{"radius",   ParamType::Float, "1.0"},
-                  {"segments", ParamType::Int,   "16"},
-                  {"rings",    ParamType::Int,   "16"}}},
+                 {{"radius",   ParamType::Float, "1.0", 0.05, 10.0, 0.01},
+                  {"segments", ParamType::Int,   "16",  3.0,  256.0, 1.0},
+                  {"rings",    ParamType::Int,   "16",  3.0,  256.0, 1.0}}},
                 makeFactory<PrimitiveSphereSop>());
             reg.registerType(
                 {"primitive_plane", "Plane", "Generators",
                  {}, {{"out"}},
-                 {{"width", ParamType::Float, "1.0"},
-                  {"depth", ParamType::Float, "1.0"}}},
+                 {{"width", ParamType::Float, "1.0", 0.05, 10.0, 0.01},
+                  {"depth", ParamType::Float, "1.0", 0.05, 10.0, 0.01},
+                  // Subdivisions — cook reads these too (see PrimitivePlaneSop's
+                  // declareParam), they were just missing from the catalog
+                  // entry so the inspector never showed them.
+                  {"cols",  ParamType::Int,   "1",   1.0, 128.0, 1.0},
+                  {"rows",  ParamType::Int,   "1",   1.0, 128.0, 1.0}}},
                 makeFactory<PrimitivePlaneSop>());
             reg.registerType(
                 {"primitive_torus", "Torus", "Generators",
                  {}, {{"out"}},
-                 {{"major_radius",   ParamType::Float, "1.0"},
-                  {"minor_radius",   ParamType::Float, "0.3"},
-                  {"major_segments", ParamType::Int,   "32"},
-                  {"minor_segments", ParamType::Int,   "16"}}},
+                 {{"major_radius",   ParamType::Float, "1.0", 0.05, 10.0, 0.01},
+                  {"minor_radius",   ParamType::Float, "0.3", 0.01,  5.0, 0.01},
+                  {"major_segments", ParamType::Int,   "32",  4.0, 256.0, 1.0},
+                  {"minor_segments", ParamType::Int,   "16",  4.0, 256.0, 1.0}}},
                 makeFactory<PrimitiveTorusSop>());
             reg.registerType(
                 {"primitive_cylinder", "Cylinder", "Generators",
                  {}, {{"out"}},
-                 {{"radius",   ParamType::Float, "0.5"},
-                  {"height",   ParamType::Float, "1.0"},
-                  {"segments", ParamType::Int,   "32"}}},
+                 {{"radius",   ParamType::Float, "0.5", 0.05, 10.0, 0.01},
+                  {"height",   ParamType::Float, "1.0", 0.05, 10.0, 0.01},
+                  {"segments", ParamType::Int,   "32",  3.0, 256.0, 1.0}}},
                 makeFactory<PrimitiveCylinderSop>());
             reg.registerType(
                 {"primitive_cone", "Cone", "Generators",
                  {}, {{"out"}},
-                 {{"radius",   ParamType::Float, "0.5"},
-                  {"height",   ParamType::Float, "1.0"},
-                  {"segments", ParamType::Int,   "32"}}},
+                 {{"radius",   ParamType::Float, "0.5", 0.05, 10.0, 0.01},
+                  {"height",   ParamType::Float, "1.0", 0.05, 10.0, 0.01},
+                  {"segments", ParamType::Int,   "32",  3.0, 256.0, 1.0}}},
                 makeFactory<PrimitiveConeSop>());
         }
     }

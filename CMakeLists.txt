@@ -107,6 +107,8 @@ add_library(tracey
     src/sops/sop_registry.cpp
     src/sops/sop_graph.hpp
     src/sops/sop_graph.cpp
+    src/sops/cook_cache.hpp
+    src/sops/cook_cache.cpp
     src/sops/serialization.hpp
     src/sops/serialization.cpp
     src/sops/register_builtins.cpp
@@ -119,8 +121,10 @@ add_library(tracey
     src/sops/nodes/attribute_vop_sop.cpp
     src/sops/nodes/points_grid_sop.cpp
     src/sops/nodes/copy_to_points_sop.cpp
+    src/sops/nodes/instance_sop.cpp
     src/sops/nodes/scatter_sop.cpp
     src/sops/nodes/light_sop.cpp
+    src/sops/nodes/normal_sop.cpp
 
     # ── VOPs (per-point attribute graph hosted inside attribute_vop SOP) ──
     src/vops/parameter.hpp

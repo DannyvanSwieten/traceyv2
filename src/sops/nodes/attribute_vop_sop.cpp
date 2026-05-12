@@ -31,6 +31,7 @@
 
 #include "../../vops/vop_graph.hpp"
 #include "../../vops/vop_node.hpp"
+#include "../../vops/vop_registry.hpp"
 #include "../../vops/serialization.hpp"
 
 #include "json.hpp" // nlohmann/json (bundled via deps/tinygltf)
@@ -38,6 +39,7 @@
 #include <algorithm>
 #include <memory>
 #include <string>
+#include <thread>
 #include <variant>
 #include <vector>
 
@@ -89,18 +91,61 @@ namespace tracey
                     }
 
                     // Run prepare() once before the per-point loop so bind_out_*
-                    // nodes can ensure their target attribute exists.
+                    // nodes can ensure their target attribute exists. Must
+                    // happen serially BEFORE the parallel section: prepare()
+                    // can `add<>` an attribute, which reallocates the
+                    // attribute table's storage. Doing that concurrently
+                    // with reads in evaluate() would race.
                     for (const auto &n : m_vopGraph->nodes())
                     {
                         if (auto *vn = dynamic_cast<vops::VopNode *>(n.get()))
                             vn->prepare(out);
                     }
+                    // Hoist compile() out of the per-point loop. evaluatePoint
+                    // does it lazily but calling it once up-front prevents
+                    // the parallel workers from racing into the first compile().
+                    m_vopGraph->compile();
 
                     const size_t pointCount = out.points().size();
-                    for (size_t i = 0; i < pointCount; ++i)
+
+                    // Parallel-for across points. Each evaluate() reads
+                    // attributes at ctx.pointIndex and writes to the same
+                    // index — no aliasing across threads. Per-thread
+                    // slot buffer is reused across points in the chunk to
+                    // avoid a heap allocation per point.
+                    //
+                    // Skip threading for small geometries: starting a few
+                    // hundred µs of threads to evaluate a 100-point graph
+                    // is a net slowdown. The threshold is conservative.
+                    constexpr size_t kSerialThreshold = 1024;
+                    if (pointCount < kSerialThreshold)
                     {
-                        m_vopGraph->evaluatePoint(i, out);
+                        std::vector<vops::Value> slots;
+                        for (size_t i = 0; i < pointCount; ++i)
+                            m_vopGraph->evaluatePoint(i, out, slots);
+                        return out;
                     }
+
+                    const size_t numThreads = std::max<size_t>(
+                        1, std::thread::hardware_concurrency());
+                    const size_t chunkSize =
+                        (pointCount + numThreads - 1) / numThreads;
+
+                    std::vector<std::thread> threads;
+                    threads.reserve(numThreads);
+                    auto runChunk = [&](size_t begin, size_t end) {
+                        std::vector<vops::Value> slots;
+                        for (size_t i = begin; i < end; ++i)
+                            m_vopGraph->evaluatePoint(i, out, slots);
+                    };
+                    for (size_t t = 0; t < numThreads; ++t)
+                    {
+                        const size_t begin = t * chunkSize;
+                        const size_t end = std::min(pointCount, begin + chunkSize);
+                        if (begin >= end) break;
+                        threads.emplace_back(runChunk, begin, end);
+                    }
+                    for (auto &th : threads) th.join();
                     return out;
                 }
 
@@ -156,7 +201,7 @@ namespace tracey
 
                 vops::VopGraph &vopGraph()
                 {
-                    if (!m_vopGraph) m_vopGraph = std::make_unique<vops::VopGraph>(0);
+                    if (!m_vopGraph) m_vopGraph = makeSeededVopGraph();
                     return *m_vopGraph;
                 }
                 const vops::VopGraph &vopGraph() const
@@ -166,9 +211,72 @@ namespace tracey
                         // Lazy alloc on first const access too. Const because
                         // outside callers expect a stable reference; mutable
                         // member makes this safe.
-                        m_vopGraph = std::make_unique<vops::VopGraph>(0);
+                        m_vopGraph = makeSeededVopGraph();
                     }
                     return *m_vopGraph;
+                }
+
+                // Build a fresh VopGraph seeded with passthroughs for all
+                // the Houdini-standard point attributes (P, N, Cd, Alpha,
+                // uv, v). Diving into a brand-new attribute_vop drops you
+                // into a fully-wired graph that emits the same geometry as
+                // it received, so you can immediately insert nodes between
+                // any input/output pair via the right-click "insert on wire"
+                // menu — mirroring Houdini's "Input/Output node always
+                // present" feel.
+                //
+                // Layout: one row per attribute, input node on the left,
+                // output node on the right, horizontal wire between them.
+                // VOPs flow left-to-right in the UI (inputs on the left
+                // edge of a node, outputs on the right edge), so a single
+                // bezier hop is the natural shape — column-style top-to-
+                // bottom layout would force the wire to do an L-bend.
+                //
+                // If the registered VOP catalog hasn't loaded yet (unlikely
+                // at runtime, possible during tests), pairs whose factory
+                // returns null are silently skipped.
+                static std::unique_ptr<vops::VopGraph> makeSeededVopGraph()
+                {
+                    auto g = std::make_unique<vops::VopGraph>(0);
+                    auto &reg = vops::VopRegistry::instance();
+
+                    // (inKind, outKind) pairs in top-to-bottom row order.
+                    // Match the kinds registered in src/vops/nodes/bind_*_vops.cpp.
+                    struct Pair { const char *in; const char *out; };
+                    static constexpr Pair kStandardPairs[] = {
+                        {"bind_in_p",     "bind_out_p"},
+                        {"bind_in_N",     "bind_out_N"},
+                        {"bind_in_Cd",    "bind_out_Cd"},
+                        {"bind_in_Alpha", "bind_out_Alpha"},
+                        {"bind_in_uv",    "bind_out_uv"},
+                        {"bind_in_v",     "bind_out_v"},
+                    };
+                    // Spacings match VopGraphCanvas's NODE_WIDTH (110) so
+                    // the input/output nodes sit with a comfortable gap and
+                    // the bezier wire has room to curve. kRowSpacing leaves
+                    // room for the tallest single-port node + a margin.
+                    constexpr float kInputX     =  80.0f;
+                    constexpr float kOutputX    = 280.0f;
+                    constexpr float kRowY0      =  60.0f;
+                    constexpr float kRowSpacing =  80.0f;
+
+                    int row = 0;
+                    for (const auto &p : kStandardPairs)
+                    {
+                        auto inNode  = reg.create(p.in,  g->nextUid());
+                        auto outNode = reg.create(p.out, g->nextUid());
+                        if (!inNode || !outNode) continue;
+                        const float y = kRowY0 + static_cast<float>(row) * kRowSpacing;
+                        inNode->setPos(kInputX,  y);
+                        outNode->setPos(kOutputX, y);
+                        const size_t inUid  = inNode->uid();
+                        const size_t outUid = outNode->uid();
+                        g->addNode(std::move(inNode));
+                        g->addNode(std::move(outNode));
+                        g->addConnection({inUid, 0, outUid, 0});
+                        ++row;
+                    }
+                    return g;
                 }
 
                 void setVopGraph(std::unique_ptr<vops::VopGraph> g)
@@ -192,12 +300,26 @@ namespace tracey
                         nlohmann::json arr = nlohmann::json::array();
                         for (const auto &p : m_promotions)
                         {
-                            arr.push_back({
+                            nlohmann::json pj = {
                                 {"vop_node_uid",   p.vopNodeUid},
                                 {"vop_param_name", p.vopParamName},
                                 {"host_param_name", p.hostParamName},
                                 {"type",           paramTypeName(p.paramType)},
-                            });
+                            };
+                            // Forward the VOP-side ParamSpec hints so the
+                            // host SOP inspector can render sliders /
+                            // dropdowns on promoted rows, not just bare
+                            // number inputs. Only emitted when set.
+                            if (p.rangeMin != p.rangeMax)
+                            {
+                                pj["range"] = {
+                                    {"min",  p.rangeMin},
+                                    {"max",  p.rangeMax},
+                                    {"step", p.rangeStep},
+                                };
+                            }
+                            if (!p.options.empty()) pj["options"] = p.options;
+                            arr.push_back(std::move(pj));
                         }
                         out["promotions"] = std::move(arr);
                     }
@@ -230,6 +352,42 @@ namespace tracey
                                 else if (t == "bool")   p.paramType = ParamType::Bool;
                                 else if (t == "vec3")   p.paramType = ParamType::Vec3;
                                 else                    p.paramType = ParamType::String;
+                                if (pj.contains("range") && pj["range"].is_object())
+                                {
+                                    const auto &rj = pj["range"];
+                                    p.rangeMin  = rj.value("min",  0.0);
+                                    p.rangeMax  = rj.value("max",  0.0);
+                                    p.rangeStep = rj.value("step", 0.0);
+                                }
+                                if (pj.contains("options") && pj["options"].is_array())
+                                {
+                                    for (const auto &opt : pj["options"])
+                                    {
+                                        if (opt.is_string()) p.options.push_back(opt.get<std::string>());
+                                    }
+                                }
+                                // Re-declare the host param slot. promote()
+                                // does this at first promotion, but after a
+                                // set_sop_graph round-trip the node is built
+                                // fresh and the slot would be missing — so
+                                // applyParamFromJson's setParamFloat would
+                                // silently no-op (findParam returns null)
+                                // and slider edits never stick. Declaring
+                                // here with a placeholder value lets the
+                                // subsequent params block fill the actual
+                                // value.
+                                Parameter slot;
+                                slot.name = p.hostParamName;
+                                slot.type = p.paramType;
+                                switch (p.paramType)
+                                {
+                                case ParamType::Float:  slot.value = 0.0f; break;
+                                case ParamType::Int:    slot.value = 0;    break;
+                                case ParamType::Bool:   slot.value = false; break;
+                                case ParamType::Vec3:   slot.value = Vec3(0.0f); break;
+                                case ParamType::String: slot.value = std::string{}; break;
+                                }
+                                declareParam(std::move(slot));
                                 m_promotions.push_back(std::move(p));
                             }
                         }
@@ -290,12 +448,29 @@ namespace tracey
                     hostParam.channels.clear();
                     declareParam(std::move(hostParam));
 
-                    // Record the promotion.
+                    // Record the promotion, forwarding any UI hints
+                    // (range / options) from the VOP-side ParamSpec so the
+                    // host inspector renders matching slider / dropdown
+                    // widgets — see VopPromotion comment.
                     VopPromotion p;
                     p.vopNodeUid    = vopUid;
                     p.vopParamName  = vopParamName;
                     p.hostParamName = hostName;
                     p.paramType     = vopParam->type;
+                    for (const auto &entry : vops::VopRegistry::instance().catalog())
+                    {
+                        if (entry.kind != vn->kind()) continue;
+                        for (const auto &ps : entry.params)
+                        {
+                            if (ps.name != vopParamName) continue;
+                            p.rangeMin  = ps.rangeMin;
+                            p.rangeMax  = ps.rangeMax;
+                            p.rangeStep = ps.rangeStep;
+                            p.options   = ps.options;
+                            break;
+                        }
+                        break;
+                    }
                     m_promotions.push_back(std::move(p));
                     return hostName;
                 }
@@ -388,6 +563,60 @@ namespace tracey
         {
             auto *host = dynamic_cast<AttributeVopSop *>(node);
             return host && host->demote(hostParamName);
+        }
+
+        void syncPromotedHostValuesFromVop(SopNode *node)
+        {
+            auto *host = dynamic_cast<AttributeVopSop *>(node);
+            if (!host) return;
+            auto *vopGraph = attributeVopGraph(node);
+            if (!vopGraph) return;
+            const auto &proms = host->promotions();
+            if (proms.empty()) return;
+            auto &hostParams = host->parameters();
+            for (const auto &p : proms)
+            {
+                // Find the VOP node by uid.
+                vops::VopNode *vn = nullptr;
+                for (const auto &n : vopGraph->nodes())
+                {
+                    if (auto *cand = dynamic_cast<vops::VopNode *>(n.get());
+                        cand && cand->uid() == p.vopNodeUid)
+                    {
+                        vn = cand;
+                        break;
+                    }
+                }
+                if (!vn) continue;
+                // Find the host SOP param by name.
+                Parameter *hp = nullptr;
+                for (auto &q : hostParams)
+                {
+                    if (q.name == p.hostParamName) { hp = &q; break; }
+                }
+                if (!hp) continue;
+                // Copy the VOP-side value into the host param's constant
+                // baseline. Channels stay as-is so animated promotions
+                // keep their keyframes.
+                switch (p.paramType)
+                {
+                case ParamType::Float:
+                    hp->value = vn->paramFloat(p.vopParamName, 0.0f);
+                    break;
+                case ParamType::Int:
+                    hp->value = vn->paramInt(p.vopParamName, 0);
+                    break;
+                case ParamType::Bool:
+                    hp->value = vn->paramBool(p.vopParamName, false);
+                    break;
+                case ParamType::Vec3:
+                    hp->value = vn->paramVec3(p.vopParamName, Vec3(0.0f));
+                    break;
+                case ParamType::String:
+                    hp->value = vn->paramString(p.vopParamName, std::string{});
+                    break;
+                }
+            }
         }
     }
 }

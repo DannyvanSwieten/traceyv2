@@ -26,6 +26,23 @@ namespace tracey
             ParamType type;
             // Stringified default (so this struct stays variant-free).
             std::string defaultRepr;
+            // Optional UI hints. Default to "no hint" so all existing
+            // registrations keep working unchanged.
+            //
+            //   range[Min|Max|Step] — when min != max, the inspector renders
+            //   a slider for float/int params. Step optional (the inspector
+            //   picks a sane default when 0).
+            //
+            //   options — when non-empty, the inspector renders a named
+            //   dropdown for string/int params. Each entry is shown verbatim;
+            //   for int params the entry's index becomes the value.
+            //
+            // The two hints are mutually exclusive; a node author picks the
+            // one that makes sense for their parameter.
+            double rangeMin = 0.0;
+            double rangeMax = 0.0;
+            double rangeStep = 0.0;
+            std::vector<std::string> options;
         };
 
         struct CatalogEntry

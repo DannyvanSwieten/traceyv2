@@ -15,6 +15,8 @@ namespace tracey
 {
     namespace sops
     {
+        class CookCache;
+
         // Result of cooking the graph — collected from terminal ObjectOutput
         // nodes during the topo walk and returned to the caller for actor
         // construction.
@@ -26,6 +28,20 @@ namespace tracey
             std::string message;
             // uid of the offending node, if applicable. 0 means "graph-level".
             size_t nodeUid = 0;
+        };
+
+        // Per-node cook timing emitted by SopGraph::cook when the caller
+        // passes a non-null timings out-vector. Flat across nested subnets
+        // (uids are globally unique). `parentNodeUid` echoes the subnet uid
+        // each entry was nested inside (0 for root-level) so the profiler
+        // UI can group rows by subnet without re-walking the graph.
+        struct NodeCookTiming
+        {
+            size_t      nodeUid = 0;
+            size_t      parentNodeUid = 0;
+            std::string kind;
+            std::string name;
+            double      ms = 0.0;
         };
 
         class SopGraph : public Graph
@@ -74,7 +90,24 @@ namespace tracey
             // to the time-independent `cook`.
             //
             // Result cache lives until invalidate() is called (on graph edit).
-            CookResult cook(CookDiagnostic *diag = nullptr, double time = 0.0);
+            //
+            // `timings`, when non-null, gets one entry per cooked node
+            // (flat across subnet recursion). Used by the editor's
+            // profiler tab.
+            CookResult cook(CookDiagnostic *diag = nullptr,
+                            double time = 0.0,
+                            std::vector<NodeCookTiming> *timings = nullptr);
+
+            // Cache-aware cook. Reuses each node's last cooked Geometry when
+            // its (kind, params, incoming-connection topology, upstream
+            // cookIds, time-if-time-dep) fingerprint matches the cached
+            // entry. Pass nullptr to fall back to the un-cached path.
+            // Recurses into subnet inner graphs with the same cache, so a
+            // single per-editor CookCache covers the entire nested SOP tree.
+            CookResult cook(CookDiagnostic *diag,
+                            double time,
+                            CookCache *cache,
+                            std::vector<NodeCookTiming> *timings = nullptr);
 
             // Drop all cached cook results. Call after any structural or
             // parameter change. (Editor host does this implicitly on every

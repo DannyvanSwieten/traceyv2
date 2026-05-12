@@ -242,5 +242,80 @@ namespace tracey
             if (name == "linear") return ScalarChannel::Extrap::Linear;
             return def;
         }
+
+        // ── Hashing for the per-node cook cache ──────────────────────────────
+        // FNV-1a streaming hash; intentionally simple so we can read the input
+        // composition at a glance. Stable within one process; not portable to
+        // disk or cross-process comparisons.
+        namespace
+        {
+            constexpr uint64_t kFnvOffset = 0xcbf29ce484222325ULL;
+            constexpr uint64_t kFnvPrime  = 0x00000100000001b3ULL;
+
+            inline void mixBytes(uint64_t &h, const void *p, size_t n)
+            {
+                const auto *b = static_cast<const unsigned char *>(p);
+                for (size_t i = 0; i < n; ++i)
+                {
+                    h ^= b[i];
+                    h *= kFnvPrime;
+                }
+            }
+            inline void mixString(uint64_t &h, const std::string &s)
+            {
+                mixBytes(h, s.data(), s.size());
+                // Sentinel so "ab" + "" doesn't hash like "" + "ab".
+                h ^= 0; h *= kFnvPrime;
+            }
+
+            void mixChannel(uint64_t &h, const ScalarChannel &c)
+            {
+                const uint8_t pre  = static_cast<uint8_t>(c.pre);
+                const uint8_t post = static_cast<uint8_t>(c.post);
+                mixBytes(h, &pre, 1);
+                mixBytes(h, &post, 1);
+                const uint32_t n = static_cast<uint32_t>(c.keys.size());
+                mixBytes(h, &n, sizeof(n));
+                for (const auto &k : c.keys)
+                {
+                    mixBytes(h, &k.time, sizeof(k.time));
+                    mixBytes(h, &k.value, sizeof(k.value));
+                    mixBytes(h, &k.inTangent, sizeof(k.inTangent));
+                    mixBytes(h, &k.outTangent, sizeof(k.outTangent));
+                    const uint8_t interp = static_cast<uint8_t>(k.interp);
+                    mixBytes(h, &interp, 1);
+                }
+            }
+        }
+
+        uint64_t hashParameter(const Parameter &p)
+        {
+            uint64_t h = kFnvOffset;
+            mixString(h, p.name);
+            const uint8_t tag = static_cast<uint8_t>(p.type);
+            mixBytes(h, &tag, 1);
+            std::visit([&](const auto &v) {
+                using T = std::decay_t<decltype(v)>;
+                if constexpr (std::is_same_v<T, std::string>) mixString(h, v);
+                else mixBytes(h, &v, sizeof(v));
+            }, p.value);
+            const uint32_t nc = static_cast<uint32_t>(p.channels.size());
+            mixBytes(h, &nc, sizeof(nc));
+            for (const auto &c : p.channels) mixChannel(h, c);
+            return h;
+        }
+
+        uint64_t hashParameters(const std::vector<Parameter> &params)
+        {
+            uint64_t h = kFnvOffset;
+            const uint32_t n = static_cast<uint32_t>(params.size());
+            mixBytes(h, &n, sizeof(n));
+            for (const auto &p : params)
+            {
+                const uint64_t ph = hashParameter(p);
+                mixBytes(h, &ph, sizeof(ph));
+            }
+            return h;
+        }
     }
 }

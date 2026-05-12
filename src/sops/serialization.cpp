@@ -177,6 +177,10 @@ namespace tracey
                 j["uid"] = node.uid();
                 j["kind"] = node.kind();
                 j["pos"] = {node.posX(), node.posY()};
+                // Only emit `bypass` when true — keeps clean graphs compact
+                // and old JSON (which never had the field) loads as
+                // bypass=false from setBypass's default.
+                if (node.bypass()) j["bypass"] = true;
 
                 json params = json::object();
                 for (const auto &p : node.parameters())
@@ -288,6 +292,19 @@ namespace tracey
                         {
                             node->setPos(nj["pos"][0].get<float>(), nj["pos"][1].get<float>());
                         }
+                        node->setBypass(nj.value("bypass", false));
+                        // Apply "extra" BEFORE "params": attribute_vop's
+                        // extra block carries the promotion list, and each
+                        // promotion needs to (re-)declare its host param
+                        // slot on a freshly-built node before the params
+                        // block can fill values. Without this ordering,
+                        // applyParamFromJson's setParamFloat silently no-ops
+                        // for promoted params (the slot doesn't exist yet)
+                        // and slider edits never round-trip.
+                        if (nj.contains("extra"))
+                        {
+                            node->deserializeExtraJson(nj["extra"].dump());
+                        }
                         if (nj.contains("params") && nj["params"].is_object())
                         {
                             for (auto it = nj["params"].begin(); it != nj["params"].end(); ++it)
@@ -304,13 +321,6 @@ namespace tracey
                         {
                             auto inner = buildGraphFromJson(nj["subgraph"]);
                             node->setInnerGraph(std::move(inner));
-                        }
-                        // Pass through the generic "extra" field for nodes
-                        // that own non-SopGraph child state (e.g. VopGraph
-                        // for AttributeVopSop).
-                        if (nj.contains("extra"))
-                        {
-                            node->deserializeExtraJson(nj["extra"].dump());
                         }
                         graph->addNode(std::move(node));
                     }

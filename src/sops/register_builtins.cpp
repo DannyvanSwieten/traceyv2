@@ -17,8 +17,10 @@ namespace tracey
         void registerAttributeVopSop();
         void registerPointsGridSop();
         void registerCopyToPointsSop();
+        void registerInstanceSop();
         void registerScatterSop();
         void registerLightSop();
+        void registerNormalSop();
 
         void registerBuiltinSops()
         {
@@ -29,7 +31,9 @@ namespace tracey
             registerPointsGridSop();
             registerScatterSop();
             registerCopyToPointsSop();
+            registerInstanceSop();
             registerTransformSop();
+            registerNormalSop();
             registerAttributeVopSop();
             registerMergeSop();
             registerObjectOutputSop();

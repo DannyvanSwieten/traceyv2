@@ -1,10 +1,13 @@
 #include "sop_graph.hpp"
 
+#include "cook_cache.hpp"
+#include "parameter.hpp"
 #include "../graph/connection.hpp"
 
 #include <glm/gtc/quaternion.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <unordered_set>
 
 namespace tracey
@@ -141,10 +144,23 @@ namespace tracey
             }
         } // anon
 
-        CookResult SopGraph::cook(CookDiagnostic *diag, double time)
+        CookResult SopGraph::cook(CookDiagnostic *diag, double time,
+                                  std::vector<NodeCookTiming> *timings)
+        {
+            // Legacy uncached entry point — used by smoke tests and any
+            // headless path that constructs a SopGraph directly.
+            return cook(diag, time, nullptr, timings);
+        }
+
+        CookResult SopGraph::cook(CookDiagnostic *diag, double time,
+                                  CookCache *cache,
+                                  std::vector<NodeCookTiming> *timings)
         {
             if (diag) *diag = {};
-            invalidate();
+            // m_cache is only used by the uncached path. With a CookCache,
+            // downstream nodes pull their inputs from CookCache::Entry::output
+            // directly, so we don't write anything into m_cache.
+            if (!cache) invalidate();
 
             bool cycle = false;
             auto order = topoSort(*this, &cycle);
@@ -156,9 +172,6 @@ namespace tracey
 
             CookResult emitted;
 
-            // Pre-build vector<Geometry*> per node so cook() can take a span
-            // by const&. Lifetimes: each entry points into m_cache, which is
-            // stable for the duration of this cook() call.
             for (size_t uid : order)
             {
                 auto *node = findNode(uid);
@@ -166,26 +179,162 @@ namespace tracey
                 const InputsAndOutputs ports = node->ports();
                 std::vector<const Geometry *> inputs;
                 inputs.reserve(ports.inputs().size());
+                // Per-input src uid + port index + upstream cookId, used to
+                // build this node's cache key. Upstream cookId stays stable
+                // across cache hits, so a clean subtree produces a constant
+                // key and the chain short-circuits all the way down.
+                std::vector<std::tuple<size_t, uint32_t, uint64_t>> inputSrcs;
+                inputSrcs.reserve(ports.inputs().size());
+                bool anyUpstreamTimeDep = false;
                 for (size_t i = 0; i < ports.inputs().size(); ++i)
                 {
                     auto src = incomingTo(uid, i);
-                    if (!src.has_value()) { inputs.push_back(nullptr); continue; }
-                    auto it = m_cache.find(src->first);
-                    inputs.push_back(it == m_cache.end() ? nullptr : &it->second);
+                    if (!src.has_value())
+                    {
+                        inputs.push_back(nullptr);
+                        inputSrcs.emplace_back(0u, 0u, 0u);
+                        continue;
+                    }
+                    if (cache)
+                    {
+                        auto *up = cache->find(src->first);
+                        if (up && up->valid)
+                        {
+                            inputs.push_back(&up->output);
+                            inputSrcs.emplace_back(src->first, src->second, up->cookId);
+                            if (up->timeDependent) anyUpstreamTimeDep = true;
+                        }
+                        else
+                        {
+                            inputs.push_back(nullptr);
+                            inputSrcs.emplace_back(src->first, src->second, 0u);
+                        }
+                    }
+                    else
+                    {
+                        auto it = m_cache.find(src->first);
+                        inputs.push_back(it == m_cache.end() ? nullptr : &it->second);
+                        inputSrcs.emplace_back(src->first, src->second, 0u);
+                    }
                 }
 
-                Geometry result;
-                try
+                // Time-dependence: v1 conservative rule — `attribute_vop`
+                // potentially reads @Time (VOPs can sample time inside their
+                // generated kernel), and time-dependence propagates strictly
+                // downstream. Other SOP cooks are pure functions of params +
+                // inputs.
+                const bool ownTimeDep = (node->kind() == "attribute_vop");
+                const bool timeDep    = ownTimeDep || anyUpstreamTimeDep;
+
+                // Compute this node's input key. Mixed with FNV-1a so the
+                // composition stays explicit and predictable.
+                uint64_t inputKey = 0;
+                if (cache)
                 {
-                    result = node->cookAt(
-                        std::span<const Geometry *const>{inputs.data(), inputs.size()},
-                        time);
+                    constexpr uint64_t kFnvOffset = 0xcbf29ce484222325ULL;
+                    constexpr uint64_t kFnvPrime  = 0x00000100000001b3ULL;
+                    auto mix = [&](const void *p, size_t n) {
+                        const auto *b = static_cast<const unsigned char *>(p);
+                        for (size_t i = 0; i < n; ++i)
+                        {
+                            inputKey ^= b[i];
+                            inputKey *= kFnvPrime;
+                        }
+                    };
+                    inputKey = kFnvOffset;
+                    const std::string k = node->kind();
+                    mix(k.data(), k.size());
+                    const uint64_t ph = hashParameters(node->parameters());
+                    mix(&ph, sizeof(ph));
+                    // Mix in any non-Parameter state the node carries — most
+                    // importantly the attribute_vop's inner VopGraph. Without
+                    // this the cache would only see the host SOP's params
+                    // (translate/rotate/scale) change and miss every VOP-side
+                    // edit, so a freshly tweaked noise expression would
+                    // silently reuse the previous Geometry.
+                    const std::string extra = node->serializeExtraJson();
+                    if (!extra.empty()) mix(extra.data(), extra.size());
+                    for (const auto &[srcUid, srcPort, srcCookId] : inputSrcs)
+                    {
+                        mix(&srcUid, sizeof(srcUid));
+                        mix(&srcPort, sizeof(srcPort));
+                        mix(&srcCookId, sizeof(srcCookId));
+                    }
+                    if (timeDep) mix(&time, sizeof(time));
                 }
-                catch (const std::exception &e)
+
+                // Cache lookup: hit when the key matches what produced the
+                // stored output. Miss → fall through to a fresh cook.
+                CookCache::Entry *entry = cache ? &cache->upsert(uid) : nullptr;
+                const bool cacheHit = entry && entry->valid && entry->inputKey == inputKey;
+
+                const Geometry *outputPtr = nullptr;
+                const auto tStart = std::chrono::steady_clock::now();
+                if (cacheHit)
                 {
-                    if (diag) { diag->ok = false; diag->nodeUid = uid; diag->message = e.what(); }
-                    return {};
+                    // Refresh time-dependence in case the rule changed (e.g.
+                    // upstream became time-dep but this node was previously
+                    // cached as static). Then reuse the cached output.
+                    entry->timeDependent = timeDep;
+                    outputPtr = &entry->output;
                 }
+                else
+                {
+                    Geometry result;
+                    // Bypass: skip the node's cook and forward the first
+                    // input's geometry. If no input is connected (or the
+                    // upstream cook produced nothing), the bypassed node
+                    // contributes an empty Geometry. Matches Houdini's
+                    // "flagged-bypassed SOP" semantics — wires stay, the
+                    // transformation just stops applying.
+                    if (node->bypass())
+                    {
+                        if (!inputs.empty() && inputs[0]) result = *inputs[0];
+                    }
+                    else
+                    {
+                        try
+                        {
+                            result = node->cookAt(
+                                std::span<const Geometry *const>{inputs.data(), inputs.size()},
+                                time);
+                        }
+                        catch (const std::exception &e)
+                        {
+                            if (diag) { diag->ok = false; diag->nodeUid = uid; diag->message = e.what(); }
+                            return {};
+                        }
+                    }
+                    if (cache)
+                    {
+                        entry->cookId++;
+                        entry->inputKey = inputKey;
+                        entry->timeDependent = timeDep;
+                        entry->valid = true;
+                        entry->output = std::move(result);
+                        outputPtr = &entry->output;
+                    }
+                    else
+                    {
+                        m_cache[uid] = std::move(result);
+                        outputPtr = &m_cache[uid];
+                    }
+                }
+                if (timings)
+                {
+                    const auto tEnd = std::chrono::steady_clock::now();
+                    NodeCookTiming nct;
+                    nct.nodeUid       = uid;
+                    nct.parentNodeUid = 0;  // subnet recursion overwrites for inner nodes
+                    nct.kind          = node->kind();
+                    nct.name          = node->paramString("name", "");
+                    nct.ms = std::chrono::duration<double, std::milli>(tEnd - tStart).count();
+                    timings->push_back(std::move(nct));
+                }
+                // Object_output / light terminals consume inputs[0] below;
+                // outputPtr keeps the cooked Geometry alive for the rest of
+                // this loop iteration without needing m_cache.
+                (void)outputPtr;
 
                 // Terminal nodes (object_output) are detected by kind() rather
                 // than by port shape so we can be explicit about which nodes
@@ -227,8 +376,84 @@ namespace tracey
                     a.lightIntensity = node->paramFloat("intensity", 1.0f);
                     emitted.push_back(std::move(a));
                 }
-
-                m_cache[uid] = std::move(result);
+                else if (node->kind() == "instance")
+                {
+                    // Real GPU-instancing terminal: input 0 is the stamp
+                    // (the geometry to clone), input 1 is the template
+                    // point cloud. For each template point we emit ONE
+                    // EmittedActor that carries the stamp's Geometry value
+                    // unchanged + its own transform built from the template
+                    // point's P, optional pscale, and optional N. apply_emitted's
+                    // Phase-A content-hash dedup then collapses all N actors
+                    // onto ONE SceneObject + BLAS, so the path tracer ends
+                    // up with N TLAS instances pointing at one BVH instead
+                    // of N flat-baked copies of the vertex data.
+                    const Geometry *stamp = inputs.size() > 0 ? inputs[0] : nullptr;
+                    const Geometry *tmpl  = inputs.size() > 1 ? inputs[1] : nullptr;
+                    if (stamp && tmpl)
+                    {
+                        const auto &tplP  = tmpl->positions();
+                        const auto *tplPs = tmpl->points().get<float>("pscale");
+                        const auto *tplN  = tmpl->points().get<Vec3>("N");
+                        const auto *tplCd = tmpl->points().get<Vec3>("Cd");
+                        const bool useN   = node->paramBool("orient_to_normal", true);
+                        const std::string baseName =
+                            node->paramString("name", "instance_" + std::to_string(uid));
+                        for (size_t i = 0; i < tplP.size(); ++i)
+                        {
+                            EmittedActor a;
+                            a.sourceNodeUid = uid;
+                            a.instanceIndex = static_cast<uint32_t>(i);
+                            a.name          = baseName;
+                            a.geometry      = *stamp;
+                            a.translate     = tplP[i];
+                            const float s = (tplPs && i < tplPs->data().size())
+                                                ? tplPs->data()[i]
+                                                : 1.0f;
+                            a.scale = Vec3(s, s, s);
+                            // Per-instance albedo tint from Cd on the template
+                            // point. Each EmittedActor lands in its own
+                            // materialBuffer slot (TLAS instanceCustomIndex →
+                            // materials[]), so each instance shades with its
+                            // own color even though they share one BLAS.
+                            if (tplCd && i < tplCd->data().size())
+                            {
+                                a.tint = tplCd->data()[i];
+                                a.hasTint = true;
+                            }
+                            if (useN && tplN && i < tplN->data().size())
+                            {
+                                // Build a rotation that maps stamp's +Z to N,
+                                // with +Y as the up reference. Mirrors the
+                                // copy_to_points helper.
+                                const Vec3 &n = tplN->data()[i];
+                                glm::vec3 forward(n.x, n.y, n.z);
+                                const float fl2 = glm::dot(forward, forward);
+                                if (fl2 >= 1e-12f)
+                                {
+                                    forward = forward * (1.0f / std::sqrt(fl2));
+                                    glm::vec3 right = glm::cross(glm::vec3(0, 1, 0), forward);
+                                    const float rl2 = glm::dot(right, right);
+                                    if (rl2 >= 1e-12f)
+                                    {
+                                        right = right * (1.0f / std::sqrt(rl2));
+                                        glm::vec3 up = glm::cross(forward, right);
+                                        // Column-major mat3: X' = right, Y' = up, Z' = forward.
+                                        glm::mat3 R(right, up, forward);
+                                        glm::quat q = glm::quat_cast(R);
+                                        a.rotation = Vec4(q.w, q.x, q.y, q.z);
+                                    }
+                                }
+                            }
+                            a.materialLibraryName =
+                                node->paramString("material_library_name", "");
+                            emitted.push_back(std::move(a));
+                        }
+                    }
+                }
+                // Output is already stored — either in cache->upsert(uid)->output
+                // for the cached path, or in m_cache[uid] for the legacy path.
+                // No additional m_cache writes here.
             }
 
             // ── Subnet pass ────────────────────────────────────────────────
@@ -271,11 +496,29 @@ namespace tracey
                 if (auto *inner = node->innerGraph())
                 {
                     CookDiagnostic innerDiag;
-                    auto innerEmitted = inner->cook(&innerDiag, time);
+                    // Collect inner timings into a local vec; we stamp the
+                    // parent uid on each before merging into the outer list
+                    // so the profiler can group rows by subnet without
+                    // re-walking the graph.
+                    std::vector<NodeCookTiming> innerTimings;
+                    // Recurse with the same cache — uids are globally unique
+                    // (root allocator) so a single CookCache covers every
+                    // node in the subnet tree.
+                    auto innerEmitted = inner->cook(
+                        &innerDiag, time, cache,
+                        timings ? &innerTimings : nullptr);
                     if (!innerDiag.ok)
                     {
                         if (diag) { diag->ok = false; diag->nodeUid = uid; diag->message = innerDiag.message; }
                         return {};
+                    }
+                    if (timings)
+                    {
+                        for (auto &it : innerTimings)
+                        {
+                            if (it.parentNodeUid == 0) it.parentNodeUid = uid;
+                            timings->push_back(std::move(it));
+                        }
                     }
                     for (auto &child : innerEmitted)
                     {
