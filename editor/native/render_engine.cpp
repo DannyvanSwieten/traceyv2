@@ -17,6 +17,7 @@ RenderEngine::RenderEngine(RenderConfig config) : m_config(std::move(config)) {
         throw std::runtime_error("Failed to create rendering device");
     m_device.reset(dev);
     m_scene = std::make_unique<tracey::Scene>();
+    m_blas_cache = std::make_unique<tracey::BlasCache>();
 }
 
 RenderEngine::~RenderEngine() = default;
@@ -132,9 +133,15 @@ void RenderEngine::compile_scene() {
         return;
     }
 
-    auto compiled = tracey::SceneCompiler::compile(m_device.get(), *m_scene);
+    // Mark all cache entries untouched before the compile; any entry whose
+    // SceneObject doesn't appear (by name + matching content hash) in this
+    // compile will stay untouched and get evicted below.
+    m_blas_cache->markAllUntouched();
+    auto compiled = tracey::SceneCompiler::compile(m_device.get(), *m_scene,
+                                                   m_blas_cache.get());
     m_compiled_scene =
         std::make_unique<tracey::SceneCompiler::CompiledScene>(std::move(compiled));
+    m_blas_cache->evictUntouched();
 
     // Per-actor graphs were aggregated into materialPrograms during compile;
     // push them to the GPU so the hit shader's runMaterialProgram(programId, ...)
@@ -162,6 +169,76 @@ void RenderEngine::set_show_ground(bool v) {
 void RenderEngine::render_rasterizer() {
     if (!m_rasterizer || !m_compiled_scene || !m_scene->hasCamera()) return;
     m_rasterizer->render(*m_compiled_scene, m_scene->camera());
+}
+
+bool RenderEngine::refresh_tlas_only() {
+    if (!m_compiled_scene || !m_compiled_scene->tlas) return false;
+
+    // Walk the scene the same way SceneCompiler does (flatten() then per-actor
+    // instances in declaration order). The instance index across this walk
+    // must match the previous compile_scene's index 1:1 — that's how the
+    // per-instance material indices, program ids, and UV offsets stay
+    // correct without rebuilding their buffers.
+    auto sceneNodes = m_scene->flatten();
+    std::vector<tracey::Tlas::Instance> newInstances;
+    newInstances.reserve(m_compiled_scene->instances.size());
+
+    size_t instanceIndex = 0;
+    for (const auto &node : sceneNodes) {
+        const tracey::Actor *actor = node.actor;
+        if (!actor || !actor->visible()) continue;
+        const tracey::Mat4 &worldTransform = node.worldTransform;
+
+        for (const auto &sceneInstance : actor->instances()) {
+            const std::string &objectRef = sceneInstance.objectRef();
+            auto it = m_compiled_scene->objectToBlasIndex.find(objectRef);
+            if (it == m_compiled_scene->objectToBlasIndex.end()) continue;
+
+            tracey::Mat4 finalTransform = worldTransform;
+            if (sceneInstance.hasLocalTransform()) {
+                finalTransform = worldTransform *
+                                 sceneInstance.localTransform()->toMatrix();
+            }
+
+            tracey::Tlas::Instance instance;
+            instance.setTransform(finalTransform);
+            instance.blasAddress = it->second;
+            if (instanceIndex < m_compiled_scene->instances.size()) {
+                // Preserve material/SBT bits from the previous instance —
+                // those bookkeeping fields didn't change with the transform.
+                const auto &prev = m_compiled_scene->instances[instanceIndex];
+                instance.setCustomIndex(prev.instanceCustomIndex());
+                instance.setMask(prev.instanceMask());
+                instance.setSbtRecordOffset(prev.sbtRecordOffset());
+                instance.setInstanceFlags(prev.instanceFlags());
+            } else {
+                instance.setMask(0xFF);
+            }
+            newInstances.push_back(instance);
+            ++instanceIndex;
+        }
+    }
+
+    // Topology guard: if instance count drifted (visibility toggled between
+    // compile and this refresh, or actor add/remove slipped past the
+    // caller's precondition), bail and let the caller fall through to a
+    // full compile_scene.
+    if (newInstances.size() != m_compiled_scene->instances.size()) return false;
+
+    // Re-collect BLAS pointers from the (still-owned by BlasCache) entries.
+    std::vector<const tracey::BottomLevelAccelerationStructure *> blasPtrs;
+    blasPtrs.reserve(m_compiled_scene->blases.size());
+    for (const auto *b : m_compiled_scene->blases) blasPtrs.push_back(b);
+
+    m_compiled_scene->instances = std::move(newInstances);
+    m_compiled_scene->tlas = std::unique_ptr<tracey::TopLevelAccelerationStructure>(
+        m_device->createTopLevelAccelerationStructure(
+            std::span<const tracey::BottomLevelAccelerationStructure *>(
+                blasPtrs.data(), blasPtrs.size()),
+            std::span<const tracey::Tlas::Instance>(
+                m_compiled_scene->instances.data(),
+                m_compiled_scene->instances.size())));
+    return true;
 }
 
 RenderResult RenderEngine::render_frame(bool clear_accumulation) {

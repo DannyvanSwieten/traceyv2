@@ -366,7 +366,14 @@ void EditorServer::cook_and_apply() {
     if (m_broadcast) m_broadcast(R"({"event":"cook_status","busy":true})");
 
     tracey::sops::CookDiagnostic diag;
-    auto emitted = m_sop_graph->cook(&diag, m_timeline.current_time);
+    // Same Houdini-style per-node cook cache as the worker path, just a
+    // separate instance — this one's owned by the main thread under
+    // m_mutex. Reuses cached Geometry for any node whose
+    // (kind, params, upstream cookIds) fingerprint is unchanged.
+    m_main_cook_cache.markAllUntouched();
+    auto emitted = m_sop_graph->cook(&diag, m_timeline.current_time,
+                                     &m_main_cook_cache);
+    m_main_cook_cache.evictUntouched();
     if (!diag.ok) {
         std::fprintf(stderr, "[sop] cook failed: %s (node uid=%zu)\n",
                      diag.message.c_str(), diag.nodeUid);
@@ -385,18 +392,361 @@ void EditorServer::cook_and_apply() {
 // parameter and re-resolved here.
 //
 // Must be called with m_mutex held; main-thread only (Vulkan recompile).
+// FNV-1a primitives used by the per-actor + global signatures below.
+namespace {
+constexpr uint64_t kSigOffset = 0xcbf29ce484222325ULL;
+constexpr uint64_t kSigPrime  = 0x00000100000001b3ULL;
+
+// Compose a (sourceNodeUid, instanceIndex) into a 64-bit key for the per-
+// actor tracking maps. Layout: low 24 bits = instanceIndex (16M instances
+// per SOP, comfortably more than any reasonable scatter/instance graph),
+// high 40 bits = sourceNodeUid. The high bits stay 40-wide so editor uid
+// counters can grow well past 2^32 before any collision risk.
+inline uint64_t make_actor_key(size_t uid, uint32_t inst) {
+    return (static_cast<uint64_t>(uid) << 24) |
+           (static_cast<uint64_t>(inst) & 0xFFFFFFULL);
+}
+inline uint64_t make_actor_key(const tracey::sops::EmittedActor &a) {
+    return make_actor_key(a.sourceNodeUid, a.instanceIndex);
+}
+inline void sig_mix(uint64_t &h, const void *p, size_t n) {
+    const auto *b = static_cast<const unsigned char *>(p);
+    for (size_t i = 0; i < n; ++i) { h ^= b[i]; h *= kSigPrime; }
+}
+inline void sig_mix_str(uint64_t &h, const std::string &s) {
+    sig_mix(h, s.data(), s.size());
+    const uint64_t n = s.size();
+    sig_mix(h, &n, sizeof(n));
+}
+
+// 64-bit fingerprint of a Geometry payload — captures everything
+// `GeometryConverter::toSceneObject` reads (positions, vertex→point
+// topology, primitive list, per-point / per-vertex N/uv/Cd). Two
+// Geometry values producing identical SceneObjects share this hash, so
+// apply_emitted can dedupe them onto one shared SceneObject + BLAS.
+//
+// Stable within one process run; not for on-disk comparison.
+uint64_t geometry_dedup_hash(const tracey::Geometry &g) {
+    uint64_t h = kSigOffset;
+
+    auto mix_vec3_attr = [&](const tracey::Attribute<tracey::Vec3> *a, char tag) {
+        if (!a) return;
+        sig_mix(h, &tag, 1);
+        const uint64_t n = a->data().size();
+        sig_mix(h, &n, sizeof(n));
+        if (n > 0) sig_mix(h, a->data().data(), n * sizeof(tracey::Vec3));
+    };
+    auto mix_vec2_attr = [&](const tracey::Attribute<tracey::Vec2> *a, char tag) {
+        if (!a) return;
+        sig_mix(h, &tag, 1);
+        const uint64_t n = a->data().size();
+        sig_mix(h, &n, sizeof(n));
+        if (n > 0) sig_mix(h, a->data().data(), n * sizeof(tracey::Vec2));
+    };
+
+    // Positions — the BLAS-affecting field. Always present after
+    // construction; if for some reason absent, the SceneObject would be
+    // empty anyway and won't reach the rasterizer.
+    if (const auto *P = g.points().get<tracey::Vec3>("P"))
+    {
+        const uint64_t n = P->data().size();
+        sig_mix(h, &n, sizeof(n));
+        if (n > 0) sig_mix(h, P->data().data(), n * sizeof(tracey::Vec3));
+    }
+    // Vertex→point topology + primitive list — same mesh data laid out
+    // differently produces different SceneObject corner streams.
+    const auto &v2p = g.vertexToPoint();
+    const uint64_t vn = v2p.size();
+    sig_mix(h, &vn, sizeof(vn));
+    if (vn > 0) sig_mix(h, v2p.data(), vn * sizeof(uint32_t));
+    const auto &prims = g.primitivesList();
+    const uint64_t pn = prims.size();
+    sig_mix(h, &pn, sizeof(pn));
+    if (pn > 0) sig_mix(h, prims.data(), pn * sizeof(tracey::GeoPrimitive));
+    // Shading-relevant per-corner / per-point attributes. Tag bytes
+    // disambiguate "N on points" vs "N on vertices" so different storage
+    // produces different hashes even with identical values.
+    mix_vec3_attr(g.points().get<tracey::Vec3>("N"),  'n');
+    mix_vec3_attr(g.vertices().get<tracey::Vec3>("N"), 'N');
+    mix_vec2_attr(g.points().get<tracey::Vec2>("uv"),  'u');
+    mix_vec2_attr(g.vertices().get<tracey::Vec2>("uv"), 'U');
+    mix_vec3_attr(g.points().get<tracey::Vec3>("Cd"),  'c');
+    mix_vec3_attr(g.vertices().get<tracey::Vec3>("Cd"), 'C');
+    return h;
+}
+
+// Hash of just the TRS of an actor — flips on any transform tweak, stable
+// otherwise. The fast path uses this to identify pure transform deltas.
+uint64_t actor_transform_sig(const tracey::sops::EmittedActor &a) {
+    uint64_t h = kSigOffset;
+    sig_mix(h, &a.translate, sizeof(a.translate));
+    sig_mix(h, &a.rotation, sizeof(a.rotation));
+    sig_mix(h, &a.scale, sizeof(a.scale));
+    return h;
+}
+
+// Hash of everything BUT the TRS — name, parent uid, light/subnet bits,
+// material library, geometry positions. A diff in any of these forces
+// the slow path (full scene rebuild).
+uint64_t actor_structural_sig(const tracey::sops::EmittedActor &a) {
+    uint64_t h = kSigOffset;
+    sig_mix(h, &a.parentNodeUid, sizeof(a.parentNodeUid));
+    sig_mix(h, &a.isSubnetMarker, sizeof(a.isSubnetMarker));
+    sig_mix(h, &a.isLight, sizeof(a.isLight));
+    sig_mix(h, &a.lightType, sizeof(a.lightType));
+    sig_mix(h, &a.lightColor, sizeof(a.lightColor));
+    sig_mix(h, &a.lightIntensity, sizeof(a.lightIntensity));
+    sig_mix_str(h, a.name);
+    sig_mix_str(h, a.materialLibraryName);
+    // Per-instance tint folds into structural — a Cd-only template edit
+    // changes only this slot but still has to invalidate the actor's
+    // material so the new color reaches the materialBuffer.
+    sig_mix(h, &a.hasTint, sizeof(a.hasTint));
+    if (a.hasTint) sig_mix(h, &a.tint, sizeof(a.tint));
+    const uint64_t vcount = a.geometry.pointCount();
+    sig_mix(h, &vcount, sizeof(vcount));
+    if (vcount > 0) {
+        const auto &positions = a.geometry.positions();
+        sig_mix(h, positions.data(), positions.size() * sizeof(tracey::Vec3));
+    }
+    return h;
+}
+}  // namespace
+
+// Fingerprint of an emitted-actor list. Captures only the bits that affect
+// the live scene — per-actor TRS, name/parent/material, light fields, and a
+// shallow digest of the geometry data — so cook outputs that are byte-equal
+// to the previous cook produce the same hash and apply_emitted can short-
+// circuit. Excludes anything that would always differ (no pointers; no
+// per-cook ordering noise beyond the emitted-vector order).
+static uint64_t emitted_signature(const std::vector<tracey::sops::EmittedActor>& emitted) {
+    constexpr uint64_t kFnvOffset = 0xcbf29ce484222325ULL;
+    constexpr uint64_t kFnvPrime  = 0x00000100000001b3ULL;
+    uint64_t h = kFnvOffset;
+    auto mix = [&](const void* p, size_t n) {
+        const auto* b = static_cast<const unsigned char*>(p);
+        for (size_t i = 0; i < n; ++i) { h ^= b[i]; h *= kFnvPrime; }
+    };
+    auto mixStr = [&](const std::string& s) {
+        mix(s.data(), s.size());
+        // Length-suffix so "ab" + "c" doesn't collide with "a" + "bc".
+        const uint64_t n = s.size();
+        mix(&n, sizeof(n));
+    };
+    const uint32_t count = static_cast<uint32_t>(emitted.size());
+    mix(&count, sizeof(count));
+    for (const auto& a : emitted) {
+        mix(&a.sourceNodeUid, sizeof(a.sourceNodeUid));
+        mix(&a.parentNodeUid, sizeof(a.parentNodeUid));
+        mix(&a.isSubnetMarker, sizeof(a.isSubnetMarker));
+        mix(&a.isLight, sizeof(a.isLight));
+        mix(&a.translate, sizeof(a.translate));
+        mix(&a.rotation, sizeof(a.rotation));
+        mix(&a.scale, sizeof(a.scale));
+        mix(&a.lightType, sizeof(a.lightType));
+        mix(&a.lightColor, sizeof(a.lightColor));
+        mix(&a.lightIntensity, sizeof(a.lightIntensity));
+        mixStr(a.name);
+        mixStr(a.materialLibraryName);
+        // Geometry digest: vertex count + raw position bytes. Cheap (one
+        // memcpy worth of FNV) and tight enough that any geometry change
+        // alters the fingerprint. We deliberately don't hash attribute
+        // tables — the BLAS-affecting fields are positions; attribute-only
+        // changes (Cd, custom attribs) are not yet rendered, so we'd
+        // re-apply for nothing the renderer would observe.
+        const uint64_t vcount = a.geometry.pointCount();
+        mix(&vcount, sizeof(vcount));
+        if (vcount > 0) {
+            const auto& positions = a.geometry.positions();
+            mix(positions.data(), positions.size() * sizeof(tracey::Vec3));
+        }
+    }
+    return h;
+}
+
 void EditorServer::apply_emitted(std::vector<tracey::sops::EmittedActor>&& emitted) {
     if (!m_engine) return;
+
+    // Houdini-style "nothing changed" early-out. The signature covers every
+    // actor-visible field — if it matches the last applied cook, no actor
+    // was added, removed, repositioned, renamed, or had its geometry edited
+    // since last time. Skipping scene.clear() + compile_scene + BLAS/TLAS
+    // rebuild means a Cmd+Z to the same state, a re-pushed graph with no
+    // semantic change, or an unrelated edit elsewhere is effectively free.
+    const uint64_t sig = emitted_signature(emitted);
+    if (m_has_applied_once && sig == m_last_emitted_signature
+        && m_engine->compiled_scene_ready()) {
+        // Nothing observable changed — but apply_animation_at downstream
+        // may still want to overlay animated transforms. We don't broadcast
+        // scene_changed because the actor list is byte-identical to the
+        // previous cook.
+        return;
+    }
+
+    // Per-actor delta classification: build fresh sig pairs for each emitted
+    // actor and compare against the previous apply. If every difference vs.
+    // last time is a TRS-only delta (no actor added/removed, no structural
+    // change), we can keep the existing scene + BLAS / material buffers
+    // intact and just refresh the TLAS — orders of magnitude cheaper than
+    // a full apply_emitted + compile_scene.
+    std::unordered_map<uint64_t, ActorSig> newSigs;
+    newSigs.reserve(emitted.size());
+    // Each entry is (composite key, index into `emitted`) so the fast path
+    // can directly pull the new TRS without a linear scan when there are
+    // many instance actors.
+    std::vector<std::pair<uint64_t, size_t>> moved_keys;
+    bool fastPathEligible =
+        m_has_applied_once && m_engine->compiled_scene_ready();
+    for (size_t ei = 0; ei < emitted.size(); ++ei) {
+        const auto &a = emitted[ei];
+        if (a.sourceNodeUid == 0) {  // root-level emit with no source node — bail to slow path
+            fastPathEligible = false;
+        }
+        const uint64_t key = make_actor_key(a);
+        ActorSig s;
+        s.transform_sig  = actor_transform_sig(a);
+        s.structural_sig = actor_structural_sig(a);
+        newSigs[key] = s;
+        if (!fastPathEligible) continue;
+        auto it = m_actor_signatures.find(key);
+        if (it == m_actor_signatures.end()) {
+            fastPathEligible = false;  // new actor — slow path
+        } else if (it->second.structural_sig != s.structural_sig) {
+            fastPathEligible = false;  // geometry / material / etc. changed
+        } else if (it->second.transform_sig != s.transform_sig) {
+            moved_keys.push_back({key, ei});
+        }
+    }
+    // Removed actors (in last apply but not this one) also force the slow
+    // path — scene needs to drop their Actors/SceneObjects.
+    if (fastPathEligible) {
+        for (const auto &[k, _] : m_actor_signatures) {
+            if (newSigs.find(k) == newSigs.end()) {
+                fastPathEligible = false;
+                break;
+            }
+        }
+    }
+
+    if (fastPathEligible && !moved_keys.empty()) {
+        // Transform-only fast path. Walk moved keys, push the new TRS onto
+        // the existing live Actor, then ask the engine to rebuild ONLY the
+        // TLAS from the current scene. compile_scene's heavy lifting (BLAS,
+        // material buffer, UV buffer, program lookup) all stays.
+        auto &liveScene = m_engine->scene();
+        for (const auto &[key, ei] : moved_keys) {
+            auto actorIt = m_emitted_actor_to_actor.find(key);
+            if (actorIt == m_emitted_actor_to_actor.end()) continue;
+            auto *actor = liveScene.getActor(actorIt->second);
+            if (!actor) continue;
+            const auto &a = emitted[ei];
+            tracey::Transform xf;
+            xf.setPosition(a.translate);
+            xf.setRotation(tracey::Quaternion(a.rotation.x, a.rotation.y,
+                                               a.rotation.z, a.rotation.w));
+            xf.setScale(a.scale);
+            actor->setTransform(xf);
+        }
+        if (m_engine->refresh_tlas_only()) {
+            m_actor_signatures = std::move(newSigs);
+            m_last_emitted_signature = sig;
+            m_has_applied_once = true;
+            m_clear_next_frame = true;
+            if (m_broadcast) m_broadcast(R"({"event":"scene_changed"})");
+            // Animation overlay still wants to re-run after a transform
+            // update so any animated channels write fresh values on top.
+            m_timeline_dirty = true;
+            return;
+        }
+        // refresh_tlas_only returned false (topology drifted, e.g. a hidden
+        // actor flipped visible between compile and apply). Fall through
+        // to the slow path.
+    }
+
+    m_last_emitted_signature = sig;
+    m_has_applied_once = true;
 
     // The camera state is independent of the SOP graph (driven by user
     // fly-through) so we preserve it across cooks; otherwise every parameter
     // tweak would snap the viewport back to the default angle.
     auto& scene = m_engine->scene();
-    std::optional<tracey::Camera> savedCamera;
-    if (scene.hasCamera()) savedCamera = scene.camera();
-    scene.clear();
-    if (savedCamera) scene.setCamera(*savedCamera);
-    m_sop_node_to_actor.clear();
+
+    // Incremental slow path: rather than `scene.clear()` + reconstruct
+    // from scratch, diff vs. m_actor_signatures and only recreate the
+    // actors / SceneObjects whose structural_sig changed. Unchanged
+    // actors keep their existing Actor + SceneObject + child links, so
+    // we skip the GeometryConverter::toSceneObject vertex-copy and the
+    // Scene::createActor allocation for them entirely. The BLAS cache
+    // handles BVH reuse on the compile_scene side.
+    //
+    // Removed actors (uid present in m_actor_signatures but not in
+    // newSigs) get scene.removeActor + scene.removeObject. Added actors
+    // (key present in newSigs but not in m_actor_signatures) take the
+    // create path below. Structural-change actors are remove-then-create.
+    std::unordered_set<uint64_t> newKeys;
+    std::unordered_set<size_t> newUids;
+    newKeys.reserve(emitted.size());
+    for (const auto &a : emitted) {
+        newKeys.insert(make_actor_key(a));
+        newUids.insert(a.sourceNodeUid);
+    }
+
+    // Helper: drop the SceneObject reference owned by `key` from the
+    // refcount + content-hash table. Removes the SceneObject from the live
+    // scene only when no other actor still references it (refcount → 0).
+    auto release_object_for_key = [&](uint64_t key) {
+        auto objIt = m_sop_node_object_names.find(key);
+        if (objIt == m_sop_node_object_names.end()) return;
+        const std::string name = objIt->second;
+        m_sop_node_object_names.erase(objIt);
+        auto rcIt = m_scene_object_refcount.find(name);
+        if (rcIt == m_scene_object_refcount.end()) return;
+        if (--rcIt->second > 0) return;
+        m_scene_object_refcount.erase(rcIt);
+        scene.removeObject(name);
+        // Drop the reverse content-hash entry that pointed at this name.
+        for (auto h2n = m_geometry_hash_to_object_name.begin();
+             h2n != m_geometry_hash_to_object_name.end();)
+        {
+            if (h2n->second == name) h2n = m_geometry_hash_to_object_name.erase(h2n);
+            else ++h2n;
+        }
+    };
+
+    // Iterate the *old* m_actor_signatures (still holds the previous
+    // cook's set) and prune anything that isn't in this cook's newKeys.
+    // This is where actors from a deleted SOP (e.g. removing an Instance
+    // SOP that had emitted N TLAS instances) get torn down. The new
+    // signature map is swapped in AFTER this diff so we still have the
+    // old set to walk against.
+    for (auto it = m_actor_signatures.begin(); it != m_actor_signatures.end();)
+    {
+        if (newKeys.find(it->first) != newKeys.end()) { ++it; continue; }
+        auto actorIt = m_emitted_actor_to_actor.find(it->first);
+        if (actorIt != m_emitted_actor_to_actor.end()) {
+            scene.removeActor(actorIt->second);
+            // Also drop the convenience sourceNodeUid→actor mapping when
+            // the removed actor is the primary (instanceIndex==0).
+            const size_t uid = static_cast<size_t>(it->first >> 24);
+            const uint32_t inst = static_cast<uint32_t>(it->first & 0xFFFFFFULL);
+            if (inst == 0) m_sop_node_to_actor.erase(uid);
+            m_emitted_actor_to_actor.erase(actorIt);
+        }
+        release_object_for_key(it->first);
+        // Only forget the per-uid visibility flag when *every* actor for
+        // that uid is gone (instance SOPs share one visibility flag across
+        // all their instances).
+        const size_t uid = static_cast<size_t>(it->first >> 24);
+        if (newUids.find(uid) == newUids.end()) {
+            m_sop_node_visible.erase(uid);
+        }
+        it = m_actor_signatures.erase(it);
+    }
+    // NOTE: m_actor_signatures is intentionally NOT swapped here yet —
+    // the per-actor create loop below still needs to look up each new
+    // key's *previous* signature to decide between "unchanged → skip",
+    // "transform-only → just retarget", and "structural change →
+    // remove-and-recreate". The swap happens after the create loop.
 
     // Pass 1: create one Actor per emit. Subnet markers create transform-only
     // actors (no SceneObject, no SceneInstance, no material) — they're parent
@@ -473,7 +823,57 @@ void EditorServer::apply_emitted(std::vector<tracey::sops::EmittedActor>&& emitt
         return false;
     };
 
+    // Composite keys whose Actor got newly created (or recreated after a
+    // structural change) in this pass. Used by Pass 2 below to gate parent
+    // re-wiring — addChild isn't idempotent, so re-running it on unchanged
+    // actors would push duplicate child uids.
+    std::unordered_set<uint64_t> recreatedKeys;
+
     for (const auto& ea : emitted) {
+        const uint64_t actorKey = make_actor_key(ea);
+        // Skip-when-unchanged: if this composite key already has a live
+        // actor in the scene with the same structural_sig, the actor's
+        // SceneObject / material / instance bookkeeping is still valid.
+        // We only need to update its transform if transform_sig differs —
+        // compile_scene below picks up actor->transform() into the new
+        // TLAS.
+        const auto sigIt = m_actor_signatures.find(actorKey);
+        const ActorSig &newSig = newSigs[actorKey];
+        if (sigIt != m_actor_signatures.end() &&
+            sigIt->second.structural_sig == newSig.structural_sig)
+        {
+            if (sigIt->second.transform_sig != newSig.transform_sig)
+            {
+                auto actorIt = m_emitted_actor_to_actor.find(actorKey);
+                if (actorIt != m_emitted_actor_to_actor.end()) {
+                    auto *actor = scene.getActor(actorIt->second);
+                    if (actor) {
+                        tracey::Transform xf;
+                        xf.setPosition(ea.translate);
+                        xf.setRotation(tracey::Quaternion(ea.rotation.x, ea.rotation.y,
+                                                           ea.rotation.z, ea.rotation.w));
+                        xf.setScale(ea.scale);
+                        actor->setTransform(xf);
+                    }
+                }
+            }
+            continue;
+        }
+
+        // Structural change OR brand-new key: tear down any prior actor +
+        // release this key's SceneObject reference (the shared SceneObject
+        // only drops out of the scene when no other actor still uses it).
+        {
+            auto actorIt = m_emitted_actor_to_actor.find(actorKey);
+            if (actorIt != m_emitted_actor_to_actor.end()) {
+                scene.removeActor(actorIt->second);
+                if (ea.instanceIndex == 0) m_sop_node_to_actor.erase(ea.sourceNodeUid);
+                m_emitted_actor_to_actor.erase(actorIt);
+            }
+            release_object_for_key(actorKey);
+        }
+        recreatedKeys.insert(actorKey);
+
         if (ea.isSubnetMarker) {
             auto* actor = scene.createActor();
             actor->setName(ea.name.empty() ? "subnet" : ea.name);
@@ -484,7 +884,9 @@ void EditorServer::apply_emitted(std::vector<tracey::sops::EmittedActor>&& emitt
             xform.setScale(ea.scale);
             actor->setTransform(xform);
             if (ea.sourceNodeUid != 0) {
-                m_sop_node_to_actor[ea.sourceNodeUid] = actor->getUid();
+                m_emitted_actor_to_actor[actorKey] = actor->getUid();
+                if (ea.instanceIndex == 0)
+                    m_sop_node_to_actor[ea.sourceNodeUid] = actor->getUid();
             }
             restoreVisibility(actor, ea.sourceNodeUid);
             continue;
@@ -512,15 +914,45 @@ void EditorServer::apply_emitted(std::vector<tracey::sops::EmittedActor>&& emitt
             actor->setLight(light);
 
             if (ea.sourceNodeUid != 0) {
-                m_sop_node_to_actor[ea.sourceNodeUid] = actor->getUid();
+                m_emitted_actor_to_actor[actorKey] = actor->getUid();
+                if (ea.instanceIndex == 0)
+                    m_sop_node_to_actor[ea.sourceNodeUid] = actor->getUid();
             }
             restoreVisibility(actor, ea.sourceNodeUid);
             continue;
         }
 
-        // Each emitted actor's geometry becomes a uniquely-named SceneObject.
-        const std::string objectName = ea.name.empty() ? "actor" : ea.name;
-        scene.addObject(objectName, tracey::GeometryConverter::toSceneObject(ea.geometry, objectName));
+        // Each emitted actor's geometry becomes a SceneObject — but only if
+        // we haven't already added an identical Geometry in this process.
+        // Two emit sources with the same vertex content share ONE
+        // SceneObject (and therefore one vertex buffer, color buffer, and
+        // BLAS), bumping the refcount so the SceneObject only goes away
+        // when the last referencing actor does.
+        const uint64_t geomHash = geometry_dedup_hash(ea.geometry);
+        std::string objectName;
+        auto dedupIt = m_geometry_hash_to_object_name.find(geomHash);
+        if (dedupIt != m_geometry_hash_to_object_name.end() &&
+            scene.hasObject(dedupIt->second))
+        {
+            // Cache hit: reuse the existing SceneObject. We deliberately
+            // re-verify it's still in the live scene — a previous teardown
+            // could have evicted it but left the hash entry behind in
+            // pathological cases.
+            objectName = dedupIt->second;
+        }
+        else
+        {
+            // Fresh content: build a new SceneObject. Suffix the uid so
+            // two distinct-content actors with the same display name (e.g.
+            // multiple `Body_prim_0`s) don't clobber each other in
+            // scene.m_objects.
+            objectName = (ea.name.empty() ? std::string{"actor"} : ea.name) +
+                         "_" + std::to_string(ea.sourceNodeUid);
+            scene.addObject(objectName, tracey::GeometryConverter::toSceneObject(ea.geometry, objectName));
+            m_geometry_hash_to_object_name[geomHash] = objectName;
+        }
+        m_sop_node_object_names[actorKey] = objectName;
+        ++m_scene_object_refcount[objectName];
 
         auto* actor = scene.createActor();
         actor->setName(objectName);
@@ -563,24 +995,48 @@ void EditorServer::apply_emitted(std::vector<tracey::sops::EmittedActor>&& emitt
                 mat = fromGltf;
             }
         }
+        // Per-instance albedo tint (Phase C of GPU instancing). When the
+        // upstream cook attached a tint — e.g. `instance` SOP forwarding
+        // a per-point Cd from the template — multiply it into the base
+        // material albedo. Each TLAS instance gets its own materialBuffer
+        // entry, so 1000 instances sharing one BLAS still get 1000
+        // distinct colors. Skip when a material library is in play — the
+        // material graph already controls albedo through its own knobs.
+        if (ea.hasTint && (ea.materialLibraryName.empty() ||
+                           !is_safe_library_name(ea.materialLibraryName))) {
+            const tracey::Vec3 base = mat.albedo().value_or(tracey::Vec3(1.0f));
+            mat.setAlbedo(tracey::Vec3(base.x * ea.tint.x,
+                                        base.y * ea.tint.y,
+                                        base.z * ea.tint.z));
+        }
         actor->addInstance(tracey::SceneInstance(objectName, mat));
 
-        // Stable actor↔SOP mapping via the uid threaded through EmittedActor.
-        // The actor we just appended is at the back of scene.actors().
+        // Stable actor↔SOP mapping via the composite key threaded through
+        // EmittedActor. The actor we just appended is at the back of
+        // scene.actors().
         if (ea.sourceNodeUid != 0 && !scene.actors().empty()) {
-            m_sop_node_to_actor[ea.sourceNodeUid] =
-                scene.actors().back()->getUid();
+            const uint64_t newActorUid = scene.actors().back()->getUid();
+            m_emitted_actor_to_actor[actorKey] = newActorUid;
+            if (ea.instanceIndex == 0)
+                m_sop_node_to_actor[ea.sourceNodeUid] = newActorUid;
         }
         restoreVisibility(actor, ea.sourceNodeUid);
     }
 
-    // Pass 2: wire parent → child edges. Both directions are stored so
-    // Scene::flatten() can walk top-down without a per-actor reverse scan.
+    // Pass 2: wire parent → child edges for recreated actors only. Both
+    // directions are stored so Scene::flatten() can walk top-down without
+    // a per-actor reverse scan. Unchanged actors keep their existing
+    // parent/child links — addChild isn't idempotent, so re-running it
+    // every cook on those would duplicate child uids. Parenting is
+    // expressed in SOP-node terms (parentNodeUid → sourceNodeUid), so we
+    // use the SOP→primary-actor map on both sides.
     for (const auto& ea : emitted) {
         if (ea.parentNodeUid == 0) continue;
-        const auto childIt = m_sop_node_to_actor.find(ea.sourceNodeUid);
+        const uint64_t actorKey = make_actor_key(ea);
+        if (recreatedKeys.find(actorKey) == recreatedKeys.end()) continue;
+        const auto childIt = m_emitted_actor_to_actor.find(actorKey);
         const auto parentIt = m_sop_node_to_actor.find(ea.parentNodeUid);
-        if (childIt == m_sop_node_to_actor.end() ||
+        if (childIt == m_emitted_actor_to_actor.end() ||
             parentIt == m_sop_node_to_actor.end()) {
             continue;
         }
@@ -590,6 +1046,11 @@ void EditorServer::apply_emitted(std::vector<tracey::sops::EmittedActor>&& emitt
         parent->addChild(child);
         child->setParent(parent->getUid());
     }
+
+    // Both diff passes have read m_actor_signatures (previous state) and
+    // newSigs (this cook's state). Promote newSigs to the canonical
+    // m_actor_signatures now that we're done diffing.
+    m_actor_signatures = std::move(newSigs);
 
     // Recompile so the path tracer picks up the new BLAS/TLAS + material
     // programs, and reset accumulation.
@@ -782,6 +1243,28 @@ bool EditorServer::detect_animated_vop_promotions() const {
     return walk(m_sop_graph.get());
 }
 
+// True if any SOP node anywhere in the graph carries an animated parameter
+// (translate/rotate/scale on a subnet, an animated VOP promotion, a
+// keyframed scalar on any leaf, etc.). Used by the export loop to decide
+// whether per-frame state can be skipped on a static scene.
+bool EditorServer::detect_any_animation() const {
+    if (!m_sop_graph) return false;
+    std::function<bool(const tracey::sops::SopGraph*)> walk;
+    walk = [&](const tracey::sops::SopGraph* g) -> bool {
+        if (!g) return false;
+        for (const auto& n : g->nodes()) {
+            auto* sn = dynamic_cast<const tracey::sops::SopNode*>(n.get());
+            if (!sn) continue;
+            for (const auto& p : sn->parameters()) {
+                if (p.isAnimated()) return true;
+            }
+            if (sn->innerGraph() && walk(sn->innerGraph())) return true;
+        }
+        return false;
+    };
+    return walk(m_sop_graph.get());
+}
+
 // Worker thread: pull JSON requests, deserialize + cook on a private
 // SopGraph copy, hand the emitted actor list to the main thread via
 // m_pending_cook_result. Latest-wins: a new set_sop_graph while a cook is
@@ -811,8 +1294,17 @@ void EditorServer::cook_worker_loop() {
 
         tracey::sops::CookDiagnostic diag;
         std::vector<tracey::sops::EmittedActor> emitted;
+        std::vector<tracey::sops::NodeCookTiming> timings;
         try {
-            emitted = graph->cook(&diag, request.time);
+            // Houdini-style cook cache: per-node Geometry cache keyed by
+            // (kind, params hash, upstream cookIds, time if time-dep). The
+            // worker thread owns the cache exclusively, so no lock needed
+            // — the loop only ever runs one cook at a time. Mark all
+            // untouched up-front and evict after the cook so entries from
+            // a node the user deleted get freed.
+            m_worker_cook_cache.markAllUntouched();
+            emitted = graph->cook(&diag, request.time, &m_worker_cook_cache, &timings);
+            m_worker_cook_cache.evictUntouched();
         } catch (const std::exception& e) {
             // Without this catch, an uncaught exception from any SOP's cook()
             // would terminate the worker thread for the lifetime of the
@@ -831,7 +1323,10 @@ void EditorServer::cook_worker_loop() {
             std::lock_guard<std::mutex> lk(m_cook_result_mutex);
             // Last-wins: if the main thread hasn't drained the previous
             // result yet, overwrite it with this newer one.
-            m_pending_cook_result = std::move(emitted);
+            m_pending_cook_result = PendingCookResult{
+                std::move(emitted),
+                std::move(timings),
+            };
         }
     }
 }
@@ -857,14 +1352,40 @@ void EditorServer::post_cook_request(std::string graph_json, double time) {
 // Called from render_tick on the main thread (already holds m_mutex).
 // Applies any cook result the worker has produced since the previous tick.
 void EditorServer::drain_cook_result() {
-    std::optional<std::vector<tracey::sops::EmittedActor>> result;
+    std::optional<PendingCookResult> result;
     {
         std::lock_guard<std::mutex> lk(m_cook_result_mutex);
         if (!m_pending_cook_result) return;
         result = std::move(m_pending_cook_result);
         m_pending_cook_result.reset();
     }
-    apply_emitted(std::move(*result));
+    apply_emitted(std::move(result->emitted));
+
+    // Broadcast per-node timings so the profiler tab can refresh. Doing it
+    // here (rather than in apply_emitted) keeps the profiler decoupled
+    // from scene rebuild side-effects — it just needs the latest "what
+    // did the worker do?" snapshot.
+    if (m_broadcast && !result->timings.empty()) {
+        json arr = json::array();
+        double total_ms = 0.0;
+        for (const auto& nct : result->timings) {
+            arr.push_back({
+                {"node_uid",        static_cast<uint64_t>(nct.nodeUid)},
+                {"parent_node_uid", static_cast<uint64_t>(nct.parentNodeUid)},
+                {"kind",            nct.kind},
+                {"name",            nct.name},
+                {"ms",              nct.ms},
+            });
+            total_ms += nct.ms;
+        }
+        json msg = {
+            {"event",   "cook_timings"},
+            {"total_ms", total_ms},
+            {"rows",    std::move(arr)},
+        };
+        m_broadcast(msg.dump());
+    }
+
     // Clear the loading status. If another request is already queued behind
     // this one, the next post_cook_request will re-broadcast busy:true.
     if (m_broadcast) {
@@ -992,6 +1513,22 @@ void EditorServer::export_video_loop(VideoExportRequest req) {
     const auto t0 = clock::now();
     bool success = true;
 
+    // Detect once at the top of the export whether the graph is fully
+    // static (no animated channels and no time-dependent VOPs). For a
+    // static scene every per-frame cook produces byte-identical output —
+    // so we cook+apply once before the first frame, then per frame only
+    // render the requested samples. Skipping the cook for an N-second
+    // export of a 20-mesh scene saves N*30 BLAS rebuilds.
+    //
+    // For animated scenes we fall back to the per-frame cook + apply
+    // path, same as before. The proper per-actor BLAS cache lands next.
+    bool scene_static = false;
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        scene_static = !detect_any_animation();
+    }
+    bool cooked_once = false;
+
     for (int f = req.frame_start; f <= req.frame_end; ++f) {
         if (m_export_cancel.load()) break;
 
@@ -1004,8 +1541,12 @@ void EditorServer::export_video_loop(VideoExportRequest req) {
         {
             std::lock_guard<std::mutex> lock(m_mutex);
             m_timeline.current_time = frame_time;
-            // Full re-cook so animated SOP geometry / parameters evaluate.
-            cook_and_apply();
+            // Skip the per-frame cook+apply on static scenes after the
+            // first frame — the BLAS / scene state is already correct.
+            if (!scene_static || !cooked_once) {
+                cook_and_apply();
+                cooked_once = true;
+            }
             apply_animation_at(frame_time);
 
             for (int s = 0; s < req.samples_per_frame; ++s) {
@@ -1121,13 +1662,16 @@ bool EditorServer::update_camera_from_input(double /*dt*/) {
 
     bool changed = false;
 
-    // Houdini-style: hold Space, then drag with LMB/MMB/RMB to tumble/pan/dolly.
-    const bool nav = input.key_space;
+    // Drag-to-navigate: LMB tumbles, MMB pans, RMB dollies — no modifier
+    // key. The Space modifier was dropped because Space is reserved for
+    // the timeline (play/pause), and the user wants camera navigation to
+    // be the default mouse behaviour in the viewport rather than a
+    // gated mode.
     constexpr float TUMBLE_SENS = 0.005f;  // radians per pixel
     constexpr float DOLLY_SENS  = 0.01f;   // log-units per pixel
     constexpr float WHEEL_SENS  = 0.05f;   // log-units per scroll tick
 
-    if (nav && (input.mouse_dx != 0.0f || input.mouse_dy != 0.0f)) {
+    if (input.mouse_dx != 0.0f || input.mouse_dy != 0.0f) {
         if (input.mouse_left) {
             m_orbit_yaw   -= input.mouse_dx * TUMBLE_SENS;
             m_orbit_pitch -= input.mouse_dy * TUMBLE_SENS;
@@ -1390,7 +1934,7 @@ std::string EditorServer::handle_command(const std::string& json_request) {
                 actor_to_sop[actorUid] = outputUid;
             }
             json arr = json::array();
-            for (const auto& a : m_engine->scene().actors()) {
+            for (const auto* a : m_engine->scene().actors()) {
                 const auto it = actor_to_sop.find(a->getUid());
                 arr.push_back(actor_to_json(*a, it != actor_to_sop.end() ? it->second : 0));
             }
@@ -1880,11 +2424,22 @@ std::string EditorServer::handle_command(const std::string& json_request) {
                 for (const auto& p : e.outputs) outputs.push_back({{"name", p.name}});
                 json params = json::array();
                 for (const auto& p : e.params) {
-                    params.push_back({
+                    json pj = {
                         {"name",     p.name},
                         {"type",     tracey::sops::paramTypeName(p.type)},
                         {"default",  p.defaultRepr},
-                    });
+                    };
+                    // UI hints — omitted entirely when unset so the wire
+                    // stays lean for the (still-typical) plain-input case.
+                    if (p.rangeMin != p.rangeMax) {
+                        pj["range"] = {
+                            {"min",  p.rangeMin},
+                            {"max",  p.rangeMax},
+                            {"step", p.rangeStep},
+                        };
+                    }
+                    if (!p.options.empty()) pj["options"] = p.options;
+                    params.push_back(std::move(pj));
                 }
                 arr.push_back({
                     {"kind",     e.kind},
@@ -1932,19 +2487,60 @@ std::string EditorServer::handle_command(const std::string& json_request) {
         // Catalog mirrors list_sop_node_catalog. get/set are scoped per host
         // SOP node uid; the host must be an attribute_vop SOP.
         if (cmd == "list_vop_node_catalog") {
+            // Catalog ships static metadata, but per-port DataType lives on
+            // each node's runtime ports() — the catalog's PortSpec only
+            // carries a name. Probe each kind with a throwaway instance to
+            // pull the typed port info and emit it alongside the name so
+            // the inspector knows which widget (float/int/vec3) to render
+            // for each unconnected input.
+            auto dataTypeName = [](tracey::DataType dt) -> std::string {
+                switch (dt) {
+                    case tracey::DataType::Float: return "float";
+                    case tracey::DataType::Int:   return "int";
+                    case tracey::DataType::Bool:  return "bool";
+                    case tracey::DataType::Vec2:  return "vec2";
+                    case tracey::DataType::Vec3:  return "vec3";
+                    case tracey::DataType::Vec4:  return "vec4";
+                    default:                      return "unknown";
+                }
+            };
             json arr = json::array();
             for (const auto& e : tracey::vops::VopRegistry::instance().catalog()) {
+                // Probe instance — uid 0 since we never wire it into a graph.
+                auto probe = tracey::vops::VopRegistry::instance().create(e.kind, 0);
+                tracey::InputsAndOutputs io = probe ? probe->ports() : tracey::InputsAndOutputs{};
+                const auto probeIns  = io.inputs();
+                const auto probeOuts = io.outputs();
                 json inputs = json::array();
-                for (const auto& p : e.inputs) inputs.push_back({{"name", p.name}});
+                for (size_t i = 0; i < e.inputs.size(); ++i) {
+                    json pj = {{"name", e.inputs[i].name}};
+                    if (i < probeIns.size())
+                        pj["data_type"] = dataTypeName(probeIns[i].getDataType());
+                    inputs.push_back(std::move(pj));
+                }
                 json outputs = json::array();
-                for (const auto& p : e.outputs) outputs.push_back({{"name", p.name}});
+                for (size_t i = 0; i < e.outputs.size(); ++i) {
+                    json pj = {{"name", e.outputs[i].name}};
+                    if (i < probeOuts.size())
+                        pj["data_type"] = dataTypeName(probeOuts[i].getDataType());
+                    outputs.push_back(std::move(pj));
+                }
                 json params = json::array();
                 for (const auto& p : e.params) {
-                    params.push_back({
+                    json pj = {
                         {"name",     p.name},
                         {"type",     tracey::vops::paramTypeName(p.type)},
                         {"default",  p.defaultRepr},
-                    });
+                    };
+                    if (p.rangeMin != p.rangeMax) {
+                        pj["range"] = {
+                            {"min",  p.rangeMin},
+                            {"max",  p.rangeMax},
+                            {"step", p.rangeStep},
+                        };
+                    }
+                    if (!p.options.empty()) pj["options"] = p.options;
+                    params.push_back(std::move(pj));
                 }
                 arr.push_back({
                     {"kind",     e.kind},
@@ -1981,6 +2577,13 @@ std::string EditorServer::handle_command(const std::string& json_request) {
             } catch (const std::exception& e) {
                 return err_response(std::string("vop graph parse error: ") + e.what());
             }
+            // After replacing the VOP graph, copy any promoted-param VOP-side
+            // values into the host SOP's parameter baselines. Without this,
+            // cookAt's stampPromotedParams overwrites the user's freshly
+            // edited number-box value with the stale host baseline at every
+            // cook (the host param keeps the value it had at promotion
+            // time). Channel keyframes are preserved.
+            tracey::sops::syncPromotedHostValuesFromVop(node);
             // Re-cook the SOP graph so the attribute_vop host re-evaluates
             // its child VOP graph against the live geometry.
             if (m_sop_graph) {
@@ -2018,6 +2621,50 @@ std::string EditorServer::handle_command(const std::string& json_request) {
             m_timeline_dirty = true;
             if (m_broadcast) m_broadcast(R"({"event":"sop_graph_changed"})");
             return ok_response({{"host_param_name", hostName}});
+        }
+        if (cmd == "set_vop_input_default" || cmd == "clear_vop_input_default") {
+            // Per-input-port constant editor: when an input has no wire,
+            // the VOP graph's readInput falls back to this stored value
+            // instead of returning nullopt. Lets the user dial in a
+            // constant without dragging a Constant node + wire it up.
+            //
+            // Payload: { host_uid, vop_node_uid, port, type?, value? }.
+            // `clear_vop_input_default` drops the stored value entirely so
+            // the input goes back to the node's built-in zero default.
+            if (!m_sop_graph) return err_response("no sop graph");
+            const size_t host_uid     = req.at("host_uid").get<size_t>();
+            const size_t vop_node_uid = req.at("vop_node_uid").get<size_t>();
+            const size_t port         = req.at("port").get<size_t>();
+
+            auto* node = findNodeRecursive(m_sop_graph.get(), host_uid);
+            if (!node) return err_response("host node not found");
+            auto* vop = tracey::sops::attributeVopGraph(node);
+            if (!vop) return err_response("host is not an attribute_vop");
+            auto* vopNode = vop->findNode(vop_node_uid);
+            if (!vopNode) return err_response("vop node not found");
+
+            if (cmd == "clear_vop_input_default") {
+                vopNode->clearInputDefault(port);
+            } else {
+                const auto t = req.at("type").get<std::string>();
+                const auto& v = req.at("value");
+                tracey::vops::Value val;
+                if (t == "float" && v.is_number())             val = v.get<float>();
+                else if (t == "int" && v.is_number_integer())  val = v.get<int>();
+                else if (t == "vec3" && v.is_array() && v.size() == 3)
+                    val = tracey::Vec3(v[0].get<float>(), v[1].get<float>(), v[2].get<float>());
+                else return err_response("unsupported input default type");
+                vopNode->setInputDefault(port, val);
+            }
+            vop->markDirty();
+            // Re-cook so the new constant flows through to the geometry.
+            if (m_sop_graph) {
+                std::string json = tracey::sops::serializeSopGraph(*m_sop_graph);
+                m_last_pushed_graph_json = json;
+                post_cook_request(std::move(json), m_timeline.current_time);
+            }
+            if (m_broadcast) m_broadcast(R"({"event":"sop_graph_changed"})");
+            return ok_response_null();
         }
         if (cmd == "vop_demote_param") {
             // Strip a promotion + its host param. Any channels on it are
@@ -2341,6 +2988,24 @@ std::string EditorServer::handle_command(const std::string& json_request) {
                     // can re-cook (for VOP-promotion animation) without a
                     // round-trip.
                     m_last_pushed_graph_json = sopJson;
+                    // Drop the actors that load_scene_from_file restored from
+                    // the file's saved actor list — for any scene with a SOP
+                    // graph (v2+) the cook below is the authoritative source
+                    // of actors. Without this, every saved-then-loaded actor
+                    // appears twice in the hierarchy (one bare from the
+                    // restore + one SOP-emitted from the cook). Also reset
+                    // our SOP-side tracking so apply_emitted's "did this
+                    // actor change since last cook?" diff starts from a
+                    // clean slate against the now-empty scene.
+                    auto &liveScene = m_engine->scene();
+                    std::vector<size_t> staleUids;
+                    for (const auto &a : liveScene.actors())
+                        if (a) staleUids.push_back(a->getUid());
+                    for (size_t uid : staleUids) liveScene.removeActor(uid);
+                    m_sop_node_to_actor.clear();
+                    m_emitted_actor_to_actor.clear();
+                    m_actor_signatures.clear();
+                    m_has_applied_once = false;
                     cook_and_apply();
                 }
 

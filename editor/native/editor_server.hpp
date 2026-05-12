@@ -15,7 +15,9 @@
 
 #include "render_engine.hpp"
 #include "viewport_renderer.hpp"
-#include "sops/sop_node.hpp"  // tracey::sops::EmittedActor (used in cook-result slot)
+#include "sops/sop_node.hpp"   // tracey::sops::EmittedActor (used in cook-result slot)
+#include "sops/sop_graph.hpp"  // tracey::sops::NodeCookTiming
+#include "sops/cook_cache.hpp"
 
 namespace tracey {
     namespace sops {
@@ -98,13 +100,21 @@ private:
     // creation/edits flow through here.
     std::unique_ptr<tracey::sops::SopGraph> m_sop_graph;
 
-    // Map from SOP node uid → emitted actor uid in the scene
-    // (m_engine->scene().actors()). Covers both object_output nodes (the
-    // primary geometry-bearing actors) and subnet nodes (transform-only
-    // parent actors created from EmittedActor markers). Lets
-    // `set_actor_transform` and the keyframe-override path find the source
-    // SOP node to write back into.
+    // Map from SOP node uid → emitted actor uid in the scene. Covers
+    // object_output, light, and subnet nodes (one actor per SOP node) PLUS
+    // the *primary* (instanceIndex == 0) actor for `instance` SOPs — used
+    // by external paths (animation overlay, gizmo writeback) that work on
+    // a SOP-node basis. For per-emitted-actor lookups during apply_emitted
+    // (signatures, scene-object ownership, transform updates across all
+    // instances) see m_emitted_actor_to_actor below.
     std::unordered_map<size_t, uint64_t> m_sop_node_to_actor;
+
+    // Map from composite (sourceNodeUid, instanceIndex) → actor uid. Stores
+    // every emitted actor, including the N instance actors that share a
+    // sourceNodeUid coming out of the `instance` SOP. apply_emitted's
+    // per-actor maps (signatures, object names) all use this composite
+    // key so they don't collide across instances.
+    std::unordered_map<uint64_t, uint64_t> m_emitted_actor_to_actor;
 
     // ── Timeline / playback ─────────────────────────────────────────────
     // The playhead lives natively. render_tick advances `current_time` while
@@ -173,6 +183,12 @@ private:
     // accurate as the user promotes / demotes / keys params.
     bool detect_animated_vop_promotions() const;
 
+    // True if any SOP node carries an animated parameter (channel keys
+    // anywhere in the tree). Superset of detect_animated_vop_promotions;
+    // also includes keyed translate/rotate/scale on subnets and transform
+    // SOPs that apply_animation_at processes.
+    bool detect_any_animation() const;
+
     std::thread m_cook_thread;
     std::mutex m_cook_request_mutex;
     std::condition_variable m_cook_request_cv;
@@ -193,8 +209,76 @@ private:
     bool m_has_animated_vop_promotions = false;
     bool m_cook_shutdown = false;
 
+    // Persistent per-node geometry caches. Separate instances so the worker
+    // thread (set_sop_graph live edits) and the main thread (cook_and_apply
+    // for load_scene + export + apply_animation_at re-cooks) don't need
+    // synchronization. They store the same kind of data — independent caches
+    // just cost a bit of extra memory while the editor's open.
+    tracey::sops::CookCache m_worker_cook_cache;
+    tracey::sops::CookCache m_main_cook_cache;
+
+    // FNV-1a fingerprint of the previous apply_emitted's input. apply_emitted
+    // hashes the new emitted set against this; on a match it skips the scene
+    // rebuild + compile_scene entirely. The signature covers per-actor
+    // geometry (vertex count + position digest), TRS, name, parent uid,
+    // material/light fields — enough that any actor-visible change to the
+    // cook output forces a real apply. Reset on every cook that miss-applies
+    // (or never matched).
+    uint64_t m_last_emitted_signature = 0;
+    bool m_has_applied_once = false;
+
+    // Per-actor delta tracking. `structural_sig` covers everything that
+    // would force a scene rebuild (geometry digest, name, parent/light
+    // bits, material library). `transform_sig` covers only TRS. When all
+    // changes vs. the previous cook are transform_sig deltas (no add,
+    // remove, or structural change), apply_emitted takes the fast path:
+    // update each affected actor's transform in place and ask the engine
+    // to refresh ONLY the TLAS — no scene.clear, no BLAS work, no
+    // material buffer re-upload.
+    struct ActorSig {
+        uint64_t transform_sig = 0;
+        uint64_t structural_sig = 0;
+    };
+    // Keyed by `make_actor_key(sourceNodeUid, instanceIndex)` so the
+    // `instance` SOP (which emits N actors sharing one sourceNodeUid) can
+    // track each instance's signature independently — without this, the
+    // last instance in the emitted vector would clobber all earlier ones
+    // and the structural-change detector would always misfire.
+    std::unordered_map<uint64_t, ActorSig> m_actor_signatures;
+
+    // Per-actor SceneObject name. Keyed by the composite actor key so
+    // each instance from the `instance` SOP has its own owner entry (the
+    // actual SceneObject name is usually shared across instances via
+    // Phase-A content dedup, but the ownership lookup needs to disambiguate
+    // each instance for cleanup).
+    std::unordered_map<uint64_t, std::string> m_sop_node_object_names;
+
+    // Per-SceneObject refcount + reverse geometry-content map. Together they
+    // implement Phase-A GPU instancing: identical Geometry payloads emitted
+    // by different SOP nodes (two `primitive_cube`s, a glTF mesh imported
+    // twice, etc.) share ONE SceneObject + one vertex/color buffer + one
+    // BLAS instead of paying the upload cost N times. The BLAS cache already
+    // dedupes BVHs by name+hash; this layer dedupes the SceneObjects that
+    // feed those names.
+    //
+    //   • m_scene_object_refcount[name] = how many actors currently
+    //     reference this SceneObject. removeObject only happens when this
+    //     drops to 0.
+    //   • m_geometry_hash_to_object_name[geomHash] = the name we used last
+    //     time we saw this exact content. Re-emitted geometry hits this and
+    //     reuses the existing SceneObject.
+    std::unordered_map<std::string, size_t> m_scene_object_refcount;
+    std::unordered_map<uint64_t, std::string> m_geometry_hash_to_object_name;
+
     std::mutex m_cook_result_mutex;
-    std::optional<std::vector<tracey::sops::EmittedActor>> m_pending_cook_result;
+    // Pending result delivered from the cook worker to the main thread.
+    // Bundles the emitted-actor list + per-node cook timings so the
+    // profiler tab can show what the worker just did. Latest-wins.
+    struct PendingCookResult {
+        std::vector<tracey::sops::EmittedActor> emitted;
+        std::vector<tracey::sops::NodeCookTiming> timings;
+    };
+    std::optional<PendingCookResult> m_pending_cook_result;
 
     // ── Video export ────────────────────────────────────────────────────
     // The export worker drives a frame-accurate offline render: seek →

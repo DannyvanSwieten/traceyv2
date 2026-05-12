@@ -71,7 +71,7 @@ tracey::Camera camera_from_json(const json& j) {
 void save_scene_to_file(const tracey::Scene& scene, const std::string& path) {
     json root;
     json actors_arr = json::array();
-    for (const auto& actor : scene.actors()) {
+    for (const auto* actor : scene.actors()) {
         json a = {
             {"id", actor->getUid()},
             {"name", actor->name()},

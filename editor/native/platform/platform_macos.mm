@@ -118,7 +118,11 @@
 
 - (void)mouseDown:(NSEvent*)event {
     if (_inputState) _inputState->mouse_left = true;
-    // Claim keyboard focus so WASD/QE/Shift/Space land here, not the WKWebView.
+    // Claim keyboard focus so WASD/QE/Shift land here, not the WKWebView.
+    // Space deliberately is NOT consumed by this view (see handleKey) — it
+    // belongs to the timeline play/pause shortcut owned by the JS side, so
+    // we forward Space presses to the WebView even when the viewport has
+    // focus.
     [self.window makeFirstResponder:self];
 }
 - (void)mouseUp:(NSEvent*)event {
@@ -144,11 +148,48 @@
 }
 
 // ─── Keyboard ──
-- (void)keyDown:(NSEvent*)event { [self handleKey:event pressed:YES]; }
-- (void)keyUp:(NSEvent*)event { [self handleKey:event pressed:NO]; }
+- (void)keyDown:(NSEvent*)event {
+    // Space is reserved for the timeline (play/pause) and isn't a camera
+    // modifier any more. We don't track it on the input_state, and we
+    // forward the keypress to the WebView so the App.tsx window listener
+    // still fires when the viewport has keyboard focus.
+    if (event.keyCode == 49) {
+        [self forwardKeyEventToWebView:event];
+        return;
+    }
+    [self handleKey:event pressed:YES];
+}
+- (void)keyUp:(NSEvent*)event {
+    if (event.keyCode == 49) {
+        [self forwardKeyEventToWebView:event];
+        return;
+    }
+    [self handleKey:event pressed:NO];
+}
 - (BOOL)performKeyEquivalent:(NSEvent*)event {
+    if (event.keyCode == 49) {
+        [self forwardKeyEventToWebView:event];
+        return YES;
+    }
     [self handleKey:event pressed:(event.type == NSEventTypeKeyDown)];
     return YES;
+}
+
+// Dispatch a synthetic KeyboardEvent on `window` so the App's top-level
+// keydown/keyup listeners (timeline play/pause) fire regardless of which
+// element actually has DOM focus. We can't simply forward the NSEvent to
+// the WKWebView because the WebView only delivers keys to its current
+// focused DOM node — not to window-level listeners unless an element is
+// focused there. JS-synthesised events bypass that gating.
+- (void)forwardKeyEventToWebView:(NSEvent*)event {
+    TraceyNSWindow* win = (TraceyNSWindow*)self.window;
+    if (![win isKindOfClass:[TraceyNSWindow class]] || !win.editorWebView) return;
+    NSString* type = (event.type == NSEventTypeKeyDown) ? @"keydown" : @"keyup";
+    // Only Space is forwarded today; keycode 49 maps to " " / "Space".
+    NSString* js = [NSString
+        stringWithFormat:@"window.dispatchEvent(new KeyboardEvent('%@', {key:' ',code:'Space',keyCode:32,which:32,bubbles:true,cancelable:true}))",
+                         type];
+    [win.editorWebView evaluateJavaScript:js completionHandler:nil];
 }
 
 - (void)handleKey:(NSEvent*)event pressed:(BOOL)pressed {
@@ -161,7 +202,6 @@
     case 2:  _inputState->key_d = pressed; break;
     case 12: _inputState->key_q = pressed; break;
     case 14: _inputState->key_e = pressed; break;
-    case 49: _inputState->key_space = pressed; break;
     default: break;
     }
 }

@@ -2,6 +2,7 @@
 
 #include "scene/scene.hpp"
 #include "scene/scene_compiler.hpp"
+#include "scene/blas_cache.hpp"
 #include "rendering/path_tracer.hpp"
 #include "rendering/rasterizer.hpp"
 #include "device/device.hpp"
@@ -80,6 +81,16 @@ public:
     bool path_tracer_ready() const { return m_path_tracer != nullptr; }
     bool rasterizer_ready() const { return m_rasterizer != nullptr; }
     bool compiled_scene_ready() const { return m_compiled_scene != nullptr; }
+
+    // Rebuild ONLY the TLAS from the current scene's actor transforms.
+    // Keeps the BLAS cache, material buffer, UV buffer, and per-instance
+    // material/program-id bookkeeping untouched. Caller must guarantee:
+    //   • scene topology (actor add/remove/visibility) is identical to
+    //     the previous compile, otherwise instance ordering drifts and
+    //     the per-instance material/program indices line up wrong.
+    //   • only `actor->transform()` values changed since last compile.
+    // Returns false if the precondition fails or no compiled scene exists.
+    bool refresh_tlas_only();
     // True only when the compiled scene has at least one TLAS instance; the
     // rasterizer can still draw the reference ground grid without geometry,
     // so this gates the path tracer (which needs a BVH) specifically.
@@ -120,6 +131,11 @@ private:
     std::unique_ptr<tracey::PathTracer> m_path_tracer;
     std::unique_ptr<tracey::Rasterizer> m_rasterizer;
     std::unique_ptr<tracey::SceneCompiler::CompiledScene> m_compiled_scene;
+    // Per-object BLAS + vertex/color buffer cache that survives between
+    // compile_scene() calls. SceneCompiler queries it on each compile so a
+    // recook with unchanged geometry doesn't rebuild BVHs or re-upload
+    // vertex data. Cleared by clear_blas_cache().
+    std::unique_ptr<tracey::BlasCache> m_blas_cache;
 
     // Raw JSON for the active material graph. Empty until first set or first
     // initialise (which seeds a passthrough). Source of truth across IPC.
