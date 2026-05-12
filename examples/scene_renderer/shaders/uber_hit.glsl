@@ -17,10 +17,18 @@ void shader(HitInfo hitInfo, inout RayPayloads payloads) {
         return;
     }
 
-    vec3 N = normalize(vec3(hitInfo.normalX, hitInfo.normalY, hitInfo.normalZ));
+    // Interpolated per-vertex N when the geometry carries it (smooth
+    // Normal SOP output, glTF imports, etc.) — falls back to the BLAS
+    // face normal for objects without per-vertex normals. The hit
+    // shader doesn't care which path was taken; either way N is unit.
+    vec3 N_raw = getHitNormal(hitInfo);
     vec3 incomingDir = normalize(payloads.rayPayload.direction);
     vec3 V = -incomingDir;
-    if (dot(N, V) < 0.0) N = -N;
+    // entering = ray hit the front face (N_raw aligns with V). Captured
+    // before the orientation flip so the glass path can choose the
+    // correct etaI/etaT pair (1↔ior depending on direction of travel).
+    bool entering = dot(N_raw, V) >= 0.0;
+    vec3 N = entering ? N_raw : -N_raw;
 
     vec3 hitPos = getWorldHitPosition(g_CurrentRayIndex, hitInfo);
     vec2 uv = getHitUV(hitInfo);
@@ -52,6 +60,12 @@ void shader(HitInfo hitInfo, inout RayPayloads payloads) {
     vec3 emission = mat.emission;
     float metallic = mat.metallic;
     float roughness = clamp(mat.roughness, 0.04, 1.0);
+    float transmission = clamp(mat.transmission, 0.0, 1.0);
+    float ior = max(mat.ior, 1.0e-3);
+    // Mirror src/shading/bsdf/pbr/pbr_bsdf.cpp:sampleBRDF: only dielectrics
+    // (low metallic) follow the glass path. Metals stay on the GGX branch
+    // even when their material program writes transmission.
+    bool isGlass = transmission > 0.0 && metallic < 0.01;
 
     if (length(emission) > 0.0) {
         payloads.rayPayload.color *= emission;
@@ -69,7 +83,10 @@ void shader(HitInfo hitInfo, inout RayPayloads payloads) {
     // schedules into the next-bounce queue), so this is "lights ignore
     // occlusion" for v1 — visually wrong through walls, but still
     // illuminates scenes correctly when geometry doesn't intervene.
-    if (shaderInputs.lightCount > 0u) {
+    if (shaderInputs.lightCount > 0u && !isGlass) {
+        // Glass has a pure delta lobe (reflect + refract), no diffuse — so
+        // direct-light NEE contributes nothing through it. Skip the loop
+        // for transmissive dielectrics rather than baking a wrong term.
         vec3 diffuseBrdf = albedo * (1.0 - metallic) * (1.0 / 3.14159265);
         for (uint li = 0u; li < shaderInputs.lightCount; ++li) {
             vec4 posType   = lights.data[li * 3u + 0u];
@@ -110,7 +127,37 @@ void shader(HitInfo hitInfo, inout RayPayloads payloads) {
     vec3 throughput;
     float NdotV = max(dot(N, V), 0.001);
 
-    if (r3 < metallic) {
+    if (isGlass) {
+        // Smooth dielectric: pick reflection vs. refraction by Fresnel.
+        // Both lobes are perfect-specular deltas — pdf=F for reflection,
+        // pdf=1-F for refraction — so f/pdf simplifies to a tint (×etaScale
+        // for refraction, the standard solid-angle compression term).
+        // Mirrors src/shading/bsdf/pbr/pbr_bsdf.cpp:sampleGlass.
+        float etaI = entering ? 1.0 : ior;
+        float etaT = entering ? ior : 1.0;
+        float eta  = etaI / etaT;
+        float cosI = clamp(dot(N, V), 0.0, 1.0);
+        float F = fresnelDielectric(cosI, etaI, etaT);
+
+        if (r3 < F) {
+            // Reflection lobe: f = albedo * F, pdf = F, ratio = albedo.
+            L = reflect(incomingDir, N);
+            throughput = albedo;
+        } else {
+            // Snell refraction via GLSL built-in. refract() returns a
+            // zero vector on total internal reflection — fall back to
+            // pure reflection in that case (TIR carries 100% energy).
+            vec3 refracted = refract(incomingDir, N, eta);
+            if (dot(refracted, refracted) < 1.0e-6) {
+                L = reflect(incomingDir, N);
+                throughput = albedo;
+            } else {
+                L = normalize(refracted);
+                float etaScale = (etaT * etaT) / (etaI * etaI);
+                throughput = albedo * transmission * etaScale;
+            }
+        }
+    } else if (r3 < metallic) {
         vec3 H_local = sampleGGX(r1, r2, roughness);
         vec3 H = normalize(tangentToWorld(H_local, N, T, B));
         L = reflect(-V, H);
@@ -142,5 +189,10 @@ void shader(HitInfo hitInfo, inout RayPayloads payloads) {
     payloads.rayPayload.depth += 1u;
     payloads.rayPayload.direction = L;
 
-    traceRay(hitPos + N * 0.001, 0.01, L, 1000.0);
+    // For reflected rays (incl. metal/diffuse) L is above the surface and
+    // we offset along +N. For refracted rays L points THROUGH the surface
+    // (dot(L, N) < 0) and we must offset along -N or the next ray starts
+    // on the wrong side and self-intersects immediately.
+    vec3 offsetN = (dot(L, N) < 0.0) ? -N : N;
+    traceRay(hitPos + offsetN * 0.001, 0.01, L, 1000.0);
 }

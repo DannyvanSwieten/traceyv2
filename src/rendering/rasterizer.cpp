@@ -183,7 +183,7 @@ namespace tracey
             }
 
             // Get vertex buffer and count for this BLAS
-            const Buffer* vertexBuffer = scene.vertexBuffers[blasIndex].get();
+            const Buffer* vertexBuffer = scene.vertexBuffers[blasIndex];
             uint32_t vertexCount = scene.vertexCounts[blasIndex];
 
             // Extract model matrix from instance transform (3x4 row-major -> 4x4 column-major)
@@ -224,7 +224,7 @@ namespace tracey
             if (blasIndex < scene.colorBuffers.size() && scene.colorBuffers[blasIndex])
             {
                 m_commandBuffer->bindVertexBufferAt(
-                    scene.colorBuffers[blasIndex].get(), 1, 0);
+                    scene.colorBuffers[blasIndex], 1, 0);
             }
 
             // Push constants: MVP matrix (64 bytes) + base color (16 bytes) = 80 bytes
@@ -253,7 +253,7 @@ namespace tracey
                 const auto& instance = scene.instances[i];
                 size_t blasIndex = static_cast<size_t>(instance.blasAddress);
                 if (blasIndex >= scene.vertexBuffers.size()) continue;
-                const Buffer* vb = scene.vertexBuffers[blasIndex].get();
+                const Buffer* vb = scene.vertexBuffers[blasIndex];
                 uint32_t vertexCount = scene.vertexCounts[blasIndex];
 
                 glm::mat4 model(1.0f);
@@ -297,7 +297,7 @@ namespace tracey
                 const auto& instance = scene.instances[i];
                 size_t blasIndex = static_cast<size_t>(instance.blasAddress);
                 if (blasIndex >= scene.vertexBuffers.size()) continue;
-                const Buffer* vb = scene.vertexBuffers[blasIndex].get();
+                const Buffer* vb = scene.vertexBuffers[blasIndex];
                 uint32_t vertexCount = scene.vertexCounts[blasIndex];
 
                 glm::mat4 model(1.0f);

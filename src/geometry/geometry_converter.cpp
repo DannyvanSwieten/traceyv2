@@ -72,6 +72,54 @@ namespace tracey
             }
         }
 
+        // Point-cloud fallback: when the geometry has points but no triangle
+        // primitives (e.g. scatter, points_grid emitting a bare point cloud),
+        // emit each point as a degenerate triangle — three copies of the same
+        // position. The BLAS builds cleanly (path tracer rays harmlessly miss
+        // zero-area triangles) and the rasterizer's points pipeline finds a
+        // vertex buffer to drive its POINT_LIST splat draws. Without this,
+        // scatter output renders nothing — the cube etc. test against
+        // `triCount > 0` and the SceneCompiler skipped any object whose
+        // positions array was empty.
+        if (triCount == 0 && positions.empty() && P->data().size() > 0)
+        {
+            const size_t pCount = P->data().size();
+            positions.reserve(pCount * 3);
+            if (wantNormals) normals.reserve(pCount * 3);
+            if (wantUVs)     uvs.reserve(pCount * 3);
+            if (wantColors)  colors.reserve(pCount * 3);
+            for (size_t pid = 0; pid < pCount; ++pid)
+            {
+                const Vec3 pos = P->at(pid);
+                positions.push_back(pos);
+                positions.push_back(pos);
+                positions.push_back(pos);
+
+                if (wantNormals)
+                {
+                    const Vec3 n = pointN ? pointN->at(pid)
+                                          : Vec3(0.0f, 1.0f, 0.0f);
+                    normals.push_back(n);
+                    normals.push_back(n);
+                    normals.push_back(n);
+                }
+                if (wantUVs)
+                {
+                    const Vec2 u = pointUV ? pointUV->at(pid) : Vec2(0.0f);
+                    uvs.push_back(u);
+                    uvs.push_back(u);
+                    uvs.push_back(u);
+                }
+                if (wantColors)
+                {
+                    const Vec3 c = pointCd ? pointCd->at(pid) : Vec3(1.0f);
+                    colors.push_back(c);
+                    colors.push_back(c);
+                    colors.push_back(c);
+                }
+            }
+        }
+
         out.setPositions(std::move(positions));
         if (wantNormals) out.setNormals(std::move(normals));
         if (wantUVs) out.setUvs(std::move(uvs));

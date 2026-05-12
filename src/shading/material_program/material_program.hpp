@@ -15,6 +15,7 @@ namespace tracey
         Vec2 uv0{0.0f};
         Vec2 uv1{0.0f};
         uint32_t primitiveIndex = 0;
+        uint32_t instanceIndex = 0;
         uint32_t materialIndex = 0;
     };
 

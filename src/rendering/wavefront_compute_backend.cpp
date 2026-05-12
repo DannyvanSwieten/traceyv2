@@ -96,6 +96,21 @@ namespace tracey
         uvStructure.addMember({"uvs", "vec2", 0, true, 0});
         m_pipelineLayout->addStorageBuffer("uvBuffer", ShaderStage::ClosestHit, uvStructure);
 
+        // Per-vertex normals — same per-vertex indexing as the UV buffer,
+        // looked up at hit time via instanceUvOffset + triIdx*3 + i. The
+        // hit shader interpolates these to get a smooth surface normal
+        // (or a per-face one, when the upstream Normal SOP wrote them in
+        // flat mode). Falls back to the BLAS face normal when the buffer
+        // wasn't created (no object in the scene carries N).
+        //
+        // Declared as vec4 (not vec3) to dodge the std430 array stride
+        // trap — `vec3 arr[]` has a 16-byte stride per element, which
+        // wouldn't match a packed std::vector<Vec3>. We store xyz and
+        // ignore w on the upload side; the shader reads `.xyz`.
+        StructureLayout normalStructure("NormalData");
+        normalStructure.addMember({"normals", "vec4", 0, true, 0});
+        m_pipelineLayout->addStorageBuffer("normalBuffer", ShaderStage::ClosestHit, normalStructure);
+
         // Per-instance program lookup. instanceProgramIndex.indices[hit.instanceIndex]
         // is the programId the hit shader hands to runMaterialProgram, and the
         // bin key the wavefront sort kernel uses.
@@ -178,7 +193,11 @@ namespace tracey
 
             if (!scene.vertexBuffers.empty())
             {
-                descriptorSet->setBuffer("vertexBuffer", scene.vertexBuffers[0].get());
+                // BlasCache owns the buffer; CompiledScene stores observers,
+                // so the const_cast strips the constness of the pointer (the
+                // underlying buffer is still mutable on the cache side).
+                descriptorSet->setBuffer("vertexBuffer",
+                    const_cast<Buffer*>(scene.vertexBuffers[0]));
             }
 
             if (scene.materialBuffer)
@@ -189,6 +208,11 @@ namespace tracey
             if (scene.uvBuffer)
             {
                 descriptorSet->setBuffer("uvBuffer", scene.uvBuffer.get());
+            }
+
+            if (scene.normalBuffer)
+            {
+                descriptorSet->setBuffer("normalBuffer", scene.normalBuffer.get());
             }
 
             if (scene.instanceProgramIndexBuffer)

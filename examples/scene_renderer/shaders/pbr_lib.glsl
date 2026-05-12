@@ -125,6 +125,47 @@ vec2 getHitUV(HitInfo hitInfo) {
 }
 
 // ============================================================================
+// Normal Interpolation
+// ============================================================================
+
+// Interpolated per-vertex N at the hit point. Reuses `instanceUvOffset`
+// for addressing (normals are stored parallel to UVs — one entry per
+// vertex). Falls back to the BLAS face normal (always available) when
+// the per-instance slice is all-zero — that's the signal SceneCompiler
+// uses for "this object didn't carry N". This same fallback handles
+// the Normal SOP's "flat" mode degrading gracefully on the rare object
+// that has neither flat nor smooth vertex N set up yet.
+vec3 getHitNormal(HitInfo hitInfo) {
+    uint triIdx = hitInfo.triangleIndex;
+    uint base = instanceUvOffset.offsets[hitInfo.instanceIndex] + triIdx * 3u;
+
+    // Stored as vec4 to match std430's 16-byte array stride; we only
+    // use xyz.
+    vec3 n0 = normalBuffer.normals[base + 0u].xyz;
+    vec3 n1 = normalBuffer.normals[base + 1u].xyz;
+    vec3 n2 = normalBuffer.normals[base + 2u].xyz;
+
+    // Cheap "is anything non-zero" check. Triangles with tangent-zero
+    // N (legitimate degeneracy) would also fall through to face N —
+    // visually no worse, since interpolating zero-length vectors is
+    // ill-defined anyway.
+    float magSum = dot(n0, n0) + dot(n1, n1) + dot(n2, n2);
+    vec3 faceN = vec3(hitInfo.normalX, hitInfo.normalY, hitInfo.normalZ);
+    if (magSum < 1e-6) {
+        return normalize(faceN);
+    }
+
+    float u = hitInfo.barycentricU;
+    float v = hitInfo.barycentricV;
+    float w = 1.0 - u - v;
+    vec3 n = w * n0 + u * n1 + v * n2;
+    // Renormalise after the linear blend — the inputs are unit length
+    // each but their average isn't.
+    float len = length(n);
+    return len > 1e-6 ? n / len : normalize(faceN);
+}
+
+// ============================================================================
 // Random Number Generation
 // ============================================================================
 
@@ -187,6 +228,18 @@ vec3 tangentToWorld(vec3 v, vec3 N, vec3 T, vec3 B) {
 // Fresnel-Schlick approximation
 vec3 fresnelSchlick(float cosTheta, vec3 F0) {
     return F0 + (1.0 - F0) * pow(max(1.0 - cosTheta, 0.0), 5.0);
+}
+
+// Scalar Schlick-Fresnel for dielectrics (glass, water, …). Mirrors
+// src/shading/bsdf/pbr/pbr_bsdf.cpp:fresnelDielectric so CPU and GPU
+// glass paths agree on the reflection probability used for splitting.
+float fresnelDielectric(float cosTheta, float etaI, float etaT) {
+    float r0 = (etaI - etaT) / (etaI + etaT);
+    r0 = r0 * r0;
+    float c = 1.0 - cosTheta;
+    float c2 = c * c;
+    float c5 = c2 * c2 * c;
+    return r0 + (1.0 - r0) * c5;
 }
 
 // GGX/Trowbridge-Reitz normal distribution function

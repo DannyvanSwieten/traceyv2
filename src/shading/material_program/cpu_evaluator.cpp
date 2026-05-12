@@ -44,6 +44,9 @@ namespace tracey
             case Op::LoadViewDir:  reg(inst.dst) = Vec4(surface.viewDir, 0.0f);       break;
             case Op::LoadUV0:      reg(inst.dst) = Vec4(surface.uv0, 0.0f, 0.0f);     break;
             case Op::LoadUV1:      reg(inst.dst) = Vec4(surface.uv1, 0.0f, 0.0f);     break;
+            case Op::LoadInstanceIndex:
+                reg(inst.dst) = Vec4(static_cast<float>(surface.instanceIndex));
+                break;
 
             case Op::LoadInputAlbedo:    reg(inst.dst) = Vec4(inputs.albedo, 0.0f);   break;
             case Op::LoadInputMetallic:  reg(inst.dst) = Vec4(inputs.metallic);       break;

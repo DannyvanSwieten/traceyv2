@@ -83,6 +83,16 @@ namespace tracey
         // animation rate without recompiling the program.
         LoadParam,
 
+        // dst = vec4(float(surface.instanceIndex)). Splatted across all
+        // four lanes so it composes with arithmetic / Mix / Splat ops the
+        // same way any other surface load does. The hit shader stamps the
+        // per-instance TLAS index into SurfaceData::instanceIndex.
+        //
+        // Appended at the end (not next to the other surface loads) so the
+        // numeric Op values that already exist on disk and in the GPU
+        // material VM stay stable.
+        LoadInstanceIndex,
+
         Count_
     };
 
