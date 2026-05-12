@@ -15,10 +15,13 @@ namespace tracey
         if (uid >= m_actors.size())
             return;
 
-        // Remove from parent's children list if applicable
+        // Remove from parent's children list if applicable. Skip slots that
+        // were already reset by a prior removeActor — m_actors is sparse
+        // (we reset rather than erase so existing uids stay stable as
+        // indices), so iterating it always includes null entries.
         for (auto &actorPtr : m_actors)
         {
-            actorPtr->removeChild(uid);
+            if (actorPtr) actorPtr->removeChild(uid);
         }
 
         m_actors[uid].reset();
@@ -87,6 +90,11 @@ namespace tracey
     {
         obj->setName(name);
         m_objects[name] = std::move(obj);
+    }
+
+    void Scene::removeObject(const std::string &name)
+    {
+        m_objects.erase(name);
     }
 
     void Scene::addObject(const std::string &name, SceneObject &&obj)

@@ -17,6 +17,30 @@ namespace tracey
         return m_positions.size() / 3;
     }
 
+    uint64_t SceneObject::contentHash() const
+    {
+        // FNV-1a over the raw bytes of positions + indices. We deliberately
+        // exclude normals / uvs / colors — those affect shading but not the
+        // BLAS topology, so a Cd-only edit shouldn't invalidate the cached
+        // BVH. The byte view is endian-sensitive but we never persist this
+        // value to disk; it's only compared within the same process.
+        constexpr uint64_t kFnvOffset = 0xcbf29ce484222325ULL;
+        constexpr uint64_t kFnvPrime  = 0x00000100000001b3ULL;
+        uint64_t h = kFnvOffset;
+        auto mix = [&](const void* p, size_t bytes) {
+            const auto* b = static_cast<const unsigned char*>(p);
+            for (size_t i = 0; i < bytes; ++i) {
+                h ^= static_cast<uint64_t>(b[i]);
+                h *= kFnvPrime;
+            }
+        };
+        if (!m_positions.empty())
+            mix(m_positions.data(), m_positions.size() * sizeof(Vec3));
+        if (!m_indices.empty())
+            mix(m_indices.data(), m_indices.size() * sizeof(uint32_t));
+        return h;
+    }
+
     SceneObject SceneObject::createCube(float size)
     {
         SceneObject obj("cube");

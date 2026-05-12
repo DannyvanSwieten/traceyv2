@@ -70,23 +70,33 @@ namespace tracey
     };
     static_assert(sizeof(GPULight) == 48, "GPULight must be 48 bytes (3 * vec4)");
 
+    class BlasCache;
+
     class SceneCompiler
     {
     public:
         struct CompiledScene
         {
-            // Acceleration structures
-            std::vector<std::unique_ptr<BottomLevelAccelerationStructure>> blases;
+            // Acceleration structures. BLASes are observer pointers into the
+            // BlasCache passed to compile() — they outlive any single
+            // CompiledScene so a recompile can reuse them when the object's
+            // geometry hasn't changed. The TLAS is per-compile (it depends
+            // on instance transforms + materials, not just geometry).
+            std::vector<const BottomLevelAccelerationStructure *> blases;
             std::unique_ptr<TopLevelAccelerationStructure> tlas;
 
-            // Vertex buffers (one per unique object)
-            std::vector<std::unique_ptr<Buffer>> vertexBuffers;
+            // Vertex buffers (one per unique object). Observer pointers into
+            // the BlasCache for the same reason as blases above — re-uploading
+            // GPU vertex data per cook on a static glTF is the main cost the
+            // cache eliminates.
+            std::vector<const Buffer *> vertexBuffers;
 
             // Per-vertex Cd buffers (vec3 per corner, parallel to
             // vertexBuffers). Always populated — when the source SceneObject
             // has no Cd, the buffer is filled with white so the rasterizer's
-            // vertex input description always has a valid binding 1.
-            std::vector<std::unique_ptr<Buffer>> colorBuffers;
+            // vertex input description always has a valid binding 1. Same
+            // observer-into-cache contract as vertexBuffers.
+            std::vector<const Buffer *> colorBuffers;
 
             // Vertex counts per buffer (parallel to vertexBuffers).
             // The buffers store positions (vec3) per triangle vertex, so this
@@ -105,6 +115,14 @@ namespace tracey
             // UV buffer (vec2 per vertex, parallel to triangle data)
             std::unique_ptr<Buffer> uvBuffer;
             bool hasUVs = false;
+
+            // Per-vertex normal buffer (vec3 per vertex, parallel to UVs and
+            // indexed by the same per-instance offset). When `hasNormals`
+            // is true the hit shader interpolates these with the barycentric
+            // coordinates of the hit; when false (or when the per-instance
+            // slice is all zero), it falls back to the BLAS face normal.
+            std::unique_ptr<Buffer> normalBuffer;
+            bool hasNormals = false;
 
             // Instance data for reference
             std::vector<Tlas::Instance> instances;
@@ -144,9 +162,12 @@ namespace tracey
 
         /// Compile scene with default BVH configuration
         static CompiledScene compile(Device *device, const Scene &scene);
+        static CompiledScene compile(Device *device, const Scene &scene, BlasCache *cache);
 
         /// Compile scene with custom BVH configuration
         static CompiledScene compile(Device *device, const Scene &scene, const BVHConfig &bvhConfig);
+        static CompiledScene compile(Device *device, const Scene &scene,
+                                     const BVHConfig &bvhConfig, BlasCache *cache);
 
     private:
         struct ObjectData
@@ -156,7 +177,9 @@ namespace tracey
             std::unique_ptr<BottomLevelAccelerationStructure> blas;
             size_t vertexCount;
             size_t nodeCount;
-            std::vector<Vec2> uvs; // Per-vertex UVs for this object
+            std::vector<Vec2> uvs;       // Per-vertex UVs for this object
+            std::vector<Vec3> normals;   // Per-vertex normals for this object
+            bool hasNormals = false;
         };
 
         static ObjectData compileObject(Device *device, const SceneObject &obj, const BVHConfig &bvhConfig);

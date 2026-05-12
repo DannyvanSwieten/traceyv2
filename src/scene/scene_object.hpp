@@ -39,6 +39,15 @@ namespace tracey
         size_t vertexCount() const { return m_positions.size(); }
         size_t triangleCount() const;
 
+        // 64-bit fingerprint of the data that goes into BLAS construction
+        // (positions + indices). Stable across calls for the same data;
+        // changes when geometry topology or vertex positions change. Used
+        // by SceneCompiler's BlasCache to detect "this named object is
+        // structurally unchanged since the last compile" and skip the
+        // expensive BVH rebuild + GPU upload. Lazily memoised; mutators
+        // clear the cached value.
+        uint64_t contentHash() const;
+
         // Primitive generators
         static SceneObject createCube(float size = 1.0f);
         // `cols` segments along X (width), `rows` along Z (depth). 1×1 = 2

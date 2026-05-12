@@ -1,4 +1,5 @@
 #include "scene_compiler.hpp"
+#include "blas_cache.hpp"
 #include "material_instance.hpp"
 #include "../graph/graphs/shader_graph/compiler.hpp"
 #include "../graph/graphs/shader_graph/serialization.hpp"
@@ -291,6 +292,24 @@ namespace tracey
             data.uvs.resize(data.vertexCount, Vec2(0.0f, 0.0f));
         }
 
+        // Store per-vertex normals if available. Always sized to vertexCount
+        // (zero-padded when the source SceneObject had no N) so the
+        // per-instance offset arithmetic stays valid even across mixed
+        // scenes with some normal-bearing objects and some without.
+        data.hasNormals = obj.hasNormals();
+        if (data.hasNormals)
+        {
+            data.normals = obj.normals();
+            // Pad in case the source vector is shorter than the vertex count
+            // (defensive — shouldn't happen with the existing converters).
+            if (data.normals.size() < data.vertexCount)
+                data.normals.resize(data.vertexCount, Vec3(0.0f));
+        }
+        else
+        {
+            data.normals.resize(data.vertexCount, Vec3(0.0f));
+        }
+
         // Create BLAS with custom BVH configuration
         data.blas = std::unique_ptr<BottomLevelAccelerationStructure>(
             device->createBottomLevelAccelerationStructure(
@@ -315,10 +334,21 @@ namespace tracey
 
     SceneCompiler::CompiledScene SceneCompiler::compile(Device *device, const Scene &scene)
     {
-        return compile(device, scene, BVHConfig{});
+        return compile(device, scene, BVHConfig{}, nullptr);
+    }
+
+    SceneCompiler::CompiledScene SceneCompiler::compile(Device *device, const Scene &scene, BlasCache *cache)
+    {
+        return compile(device, scene, BVHConfig{}, cache);
     }
 
     SceneCompiler::CompiledScene SceneCompiler::compile(Device *device, const Scene &scene, const BVHConfig &bvhConfig)
+    {
+        return compile(device, scene, bvhConfig, nullptr);
+    }
+
+    SceneCompiler::CompiledScene SceneCompiler::compile(Device *device, const Scene &scene,
+                                                        const BVHConfig &bvhConfig, BlasCache *cache)
     {
         CompiledScene result;
 
@@ -326,7 +356,10 @@ namespace tracey
                   << ", traversalCost=" << bvhConfig.traversalCost
                   << ", intersectionCost=" << bvhConfig.intersectionCost << std::endl;
 
-        // Step 1: Compile all unique objects to BLAS
+        // Step 1: Compile all unique objects to BLAS — or pull them from the
+        // cache when the object's positions + indices fingerprint matches a
+        // previous compile's entry. Cache hits skip the BLAS build AND the
+        // GPU vertex-buffer upload, which is the bulk of the expensive work.
         const auto &objects = scene.objects();
         std::vector<const BottomLevelAccelerationStructure *> blasPtrs;
         std::vector<Vec2> allUVs; // Collect all UVs across all objects
@@ -337,6 +370,17 @@ namespace tracey
         // slice of the global uvBuffer. Pads every object (even those
         // without UVs) with allUVs.size() to keep parallel indexing.
         std::vector<uint32_t> blasUvStart;
+        // Same shape for per-vertex normals. We reuse the same offset
+        // array (UV start == normal start because both store one entry
+        // per vertex), so only one buffer of offsets is uploaded; the
+        // hit shader uses it for both UV and normal lookup. Stored as
+        // Vec4 (xyz = normal, w unused) because std430 arrays of vec3
+        // have a 16-byte stride that wouldn't match a packed
+        // std::vector<Vec3> — the resulting reads would scramble
+        // adjacent entries' components into "normals" that look like
+        // flat shading.
+        std::vector<Vec4> allNormals;
+        bool anyObjectHasNormals = false;
 
         for (const auto &[name, objPtr] : objects)
         {
@@ -345,27 +389,79 @@ namespace tracey
                 continue;
             }
 
-            ObjectData objData = compileObject(device, *objPtr, bvhConfig);
-            if (objData.blas)
+            const uint64_t hash = objPtr->contentHash();
+            const BlasCache::Entry *entry = nullptr;
+            if (cache)
             {
-                result.objectToBlasIndex[name] = result.blases.size();
-                blasPtrs.push_back(objData.blas.get());
-                result.blases.push_back(std::move(objData.blas));
-                result.vertexBuffers.push_back(std::move(objData.vertexBuffer));
-                result.colorBuffers.push_back(std::move(objData.colorBuffer));
-                result.vertexCounts.push_back(static_cast<uint32_t>(objData.vertexCount));
-                result.totalNodes += objData.nodeCount;
-                result.totalTriangles += objData.vertexCount / 3;
+                entry = cache->lookup(name, hash);
+            }
 
-                // Snapshot the offset *before* appending — that's where this
-                // BLAS's UVs begin in allUVs. compileObject always pads
-                // objData.uvs to vertexCount (zeros for UV-less objects), so
-                // the stride here is always vertexCount and per-instance
-                // arithmetic stays valid even when some BLASes are UV-less.
-                blasUvStart.push_back(static_cast<uint32_t>(allUVs.size()));
+            if (!entry)
+            {
+                ObjectData objData = compileObject(device, *objPtr, bvhConfig);
+                if (!objData.blas) continue;
 
-                anyObjectHasUVs = anyObjectHasUVs || objPtr->hasUvs();
-                allUVs.insert(allUVs.end(), objData.uvs.begin(), objData.uvs.end());
+                BlasCache::Entry fresh;
+                fresh.blas = std::move(objData.blas);
+                fresh.vertexBuffer = std::move(objData.vertexBuffer);
+                fresh.colorBuffer = std::move(objData.colorBuffer);
+                fresh.vertexCount = objData.vertexCount;
+                fresh.uvs = std::move(objData.uvs);
+                fresh.hasUvs = objPtr->hasUvs();
+                fresh.normals = std::move(objData.normals);
+                fresh.hasNormals = objData.hasNormals;
+                fresh.contentHash = hash;
+                if (cache)
+                {
+                    entry = cache->insert(name, std::move(fresh));
+                }
+                else
+                {
+                    // No cache → the CompiledScene needs to own the BLAS, but
+                    // we just changed it to observer pointers. The headless
+                    // path (smoke tests, scene_renderer example) always
+                    // passes a cache so this branch is for unit-test paths
+                    // that build a Scene directly and call compile(); they
+                    // discard the result right after rendering, so we leak
+                    // into a static holder for the duration of the call.
+                    // Simpler than introducing two compile() flavors.
+                    static thread_local std::vector<BlasCache::Entry> oneShot;
+                    oneShot.push_back(std::move(fresh));
+                    entry = &oneShot.back();
+                }
+            }
+
+            result.objectToBlasIndex[name] = result.blases.size();
+            blasPtrs.push_back(entry->blas.get());
+            result.blases.push_back(entry->blas.get());
+            result.vertexBuffers.push_back(entry->vertexBuffer.get());
+            result.colorBuffers.push_back(entry->colorBuffer.get());
+            result.vertexCounts.push_back(static_cast<uint32_t>(entry->vertexCount));
+            result.totalTriangles += entry->vertexCount / 3;
+            if (entry->blas) result.totalNodes += entry->blas->nodeCount();
+
+            // Snapshot the offset *before* appending — that's where this
+            // BLAS's UVs begin in allUVs.
+            blasUvStart.push_back(static_cast<uint32_t>(allUVs.size()));
+            anyObjectHasUVs = anyObjectHasUVs || entry->hasUvs;
+            allUVs.insert(allUVs.end(), entry->uvs.begin(), entry->uvs.end());
+
+            // Normals concatenated parallel to UVs (one entry per vertex,
+            // same per-BLAS offset). Packed Vec3 → Vec4 here so the
+            // upload matches std430's 16-byte array stride.
+            anyObjectHasNormals = anyObjectHasNormals || entry->hasNormals;
+            if (entry->normals.size() == entry->vertexCount)
+            {
+                allNormals.reserve(allNormals.size() + entry->normals.size());
+                for (const auto &n : entry->normals)
+                    allNormals.emplace_back(n.x, n.y, n.z, 0.0f);
+            }
+            else
+            {
+                // Defensive zero-padding when the cache entry didn't
+                // populate normals (older entry from before the field
+                // existed). Keeps per-instance offset arithmetic valid.
+                allNormals.insert(allNormals.end(), entry->vertexCount, Vec4(0.0f));
             }
         }
 
@@ -387,6 +483,24 @@ namespace tracey
 
             result.hasUVs = true;
             std::cout << "Created UV buffer with " << allUVs.size() << " entries" << std::endl;
+        }
+
+        // Create the normal buffer even when no object carries N. The
+        // wavefront descriptor set always expects a bound SSBO at the
+        // `normalBuffer` slot (declared unconditionally in the pipeline
+        // layout); leaving it null would produce undefined reads on
+        // some MoltenVK builds. When `hasNormals` is false the slice is
+        // all zeros and the hit shader's getHitNormal detects that and
+        // falls back to the BLAS face normal.
+        if (!allNormals.empty())
+        {
+            const size_t bytes = allNormals.size() * sizeof(Vec4);
+            result.normalBuffer = std::unique_ptr<Buffer>(
+                device->createBuffer(static_cast<uint32_t>(bytes), BufferUsage::StorageBuffer));
+            auto *mapped = static_cast<Vec4 *>(result.normalBuffer->mapForWriting());
+            std::copy(allNormals.begin(), allNormals.end(), mapped);
+            result.normalBuffer->flush();
+            result.hasNormals = anyObjectHasNormals;
         }
 
         // Step 2: Flatten scene and create instances with materials

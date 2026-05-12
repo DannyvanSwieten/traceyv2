@@ -52,7 +52,32 @@ namespace tracey
         void removeActor(size_t uid);
         void clear();
         std::vector<SceneNode> flatten() const;
-        const std::vector<std::unique_ptr<Actor>> &actors() const { return m_actors; }
+
+        // Live actors only. The underlying m_actors is sparse — removeActor
+        // resets a slot to null rather than erasing so existing uids stay
+        // valid as indices via getActor(uid) — and every caller that just
+        // wants to iterate "all actors" needs the non-sparse view.
+        //
+        // Returning a fresh filtered vector each call is cheap (pointers
+        // only) and makes the null check at every consumer impossible to
+        // forget, which had been a recurring source of crashes in
+        // save_scene_to_file / get_all_actors / etc.
+        //
+        // For uid-keyed indexing into the sparse table, use getActor(uid).
+        std::vector<Actor *> actors()
+        {
+            std::vector<Actor *> out;
+            out.reserve(m_actors.size());
+            for (const auto &a : m_actors) if (a) out.push_back(a.get());
+            return out;
+        }
+        std::vector<const Actor *> actors() const
+        {
+            std::vector<const Actor *> out;
+            out.reserve(m_actors.size());
+            for (const auto &a : m_actors) if (a) out.push_back(a.get());
+            return out;
+        }
 
         // Object management
         void addObject(const std::string &name, std::unique_ptr<SceneObject> obj);
@@ -60,6 +85,13 @@ namespace tracey
         SceneObject *getObject(const std::string &name);
         const SceneObject *getObject(const std::string &name) const;
         bool hasObject(const std::string &name) const;
+        // Drop a SceneObject by name. No-op if the name isn't in the table.
+        // Callers must ensure no live Actor's SceneInstance still references
+        // the removed name — the SceneCompiler skips missing refs cleanly
+        // (line ~454 in scene_compiler.cpp), but the rasterizer + path
+        // tracer will silently drop instances of orphaned objects, so
+        // typical use is "remove the object as part of removing its actor".
+        void removeObject(const std::string &name);
         const std::unordered_map<std::string, std::unique_ptr<SceneObject>> &objects() const { return m_objects; }
 
         // Camera management
