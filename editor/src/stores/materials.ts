@@ -20,12 +20,51 @@ const EMPTY_GRAPH: ShaderGraph = {
 
 const [graph, setGraphInternal] = createSignal<ShaderGraph>(EMPTY_GRAPH);
 
-// Currently-selected node uid (or null). Lives here rather than inside the
-// canvas so the inspector and canvas share a single source of truth.
-const [selectedNodeId, setSelectedNodeId] = createSignal<number | null>(null);
-export const selectedNode = selectedNodeId;
+// Multi-selection model: `selectedNodes` is the click-ordered list,
+// `selectedNode` returns the primary (most recently added) for the
+// inspector and single-node keyboard shortcuts. Mirrors stores/sops.ts.
+const [selectedNodeIds, setSelectedNodeIdsInternal] = createSignal<number[]>([]);
+const [primarySelectedId, setPrimarySelectedId] = createSignal<number | null>(null);
+export const selectedNode = primarySelectedId;
+export const selectedNodes = selectedNodeIds;
+
 export function setSelectedNode(uid: number | null): void {
-  setSelectedNodeId(uid);
+  if (uid === null) {
+    setSelectedNodeIdsInternal([]);
+    setPrimarySelectedId(null);
+    return;
+  }
+  setSelectedNodeIdsInternal([uid]);
+  setPrimarySelectedId(uid);
+}
+
+export function setSelectedNodes(uids: number[]): void {
+  const seen = new Set<number>();
+  const ordered: number[] = [];
+  for (const u of uids) {
+    if (!seen.has(u)) { seen.add(u); ordered.push(u); }
+  }
+  setSelectedNodeIdsInternal(ordered);
+  setPrimarySelectedId(ordered.length > 0 ? ordered[ordered.length - 1] : null);
+}
+
+export function toggleSelectedNode(uid: number): void {
+  const cur = selectedNodeIds();
+  const idx = cur.indexOf(uid);
+  if (idx >= 0) {
+    const next = cur.slice();
+    next.splice(idx, 1);
+    setSelectedNodeIdsInternal(next);
+    setPrimarySelectedId(next.length > 0 ? next[next.length - 1] : null);
+  } else {
+    const next = [...cur, uid];
+    setSelectedNodeIdsInternal(next);
+    setPrimarySelectedId(uid);
+  }
+}
+
+export function isNodeSelected(uid: number): boolean {
+  return selectedNodeIds().includes(uid);
 }
 
 // Per-user material library, kept in a shared signal so the modal's library
@@ -81,7 +120,7 @@ export async function loadMaterialGraphFromEngine(): Promise<void> {
 export function replaceGraph(next: ShaderGraph): void {
   reseedUidsFrom(next);
   setGraphInternal(next);
-  setSelectedNodeId(null);
+  setSelectedNode(null);
   schedulePush();
 }
 

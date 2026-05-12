@@ -1,4 +1,4 @@
-import { Component, For, createSignal, Accessor, Show } from 'solid-js';
+import { Component, For, createSignal, onCleanup, onMount, Show } from 'solid-js';
 import {
   Node,
   Connection,
@@ -11,8 +11,18 @@ import {
   addConnection,
   removeNode,
   selectedNode,
+  selectedNodes,
   setSelectedNode,
+  setSelectedNodes,
+  toggleSelectedNode,
+  isNodeSelected,
 } from '../../stores/materials';
+import {
+  rectFromCorners,
+  nodesInRect,
+  type MarqueeRect,
+  type NodeBox,
+} from '../../lib/graph_canvas_marquee';
 import './GraphCanvas.css';
 
 const NODE_WIDTH = 180;
@@ -74,6 +84,10 @@ export const GraphCanvas: Component = () => {
   const [zoom, setZoom] = createSignal(1);
   const [pendingFrom, setPendingFrom] = createSignal<PortRef | null>(null);
   const [mouseWorld, setMouseWorld] = createSignal<[number, number]>([0, 0]);
+  // Houdini-style: hold Space to pan; empty-canvas drag without Space starts
+  // a rubber-band selection.
+  const [spaceDown, setSpaceDown] = createSignal(false);
+  const [marquee, setMarquee] = createSignal<MarqueeRect | null>(null);
 
   let svgRef: SVGSVGElement | undefined;
 
@@ -93,6 +107,7 @@ export const GraphCanvas: Component = () => {
   function onSvgPointerDown(e: PointerEvent) {
     if (e.button !== 0) return;
     e.preventDefault();
+    if (spaceDown()) { startCanvasPan(e); return; }
     const targetEl = e.target as Element;
     if (targetEl.closest?.('[data-port-kind]')) {
       // Ports use the click event for connection creation; skip drag setup.
@@ -110,7 +125,7 @@ export const GraphCanvas: Component = () => {
       setPendingFrom(null);
       return;
     }
-    startCanvasPan(e);
+    startMarqueeSelect(e);
   }
 
   function onSvgPointerMove(e: PointerEvent) {
@@ -118,7 +133,6 @@ export const GraphCanvas: Component = () => {
   }
 
   function startCanvasPan(e: PointerEvent) {
-    setSelectedNode(null);
     const startPan = pan();
     const startX = e.clientX;
     const startY = e.clientY;
@@ -128,6 +142,41 @@ export const GraphCanvas: Component = () => {
     const onUp = () => {
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', onUp);
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+  }
+
+  function startMarqueeSelect(e: PointerEvent) {
+    const additive = e.metaKey || e.ctrlKey || e.shiftKey;
+    const preExisting = additive ? [...selectedNodes()] : [];
+    if (!additive) setSelectedNode(null);
+
+    const startWorld = clientToWorld(e.clientX, e.clientY);
+    setMarquee(rectFromCorners(startWorld, startWorld));
+
+    const onMove = (mv: PointerEvent) => {
+      const cur = clientToWorld(mv.clientX, mv.clientY);
+      setMarquee(rectFromCorners(startWorld, cur));
+    };
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      const rect = marquee();
+      setMarquee(null);
+      if (!rect) return;
+      const dx = rect.maxX - rect.minX;
+      const dy = rect.maxY - rect.minY;
+      if (dx < 1 && dy < 1) return;
+      const boxes: NodeBox<number>[] = materialGraph().nodes.map((n) => ({
+        uid: n.uid,
+        x: nodeOrigin(n)[0],
+        y: nodeOrigin(n)[1],
+        width: NODE_WIDTH,
+        height: nodeHeight(n),
+      }));
+      const hits = nodesInRect(rect, boxes);
+      setSelectedNodes(additive ? [...preExisting, ...hits] : hits);
     };
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp);
@@ -150,18 +199,29 @@ export const GraphCanvas: Component = () => {
     setZoom(newZoom);
   }
 
-  // Node drag: translate the node by the delta of the cursor in world space.
-  // Called from the SVG-level pointerdown after we identify the hit node.
+  // Node drag: translate every selected node by the cursor's world-space
+  // delta. Cmd/Ctrl/Shift+click on a node toggles its membership in the
+  // selection instead of starting a drag.
   function startNodeDrag(e: PointerEvent, uid: number) {
-    setSelectedNode(uid);
+    const multi = e.metaKey || e.ctrlKey || e.shiftKey;
+    if (multi) { toggleSelectedNode(uid); return; }
+    if (!isNodeSelected(uid)) setSelectedNode(uid);
+
     const [startX, startY] = clientToWorld(e.clientX, e.clientY);
-    const node = materialGraph().nodes.find((n) => n.uid === uid);
-    if (!node) return;
-    const [origX, origY] = nodeOrigin(node);
+    const origPositions = new Map<number, [number, number]>();
+    for (const u of selectedNodes()) {
+      const n = materialGraph().nodes.find((nd) => nd.uid === u);
+      if (n) origPositions.set(u, nodeOrigin(n));
+    }
+    if (origPositions.size === 0) return;
 
     const onMove = (mv: PointerEvent) => {
       const [wx, wy] = clientToWorld(mv.clientX, mv.clientY);
-      moveNode(uid, origX + (wx - startX), origY + (wy - startY));
+      const dx = wx - startX;
+      const dy = wy - startY;
+      for (const [u, [ox, oy]] of origPositions) {
+        moveNode(u, ox + dx, oy + dy);
+      }
     };
     const onUp = () => {
       window.removeEventListener('pointermove', onMove);
@@ -201,12 +261,41 @@ export const GraphCanvas: Component = () => {
     setPendingFrom(null);
   }
 
+  // Window-level Space tracking — see SopGraphCanvas for the rationale.
+  onMount(() => {
+    const isTextEditing = (target: EventTarget | null): boolean => {
+      const el = target as HTMLElement | null;
+      if (!el) return false;
+      const tag = el.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
+      return el.isContentEditable === true;
+    };
+    const onDown = (e: KeyboardEvent) => {
+      if ((e.key === ' ' || e.code === 'Space') && !isTextEditing(e.target)) {
+        e.preventDefault();
+        if (!e.repeat) setSpaceDown(true);
+      }
+    };
+    const onUp = (e: KeyboardEvent) => {
+      if (e.key === ' ' || e.code === 'Space') setSpaceDown(false);
+    };
+    const onBlur = () => setSpaceDown(false);
+    window.addEventListener('keydown', onDown);
+    window.addEventListener('keyup', onUp);
+    window.addEventListener('blur', onBlur);
+    onCleanup(() => {
+      window.removeEventListener('keydown', onDown);
+      window.removeEventListener('keyup', onUp);
+      window.removeEventListener('blur', onBlur);
+    });
+  });
+
   function onNodeKeyDown(e: KeyboardEvent) {
     if (e.key === 'Delete' || e.key === 'Backspace') {
-      const uid = selectedNode();
-      if (uid !== null) {
+      const uids = [...selectedNodes()];
+      if (uids.length > 0) {
         e.preventDefault();
-        removeNode(uid);
+        for (const u of uids) removeNode(u);
         setSelectedNode(null);
       }
     }
@@ -215,6 +304,7 @@ export const GraphCanvas: Component = () => {
   return (
     <svg
       class="graph-canvas"
+      classList={{ 'graph-canvas--panning': spaceDown() }}
       ref={svgRef}
       onPointerDown={onSvgPointerDown}
       onPointerMove={onSvgPointerMove}
@@ -268,7 +358,7 @@ export const GraphCanvas: Component = () => {
             const h = nodeHeight(node);
             const ins = inputPortCount(node.kind);
             const outs = outputPortCount(node.kind);
-            const selected = () => selectedNode() === node.uid;
+            const selected = () => isNodeSelected(node.uid);
             return (
               <g
                 transform={`translate(${x} ${y})`}
@@ -310,6 +400,21 @@ export const GraphCanvas: Component = () => {
             );
           }}
         </For>
+
+        <Show when={marquee()}>
+          {() => {
+            const r = marquee()!;
+            return (
+              <rect
+                class="graph-marquee"
+                x={r.minX}
+                y={r.minY}
+                width={r.maxX - r.minX}
+                height={r.maxY - r.minY}
+              />
+            );
+          }}
+        </Show>
       </g>
     </svg>
   );

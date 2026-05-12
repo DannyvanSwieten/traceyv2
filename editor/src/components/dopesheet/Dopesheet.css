@@ -1,0 +1,183 @@
+.dopesheet {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  background: #1f1f1f;
+  border-top: 1px solid #3c3c3c;
+  overflow: hidden;
+  -webkit-user-select: none;
+  user-select: none;
+  /* Channel list column width — TS keeps DOPESHEET_CHANNEL_LIST_WIDTH in sync. */
+  --channel-list-w: 180px;
+  --row-h: 22px;
+}
+
+/* ── Header (channel-list title + frame ruler) ─────────────────────────── */
+
+.dopesheet-header {
+  flex-shrink: 0;
+  display: flex;
+  height: 24px;
+  background: #252526;
+  border-bottom: 1px solid #3c3c3c;
+}
+.dopesheet-header-channels {
+  width: var(--channel-list-w);
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  font: 11px system-ui, -apple-system, sans-serif;
+  font-weight: 600;
+  color: #cccccc;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  border-right: 1px solid #3c3c3c;
+}
+.dopesheet-header-count {
+  text-transform: none;
+  font-weight: normal;
+  letter-spacing: 0;
+  color: #808080;
+}
+
+.dopesheet-ruler {
+  flex: 1;
+  position: relative;
+  cursor: pointer;
+  background: #1e1e1e;
+}
+
+.dopesheet-tick {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(var(--frac) * 100%);
+  width: 1px;
+  background: #3c3c3c;
+}
+.dopesheet-tick-label {
+  position: absolute;
+  top: 3px;
+  left: 4px;
+  font: 10px system-ui, -apple-system, sans-serif;
+  color: #707070;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+/* ── Body (channel list + lanes) ───────────────────────────────────────── */
+
+.dopesheet-body {
+  flex: 1;
+  display: flex;
+  overflow: auto;
+}
+
+.dopesheet-channel-list {
+  width: var(--channel-list-w);
+  flex-shrink: 0;
+  background: #252526;
+  border-right: 1px solid #3c3c3c;
+  position: sticky;
+  left: 0;
+  z-index: 1;
+}
+
+.dopesheet-channel-row {
+  height: var(--row-h);
+  display: flex;
+  align-items: center;
+  padding: 0 10px;
+  font: 11px system-ui, -apple-system, sans-serif;
+  color: #cccccc;
+  border-bottom: 1px solid #2a2a2a;
+}
+.dopesheet-channel-row:hover {
+  background: #2a2d2e;
+}
+.dopesheet-channel-label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dopesheet-empty {
+  padding: 12px 10px;
+  font: 11px system-ui, -apple-system, sans-serif;
+  color: #707070;
+  line-height: 1.5;
+}
+
+.dopesheet-lanes {
+  flex: 1;
+  position: relative;
+  background:
+    repeating-linear-gradient(
+      to bottom,
+      #1f1f1f 0,
+      #1f1f1f calc(var(--row-h) - 1px),
+      #2a2a2a calc(var(--row-h) - 1px),
+      #2a2a2a var(--row-h)
+    );
+  /* Live: 0..1 along the lane width. Set by Dopesheet.tsx via createEffect. */
+  --playhead-frac: 0;
+}
+
+.dopesheet-track {
+  height: var(--row-h);
+  position: relative;
+}
+
+.dopesheet-key {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(var(--frac) * 100%);
+  transform: translateX(-50%);
+  width: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  padding: 0;
+  cursor: grab;
+}
+.dopesheet-key:active {
+  cursor: grabbing;
+}
+.dopesheet-key-diamond {
+  width: 9px;
+  height: 9px;
+  background: #ff9c33;
+  border: 1px solid #ffb866;
+  transform: rotate(45deg);
+  transition: transform 60ms ease-out;
+}
+.dopesheet-key:hover .dopesheet-key-diamond {
+  transform: rotate(45deg) scale(1.15);
+}
+
+.dopesheet-playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(var(--playhead-frac) * 100%);
+  width: 1px;
+  background: #ff9c33;
+  pointer-events: none;
+  box-shadow: 0 0 4px rgba(255, 156, 51, 0.55);
+}
+
+.dopesheet-drag-ghost {
+  display: none;
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(var(--ghost-frac) * 100%);
+  width: 1px;
+  background: rgba(255, 156, 51, 0.5);
+  pointer-events: none;
+}

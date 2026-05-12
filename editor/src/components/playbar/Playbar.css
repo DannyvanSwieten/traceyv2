@@ -1,0 +1,149 @@
+.playbar {
+  flex-shrink: 0;
+  height: 36px;
+  background: #252526;
+  border-top: 1px solid #3c3c3c;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.playbar-transport {
+  display: flex;
+  gap: 2px;
+}
+
+.playbar-btn {
+  width: 28px;
+  height: 24px;
+  background: #2a2a2a;
+  color: #ddd;
+  border: 1px solid #444;
+  border-radius: 3px;
+  cursor: pointer;
+  font: 12px system-ui, -apple-system, sans-serif;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+.playbar-btn:hover {
+  background: #353535;
+}
+.playbar-btn-primary {
+  background: #2c5d8c;
+  border-color: #3a78b4;
+  color: #fff;
+}
+.playbar-btn-primary:hover {
+  background: #356da4;
+}
+
+.playbar-num {
+  width: 56px;
+  height: 22px;
+  background: #1e1e1e;
+  color: #ddd;
+  border: 1px solid #444;
+  border-radius: 3px;
+  padding: 0 6px;
+  font: 12px system-ui, -apple-system, sans-serif;
+  text-align: center;
+}
+.playbar-num:focus {
+  outline: 1px solid #3a78b4;
+  outline-offset: -1px;
+}
+
+.playbar-track {
+  flex: 1;
+  height: 18px;
+  position: relative;
+  background: linear-gradient(
+    to bottom,
+    #1a1a1a 0%,
+    #232323 50%,
+    #1a1a1a 100%
+  );
+  border: 1px solid #3c3c3c;
+  border-radius: 3px;
+  cursor: pointer;
+  /* Set live by Playbar.tsx via createEffect: 0..1 along the track. */
+  --playhead-frac: 0;
+}
+
+.playbar-playhead {
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  left: calc(var(--playhead-frac) * 100%);
+  width: 2px;
+  background: #ff9c33;
+  pointer-events: none;
+  transform: translateX(-1px);
+  box-shadow: 0 0 4px rgba(255, 156, 51, 0.55);
+}
+.playbar-playhead::before {
+  content: '';
+  position: absolute;
+  top: -3px;
+  left: -4px;
+  width: 10px;
+  height: 6px;
+  background: #ff9c33;
+  border-radius: 1px;
+}
+
+.playbar-frame {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+}
+.playbar-frame-input {
+  width: 64px;
+}
+.playbar-frame-total {
+  font: 11px system-ui, -apple-system, sans-serif;
+  color: #888;
+}
+
+.playbar-fps {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+}
+.playbar-fps-label {
+  font: 11px system-ui, -apple-system, sans-serif;
+  color: #888;
+}
+
+.playbar-loop {
+  height: 24px;
+  background: #2a2a2a;
+  color: #ddd;
+  border: 1px solid #444;
+  border-radius: 3px;
+  font: 12px system-ui, -apple-system, sans-serif;
+  padding: 0 6px;
+  cursor: pointer;
+}
+
+/* Auto-key (AK) toggle. Houdini/Maya convention: red-tinted when on so it
+ * reads at a glance whether subsequent edits will dirty the animation. */
+.playbar-autokey {
+  width: auto;
+  padding: 0 8px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+}
+.playbar-autokey.is-on {
+  background: #a52121;
+  border-color: #d04040;
+  color: #fff;
+}
+.playbar-autokey.is-on:hover {
+  background: #b83838;
+}

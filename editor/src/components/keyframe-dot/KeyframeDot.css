@@ -1,0 +1,38 @@
+.keyframe-dot {
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  margin: 0;
+  border: none;
+  background: transparent;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.keyframe-dot:disabled {
+  cursor: default;
+  opacity: 0.35;
+}
+
+.keyframe-diamond {
+  width: 7px;
+  height: 7px;
+  background: transparent;
+  border: 1px solid #666;
+  transform: rotate(45deg);
+  transition: background-color 80ms linear, border-color 80ms linear;
+}
+
+.keyframe-dot:hover:not(:disabled) .keyframe-diamond {
+  border-color: #ff9c33;
+}
+
+.keyframe-dot.is-animated .keyframe-diamond {
+  border-color: #ff9c33;
+}
+.keyframe-dot.is-animated.on-key .keyframe-diamond {
+  background: #ff9c33;
+  border-color: #ff9c33;
+}

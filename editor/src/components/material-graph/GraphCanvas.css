@@ -3,11 +3,33 @@
   width: 100%;
   height: 100%;
   background: #1a1a1a;
-  cursor: grab;
+  cursor: default;
+  -webkit-user-select: none;
   user-select: none;
   outline: none;
 }
 .graph-canvas:focus { outline: none; }
+
+/* While the user is holding Space for the Houdini-style pan, swap the cursor
+   to grab so the gesture is discoverable. */
+.graph-canvas--panning {
+  cursor: grab;
+}
+.graph-canvas--panning:active {
+  cursor: grabbing;
+}
+
+/* Rubber-band selection rectangle. Drawn inside the pan/zoom group so it
+   lives in world space; pointer-events:none lets clicks fall through to
+   nodes / canvas while it's visible (it's only ever shown during a drag
+   that owns the pointer through window listeners anyway). */
+.graph-marquee {
+  fill: rgba(108, 204, 255, 0.12);
+  stroke: #6cf;
+  stroke-width: 1;
+  stroke-dasharray: 4 4;
+  pointer-events: none;
+}
 
 .graph-edge {
   fill: none;
