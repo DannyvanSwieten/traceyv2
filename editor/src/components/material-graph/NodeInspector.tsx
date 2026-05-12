@@ -50,6 +50,98 @@ function findNode(uid: number | null): Node | undefined {
   return materialGraph().nodes.find((n) => n.uid === uid);
 }
 
+// Per-(node, port) editor-type hint. Output nodes know their sink semantics
+// (Albedo is colour, IOR is scalar, …) so the inspector swaps the generic
+// Vec4 editor for a colour picker or a single-float field. Everything else
+// keeps the Vec4 editor — the four-lane register is the canonical shape.
+type EditorType = 'float' | 'color' | 'vec4';
+function inputEditorType(node: Node, portIdx: number): EditorType {
+  if (node.kind === 'Output' && portIdx === 0) {
+    switch (node.op) {
+      case 'WriteAlbedo':
+      case 'WriteEmission':
+        return 'color';
+      case 'WriteMetallic':
+      case 'WriteRoughness':
+      case 'WriteAlpha':
+      case 'WriteIor':
+      case 'WriteTransmission':
+        return 'float';
+    }
+  }
+  return 'vec4';
+}
+
+// Float editor that adapts to the Vec4Editor signature: reads `.x`, writes
+// `[v, v, v, v]` so the splatted value is identical regardless of which
+// lane downstream picks up.
+interface ScalarEditorProps {
+  label: string;
+  value: () => Vec4Tuple;
+  onChange: (next: Vec4Tuple) => void;
+}
+const FloatEditor: Component<ScalarEditorProps> = (props) => {
+  const setValue = (raw: string) => {
+    const v = parseFloat(raw);
+    if (Number.isNaN(v)) return;
+    props.onChange([v, v, v, v] as Vec4Tuple);
+  };
+  return (
+    <div class="inspector-vec4">
+      <div class="inspector-row-label">{props.label}</div>
+      <div class="inspector-vec4-row">
+        <label class="inspector-vec4-cell">
+          <input
+            type="number"
+            step="0.01"
+            aria-label={props.label}
+            value={props.value()[0]}
+            onInput={(e) => setValue(e.currentTarget.value)}
+          />
+        </label>
+      </div>
+    </div>
+  );
+};
+
+// Colour picker variant: reads xyz as linear RGB in [0,1], renders via the
+// native <input type="color">. Round-trips through 8-bit hex which is lossy
+// at the bottom of the channel range — fine for material defaults, but
+// don't expect it to preserve sub-0.004 values across edit cycles.
+const ColorEditor: Component<ScalarEditorProps> = (props) => {
+  const clamp01 = (x: number) => Math.max(0, Math.min(1, x));
+  const toHex = () => {
+    const v = props.value();
+    const r = Math.round(clamp01(v[0]) * 255);
+    const g = Math.round(clamp01(v[1]) * 255);
+    const b = Math.round(clamp01(v[2]) * 255);
+    return `#${[r, g, b].map((c) => c.toString(16).padStart(2, '0')).join('')}`;
+  };
+  const fromHex = (hex: string) => {
+    const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex);
+    if (!m) return;
+    const r = parseInt(m[1], 16) / 255;
+    const g = parseInt(m[2], 16) / 255;
+    const b = parseInt(m[3], 16) / 255;
+    const cur = props.value();
+    props.onChange([r, g, b, cur[3] ?? 1] as Vec4Tuple);
+  };
+  return (
+    <div class="inspector-vec4">
+      <div class="inspector-row-label">{props.label}</div>
+      <div class="inspector-vec4-row">
+        <input
+          class="inspector-color"
+          type="color"
+          aria-label={props.label}
+          value={toHex()}
+          onInput={(e) => fromHex(e.currentTarget.value)}
+        />
+      </div>
+    </div>
+  );
+};
+
 interface Vec4EditorProps {
   label: string;
   value: () => Vec4Tuple;
@@ -259,11 +351,24 @@ const InputDefaultRow: Component<{ node: Node; portIdx: number }> = (props) => {
     const v = live?.input_defaults?.[String(props.portIdx)];
     return (v ?? [0, 0, 0, 1]) as Vec4Tuple;
   };
+  const label = () =>
+    inputPortName(props.node.kind, props.portIdx) || `in ${props.portIdx}`;
+  const onChange = (next: Vec4Tuple) =>
+    setInputDefault(props.node.uid, props.portIdx, next);
+  const kind = () => inputEditorType(props.node, props.portIdx);
   return (
-    <Vec4Editor
-      label={inputPortName(props.node.kind, props.portIdx) || `in ${props.portIdx}`}
-      value={stored}
-      onChange={(next) => setInputDefault(props.node.uid, props.portIdx, next)}
-    />
+    <Show
+      when={kind() === 'color'}
+      fallback={
+        <Show
+          when={kind() === 'float'}
+          fallback={<Vec4Editor label={label()} value={stored} onChange={onChange} />}
+        >
+          <FloatEditor label={label()} value={stored} onChange={onChange} />
+        </Show>
+      }
+    >
+      <ColorEditor label={label()} value={stored} onChange={onChange} />
+    </Show>
   );
 };

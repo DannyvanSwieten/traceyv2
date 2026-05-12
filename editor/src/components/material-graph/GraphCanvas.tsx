@@ -788,7 +788,10 @@ export const GraphCanvas: Component = () => {
   return (<>
     <svg
       class="graph-canvas"
-      classList={{ 'graph-canvas--panning': panKeyDown() }}
+      classList={{
+        'graph-canvas--panning': panKeyDown(),
+        'graph-canvas--cutting': cutKeyDown(),
+      }}
       ref={svgRef}
       onPointerDown={onSvgPointerDown}
       onPointerMove={onSvgPointerMove}
@@ -954,6 +957,13 @@ export const GraphCanvas: Component = () => {
               />
             );
           }}
+        </Show>
+
+        <Show when={cutPath().length >= 2}>
+          <polyline
+            class="graph-cut-path"
+            points={cutPath().map((p) => `${p[0]},${p[1]}`).join(' ')}
+          />
         </Show>
       </g>
     </svg>
