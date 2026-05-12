@@ -553,6 +553,181 @@ namespace tracey
         return true;
     }
 
+    bool VulkanPresenter::presentComposite(VulkanImage2D *fullscreenSrc,
+                                          VulkanImage2D *insetSrc,
+                                          int32_t insetX, int32_t insetY,
+                                          uint32_t insetWidth, uint32_t insetHeight,
+                                          bool /*waitForRender*/)
+    {
+        if (m_needsRecreation)
+        {
+            recreateSwapchain();
+            m_needsRecreation = false;
+        }
+
+        vkWaitForFences(m_context.device(), 1, &m_frameSync[m_currentFrame].inFlightFence, VK_TRUE, UINT64_MAX);
+
+        uint32_t imageIndex;
+        VkResult result = vkAcquireNextImageKHR(m_context.device(), m_swapchain, UINT64_MAX,
+                                                m_frameSync[m_currentFrame].imageAvailableSemaphore,
+                                                VK_NULL_HANDLE, &imageIndex);
+
+        if (result == VK_ERROR_OUT_OF_DATE_KHR)
+        {
+            m_needsRecreation = true;
+            return false;
+        }
+        else if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR)
+        {
+            throw std::runtime_error("Failed to acquire swapchain image");
+        }
+
+        vkResetFences(m_context.device(), 1, &m_frameSync[m_currentFrame].inFlightFence);
+
+        VkCommandBuffer cmd = m_commandBuffers[m_currentFrame];
+        vkResetCommandBuffer(cmd, 0);
+
+        VkCommandBufferBeginInfo beginInfo{};
+        beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        vkBeginCommandBuffer(cmd, &beginInfo);
+
+        VkImage dstImage = m_swapchainImages[imageIndex];
+        VkImage fullSrc = fullscreenSrc->vkImage();
+        VkImage insetSrcImg = insetSrc ? insetSrc->vkImage() : VK_NULL_HANDLE;
+
+        // Helper: barrier transition
+        auto transition = [&](VkImage image, VkImageLayout oldLayout, VkImageLayout newLayout,
+                              VkAccessFlags srcAccess, VkAccessFlags dstAccess,
+                              VkPipelineStageFlags srcStage, VkPipelineStageFlags dstStage) {
+            VkImageMemoryBarrier b{};
+            b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+            b.oldLayout = oldLayout;
+            b.newLayout = newLayout;
+            b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            b.image = image;
+            b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+            b.srcAccessMask = srcAccess;
+            b.dstAccessMask = dstAccess;
+            vkCmdPipelineBarrier(cmd, srcStage, dstStage, 0, 0, nullptr, 0, nullptr, 1, &b);
+        };
+
+        // Sources: GENERAL → TRANSFER_SRC.
+        transition(fullSrc, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                   VK_ACCESS_MEMORY_READ_BIT, VK_ACCESS_TRANSFER_READ_BIT,
+                   VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+        if (insetSrcImg)
+        {
+            transition(insetSrcImg, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                       VK_ACCESS_MEMORY_READ_BIT, VK_ACCESS_TRANSFER_READ_BIT,
+                       VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+        }
+        // Swapchain image: UNDEFINED → TRANSFER_DST.
+        transition(dstImage, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                   0, VK_ACCESS_TRANSFER_WRITE_BIT,
+                   VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+
+        // Blit fullscreen → entire swapchain extent.
+        {
+            VkImageBlit blit{};
+            blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+            blit.srcOffsets[0] = {0, 0, 0};
+            blit.srcOffsets[1] = {static_cast<int32_t>(fullscreenSrc->width()),
+                                  static_cast<int32_t>(fullscreenSrc->height()), 1};
+            blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+            blit.dstOffsets[0] = {0, 0, 0};
+            blit.dstOffsets[1] = {static_cast<int32_t>(m_config.width),
+                                  static_cast<int32_t>(m_config.height), 1};
+            vkCmdBlitImage(cmd, fullSrc, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                           dstImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                           1, &blit, VK_FILTER_LINEAR);
+        }
+
+        // Barrier: make the fullscreen blit visible to the inset blit reading
+        // the same swapchain image.
+        if (insetSrcImg)
+        {
+            VkMemoryBarrier mem{};
+            mem.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+            mem.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            mem.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                 0, 1, &mem, 0, nullptr, 0, nullptr);
+
+            VkImageBlit blit{};
+            blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+            blit.srcOffsets[0] = {0, 0, 0};
+            blit.srcOffsets[1] = {static_cast<int32_t>(insetSrc->width()),
+                                  static_cast<int32_t>(insetSrc->height()), 1};
+            blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+            blit.dstOffsets[0] = {insetX, insetY, 0};
+            blit.dstOffsets[1] = {insetX + static_cast<int32_t>(insetWidth),
+                                  insetY + static_cast<int32_t>(insetHeight), 1};
+            vkCmdBlitImage(cmd, insetSrcImg, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                           dstImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                           1, &blit, VK_FILTER_LINEAR);
+        }
+
+        // Final layouts.
+        transition(dstImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                   VK_ACCESS_TRANSFER_WRITE_BIT, 0,
+                   VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+        transition(fullSrc, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
+                   VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_MEMORY_READ_BIT,
+                   VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+        if (insetSrcImg)
+        {
+            transition(insetSrcImg, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
+                       VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_MEMORY_READ_BIT,
+                       VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+        }
+
+        vkEndCommandBuffer(cmd);
+
+        VkSubmitInfo submitInfo{};
+        submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        VkSemaphore waitSemaphores[] = {m_frameSync[m_currentFrame].imageAvailableSemaphore};
+        VkPipelineStageFlags waitStages[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
+        submitInfo.waitSemaphoreCount = 1;
+        submitInfo.pWaitSemaphores = waitSemaphores;
+        submitInfo.pWaitDstStageMask = waitStages;
+        submitInfo.commandBufferCount = 1;
+        submitInfo.pCommandBuffers = &cmd;
+        VkSemaphore signalSemaphores[] = {m_frameSync[m_currentFrame].renderFinishedSemaphore};
+        submitInfo.signalSemaphoreCount = 1;
+        submitInfo.pSignalSemaphores = signalSemaphores;
+
+        if (vkQueueSubmit(m_context.graphicsQueue(), 1, &submitInfo, m_frameSync[m_currentFrame].inFlightFence) != VK_SUCCESS)
+        {
+            throw std::runtime_error("Failed to submit command buffer");
+        }
+
+        VkPresentInfoKHR presentInfo{};
+        presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+        presentInfo.waitSemaphoreCount = 1;
+        presentInfo.pWaitSemaphores = signalSemaphores;
+        VkSwapchainKHR swapchains[] = {m_swapchain};
+        presentInfo.swapchainCount = 1;
+        presentInfo.pSwapchains = swapchains;
+        presentInfo.pImageIndices = &imageIndex;
+
+        result = vkQueuePresentKHR(m_context.graphicsQueue(), &presentInfo);
+
+        if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR)
+        {
+            m_needsRecreation = true;
+            return false;
+        }
+        else if (result != VK_SUCCESS)
+        {
+            throw std::runtime_error("Failed to present swapchain image");
+        }
+
+        m_currentFrame = (m_currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
+        return true;
+    }
+
     void VulkanPresenter::blitToSwapchain(VulkanImage2D *sourceImage, uint32_t swapchainImageIndex,
                                           VkCommandBuffer cmd)
     {

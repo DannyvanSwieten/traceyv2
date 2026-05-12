@@ -1,7 +1,11 @@
 #include "rasterizer.hpp"
 #include "../device/buffer.hpp"
+#include "../device/gpu/vulkan_compute_device.hpp"
+#include "gpu/vulkan_graphics_pipeline.hpp"
+#include "gpu/vulkan_graphics_command_buffer.hpp"
 #include <chrono>
 #include <cstring>
+#include <stdexcept>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
@@ -20,6 +24,11 @@ namespace tracey
 
     Rasterizer::~Rasterizer() = default;
 
+    Image2D *Rasterizer::outputImage() const
+    {
+        return m_pipeline ? m_pipeline->colorTarget() : nullptr;
+    }
+
     void Rasterizer::createPipeline()
     {
         // Create empty pipeline layout (descriptors can be added later for textures/materials)
@@ -31,20 +40,34 @@ namespace tracey
         pipelineConfig.height = m_config.height;
         pipelineConfig.vertexShader = m_config.vertexShader;
         pipelineConfig.fragmentShader = m_config.fragmentShader;
+        pipelineConfig.pointsVertexShader = m_config.pointsVertexShader;
+        pipelineConfig.pointsFragmentShader = m_config.pointsFragmentShader;
+        pipelineConfig.linesVertexShader = m_config.linesVertexShader;
+        pipelineConfig.linesFragmentShader = m_config.linesFragmentShader;
+        pipelineConfig.groundVertexShader = m_config.groundVertexShader;
+        pipelineConfig.groundFragmentShader = m_config.groundFragmentShader;
         pipelineConfig.colorFormat = m_config.colorFormat;
         pipelineConfig.useDepthBuffer = m_config.useDepthBuffer;
         pipelineConfig.depthTestEnable = m_config.depthTestEnable;
         pipelineConfig.cullBackFaces = m_config.cullBackFaces;
         pipelineConfig.alphaBlending = m_config.alphaBlending;
 
-        // Create graphics pipeline
-        m_pipeline.reset(m_device->createGraphicsPipeline(pipelineConfig, *m_pipelineLayout));
+        // The Device interface doesn't expose graphics-pipeline factories
+        // (it's compute/ray-tracing first), so we construct the Vulkan
+        // implementations directly. Requires a VulkanComputeDevice.
+        auto* vulkanDevice = dynamic_cast<VulkanComputeDevice*>(m_device);
+        if (!vulkanDevice)
+        {
+            throw std::runtime_error("Rasterizer: requires a VulkanComputeDevice");
+        }
 
-        // Get the output image from the pipeline's color target
-        m_outputImage.reset(m_pipeline->colorTarget());
+        m_pipeline = std::make_unique<VulkanGraphicsPipeline>(
+            *vulkanDevice, pipelineConfig, *m_pipelineLayout);
 
-        // Create command buffer
-        m_commandBuffer.reset(m_device->createGraphicsCommandBuffer());
+        // The pipeline owns the color target; outputImage() is just a view.
+        // Don't reset m_outputImage to take ownership — that double-frees.
+
+        m_commandBuffer = std::make_unique<VulkanGraphicsCommandBuffer>(*vulkanDevice);
 
         // Create readback buffer (for CPU access to rendered pixels)
         const size_t pixelSize = 4; // R8G8B8A8 = 4 bytes per pixel
@@ -112,6 +135,39 @@ namespace tracey
 
     void Rasterizer::renderScene(const SceneCompiler::CompiledScene &scene)
     {
+        // Optional reference ground grid. Drawn first so opaque scene geometry
+        // overlays it; the ground pipeline has depth-write off so it doesn't
+        // occlude anything below Y=0 either. Re-binds the main triangle
+        // pipeline afterwards so the geometry loop has the right state.
+        if (m_showGround && m_config.useDepthBuffer)
+        {
+            auto* vkPipeline = static_cast<VulkanGraphicsPipeline*>(m_pipeline.get());
+            if (vkPipeline->hasGroundPipeline())
+            {
+                m_commandBuffer->bindGroundPipeline(m_pipeline.get());
+
+                // Ground vertex shader procedurally emits 4 corners — no VB.
+                // mvp uses the view*projection with identity model; we abuse
+                // the existing baseColor push-constant slot to carry the
+                // camera world position for the fragment shader's distance
+                // fade.
+                glm::mat4 vp = m_projectionMatrix * m_viewMatrix;
+                // Reconstruct camera world position from the view matrix
+                // (inverse[3]). Cheaper than re-plumbing the camera into here.
+                glm::mat4 invView = glm::inverse(m_viewMatrix);
+                struct PushConstants {
+                    glm::mat4 mvp;
+                    glm::vec4 baseColor;
+                } pc;
+                pc.mvp = vp;
+                pc.baseColor = glm::vec4(invView[3][0], invView[3][1], invView[3][2], 1.0f);
+                m_commandBuffer->pushConstants(&pc, sizeof(pc), 0);
+                m_commandBuffer->draw(4, 1, 0, 0);  // TRIANGLE_STRIP, 4 verts
+
+                m_commandBuffer->bindPipeline(m_pipeline.get());
+            }
+        }
+
         // Iterate through all instances and render their geometry
         for (size_t i = 0; i < scene.instances.size(); ++i)
         {
@@ -161,8 +217,15 @@ namespace tracey
                 }
             }
 
-            // Bind vertex buffer
+            // Bind position (binding 0) + per-vertex Cd (binding 1). The
+            // compiler always allocates a color buffer (default white) so the
+            // pipeline's two-binding vertex input is always satisfied.
             m_commandBuffer->bindVertexBuffer(vertexBuffer, 0);
+            if (blasIndex < scene.colorBuffers.size() && scene.colorBuffers[blasIndex])
+            {
+                m_commandBuffer->bindVertexBufferAt(
+                    scene.colorBuffers[blasIndex].get(), 1, 0);
+            }
 
             // Push constants: MVP matrix (64 bytes) + base color (16 bytes) = 80 bytes
             struct PushConstants {
@@ -177,6 +240,94 @@ namespace tracey
             // Draw vertices (non-indexed)
             m_commandBuffer->draw(vertexCount, 1, 0, 0);
         }
+
+        // Optional wireframe overlay: bind the lines pipeline (POLYGON_MODE_LINE,
+        // depth-test on, depth-write off, slight depth bias) and re-issue
+        // draw calls against the same vertex buffers. Triangle topology stays
+        // — only the rasterizer state differs.
+        if (m_showEdges)
+        {
+            m_commandBuffer->bindLinesPipeline(m_pipeline.get());
+            for (size_t i = 0; i < scene.instances.size(); ++i)
+            {
+                const auto& instance = scene.instances[i];
+                size_t blasIndex = static_cast<size_t>(instance.blasAddress);
+                if (blasIndex >= scene.vertexBuffers.size()) continue;
+                const Buffer* vb = scene.vertexBuffers[blasIndex].get();
+                uint32_t vertexCount = scene.vertexCounts[blasIndex];
+
+                glm::mat4 model(1.0f);
+                for (int r = 0; r < 3; ++r)
+                    for (int c = 0; c < 4; ++c)
+                        model[c][r] = instance.transform[r][c];
+
+                glm::vec4 baseColor(0.8f, 0.8f, 0.8f, 1.0f);
+                if (i < scene.instanceToMaterialIndex.size())
+                {
+                    uint32_t matIdx = scene.instanceToMaterialIndex[i];
+                    if (matIdx < scene.materials.size())
+                    {
+                        const auto& m = scene.materials[matIdx];
+                        baseColor = glm::vec4(m.baseColorR, m.baseColorG, m.baseColorB, m.baseColorA);
+                    }
+                }
+
+                struct PushConstants {
+                    glm::mat4 mvp;
+                    glm::vec4 baseColor;
+                } pc;
+                pc.mvp = m_projectionMatrix * m_viewMatrix * model;
+                pc.baseColor = baseColor;
+
+                m_commandBuffer->bindVertexBuffer(vb, 0);
+                m_commandBuffer->pushConstants(&pc, sizeof(pc), 0);
+                m_commandBuffer->draw(vertexCount, 1, 0, 0);
+            }
+        }
+
+        // Optional points overlay: bind the points pipeline (sharing render
+        // pass + framebuffer) and re-issue draw calls. The same vertex
+        // buffers feed POINT_LIST topology, so each unique position becomes
+        // a 2D point sprite drawn with alpha-blended circle splats.
+        if (m_showPoints)
+        {
+            m_commandBuffer->bindPointsPipeline(m_pipeline.get());
+            for (size_t i = 0; i < scene.instances.size(); ++i)
+            {
+                const auto& instance = scene.instances[i];
+                size_t blasIndex = static_cast<size_t>(instance.blasAddress);
+                if (blasIndex >= scene.vertexBuffers.size()) continue;
+                const Buffer* vb = scene.vertexBuffers[blasIndex].get();
+                uint32_t vertexCount = scene.vertexCounts[blasIndex];
+
+                glm::mat4 model(1.0f);
+                for (int r = 0; r < 3; ++r)
+                    for (int c = 0; c < 4; ++c)
+                        model[c][r] = instance.transform[r][c];
+
+                glm::vec4 baseColor(0.8f, 0.8f, 0.8f, 1.0f);
+                if (i < scene.instanceToMaterialIndex.size())
+                {
+                    uint32_t matIdx = scene.instanceToMaterialIndex[i];
+                    if (matIdx < scene.materials.size())
+                    {
+                        const auto& m = scene.materials[matIdx];
+                        baseColor = glm::vec4(m.baseColorR, m.baseColorG, m.baseColorB, m.baseColorA);
+                    }
+                }
+
+                struct PushConstants {
+                    glm::mat4 mvp;
+                    glm::vec4 baseColor;
+                } pc;
+                pc.mvp = m_projectionMatrix * m_viewMatrix * model;
+                pc.baseColor = baseColor;
+
+                m_commandBuffer->bindVertexBuffer(vb, 0);
+                m_commandBuffer->pushConstants(&pc, sizeof(pc), 0);
+                m_commandBuffer->draw(vertexCount, 1, 0, 0);
+            }
+        }
     }
 
     size_t Rasterizer::readback(void *outData)
@@ -188,7 +339,7 @@ namespace tracey
 
         // Copy image to readback buffer (using command buffer)
         m_commandBuffer->begin();
-        m_commandBuffer->copyImageToBuffer(m_outputImage.get(), m_readbackBuffer.get());
+        m_commandBuffer->copyImageToBuffer(outputImage(), m_readbackBuffer.get());
         m_commandBuffer->end();
         m_commandBuffer->waitUntilCompleted();
 

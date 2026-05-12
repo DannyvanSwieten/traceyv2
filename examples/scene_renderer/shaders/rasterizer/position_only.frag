@@ -8,10 +8,13 @@ layout(location = 1) in vec4 fragBaseColor;
 layout(location = 0) out vec4 outColor;
 
 void main() {
-    // Calculate flat normals using screen-space derivatives
+    // Flat normal from screen-space derivatives. Vulkan's default frag-coord
+    // origin is upper-left, so dFdy advances world-space along screen-down.
+    // Flipping the cross order keeps the resulting normal pointing toward the
+    // viewer for CCW geometry under our +Y-flipped projection.
     vec3 dFdxPos = dFdx(fragWorldPos);
     vec3 dFdyPos = dFdy(fragWorldPos);
-    vec3 normal = normalize(cross(dFdxPos, dFdyPos));
+    vec3 normal = normalize(cross(dFdyPos, dFdxPos));
 
     // Simple directional lighting
     vec3 lightDir = normalize(vec3(0.5, 1.0, 0.3));

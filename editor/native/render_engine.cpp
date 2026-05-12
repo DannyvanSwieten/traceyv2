@@ -1,6 +1,5 @@
 #include "render_engine.hpp"
 
-#include "scene/gltf_loader.hpp"
 #include "scene/scene_object.hpp"
 #include "graph/graphs/shader_graph/compiler.hpp"
 #include "graph/graphs/shader_graph/serialization.hpp"
@@ -23,15 +22,23 @@ RenderEngine::RenderEngine(RenderConfig config) : m_config(std::move(config)) {
 RenderEngine::~RenderEngine() = default;
 
 void RenderEngine::initialize_path_tracer() {
+    // Initial PT size mirrors the configured viewport size — render_engine
+    // owners (EditorServer) call set_resolutions() with the inset rect once
+    // the viewport reports its real pixel dimensions.
+    if (m_pt_width == 0) m_pt_width = m_config.width;
+    if (m_pt_height == 0) m_pt_height = m_config.height;
+
     tracey::PathTracerConfig pt_config;
-    pt_config.width = m_config.width;
-    pt_config.height = m_config.height;
+    pt_config.width = m_pt_width;
+    pt_config.height = m_pt_height;
     pt_config.rayGenShader = m_config.shader_dir / "ray_gen.glsl";
     pt_config.hitShader = m_config.shader_dir / "uber_hit.glsl";
     pt_config.missShader = m_config.shader_dir / "sky_miss.glsl";
     pt_config.resolveShader = m_config.shader_dir / "resolve.glsl";
     pt_config.hdrOutput = m_config.hdr_output;
-    pt_config.samplesPerFrame = m_config.samples_per_frame;
+    // One sample per render_tick. Accumulation stops once max_samples is
+    // reached (enforced in EditorServer::render_tick).
+    pt_config.samplesPerFrame = 1;
     pt_config.maxBounces = m_config.max_bounces;
     pt_config.useMaterialPrograms = true;
 
@@ -68,6 +75,29 @@ void RenderEngine::initialize_path_tracer() {
     // graphs; the seeded passthrough lives inside the compiled scene buffer.
 }
 
+void RenderEngine::initialize_rasterizer() {
+    tracey::RasterizerConfig cfg;
+    cfg.width = m_config.width;
+    cfg.height = m_config.height;
+    cfg.vertexShader   = m_config.shader_dir / "rasterizer" / "position_only.vert.spv";
+    cfg.fragmentShader = m_config.shader_dir / "rasterizer" / "position_only.frag.spv";
+    cfg.pointsVertexShader   = m_config.shader_dir / "rasterizer" / "points.vert.spv";
+    cfg.pointsFragmentShader = m_config.shader_dir / "rasterizer" / "points.frag.spv";
+    cfg.linesVertexShader    = m_config.shader_dir / "rasterizer" / "lines.vert.spv";
+    cfg.linesFragmentShader  = m_config.shader_dir / "rasterizer" / "lines.frag.spv";
+    cfg.groundVertexShader   = m_config.shader_dir / "rasterizer" / "ground.vert.spv";
+    cfg.groundFragmentShader = m_config.shader_dir / "rasterizer" / "ground.frag.spv";
+    cfg.useDepthBuffer = true;
+    cfg.depthTestEnable = true;
+    cfg.cullBackFaces = false;  // SOP-cooked geometry can have either winding
+    cfg.alphaBlending = false;
+    cfg.colorFormat = tracey::ImageFormat::R8G8B8A8Unorm;
+    m_rasterizer = std::make_unique<tracey::Rasterizer>(m_device.get(), cfg);
+    m_rasterizer->setShowPoints(m_show_points);
+    m_rasterizer->setShowEdges(m_show_edges);
+    m_rasterizer->setShowGround(m_show_ground);
+}
+
 void RenderEngine::set_material_graph_json(const std::string& graph_json) {
     if (!m_path_tracer)
         throw std::runtime_error("Path tracer not initialized");
@@ -85,6 +115,23 @@ void RenderEngine::set_material_parameter(uint32_t program_id, uint32_t param_id
 }
 
 void RenderEngine::compile_scene() {
+    // Empty scene (e.g. SOP graph has no ObjectOutput wired yet, or fresh
+    // launch before the first import): SceneCompiler::compile would throw on
+    // no-geometry, so we install an empty CompiledScene instead of resetting
+    // to null. That lets the rasterizer keep drawing the reference ground
+    // grid (which doesn't need any scene instances) while we wait for the
+    // user to add geometry. The path tracer side checks `instances.empty()`
+    // and skips dispatch on its own.
+    bool has_geometry = false;
+    for (const auto& [_name, obj] : m_scene->objects()) {
+        if (obj && obj->vertexCount() > 0) { has_geometry = true; break; }
+    }
+    if (!has_geometry) {
+        m_compiled_scene =
+            std::make_unique<tracey::SceneCompiler::CompiledScene>();
+        return;
+    }
+
     auto compiled = tracey::SceneCompiler::compile(m_device.get(), *m_scene);
     m_compiled_scene =
         std::make_unique<tracey::SceneCompiler::CompiledScene>(std::move(compiled));
@@ -97,6 +144,26 @@ void RenderEngine::compile_scene() {
     }
 }
 
+void RenderEngine::set_show_points(bool v) {
+    m_show_points = v;
+    if (m_rasterizer) m_rasterizer->setShowPoints(v);
+}
+
+void RenderEngine::set_show_edges(bool v) {
+    m_show_edges = v;
+    if (m_rasterizer) m_rasterizer->setShowEdges(v);
+}
+
+void RenderEngine::set_show_ground(bool v) {
+    m_show_ground = v;
+    if (m_rasterizer) m_rasterizer->setShowGround(v);
+}
+
+void RenderEngine::render_rasterizer() {
+    if (!m_rasterizer || !m_compiled_scene || !m_scene->hasCamera()) return;
+    m_rasterizer->render(*m_compiled_scene, m_scene->camera());
+}
+
 RenderResult RenderEngine::render_frame(bool clear_accumulation) {
     if (!m_path_tracer)
         throw std::runtime_error("Path tracer not initialized");
@@ -104,6 +171,24 @@ RenderResult RenderEngine::render_frame(bool clear_accumulation) {
         throw std::runtime_error("Scene not compiled");
     if (!m_scene->hasCamera())
         throw std::runtime_error("Scene has no camera");
+
+    // Empty scene (every actor hidden, only lights/subnet markers, or fresh
+    // graph with no object_output): nothing for the path tracer to trace
+    // against. Return a zeroed RenderResult instead of crashing — the
+    // rasterizer still runs and shows the ground / overlays.
+    if (m_compiled_scene->instances.empty())
+    {
+        const uint32_t width = m_pt_width;
+        const uint32_t height = m_pt_height;
+        const size_t bytes_per_pixel = m_config.hdr_output ? 16 : 4;
+        RenderResult result;
+        result.width = width;
+        result.height = height;
+        result.sample_count = m_path_tracer->sampleCount();
+        result.render_time_ms = 0.0;
+        result.pixels.assign(static_cast<size_t>(width) * height * bytes_per_pixel, 0);
+        return result;
+    }
 
     const double render_time_ms =
         m_path_tracer->render(*m_compiled_scene, m_scene->camera(), clear_accumulation);
@@ -123,60 +208,43 @@ RenderResult RenderEngine::render_frame(bool clear_accumulation) {
     return result;
 }
 
-void RenderEngine::load_gltf(const std::string& path) {
-    auto loaded = tracey::GltfLoader::loadFromFile(path);
-    if (!loaded)
-        throw std::runtime_error("Failed to load GLTF file: " + path);
-
-    m_scene->clear();
-
-    for (const auto& actor : loaded->actors()) {
-        auto* new_actor = m_scene->createActor();
-        new_actor->setName(actor->name());
-        new_actor->setTransform(actor->transform());
-        for (const auto& instance : actor->instances())
-            new_actor->addInstance(instance);
-    }
-
-    for (const auto& [name, obj] : loaded->objects()) {
-        tracey::SceneObject copy = *obj;
-        m_scene->addObject(name, std::move(copy));
-    }
-
-    if (loaded->hasCamera())
-        m_scene->setCamera(loaded->camera());
-
-    for (const auto& [id, tex] : loaded->embeddedTextures()) {
-        tracey::EmbeddedTexture copy = tex;
-        m_scene->addEmbeddedTexture(id, std::move(copy));
-    }
+void RenderEngine::set_resolution(uint32_t width, uint32_t height) {
+    // Back-compat: when only one size is given, raster + PT share it.
+    set_resolutions(width, height, width, height);
 }
 
-void RenderEngine::set_resolution(uint32_t width, uint32_t height) {
-    if (width == 0 || height == 0) return;
-    if (width == m_config.width && height == m_config.height) return;
-    m_config.width = width;
-    m_config.height = height;
-    // Recreate the path tracer so its output image, descriptor sets, and
-    // accumulator get rebuilt at the new size. The active scene's per-actor
-    // graphs are preserved (they live on the actors) and get re-uploaded the
-    // next time compile_scene runs.
-    if (m_path_tracer) {
+void RenderEngine::set_resolutions(uint32_t raster_w, uint32_t raster_h,
+                                   uint32_t pt_w, uint32_t pt_h) {
+    if (raster_w == 0 || raster_h == 0) return;
+    if (pt_w == 0) pt_w = raster_w;
+    if (pt_h == 0) pt_h = raster_h;
+
+    const bool raster_changed =
+        raster_w != m_config.width || raster_h != m_config.height;
+    const bool pt_changed = pt_w != m_pt_width || pt_h != m_pt_height;
+    if (!raster_changed && !pt_changed) return;
+
+    m_config.width = raster_w;
+    m_config.height = raster_h;
+    m_pt_width = pt_w;
+    m_pt_height = pt_h;
+
+    if (pt_changed && m_path_tracer) {
+        // Recreate the path tracer so its output image, descriptor sets, and
+        // accumulator get rebuilt at the new size. Per-actor material graphs
+        // are preserved (they live on the actors) and get re-uploaded on the
+        // next compile_scene.
         m_path_tracer.reset();
         initialize_path_tracer();
     }
+    if (raster_changed && m_rasterizer) {
+        m_rasterizer.reset();
+        initialize_rasterizer();
+    }
 }
 
-uint32_t RenderEngine::samples_per_frame() const {
-    if (m_path_tracer)
-        return m_path_tracer->samplesPerFrame();
-    return m_config.samples_per_frame;
-}
-
-void RenderEngine::set_samples_per_frame(uint32_t samples) {
-    m_config.samples_per_frame = samples;
-    if (m_path_tracer)
-        m_path_tracer->setSamplesPerFrame(samples);
+uint32_t RenderEngine::current_samples() const {
+    return m_path_tracer ? m_path_tracer->sampleCount() : 0;
 }
 
 uint32_t RenderEngine::max_bounces() const {

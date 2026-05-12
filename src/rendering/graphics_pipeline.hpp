@@ -6,6 +6,12 @@
 
 namespace tracey
 {
+    enum class PrimitiveTopology
+    {
+        TriangleList,
+        PointList,
+    };
+
     /// Configuration for creating a graphics pipeline
     struct GraphicsPipelineConfig
     {
@@ -24,9 +30,33 @@ namespace tracey
         bool depthWriteEnable = true;
         bool cullBackFaces = true;
         bool alphaBlending = false;
+        PrimitiveTopology topology = PrimitiveTopology::TriangleList;
 
-        // Vertex input layout (fixed for now: position, normal, uv)
-        // Future: make this configurable
+        // Optional second pipeline drawing point sprites overlaid in the same
+        // render pass. When set, the implementation creates a sibling pipeline
+        // sharing the render pass + framebuffer + pipeline layout, with
+        // POINT_LIST topology, alpha blending, and depth-test enabled but
+        // depth-write disabled (so points don't punch through later draws).
+        std::filesystem::path pointsVertexShader;
+        std::filesystem::path pointsFragmentShader;
+
+        // Optional third sibling pipeline drawing triangle edges (wireframe)
+        // via POLYGON_MODE_LINE. Same vertex buffers as the triangle pipeline;
+        // depth-test on, depth-write off, slight depth bias to prevent
+        // z-fighting against the underlying filled triangles.
+        std::filesystem::path linesVertexShader;
+        std::filesystem::path linesFragmentShader;
+
+        // Optional fourth sibling pipeline drawing a reference ground grid on
+        // the y=0 plane. The vertex shader procedurally emits a 4-vertex quad
+        // (TRIANGLE_STRIP, no vertex buffer); fragment shader draws an
+        // anti-aliased grid that fades with distance. Depth-test on,
+        // depth-write off, alpha blending so geometry intersecting Y=0 still
+        // composites correctly.
+        std::filesystem::path groundVertexShader;
+        std::filesystem::path groundFragmentShader;
+
+        // Vertex input layout (position only — vec3 per vertex, tight stride)
     };
 
     /// Abstract interface for graphics pipeline

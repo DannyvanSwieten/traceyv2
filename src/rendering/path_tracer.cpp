@@ -61,11 +61,15 @@ namespace tracey
         m_shaderInputsLayout.addMember({"cameraUp",       "vec3",  0, false, 0});
         m_shaderInputsLayout.addMember({"maxDepth",       "uint",  0, false, 0});
         m_shaderInputsLayout.addMember({"currentSample",  "int",   0, false, 0});
+        // Direct-light count for the NEE loop in the hit shader. The lights
+        // SSBO is always bound; this gates iteration so lightCount = 0 means
+        // "skip NEE entirely".
+        m_shaderInputsLayout.addMember({"lightCount",     "uint",  0, false, 0});
 
         m_shaderInputs = std::make_unique<ShaderInputsBuffer>(m_device, m_shaderInputsLayout);
     }
 
-    void PathTracer::updateCameraUniforms(const Camera &camera)
+    void PathTracer::updateCameraUniforms(const Camera &camera, uint32_t lightCount)
     {
         m_shaderInputs->setFloat("fov", camera.fov());
         m_shaderInputs->setVec3("cameraPosition", camera.position());
@@ -74,6 +78,7 @@ namespace tracey
         m_shaderInputs->setVec3("cameraUp", camera.up());
         m_shaderInputs->setInt("currentSample", m_sampleCount + 1);
         m_shaderInputs->setUint("maxDepth", m_config.maxBounces);
+        m_shaderInputs->setUint("lightCount", lightCount);
         m_shaderInputs->upload();
     }
 
@@ -86,7 +91,7 @@ namespace tracey
             m_sampleCount = 0;
         }
 
-        updateCameraUniforms(camera);
+        updateCameraUniforms(camera, scene.lightCount);
 
         const double t = m_backend->dispatch(scene, m_sampleCount, clearAccumulation);
 

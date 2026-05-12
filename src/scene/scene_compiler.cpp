@@ -225,13 +225,36 @@ namespace tracey
         size_t bufferSize = data.vertexCount * sizeof(Vec3);
         data.vertexBuffer = std::unique_ptr<Buffer>(
             device->createBuffer(bufferSize,
-                                 BufferUsage::AccelerationStructureBuildInput | BufferUsage::StorageBuffer));
+                                 BufferUsage::AccelerationStructureBuildInput |
+                                 BufferUsage::StorageBuffer |
+                                 BufferUsage::VertexBuffer));
 
         // Copy vertex data
         auto *mapped = static_cast<Vec3 *>(data.vertexBuffer->mapForWriting());
         const auto &positions = obj.positions();
         std::copy(positions.begin(), positions.end(), mapped);
         data.vertexBuffer->flush();
+
+        // Per-vertex color buffer. Always allocated, even when the object
+        // carries no Cd, so the rasterizer's vertex input (binding 1) always
+        // has a valid buffer to bind. Missing → white per-vertex.
+        data.colorBuffer = std::unique_ptr<Buffer>(
+            device->createBuffer(bufferSize, BufferUsage::VertexBuffer));
+        auto *colorMapped = static_cast<Vec3 *>(data.colorBuffer->mapForWriting());
+        if (obj.hasColors())
+        {
+            const auto &colors = obj.colors();
+            // Defensive: copy min(positions, colors) and pad the rest with
+            // white so a malformed SceneObject can't read past the buffer.
+            const size_t n = std::min(colors.size(), positions.size());
+            std::copy(colors.begin(), colors.begin() + n, colorMapped);
+            for (size_t i = n; i < positions.size(); ++i) colorMapped[i] = Vec3(1.0f);
+        }
+        else
+        {
+            for (size_t i = 0; i < positions.size(); ++i) colorMapped[i] = Vec3(1.0f);
+        }
+        data.colorBuffer->flush();
 
         // Store UVs if available
         if (obj.hasUvs())
@@ -299,6 +322,8 @@ namespace tracey
                 blasPtrs.push_back(objData.blas.get());
                 result.blases.push_back(std::move(objData.blas));
                 result.vertexBuffers.push_back(std::move(objData.vertexBuffer));
+                result.colorBuffers.push_back(std::move(objData.colorBuffer));
+                result.vertexCounts.push_back(static_cast<uint32_t>(objData.vertexCount));
                 result.totalNodes += objData.nodeCount;
                 result.totalTriangles += objData.vertexCount / 3;
 
@@ -346,6 +371,14 @@ namespace tracey
         {
             const Actor *actor = node.actor;
             const Mat4 &worldTransform = node.worldTransform;
+
+            // Hidden actors contribute no instances to the path tracer's TLAS
+            // or the rasterizer's draw list. Children are still walked because
+            // Scene::flatten emits one SceneNode per actor with its world
+            // transform already composed, so skipping a parent does NOT
+            // suppress its children — that matches Houdini-style "display
+            // flag" semantics (hide a subnet, its children remain visible).
+            if (!actor->visible()) continue;
 
             // Resolve this actor's program id once -- all instances under the
             // actor share it. Empty graph -> passthrough at index 0.
@@ -419,9 +452,72 @@ namespace tracey
             }
         }
 
+        // Light gather: walk the same SceneNode list so light actors inherit
+        // parent transforms identically to geometry actors. Hidden actors
+        // still emit lights — the Houdini display-flag analogue is geometry
+        // visibility, not emission. The lightBuffer is always allocated
+        // (at least one zero entry) so the wavefront descriptor set always
+        // has a valid SSBO to bind; lightCount = 0 gates the NEE loop.
+        for (const auto &node : sceneNodes)
+        {
+            const Actor *actor = node.actor;
+            if (!actor->hasLight()) continue;
+
+            const Light *l = actor->light();
+            const Mat4 &xform = node.worldTransform;
+
+            GPULight gpu;
+            const Vec3 pos = transformPoint(xform, Vec3(0.0f, 0.0f, 0.0f));
+            const Vec3 dir = transformVector(xform, Vec3(0.0f, 0.0f, -1.0f));
+
+            gpu.positionAndType[0] = pos.x;
+            gpu.positionAndType[1] = pos.y;
+            gpu.positionAndType[2] = pos.z;
+            gpu.positionAndType[3] = static_cast<float>(static_cast<int>(l->type));
+
+            gpu.directionAndIntensity[0] = dir.x;
+            gpu.directionAndIntensity[1] = dir.y;
+            gpu.directionAndIntensity[2] = dir.z;
+            gpu.directionAndIntensity[3] = l->intensity;
+
+            gpu.colorAndPad[0] = l->color.x;
+            gpu.colorAndPad[1] = l->color.y;
+            gpu.colorAndPad[2] = l->color.z;
+            gpu.colorAndPad[3] = 0.0f;
+
+            result.lights.push_back(gpu);
+        }
+
+        result.lightCount = static_cast<uint32_t>(result.lights.size());
+        {
+            // Always upload at least one light slot — Vulkan binds need a
+            // non-null SSBO; the shader skips iteration when lightCount == 0.
+            const size_t lightSlots = result.lights.empty() ? 1 : result.lights.size();
+            const size_t bytes = lightSlots * sizeof(GPULight);
+            result.lightBuffer = std::unique_ptr<Buffer>(
+                device->createBuffer(static_cast<uint32_t>(bytes), BufferUsage::StorageBuffer));
+            auto *mapped = static_cast<GPULight *>(result.lightBuffer->mapForWriting());
+            if (result.lights.empty())
+            {
+                GPULight dummy{};
+                std::memcpy(mapped, &dummy, sizeof(GPULight));
+            }
+            else
+            {
+                std::memcpy(mapped, result.lights.data(), bytes);
+            }
+            result.lightBuffer->flush();
+        }
+
+        // Empty scene is a valid editor state — every actor may be hidden,
+        // a graph may emit only subnet markers / lights, or a fresh project
+        // may have no object_output yet. Returning a CompiledScene with no
+        // TLAS lets the renderer skip the path-tracer dispatch instead of
+        // crashing the process; the caller gates on
+        // `has_renderable_geometry()` before sampling.
         if (result.instances.empty())
         {
-            throw std::runtime_error("Scene has no instances to render");
+            return result;
         }
 
         // Step 3: Create TLAS

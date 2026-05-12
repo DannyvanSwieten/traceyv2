@@ -312,8 +312,15 @@ namespace tracey
         queueInfo.queueCount = 1;
         queueInfo.pQueuePriorities = &queuePriority;
 
+        VkPhysicalDeviceFeatures supportedFeatures{};
+        vkGetPhysicalDeviceFeatures(m_physicalDevice, &supportedFeatures);
+
         VkPhysicalDeviceFeatures deviceFeatures{};
-        // Enable features if you need them later (e.g. shaderInt64, etc.)
+        // Wireframe rendering uses VK_POLYGON_MODE_LINE, which requires this.
+        if (supportedFeatures.fillModeNonSolid)
+        {
+            deviceFeatures.fillModeNonSolid = VK_TRUE;
+        }
 
         // Enable descriptor indexing for bindless textures (Vulkan 1.2 core)
         // On macOS, requires MVK_CONFIG_USE_METAL_ARGUMENT_BUFFERS=1 environment variable

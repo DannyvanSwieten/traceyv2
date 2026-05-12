@@ -18,14 +18,21 @@ namespace tracey
         std::vector<Vec3> positions;
         std::vector<Vec3> normals;
         std::vector<Vec2> uvs;
+        std::vector<Vec3> colors;
 
         const auto *vertexN = geo.vertices().get<Vec3>("N");
         const auto *pointN = geo.points().get<Vec3>("N");
         const auto *vertexUV = geo.vertices().get<Vec2>("uv");
         const auto *pointUV = geo.points().get<Vec2>("uv");
+        // Vertex color "Cd" — the VOP bind_out_attr_vec3 emits it as a Point
+        // attribute; we also honour a Vertex-class Cd for per-corner shading
+        // when present.
+        const auto *vertexCd = geo.vertices().get<Vec3>("Cd");
+        const auto *pointCd = geo.points().get<Vec3>("Cd");
 
         const bool wantNormals = vertexN || pointN;
         const bool wantUVs = vertexUV || pointUV;
+        const bool wantColors = vertexCd || pointCd;
 
         size_t triCount = 0;
         for (const GeoPrimitive &p : prims) if (p.vertexCount == 3) ++triCount;
@@ -33,6 +40,7 @@ namespace tracey
         positions.reserve(triCount * 3);
         if (wantNormals) normals.reserve(triCount * 3);
         if (wantUVs) uvs.reserve(triCount * 3);
+        if (wantColors) colors.reserve(triCount * 3);
 
         for (const GeoPrimitive &p : prims)
         {
@@ -55,12 +63,19 @@ namespace tracey
                     if (vertexUV) uvs.push_back(vertexUV->at(vid));
                     else          uvs.push_back(pointUV->at(pid));
                 }
+
+                if (wantColors)
+                {
+                    if (vertexCd) colors.push_back(vertexCd->at(vid));
+                    else          colors.push_back(pointCd->at(pid));
+                }
             }
         }
 
         out.setPositions(std::move(positions));
         if (wantNormals) out.setNormals(std::move(normals));
         if (wantUVs) out.setUvs(std::move(uvs));
+        if (wantColors) out.setColors(std::move(colors));
         // Leave indices empty — per-corner expansion matches the existing
         // primitive generators' format.
         return out;

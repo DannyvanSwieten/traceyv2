@@ -50,6 +50,21 @@ namespace tracey
     };
     static_assert(sizeof(GPUMaterial) == 80, "GPUMaterial must be 80 bytes");
 
+    // GPU light record consumed by the path tracer's NEE loop. Three vec4s
+    // chosen so the std430 stride matches sizeof(GPULight) exactly and we can
+    // index `lights.data[i * 3 + k]` from GLSL without per-field padding
+    // headaches. Encoding:
+    //   slot 0: xyz = world position (Point), w = LightType as float
+    //   slot 1: xyz = world direction (Distant), w = intensity scalar
+    //   slot 2: xyz = linear RGB color, w = unused (pad to 16)
+    struct GPULight
+    {
+        float positionAndType[4]{0.0f, 0.0f, 0.0f, 0.0f};
+        float directionAndIntensity[4]{0.0f, 0.0f, -1.0f, 0.0f};
+        float colorAndPad[4]{0.0f, 0.0f, 0.0f, 0.0f};
+    };
+    static_assert(sizeof(GPULight) == 48, "GPULight must be 48 bytes (3 * vec4)");
+
     class SceneCompiler
     {
     public:
@@ -61,6 +76,17 @@ namespace tracey
 
             // Vertex buffers (one per unique object)
             std::vector<std::unique_ptr<Buffer>> vertexBuffers;
+
+            // Per-vertex Cd buffers (vec3 per corner, parallel to
+            // vertexBuffers). Always populated — when the source SceneObject
+            // has no Cd, the buffer is filled with white so the rasterizer's
+            // vertex input description always has a valid binding 1.
+            std::vector<std::unique_ptr<Buffer>> colorBuffers;
+
+            // Vertex counts per buffer (parallel to vertexBuffers).
+            // The buffers store positions (vec3) per triangle vertex, so this
+            // doubles as the draw count for non-indexed rasterization.
+            std::vector<uint32_t> vertexCounts;
 
             // Material data
             std::unique_ptr<Buffer> materialBuffer;
@@ -89,6 +115,14 @@ namespace tracey
             // Maps object name to BLAS index
             std::unordered_map<std::string, size_t> objectToBlasIndex;
 
+            // Per-frame light list. lightBuffer is ALWAYS allocated (at least
+            // one dummy entry) so the wavefront descriptor set always has a
+            // valid SSBO bound; `lightCount` gates the NEE loop in the hit
+            // shader. Scene with zero lights → lightCount = 0, NEE skipped.
+            std::vector<GPULight> lights;
+            std::unique_ptr<Buffer> lightBuffer;
+            uint32_t lightCount = 0;
+
             // BVH statistics
             size_t totalNodes = 0;
             size_t totalTriangles = 0;
@@ -104,6 +138,7 @@ namespace tracey
         struct ObjectData
         {
             std::unique_ptr<Buffer> vertexBuffer;
+            std::unique_ptr<Buffer> colorBuffer;  // per-vertex Cd (vec3)
             std::unique_ptr<BottomLevelAccelerationStructure> blas;
             size_t vertexCount;
             size_t nodeCount;

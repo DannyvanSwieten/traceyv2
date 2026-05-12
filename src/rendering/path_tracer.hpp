@@ -111,7 +111,7 @@ namespace tracey
     private:
         void createOutputImage();
         void createShaderInputs();
-        void updateCameraUniforms(const Camera &camera);
+        void updateCameraUniforms(const Camera &camera, uint32_t lightCount);
 
         // Not owned
         Device *m_device;

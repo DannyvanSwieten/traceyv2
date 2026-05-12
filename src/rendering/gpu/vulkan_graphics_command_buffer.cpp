@@ -103,12 +103,49 @@ namespace tracey
         m_currentPipeline = pipeline;
     }
 
+    void VulkanGraphicsCommandBuffer::bindPointsPipeline(GraphicsPipeline* pipeline)
+    {
+        auto* vkPipeline = static_cast<VulkanGraphicsPipeline*>(pipeline);
+        if (!vkPipeline->hasPointsPipeline()) return;
+        vkCmdBindPipeline(m_commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                          vkPipeline->vkPointsPipeline());
+        m_currentPipeline = pipeline;
+    }
+
+    void VulkanGraphicsCommandBuffer::bindLinesPipeline(GraphicsPipeline* pipeline)
+    {
+        auto* vkPipeline = static_cast<VulkanGraphicsPipeline*>(pipeline);
+        if (!vkPipeline->hasLinesPipeline()) return;
+        vkCmdBindPipeline(m_commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                          vkPipeline->vkLinesPipeline());
+        m_currentPipeline = pipeline;
+    }
+
+    void VulkanGraphicsCommandBuffer::bindGroundPipeline(GraphicsPipeline* pipeline)
+    {
+        auto* vkPipeline = static_cast<VulkanGraphicsPipeline*>(pipeline);
+        if (!vkPipeline->hasGroundPipeline()) return;
+        vkCmdBindPipeline(m_commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                          vkPipeline->vkGroundPipeline());
+        m_currentPipeline = pipeline;
+    }
+
     void VulkanGraphicsCommandBuffer::bindVertexBuffer(const Buffer* buffer, uint32_t offset)
     {
         auto* vkBuffer = static_cast<const VulkanBuffer*>(buffer);
         VkBuffer vertexBuffers[] = {vkBuffer->vkBuffer()};
         VkDeviceSize offsets[] = {offset};
         vkCmdBindVertexBuffers(m_commandBuffer, 0, 1, vertexBuffers, offsets);
+    }
+
+    void VulkanGraphicsCommandBuffer::bindVertexBufferAt(const Buffer* buffer,
+                                                        uint32_t binding,
+                                                        uint32_t offset)
+    {
+        auto* vkBuffer = static_cast<const VulkanBuffer*>(buffer);
+        VkBuffer vertexBuffers[] = {vkBuffer->vkBuffer()};
+        VkDeviceSize offsets[] = {offset};
+        vkCmdBindVertexBuffers(m_commandBuffer, binding, 1, vertexBuffers, offsets);
     }
 
     void VulkanGraphicsCommandBuffer::bindIndexBuffer(const Buffer* buffer, uint32_t offset)
@@ -138,8 +175,13 @@ namespace tracey
         }
 
         auto* vkPipeline = static_cast<VulkanGraphicsPipeline*>(m_currentPipeline);
+        // The pipeline layout's push-constant range covers VS+FS (see
+        // vulkan_graphics_pipeline.cpp). vkCmdPushConstants' stageFlags must
+        // be a superset of every overlapping range, otherwise validation
+        // fires VUID-vkCmdPushConstants-offset-01796. Push for both stages.
         vkCmdPushConstants(m_commandBuffer, vkPipeline->vkPipelineLayout(),
-                          VK_SHADER_STAGE_VERTEX_BIT, offset, size, data);
+                          VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                          offset, size, data);
     }
 
     void VulkanGraphicsCommandBuffer::copyImageToBuffer(const Image2D* image, Buffer* buffer)

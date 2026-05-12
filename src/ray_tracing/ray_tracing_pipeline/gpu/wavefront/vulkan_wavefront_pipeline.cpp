@@ -14,11 +14,7 @@ namespace tracey
 {
     VulkanWaveFrontPipeline::VulkanWaveFrontPipeline(VulkanComputeDevice &device, const RayTracingPipelineLayoutDescriptor &layout, const CpuShaderBindingTable &sbt) : m_device(device), m_layout(layout)
     {
-        fprintf(stderr, "\n*** VulkanWaveFrontPipeline constructor called ***\n");
-        fflush(stderr);
         const auto wavefrontCompilerResult = compileVulkanWaveFrontRayTracingPipeline(layout, sbt);
-        fprintf(stderr, "*** Shader compilation complete ***\n");
-        fflush(stderr);
 
         // Create descriptor set layout (shared by all pipelines)
         std::vector<VkDescriptorSetLayoutBinding> bindings;
@@ -177,16 +173,6 @@ namespace tracey
         descriptorSetLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
         descriptorSetLayoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
         descriptorSetLayoutInfo.pBindings = bindings.data();
-
-        // Debug: print all bindings
-        fprintf(stderr, "\n=== WAVEFRONT DESCRIPTOR SET LAYOUT DEBUG ===\n");
-        fprintf(stderr, "Creating descriptor set layout with %zu bindings:\n", bindings.size());
-        for (const auto &b : bindings)
-        {
-            fprintf(stderr, "  Binding %u: type=%u count=%u\n", b.binding, b.descriptorType, b.descriptorCount);
-        }
-        fprintf(stderr, "=============================================\n\n");
-        fflush(stderr);
 
         VkDescriptorSetLayout descriptorSetLayout;
         if (vkCreateDescriptorSetLayout(m_device.vkDevice(), &descriptorSetLayoutInfo, nullptr, &descriptorSetLayout) != VK_SUCCESS)

@@ -89,9 +89,15 @@ namespace tracey
         }
         else
         {
-            // Storage image (existing behavior)
-            imageInfo.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-            imageInfo.initialLayout = VK_IMAGE_LAYOUT_GENERAL;
+            // Storage image. COLOR_ATTACHMENT_BIT lets the same image serve as
+            // a graphics-pipeline render target (rasterizer's color output)
+            // without forcing a second factory; the path tracer's storage use
+            // is unaffected. initialLayout must be UNDEFINED at create time
+            // (Vulkan spec) — we explicitly transition to GENERAL below so the
+            // first compute-shader write sees the right layout.
+            imageInfo.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                              VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                              VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
         }
 
         imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
@@ -134,6 +140,51 @@ namespace tracey
         if (vkCreateImageView(m_device, &viewInfo, nullptr, &m_imageView) != VK_SUCCESS)
         {
             throw std::runtime_error("Failed to create Vulkan image view");
+        }
+
+        // Storage images need to be in GENERAL layout before the first compute
+        // shader read/write. Texture images are transitioned later by
+        // uploadData, so skip this for that path.
+        if (!forTexture)
+        {
+            VkCommandBufferAllocateInfo cmdAllocInfo{};
+            cmdAllocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+            cmdAllocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+            cmdAllocInfo.commandPool = device.commandPool();
+            cmdAllocInfo.commandBufferCount = 1;
+            VkCommandBuffer cmd;
+            if (vkAllocateCommandBuffers(m_device, &cmdAllocInfo, &cmd) != VK_SUCCESS)
+                throw std::runtime_error("Failed to allocate command buffer for image transition");
+
+            VkCommandBufferBeginInfo bi{};
+            bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+            bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+            vkBeginCommandBuffer(cmd, &bi);
+
+            VkImageMemoryBarrier b{};
+            b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+            b.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+            b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            b.image = m_image;
+            b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+            b.srcAccessMask = 0;
+            b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+            vkCmdPipelineBarrier(cmd,
+                                 VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
+                                     VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                                 0, 0, nullptr, 0, nullptr, 1, &b);
+            vkEndCommandBuffer(cmd);
+
+            VkSubmitInfo si{};
+            si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+            si.commandBufferCount = 1;
+            si.pCommandBuffers = &cmd;
+            vkQueueSubmit(device.computeQueue(), 1, &si, VK_NULL_HANDLE);
+            vkQueueWaitIdle(device.computeQueue());
+            vkFreeCommandBuffers(m_device, device.commandPool(), 1, &cmd);
         }
     }
 

@@ -68,8 +68,6 @@ namespace tracey
     {
         const auto layoutIndex = m_layout.indexForBinding(binding);
         const auto index = layoutIndex + m_userBindingOffset;
-        fprintf(stderr, "setUniformBuffer('%.*s'): layoutIndex=%zu, offset=%u, final binding=%zu\n",
-                static_cast<int>(binding.size()), binding.data(), layoutIndex, m_userBindingOffset, index);
 
         VkWriteDescriptorSet writeDesc{};
         writeDesc.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;

@@ -45,6 +45,18 @@ namespace tracey
         {
             m_size += 16;
         }
+        else if (field.type == "uvec2")
+        {
+            m_size += 8;
+        }
+        else if (field.type == "uvec3")
+        {
+            m_size += 12;
+        }
+        else if (field.type == "uvec4")
+        {
+            m_size += 16;
+        }
         else if (field.type == "bool")
         {
             m_size += 1;

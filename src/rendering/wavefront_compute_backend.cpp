@@ -3,6 +3,7 @@
 #include "path_tracer.hpp"
 #include "../ray_tracing/ray_tracing_pipeline/ray_tracing_pipeline_layout.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cstring>
 #include <span>
@@ -60,6 +61,10 @@ namespace tracey
         StructureLayout payloadLayout("RayPayload");
         payloadLayout.addMember({"color",       "vec3", 0, false, 0});
         payloadLayout.addMember({"direction",   "vec3", 0, false, 0});
+        // Direct-lighting (NEE) accumulator. Hit shader adds shadowless
+        // light contributions here; resolve sums color + accum so the
+        // existing throughput pipeline keeps working unchanged.
+        payloadLayout.addMember({"accum",       "vec3", 0, false, 0});
         payloadLayout.addMember({"depth",       "uint", 0, false, 0});
         payloadLayout.addMember({"alive",       "bool", 0, false, 0});
         payloadLayout.addMember({"sampleIndex", "uint", 0, false, 0});
@@ -98,9 +103,23 @@ namespace tracey
         instanceProgramIndexStructure.addMember({"indices", "uint", 0, true, 0});
         m_pipelineLayout->addStorageBuffer("instanceProgramIndex", ShaderStage::ClosestHit, instanceProgramIndexStructure);
 
+        // Scene lights. The hit shader iterates `shaderInputs.lightCount`
+        // entries and samples each (point: 1/r² falloff, distant: parallel
+        // ray). Single unbounded vec4 array indexed in groups of 3 — see
+        // GPULight in scene_compiler.hpp for the slot layout.
+        StructureLayout lightStructure("LightData");
+        lightStructure.addMember({"data", "vec4", 0, true, 0});
+        m_pipelineLayout->addStorageBuffer("lights", ShaderStage::ClosestHit, lightStructure);
+
         m_pipelineLayout->addSampler("linearSampler", ShaderStage::ClosestHit);
         m_pipelineLayout->addSampler("nearestSampler", ShaderStage::ClosestHit);
-        m_pipelineLayout->addSampledImageArray("textures", ShaderStage::ClosestHit, 256);
+        // Cap by the device's bindless texture budget. On macOS/MoltenVK the
+        // whole compute pipeline's resources must fit under maxPerStageResources
+        // (287), which leaves ~220 slots once the wavefront's fixed bindings
+        // are accounted for; on a desktop GPU this resolves to thousands.
+        const uint32_t kRequestedTextures = 256;
+        const uint32_t textureCount = std::min(kRequestedTextures, m_device->maxBindlessTextures());
+        m_pipelineLayout->addSampledImageArray("textures", ShaderStage::ClosestHit, textureCount);
 
         if (m_config->useMaterialPrograms)
         {
@@ -161,6 +180,11 @@ namespace tracey
             if (scene.instanceProgramIndexBuffer)
             {
                 descriptorSet->setBuffer("instanceProgramIndex", scene.instanceProgramIndexBuffer.get());
+            }
+
+            if (scene.lightBuffer)
+            {
+                descriptorSet->setBuffer("lights", scene.lightBuffer.get());
             }
 
             descriptorSet->setSampler("linearSampler", true);

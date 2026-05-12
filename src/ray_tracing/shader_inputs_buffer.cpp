@@ -87,8 +87,6 @@ void ShaderInputsBuffer::setFloat(const std::string &name, float value) {
     if (info.type != "float") {
         throw std::runtime_error("ShaderInputsBuffer: Member '" + name + "' is not a float (is " + info.type + ")");
     }
-    fprintf(stderr, "ShaderInputsBuffer::setFloat('%s', %f) at offset %zu\n",
-            name.c_str(), value, info.offset);
     std::memcpy(m_data.data() + info.offset, &value, sizeof(float));
 }
 
@@ -130,19 +128,10 @@ void ShaderInputsBuffer::setVec4(const std::string &name, const glm::vec4 &value
     if (info.type != "vec4") {
         throw std::runtime_error("ShaderInputsBuffer: Member '" + name + "' is not a vec4 (is " + info.type + ")");
     }
-    fprintf(stderr, "ShaderInputsBuffer::setVec4('%s', [%f, %f, %f, %f]) at offset %zu\n",
-            name.c_str(), value.x, value.y, value.z, value.w, info.offset);
     std::memcpy(m_data.data() + info.offset, &value, sizeof(glm::vec4));
 }
 
 void ShaderInputsBuffer::upload() {
-    fprintf(stderr, "ShaderInputsBuffer::upload() - uploading %zu bytes\n", m_data.size());
-    fprintf(stderr, "  Raw data: ");
-    for (size_t i = 0; i < m_data.size(); ++i) {
-        fprintf(stderr, "%02x ", m_data[i]);
-    }
-    fprintf(stderr, "\n");
-
     void *mapped = m_buffer->mapForWriting();
     std::memcpy(mapped, m_data.data(), m_data.size());
     m_buffer->flush();

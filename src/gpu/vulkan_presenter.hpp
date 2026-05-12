@@ -66,6 +66,18 @@ namespace tracey
                            uint32_t dstWidth, uint32_t dstHeight,
                            bool waitForRender = true);
 
+        /// Present a fullscreen image and a second image overlaid in a region,
+        /// in a single acquire/submit/present. Used for picture-in-picture
+        /// (rasterizer fullscreen + path tracer inset).
+        ///
+        /// Calling present() then presentToRegion() in the same tick would
+        /// double-acquire the same swapchain image and stall on FIFO.
+        bool presentComposite(VulkanImage2D *fullscreenSrc,
+                             VulkanImage2D *insetSrc,
+                             int32_t insetX, int32_t insetY,
+                             uint32_t insetWidth, uint32_t insetHeight,
+                             bool waitForRender = true);
+
         /// Resize the swapchain (call on window resize)
         /// @param newWidth New width in pixels
         /// @param newHeight New height in pixels

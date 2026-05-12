@@ -90,27 +90,58 @@ namespace tracey
         return obj;
     }
 
-    SceneObject SceneObject::createPlane(float width, float depth)
+    SceneObject SceneObject::createPlane(float width, float depth, uint32_t cols, uint32_t rows)
     {
         SceneObject obj("plane");
-        float hw = width * 0.5f;
-        float hd = depth * 0.5f;
+        if (cols < 1) cols = 1;
+        if (rows < 1) rows = 1;
 
-        // Two triangles forming a plane in XZ, facing up (Y+)
-        obj.m_positions = {
-            Vec3(-hw, 0, -hd), Vec3(hw, 0, -hd), Vec3(hw, 0, hd),
-            Vec3(-hw, 0, -hd), Vec3(hw, 0, hd), Vec3(-hw, 0, hd),
-        };
+        const float hw = width * 0.5f;
+        const float hd = depth * 0.5f;
+        const float dx = width  / static_cast<float>(cols);
+        const float dz = depth  / static_cast<float>(rows);
+        const float du = 1.0f / static_cast<float>(cols);
+        const float dv = 1.0f / static_cast<float>(rows);
 
-        obj.m_normals = {
-            Vec3(0, 1, 0), Vec3(0, 1, 0), Vec3(0, 1, 0),
-            Vec3(0, 1, 0), Vec3(0, 1, 0), Vec3(0, 1, 0),
-        };
+        // Plane lies in XZ, facing +Y. Each cell emits 2 triangles in CCW
+        // order; non-indexed (matches the rasterizer's vertex layout).
+        obj.m_positions.reserve(cols * rows * 6);
+        obj.m_normals.reserve(cols * rows * 6);
+        obj.m_uvs.reserve(cols * rows * 6);
 
-        obj.m_uvs = {
-            Vec2(0, 0), Vec2(1, 0), Vec2(1, 1),
-            Vec2(0, 0), Vec2(1, 1), Vec2(0, 1),
-        };
+        const Vec3 up(0, 1, 0);
+        for (uint32_t r = 0; r < rows; ++r)
+        {
+            for (uint32_t c = 0; c < cols; ++c)
+            {
+                const float x0 = -hw + dx * static_cast<float>(c);
+                const float x1 = x0 + dx;
+                const float z0 = -hd + dz * static_cast<float>(r);
+                const float z1 = z0 + dz;
+                const float u0 = du * static_cast<float>(c);
+                const float u1 = u0 + du;
+                const float v0 = dv * static_cast<float>(r);
+                const float v1 = v0 + dv;
+
+                // Triangle 1: (x0,z0) (x1,z0) (x1,z1)
+                obj.m_positions.push_back(Vec3(x0, 0, z0));
+                obj.m_positions.push_back(Vec3(x1, 0, z0));
+                obj.m_positions.push_back(Vec3(x1, 0, z1));
+                obj.m_normals.push_back(up); obj.m_normals.push_back(up); obj.m_normals.push_back(up);
+                obj.m_uvs.push_back(Vec2(u0, v0));
+                obj.m_uvs.push_back(Vec2(u1, v0));
+                obj.m_uvs.push_back(Vec2(u1, v1));
+
+                // Triangle 2: (x0,z0) (x1,z1) (x0,z1)
+                obj.m_positions.push_back(Vec3(x0, 0, z0));
+                obj.m_positions.push_back(Vec3(x1, 0, z1));
+                obj.m_positions.push_back(Vec3(x0, 0, z1));
+                obj.m_normals.push_back(up); obj.m_normals.push_back(up); obj.m_normals.push_back(up);
+                obj.m_uvs.push_back(Vec2(u0, v0));
+                obj.m_uvs.push_back(Vec2(u1, v1));
+                obj.m_uvs.push_back(Vec2(u0, v1));
+            }
+        }
 
         return obj;
     }

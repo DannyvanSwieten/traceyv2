@@ -37,6 +37,14 @@ public:
     // Returns false if the swapchain needs recreation (caller can call resize()).
     bool present(tracey::Image2D* source);
 
+    // Present a fullscreen image with a second image overlaid in a sub-region
+    // (picture-in-picture) in a single submit. `inset` may be null to fall back
+    // to a fullscreen-only present.
+    bool present_composite(tracey::Image2D* fullscreen,
+                           tracey::Image2D* inset,
+                           int32_t inset_x, int32_t inset_y,
+                           uint32_t inset_w, uint32_t inset_h);
+
 private:
     tracey::VulkanContext* m_context = nullptr;
     VkSurfaceKHR m_surface = VK_NULL_HANDLE;

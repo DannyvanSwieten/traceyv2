@@ -34,10 +34,30 @@ namespace tracey
         /// Bind graphics pipeline
         virtual void bindPipeline(GraphicsPipeline* pipeline) = 0;
 
+        /// Bind the optional secondary "points" pipeline (if the pipeline was
+        /// configured with pointsVertexShader/pointsFragmentShader). Must be
+        /// called inside the same render pass that bindPipeline started in.
+        virtual void bindPointsPipeline(GraphicsPipeline* pipeline) = 0;
+
+        /// Bind the optional "lines" pipeline (POLYGON_MODE_LINE wireframe).
+        /// No-op if the pipeline wasn't configured with line shaders.
+        virtual void bindLinesPipeline(GraphicsPipeline* pipeline) = 0;
+
+        /// Bind the optional "ground" pipeline (y=0 reference grid). No-op
+        /// if the pipeline wasn't configured with ground shaders.
+        virtual void bindGroundPipeline(GraphicsPipeline* pipeline) = 0;
+
         /// Bind vertex buffer
         /// @param buffer Vertex buffer containing interleaved vertex data
         /// @param offset Byte offset into the buffer
         virtual void bindVertexBuffer(const Buffer* buffer, uint32_t offset = 0) = 0;
+
+        /// Bind a vertex buffer at an explicit binding index. The main
+        /// rasterizer pipeline declares two bindings (0 = position, 1 = Cd);
+        /// this lets callers attach the color stream without overloading the
+        /// canonical position-only `bindVertexBuffer` call.
+        virtual void bindVertexBufferAt(const Buffer* buffer, uint32_t binding,
+                                        uint32_t offset = 0) = 0;
 
         /// Bind index buffer
         /// @param buffer Index buffer containing triangle indices

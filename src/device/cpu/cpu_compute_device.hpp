@@ -22,5 +22,6 @@ namespace tracey
                                        SamplerAddressMode addressMode = SamplerAddressMode::Repeat) override;
         BottomLevelAccelerationStructure *createBottomLevelAccelerationStructure(const Buffer *positions, uint32_t positionCount, uint32_t positionStride, const Buffer *indices, uint32_t indexCount, const BVHConfig &bvhConfig = {}) override;
         TopLevelAccelerationStructure *createTopLevelAccelerationStructure(std::span<const BottomLevelAccelerationStructure *> blases, std::span<const struct Tlas::Instance> instances) override;
+        uint32_t maxBindlessTextures() const override { return 4096; }
     };
 }

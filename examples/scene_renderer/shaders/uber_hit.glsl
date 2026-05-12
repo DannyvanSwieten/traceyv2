@@ -59,6 +59,49 @@ void shader(HitInfo hitInfo, inout RayPayloads payloads) {
         return;
     }
 
+    // Next-event estimation: iterate all scene lights and accumulate their
+    // direct (unshadowed) contribution into the payload's accum slot. We
+    // weight by the running throughput so deeper bounces still receive
+    // light — the BRDF multiplier for the *current* surface is folded in
+    // here via the Lambert diffuse term (specular highlights still arrive
+    // through BSDF importance sampling at the bounce trace). Shadow rays
+    // are not yet supported by the wavefront pipeline (traceRay only
+    // schedules into the next-bounce queue), so this is "lights ignore
+    // occlusion" for v1 — visually wrong through walls, but still
+    // illuminates scenes correctly when geometry doesn't intervene.
+    if (shaderInputs.lightCount > 0u) {
+        vec3 diffuseBrdf = albedo * (1.0 - metallic) * (1.0 / 3.14159265);
+        for (uint li = 0u; li < shaderInputs.lightCount; ++li) {
+            vec4 posType   = lights.data[li * 3u + 0u];
+            vec4 dirIntens = lights.data[li * 3u + 1u];
+            vec4 colorPad  = lights.data[li * 3u + 2u];
+
+            vec3 Ldir;
+            float falloff;
+            int ltype = int(posType.w);
+            if (ltype == 0) {
+                // Point: attenuate by inverse-square distance.
+                vec3 toLight = posType.xyz - hitPos;
+                float distSq = max(dot(toLight, toLight), 1e-4);
+                Ldir = toLight * inversesqrt(distSq);
+                falloff = 1.0 / distSq;
+            } else {
+                // Distant: light is at infinity; direction stored in slot
+                // 1.xyz already points from light *toward* the scene
+                // (actor world-forward), so flip it to get L (surface → light).
+                Ldir = -normalize(dirIntens.xyz);
+                falloff = 1.0;
+            }
+
+            float NdotLlight = max(dot(N, Ldir), 0.0);
+            if (NdotLlight <= 0.0) continue;
+
+            vec3 Li = colorPad.xyz * dirIntens.w * falloff;
+            payloads.rayPayload.accum +=
+                payloads.rayPayload.color * diffuseBrdf * Li * NdotLlight;
+        }
+    }
+
     float r1 = nextRandom(payloads.rayPayload.rngSeed);
     float r2 = nextRandom(payloads.rayPayload.rngSeed);
     float r3 = nextRandom(payloads.rayPayload.rngSeed);

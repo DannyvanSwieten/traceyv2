@@ -23,7 +23,11 @@ namespace tracey
                             float clearDepth) override;
         void endRenderPass() override;
         void bindPipeline(GraphicsPipeline* pipeline) override;
+        void bindPointsPipeline(GraphicsPipeline* pipeline) override;
+        void bindLinesPipeline(GraphicsPipeline* pipeline) override;
+        void bindGroundPipeline(GraphicsPipeline* pipeline) override;
         void bindVertexBuffer(const Buffer* buffer, uint32_t offset) override;
+        void bindVertexBufferAt(const Buffer* buffer, uint32_t binding, uint32_t offset) override;
         void bindIndexBuffer(const Buffer* buffer, uint32_t offset) override;
         void drawIndexed(uint32_t indexCount, uint32_t instanceCount,
                         uint32_t firstIndex, int32_t vertexOffset,

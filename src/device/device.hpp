@@ -94,6 +94,12 @@ namespace tracey
                                                SamplerAddressMode addressMode = SamplerAddressMode::Repeat) = 0;
         virtual BottomLevelAccelerationStructure *createBottomLevelAccelerationStructure(const Buffer *positions, uint32_t positionCount, uint32_t positionStride, const Buffer *indices, uint32_t indexCount, const BVHConfig &bvhConfig = {}) = 0;
         virtual TopLevelAccelerationStructure *createTopLevelAccelerationStructure(std::span<const BottomLevelAccelerationStructure *> blases, std::span<const Tlas::Instance> instances) = 0;
+
+        // Upper bound on bindless sampled-image array size for a single
+        // descriptor set. Backends derive this from physical device limits
+        // (e.g. maxPerStageResources on Vulkan/MoltenVK, where the entire
+        // compute pipeline's resource count must fit).
+        virtual uint32_t maxBindlessTextures() const = 0;
     };
 
     Device *createDevice(DeviceType type, DeviceBackend backend);

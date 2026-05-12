@@ -86,7 +86,7 @@ int main(int /*argc*/, char** /*argv*/) {
     // into; the linear running mean lives in the accumulator. We blit
     // outputImage directly to the swapchain — no CPU tonemap needed.
     config.hdr_output = false;
-    config.samples_per_frame = 4;  // smaller batches; accumulator builds across frames
+    config.max_samples = 1024;
     config.max_bounces = 8;
 
     std::printf("Shader dir: %s\n", config.shader_dir.string().c_str());
@@ -95,6 +95,12 @@ int main(int /*argc*/, char** /*argv*/) {
     try {
         engine = std::make_unique<tracey_editor::RenderEngine>(config);
         engine->initialize_path_tracer();
+        engine->initialize_rasterizer();
+        // Install an empty CompiledScene up front so render_tick can draw
+        // the reference ground grid before the first import. Without this,
+        // a fresh launch with no SOP graph yet has m_compiled_scene == null,
+        // and render_tick early-returns leaving the viewport black.
+        engine->compile_scene();
     } catch (const std::exception& e) {
         std::fprintf(stderr, "Render engine init failed: %s\n", e.what());
         return 1;

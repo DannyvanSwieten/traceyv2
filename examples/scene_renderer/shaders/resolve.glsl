@@ -2,7 +2,10 @@
 // Reinhard tonemap + sRGB gamma into the display-ready output image.
 
 void shader(uvec2 pixel, in RayPayloads payloads) {
-    vec3 sampleColor = payloads.rayPayload.color;
+    // `color` is the throughput committed at miss / emission; `accum` is the
+    // direct-lighting contribution gathered during each hit. Their sum is
+    // the radiance estimate for this sample.
+    vec3 sampleColor = payloads.rayPayload.color + payloads.rayPayload.accum;
 
     // 1-based sample number being folded into the running mean.
     //   currentSample      — 1-based count of render() calls since clear

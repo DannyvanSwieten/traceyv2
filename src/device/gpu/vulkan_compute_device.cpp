@@ -10,6 +10,7 @@
 #include "../../ray_tracing/ray_tracing_pipeline/gpu/vulkan_compute_raytracing_pipeline.hpp"
 #include "../../ray_tracing/ray_tracing_pipeline/gpu/wavefront/vulkan_wavefront_pipeline.hpp"
 #include "../../ray_tracing/ray_tracing_command_buffer/gpu/vulkan_compute_ray_tracing_command_buffer.hpp"
+#include <algorithm>
 #include <sstream>
 #include <array>
 namespace tracey
@@ -102,12 +103,7 @@ namespace tracey
 
     RayTracingPipeline *VulkanComputeDevice::createWaveFrontRayTracingPipeline(const RayTracingPipelineLayoutDescriptor &layout, const ShaderBindingTable *sbt)
     {
-        fprintf(stderr, "\n=== createWaveFrontRayTracingPipeline called ===\n");
-        fflush(stderr);
-        auto* pipeline = new VulkanWaveFrontPipeline(*this, layout, *dynamic_cast<const CpuShaderBindingTable *>(sbt));
-        fprintf(stderr, "=== VulkanWaveFrontPipeline created successfully ===\n");
-        fflush(stderr);
-        return pipeline;
+        return new VulkanWaveFrontPipeline(*this, layout, *dynamic_cast<const CpuShaderBindingTable *>(sbt));
     }
 
     ShaderModule *VulkanComputeDevice::createShaderModule(ShaderStage stage, const std::string_view source, const std::string_view entryPoint)
@@ -144,6 +140,24 @@ namespace tracey
     {
         return new VulkanComputeTopLevelAccelerationStructure(*this, blases, instances);
     }
+    uint32_t VulkanComputeDevice::maxBindlessTextures() const
+    {
+        VkPhysicalDeviceProperties props{};
+        vkGetPhysicalDeviceProperties(m_vulkanContext.physicalDevice(), &props);
+
+        // The wavefront compute pipeline reserves ~30 fixed bindings (TLAS,
+        // ray queues, payload, samplers, UBO, fixed SSBOs). Reserve 64 to keep
+        // headroom for future additions without hitting maxPerStageResources.
+        constexpr uint32_t kReserved = 64;
+        const uint32_t budget = props.limits.maxPerStageResources > kReserved
+            ? props.limits.maxPerStageResources - kReserved
+            : 0;
+
+        // Also bound by maxPerStageDescriptorSampledImages so the array itself
+        // is representable on this device.
+        return std::min(budget, props.limits.maxPerStageDescriptorSampledImages);
+    }
+
     int VulkanComputeDevice::findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties)
     {
         VkPhysicalDeviceMemoryProperties memProperties;
