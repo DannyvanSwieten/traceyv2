@@ -124,12 +124,29 @@ function snapshotForUndo(): void {
   refreshHistoryCounts();
 }
 
-// Stringify the graph with every `pos` field stripped. Used to detect
-// position-only edits so dragging a node doesn't trigger a re-cook on the
-// native side — the geometry output is purely a function of params and
-// connections, so canvas layout is a UI-only concern.
+// Stringify the graph with every `pos` field stripped AND with object keys
+// emitted in a canonical (alphabetical) order. Used to detect position-only
+// edits so dragging a node doesn't trigger a re-cook on the native side —
+// the geometry output is purely a function of params and connections, so
+// canvas layout is a UI-only concern.
+//
+// Canonical key order matters because lastCommittedGraph receives its key
+// ordering from whichever path last committed: an engine reload
+// (loadSopGraphFromEngine → JSON.parse(engine_json)) uses the C++
+// serializer's order, while a local push (schedulePush) uses whatever the
+// frontend mutators built. Without sorting, those two orderings can differ
+// for the same logical graph and produce false-positive cookNeeded results
+// — every drag after a sop_graph_changed would re-cook unnecessarily.
 function structuralKey(g: SopGraph): string {
-  return JSON.stringify(g, (key, value) => (key === 'pos' ? null : value));
+  return JSON.stringify(g, (key, value) => {
+    if (key === 'pos') return null;
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      const sorted: Record<string, unknown> = {};
+      for (const k of Object.keys(value).sort()) sorted[k] = (value as Record<string, unknown>)[k];
+      return sorted;
+    }
+    return value;
+  });
 }
 
 function schedulePush() {
