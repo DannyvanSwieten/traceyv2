@@ -67,6 +67,18 @@ namespace tracey
         MirroredRepeat
     };
 
+    // Four standard sampler presets the renderer keeps as descriptor-set
+    // entries. The hit shader picks one per texture access via packed bits
+    // on GPUMaterial. Keeping this enum tight (2 bits per slot) lets us
+    // pack five per-material sampler choices into a single uint.
+    enum class SamplerKind : uint8_t
+    {
+        LinearRepeat  = 0,
+        LinearClamp   = 1,
+        NearestRepeat = 2,
+        NearestClamp  = 3,
+    };
+
     class BottomLevelAccelerationStructure;
     class TopLevelAccelerationStructure;
     class RayTracingPipeline;

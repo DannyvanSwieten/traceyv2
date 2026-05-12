@@ -39,15 +39,26 @@ namespace tracey
         VulkanContext &context() { return m_vulkanContext; }
         const VulkanContext &context() const { return m_vulkanContext; }
 
-        // Get fixed samplers for bindless texture support
+        // Get fixed samplers for bindless texture support. The renderer
+        // always keeps these four combos around so per-texture sampler
+        // choice (driven by glTF wrap modes and the linear-vs-color
+        // classification) is a 2-bit index, not a descriptor rebind.
+        VkSampler linearRepeatSampler() const { return m_linearSampler; }
+        VkSampler linearClampSampler() const { return m_linearClampSampler; }
+        VkSampler nearestRepeatSampler() const { return m_nearestSampler; }
+        VkSampler nearestClampSampler() const { return m_nearestClampSampler; }
+        // Back-compat shims for callers still on the old two-sampler API.
         VkSampler linearSampler() const { return m_linearSampler; }
         VkSampler nearestSampler() const { return m_nearestSampler; }
+        VkSampler samplerForKind(SamplerKind kind) const;
 
     private:
         VkDescriptorPool m_descriptorPool = VK_NULL_HANDLE;
         VkCommandPool m_commandPool = VK_NULL_HANDLE;
         VkSampler m_linearSampler = VK_NULL_HANDLE;
+        VkSampler m_linearClampSampler = VK_NULL_HANDLE;
         VkSampler m_nearestSampler = VK_NULL_HANDLE;
+        VkSampler m_nearestClampSampler = VK_NULL_HANDLE;
 
     private:
         VulkanContext m_vulkanContext;

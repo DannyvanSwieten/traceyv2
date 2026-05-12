@@ -23,7 +23,7 @@ namespace tracey
         void setStorageBuffer(uint32_t bindingIndex, Buffer *buffer) override;
 
         // Bindless texture support
-        void setSampler(const std::string_view name, bool useLinearFiltering) override;
+        void setSampler(const std::string_view name, SamplerKind kind) override;
         void setSampledImageArray(const std::string_view name, std::span<Image2D *> images) override;
 
         VkDescriptorSet vkDescriptorSet() const { return m_descriptorSet; }

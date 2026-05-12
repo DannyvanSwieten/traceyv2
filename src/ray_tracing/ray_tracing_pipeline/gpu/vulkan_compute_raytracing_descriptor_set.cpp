@@ -277,7 +277,7 @@ namespace tracey
         vkUpdateDescriptorSets(m_device.vkDevice(), 1, &writeDesc, 0, nullptr);
     }
 
-    void VulkanComputeRayTracingDescriptorSet::setSampler(const std::string_view name, bool useLinearFiltering)
+    void VulkanComputeRayTracingDescriptorSet::setSampler(const std::string_view name, SamplerKind kind)
     {
         const auto index = m_layout.indexForBinding(name) + m_userBindingOffset;
 
@@ -290,7 +290,7 @@ namespace tracey
         writeDesc.descriptorCount = 1;
 
         VkDescriptorImageInfo imageInfo{};
-        imageInfo.sampler = useLinearFiltering ? m_device.linearSampler() : m_device.nearestSampler();
+        imageInfo.sampler = m_device.samplerForKind(kind);
         writeDesc.pImageInfo = &imageInfo;
 
         vkUpdateDescriptorSets(m_device.vkDevice(), 1, &writeDesc, 0, nullptr);

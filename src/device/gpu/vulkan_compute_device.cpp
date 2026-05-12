@@ -81,12 +81,48 @@ namespace tracey
         {
             throw std::runtime_error("Failed to create nearest sampler");
         }
+
+        // Clamp-to-edge variants. Built from the matching filter info so the
+        // only differences vs. the repeat samplers above are the address
+        // modes — useful for textures whose UVs aren't tileable (decals,
+        // baked AO/skydomes, some glTF assets that explicitly request clamp).
+        VkSamplerCreateInfo linearClampInfo = linearSamplerInfo;
+        linearClampInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        linearClampInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        linearClampInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        if (vkCreateSampler(m_vulkanContext.device(), &linearClampInfo, nullptr, &m_linearClampSampler) != VK_SUCCESS)
+        {
+            throw std::runtime_error("Failed to create linear clamp sampler");
+        }
+
+        VkSamplerCreateInfo nearestClampInfo = nearestSamplerInfo;
+        nearestClampInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        nearestClampInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        nearestClampInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        if (vkCreateSampler(m_vulkanContext.device(), &nearestClampInfo, nullptr, &m_nearestClampSampler) != VK_SUCCESS)
+        {
+            throw std::runtime_error("Failed to create nearest clamp sampler");
+        }
+    }
+
+    VkSampler VulkanComputeDevice::samplerForKind(SamplerKind kind) const
+    {
+        switch (kind)
+        {
+        case SamplerKind::LinearRepeat:  return m_linearSampler;
+        case SamplerKind::LinearClamp:   return m_linearClampSampler;
+        case SamplerKind::NearestRepeat: return m_nearestSampler;
+        case SamplerKind::NearestClamp:  return m_nearestClampSampler;
+        }
+        return m_linearSampler;
     }
 
     VulkanComputeDevice::~VulkanComputeDevice()
     {
         vkDestroySampler(m_vulkanContext.device(), m_linearSampler, nullptr);
+        vkDestroySampler(m_vulkanContext.device(), m_linearClampSampler, nullptr);
         vkDestroySampler(m_vulkanContext.device(), m_nearestSampler, nullptr);
+        vkDestroySampler(m_vulkanContext.device(), m_nearestClampSampler, nullptr);
         vkDestroyCommandPool(m_vulkanContext.device(), m_commandPool, nullptr);
         vkDestroyDescriptorPool(m_vulkanContext.device(), m_descriptorPool, nullptr);
     }

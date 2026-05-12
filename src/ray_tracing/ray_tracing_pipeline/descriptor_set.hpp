@@ -1,4 +1,5 @@
 #pragma once
+#include <cstdint>
 #include <string_view>
 #include <span>
 namespace tracey
@@ -6,6 +7,9 @@ namespace tracey
     class Image2D;
     class Buffer;
     class TopLevelAccelerationStructure;
+    // Forward declared from device.hpp to avoid pulling tlas/blas headers
+    // through every descriptor-set consumer.
+    enum class SamplerKind : uint8_t;
     class DescriptorSet
     {
     public:
@@ -28,7 +32,7 @@ namespace tracey
         virtual void setStorageBuffer(uint32_t bindingIndex, Buffer *buffer) = 0;
 
         // Bindless texture support: separate samplers and sampled image arrays
-        virtual void setSampler(const std::string_view name, bool useLinearFiltering) = 0;
+        virtual void setSampler(const std::string_view name, SamplerKind kind) = 0;
         virtual void setSampledImageArray(const std::string_view name, std::span<Image2D *> images) = 0;
     };
 } // namespace tracey
