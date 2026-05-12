@@ -82,22 +82,30 @@ namespace tracey
         std::map<std::pair<size_t, size_t>, uint16_t> outReg;
         std::vector<Vec4> paramDefaults;
 
-        auto sourceRegFor = [&](size_t consumerUid, size_t inputPort) -> uint16_t {
-            auto inc = graph.incomingTo(consumerUid, inputPort);
-            if (!inc)
+        auto sourceRegFor = [&](const ShaderGraphNode *consumer, size_t inputPort) -> uint16_t {
+            auto inc = graph.incomingTo(consumer->uid(), inputPort);
+            if (inc)
             {
-                throw std::runtime_error(
-                    "compileShaderGraph: node " + std::to_string(consumerUid) +
-                    " has unconnected input port " + std::to_string(inputPort));
+                auto it = outReg.find(*inc);
+                if (it == outReg.end())
+                {
+                    throw std::runtime_error(
+                        "compileShaderGraph: unresolved source for node " +
+                        std::to_string(consumer->uid()));
+                }
+                return it->second;
             }
-            auto it = outReg.find(*inc);
-            if (it == outReg.end())
+            // No wire — fall back to the node's stored input default if
+            // the user dialed one in via the inspector. Emit a LoadConst
+            // so the rest of the pipeline doesn't have to know whether
+            // the operand came from a ConstantNode or an inline default.
+            if (auto def = consumer->inputDefault(inputPort))
             {
-                throw std::runtime_error(
-                    "compileShaderGraph: unresolved source for node " +
-                    std::to_string(consumerUid));
+                return builder.loadConst(*def);
             }
-            return it->second;
+            throw std::runtime_error(
+                "compileShaderGraph: node " + std::to_string(consumer->uid()) +
+                " has unconnected input port " + std::to_string(inputPort));
         };
 
         for (const auto *node : order)
@@ -139,8 +147,8 @@ namespace tracey
             case ShaderNodeKind::BinaryOp:
             {
                 const auto *b = static_cast<const BinaryOpNode *>(node);
-                uint16_t a = sourceRegFor(node->uid(), 0);
-                uint16_t br = sourceRegFor(node->uid(), 1);
+                uint16_t a = sourceRegFor(node,0);
+                uint16_t br = sourceRegFor(node,1);
                 uint16_t dst = builder.allocReg();
                 builder.emit(b->opcode(), dst, a, br);
                 outReg[{node->uid(), 0}] = dst;
@@ -149,7 +157,7 @@ namespace tracey
             case ShaderNodeKind::UnaryOp:
             {
                 const auto *u = static_cast<const UnaryOpNode *>(node);
-                uint16_t a = sourceRegFor(node->uid(), 0);
+                uint16_t a = sourceRegFor(node,0);
                 uint16_t dst = builder.allocReg();
                 builder.emit(u->opcode(), dst, a);
                 outReg[{node->uid(), 0}] = dst;
@@ -158,9 +166,9 @@ namespace tracey
             case ShaderNodeKind::TernaryOp:
             {
                 const auto *t = static_cast<const TernaryOpNode *>(node);
-                uint16_t a = sourceRegFor(node->uid(), 0);
-                uint16_t b = sourceRegFor(node->uid(), 1);
-                uint16_t c = sourceRegFor(node->uid(), 2);
+                uint16_t a = sourceRegFor(node,0);
+                uint16_t b = sourceRegFor(node,1);
+                uint16_t c = sourceRegFor(node,2);
                 uint16_t dst = builder.allocReg();
                 builder.emit(t->opcode(), dst, a, b, c);
                 outReg[{node->uid(), 0}] = dst;
@@ -169,7 +177,7 @@ namespace tracey
             case ShaderNodeKind::Output:
             {
                 const auto *o = static_cast<const OutputNode *>(node);
-                uint16_t src = sourceRegFor(node->uid(), 0);
+                uint16_t src = sourceRegFor(node,0);
                 builder.emit(o->opcode(), 0, src);
                 break;
             }

@@ -26,6 +26,7 @@ namespace tracey
             case Op::LoadViewDir:         return "LoadViewDir";
             case Op::LoadUV0:             return "LoadUV0";
             case Op::LoadUV1:             return "LoadUV1";
+            case Op::LoadInstanceIndex:   return "LoadInstanceIndex";
             case Op::LoadInputAlbedo:     return "LoadInputAlbedo";
             case Op::LoadInputMetallic:   return "LoadInputMetallic";
             case Op::LoadInputRoughness:  return "LoadInputRoughness";
@@ -137,6 +138,19 @@ namespace tracey
             case ShaderNodeKind::Output:
                 j["op"] = opToString(static_cast<const OutputNode &>(node).opcode());
                 break;
+            }
+            // Per-input default constants for unconnected inputs. Keyed
+            // by port index (as a string, JSON-object convention) → vec4.
+            // Only emitted when at least one default is set, so existing
+            // graphs round-trip byte-identically.
+            if (!node.inputDefaults().empty())
+            {
+                json defs = json::object();
+                for (const auto &[port, v] : node.inputDefaults())
+                {
+                    defs[std::to_string(port)] = {v.x, v.y, v.z, v.w};
+                }
+                j["input_defaults"] = std::move(defs);
             }
             return j;
         }
@@ -270,7 +284,18 @@ namespace tracey
         }
         for (const auto &nj : nodesArr)
         {
-            graph->addNode(nodeFromJson(nj));
+            auto node = nodeFromJson(nj);
+            // Hydrate per-input defaults set via the inspector. Object
+            // keys are port indices as strings; values are vec4 arrays.
+            if (auto it = nj.find("input_defaults"); it != nj.end() && it->is_object())
+            {
+                for (auto kv = it->begin(); kv != it->end(); ++kv)
+                {
+                    const size_t port = std::stoull(kv.key());
+                    node->setInputDefault(port, readVec4(kv.value(), "input_defaults"));
+                }
+            }
+            graph->addNode(std::move(node));
         }
 
         const auto &connsArr = require(doc, "connections");
