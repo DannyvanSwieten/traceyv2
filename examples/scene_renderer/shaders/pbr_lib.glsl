@@ -16,7 +16,8 @@
 // offset 2:  metallicRoughnessTexIndex (int)
 // offset 3:  emissiveTexIndex (int)
 // offset 4:  occlusionTexIndex (int)
-// offset 5-7: padding
+// offset 5:  samplerBits (uint, packed 2 bits per slot: albedo=0, normal=1, mr=2, emissive=3, occlusion=4)
+// offset 6-7: padding
 // offset 8:  baseColorR (float)
 // offset 9:  baseColorG (float)
 // offset 10: baseColorB (float)
@@ -29,6 +30,25 @@
 // offset 17-19: padding
 #define MATERIAL_STRIDE 20
 
+// Sample one of the 4 bound samplers based on a 2-bit kind:
+//   0 = linear+repeat, 1 = linear+clamp,
+//   2 = nearest+repeat, 3 = nearest+clamp.
+// GLSL can't index into an array of samplers without descriptor-indexing,
+// so we dispatch with a chain of ifs — only one path is taken per fragment
+// and the compiler folds these into uniform-control-flow branches.
+vec4 sampleMatTexture(uint texIdx, uint kind, vec2 uv) {
+    if (kind == 1u) return texture(sampler2D(textures[texIdx], linearClampSampler),   uv);
+    if (kind == 2u) return texture(sampler2D(textures[texIdx], nearestRepeatSampler), uv);
+    if (kind == 3u) return texture(sampler2D(textures[texIdx], nearestClampSampler),  uv);
+    return texture(sampler2D(textures[texIdx], linearRepeatSampler), uv);
+}
+
+uint samplerKindForSlot(uint instanceIndex, uint slot) {
+    uint baseOffset = instanceIndex * uint(MATERIAL_STRIDE);
+    uint bits = uint(materials.data[baseOffset + 5u]);
+    return (bits >> (slot * 2u)) & 0x3u;
+}
+
 // Get albedo color from material (texture or base color factor)
 vec3 getMaterialAlbedo(uint instanceIndex, vec2 uv) {
     uint baseOffset = instanceIndex * uint(MATERIAL_STRIDE);
@@ -40,7 +60,7 @@ vec3 getMaterialAlbedo(uint instanceIndex, vec2 uv) {
     vec3 baseColor = vec3(baseR, baseG, baseB);
 
     if (albedoTexIdx >= 0) {
-        vec4 texColor = texture(sampler2D(textures[albedoTexIdx], linearSampler), uv);
+        vec4 texColor = sampleMatTexture(uint(albedoTexIdx), samplerKindForSlot(instanceIndex, 0u), uv);
         return texColor.rgb * baseColor;
     }
 
@@ -56,7 +76,7 @@ vec2 getMaterialMetallicRoughness(uint instanceIndex, vec2 uv) {
     float roughnessFactor = intBitsToFloat(materials.data[baseOffset + 13u]);
 
     if (mrTexIdx >= 0) {
-        vec4 mrTex = texture(sampler2D(textures[mrTexIdx], linearSampler), uv);
+        vec4 mrTex = sampleMatTexture(uint(mrTexIdx), samplerKindForSlot(instanceIndex, 2u), uv);
         // glTF spec: G=roughness, B=metallic
         return vec2(mrTex.b * metallicFactor, mrTex.g * roughnessFactor);
     }
@@ -75,7 +95,7 @@ vec3 getMaterialEmissive(uint instanceIndex, vec2 uv) {
     vec3 emissiveFactor = vec3(emissiveR, emissiveG, emissiveB);
 
     if (emissiveTexIdx >= 0) {
-        vec4 texColor = texture(sampler2D(textures[emissiveTexIdx], linearSampler), uv);
+        vec4 texColor = sampleMatTexture(uint(emissiveTexIdx), samplerKindForSlot(instanceIndex, 3u), uv);
         return texColor.rgb * emissiveFactor;
     }
 

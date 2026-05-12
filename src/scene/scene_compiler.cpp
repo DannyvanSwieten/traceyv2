@@ -12,10 +12,15 @@
 
 namespace tracey
 {
-    int32_t SceneCompiler::loadTexture(Device *device, CompiledScene &result, const Scene &scene, const std::string &texturePath)
+    int32_t SceneCompiler::loadTexture(Device *device, CompiledScene &result, const Scene &scene, const std::string &texturePath, bool isColorData)
     {
+        // Cache key folds in the format hint so the same source file can
+        // produce both a sRGB albedo upload and a Unorm normal/MR upload
+        // without one stomping the other. Suffix is opaque — just keeps the
+        // two paths distinguishable in the map.
+        const std::string cacheKey = texturePath + (isColorData ? "|srgb" : "|linear");
         // Check if texture is already loaded
-        auto it = result.texturePathToIndex.find(texturePath);
+        auto it = result.texturePathToIndex.find(cacheKey);
         if (it != result.texturePathToIndex.end())
         {
             return static_cast<int32_t>(it->second);
@@ -109,11 +114,16 @@ namespace tracey
             std::cout << "Loaded texture: " << texturePath << " (" << width << "x" << height << ")" << std::endl;
         }
 
-        // Create GPU texture
+        // Create GPU texture. Color-data textures (albedo, emissive) use
+        // sRGB so the hardware decodes gamma on sample; data textures
+        // (normal, metallic-roughness, occlusion) use Unorm so the byte
+        // values reach the shader unmodified.
+        const ImageFormat texFormat = isColorData ? ImageFormat::R8G8B8A8Srgb
+                                                  : ImageFormat::R8G8B8A8Unorm;
         Image2D *texture = device->createImage2DWithData(
             static_cast<uint32_t>(width),
             static_cast<uint32_t>(height),
-            ImageFormat::R8G8B8A8Srgb,
+            texFormat,
             data,
             dataSize,
             SamplerFilter::Linear,
@@ -137,7 +147,7 @@ namespace tracey
         // Store texture and return index
         int32_t index = static_cast<int32_t>(result.textures.size());
         result.textures.push_back(std::unique_ptr<Image2D>(texture));
-        result.texturePathToIndex[texturePath] = static_cast<size_t>(index);
+        result.texturePathToIndex[cacheKey] = static_cast<size_t>(index);
 
         return index;
     }
@@ -146,35 +156,49 @@ namespace tracey
     {
         GPUMaterial gpuMat;
 
-        // Load textures
+        // Pack per-texture sampler choices into samplerBits (2 bits per slot).
+        // The hit shader reads back via samplerBits >> (slot * 2) & 3.
+        auto packSampler = [&](SamplerKind k, uint32_t slot) {
+            gpuMat.samplerBits |= (static_cast<uint32_t>(k) & 0x3u) << (slot * 2u);
+        };
+
+        // Load textures. Albedo/emissive carry color data and must be loaded
+        // as sRGB; normal/MR/occlusion are raw data and need Unorm. Loading
+        // a normal map as sRGB silently gamma-decodes the byte triplets and
+        // produces wrong shading.
         auto albedoPath = material.getTexture(TEXTURE_ALBEDO);
         if (albedoPath)
         {
-            gpuMat.albedoTexIndex = loadTexture(device, result, scene, *albedoPath);
+            gpuMat.albedoTexIndex = loadTexture(device, result, scene, *albedoPath, /*isColorData=*/true);
+            packSampler(material.getTextureSampler(TEXTURE_ALBEDO), 0u);
         }
 
         auto normalPath = material.getTexture(TEXTURE_NORMAL);
         if (normalPath)
         {
-            gpuMat.normalTexIndex = loadTexture(device, result, scene, *normalPath);
+            gpuMat.normalTexIndex = loadTexture(device, result, scene, *normalPath, /*isColorData=*/false);
+            packSampler(material.getTextureSampler(TEXTURE_NORMAL), 1u);
         }
 
         auto mrPath = material.getTexture(TEXTURE_METALLIC_ROUGHNESS);
         if (mrPath)
         {
-            gpuMat.metallicRoughnessTexIndex = loadTexture(device, result, scene, *mrPath);
+            gpuMat.metallicRoughnessTexIndex = loadTexture(device, result, scene, *mrPath, /*isColorData=*/false);
+            packSampler(material.getTextureSampler(TEXTURE_METALLIC_ROUGHNESS), 2u);
         }
 
         auto emissivePath = material.getTexture(TEXTURE_EMISSIVE);
         if (emissivePath)
         {
-            gpuMat.emissiveTexIndex = loadTexture(device, result, scene, *emissivePath);
+            gpuMat.emissiveTexIndex = loadTexture(device, result, scene, *emissivePath, /*isColorData=*/true);
+            packSampler(material.getTextureSampler(TEXTURE_EMISSIVE), 3u);
         }
 
         auto occlusionPath = material.getTexture(TEXTURE_OCCLUSION);
         if (occlusionPath)
         {
-            gpuMat.occlusionTexIndex = loadTexture(device, result, scene, *occlusionPath);
+            gpuMat.occlusionTexIndex = loadTexture(device, result, scene, *occlusionPath, /*isColorData=*/false);
+            packSampler(material.getTextureSampler(TEXTURE_OCCLUSION), 4u);
         }
 
         // Set base color factor

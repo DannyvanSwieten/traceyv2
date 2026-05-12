@@ -15,7 +15,7 @@
 namespace tracey
 {
     // GPU material structure for shader consumption
-    // Layout: 5 texture indices + 3 pad + 4 baseColor + 4 params + 4 emissive = 80 bytes
+    // Layout: 5 texture indices + sampler bits + 2 pad + 4 baseColor + 4 params + 4 emissive = 80 bytes
     struct GPUMaterial
     {
         // Texture indices (-1 if no texture)
@@ -25,8 +25,13 @@ namespace tracey
         int32_t emissiveTexIndex = -1;
         int32_t occlusionTexIndex = -1;
 
+        // 2-bit SamplerKind per texture slot, in this order:
+        //   bits 0-1: albedo, 2-3: normal, 4-5: metallicRoughness,
+        //   bits 6-7: emissive, 8-9: occlusion.
+        // The hit shader picks one of the four bound samplers per access.
+        uint32_t samplerBits = 0;
+
         // Padding for vec4 alignment
-        int32_t _pad0 = 0;
         int32_t _pad1 = 0;
         int32_t _pad2 = 0;
 
@@ -148,8 +153,13 @@ namespace tracey
         static ObjectData compileObject(Device *device, const SceneObject &obj, const BVHConfig &bvhConfig);
         static Mat4 computeWorldTransform(const Scene &scene, const Actor &actor);
 
-        // Load a texture and return its index, or -1 if failed
-        static int32_t loadTexture(Device *device, CompiledScene &result, const Scene &scene, const std::string &texturePath);
+        // Load a texture and return its index, or -1 if failed. `isColorData`
+        // selects the GPU format: true → R8G8B8A8Srgb (gamma-decoded on
+        // sample, for albedo/emissive), false → R8G8B8A8Unorm (raw bytes,
+        // for normal/MR/occlusion). Two distinct uploads are kept if the
+        // same texture path is referenced as both color and data — the
+        // cache key includes the format.
+        static int32_t loadTexture(Device *device, CompiledScene &result, const Scene &scene, const std::string &texturePath, bool isColorData);
 
         // Convert MaterialInstance to GPUMaterial, loading textures as needed
         static GPUMaterial convertMaterial(Device *device, CompiledScene &result, const Scene &scene, const MaterialInstance &material);

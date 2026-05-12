@@ -1,5 +1,6 @@
 #pragma once
 #include "../core/types.hpp"
+#include "../device/device.hpp"  // for SamplerKind
 #include <string>
 #include <unordered_map>
 #include <variant>
@@ -33,6 +34,10 @@ namespace tracey
         void setVec4(const std::string &name, const Vec4 &value);
         void setInt(const std::string &name, int value);
         void setTexture(const std::string &name, const std::string &texturePath);
+        // Per-texture sampler choice. Defaults to LinearRepeat (the glTF
+        // implicit default when a texture omits its sampler reference) so
+        // callers that only set the path keep working.
+        void setTextureSampler(const std::string &name, SamplerKind kind);
 
         // Property getters
         std::optional<float> getFloat(const std::string &name) const;
@@ -41,6 +46,9 @@ namespace tracey
         std::optional<Vec4> getVec4(const std::string &name) const;
         std::optional<int> getInt(const std::string &name) const;
         std::optional<std::string> getTexture(const std::string &name) const;
+        // Returns the sampler choice for the named texture, or LinearRepeat
+        // if the texture is missing or no explicit sampler was set.
+        SamplerKind getTextureSampler(const std::string &name) const;
 
         // Generic access
         bool hasProperty(const std::string &name) const;
@@ -61,6 +69,10 @@ namespace tracey
     private:
         std::string m_shaderId;
         std::unordered_map<std::string, MaterialValue> m_properties;
+        // Parallel map: sampler choice per texture slot name (TEXTURE_ALBEDO,
+        // TEXTURE_NORMAL, …). Sparse — only populated when a non-default
+        // sampler is requested.
+        std::unordered_map<std::string, SamplerKind> m_textureSamplers;
 
         // Future extension point for shader graphs
         // std::variant<std::string, std::unique_ptr<ShaderGraph>> m_shader;

@@ -146,6 +146,44 @@ namespace tracey
             return "";
         }
 
+        // Pick a SamplerKind from a glTF Texture's sampler reference. glTF's
+        // sampler matrix is bigger than ours (3 wrap modes × 6 minFilters ×
+        // 2 magFilters), so we collapse:
+        //   - MIRRORED_REPEAT folds into Repeat (no shader-side mirror yet).
+        //   - Mipmap variants of minFilter are ignored — we don't generate
+        //     mips, so only the base filter classification matters.
+        //   - If the texture omits `sampler` (-1), the glTF default is
+        //     LINEAR/REPEAT, which maps to LinearRepeat.
+        SamplerKind samplerKindForTexture(const tinygltf::Model &model, int textureIndex)
+        {
+            if (textureIndex < 0 || textureIndex >= static_cast<int>(model.textures.size()))
+                return SamplerKind::LinearRepeat;
+            const int samplerIdx = model.textures[textureIndex].sampler;
+            if (samplerIdx < 0 || samplerIdx >= static_cast<int>(model.samplers.size()))
+                return SamplerKind::LinearRepeat;
+            const auto &s = model.samplers[samplerIdx];
+
+            // Treat unset filters as LINEAR (the spec-compatible "nice" default).
+            const int mag = s.magFilter;
+            const int minF = s.minFilter;
+            const bool nearestMag = (mag == TINYGLTF_TEXTURE_FILTER_NEAREST);
+            const bool nearestMin = (minF == TINYGLTF_TEXTURE_FILTER_NEAREST ||
+                                     minF == TINYGLTF_TEXTURE_FILTER_NEAREST_MIPMAP_NEAREST ||
+                                     minF == TINYGLTF_TEXTURE_FILTER_NEAREST_MIPMAP_LINEAR);
+            const bool isNearest = nearestMag && nearestMin;
+
+            // wrap: if EITHER axis says clamp, the asset clearly wants clamp
+            // (a partial clamp like clamp-S/repeat-T is rare; this errs on
+            // the side of matching the artist's intent for the constrained axis).
+            const bool isClamp = (s.wrapS == TINYGLTF_TEXTURE_WRAP_CLAMP_TO_EDGE) ||
+                                 (s.wrapT == TINYGLTF_TEXTURE_WRAP_CLAMP_TO_EDGE);
+
+            if (isNearest && isClamp)  return SamplerKind::NearestClamp;
+            if (isNearest)             return SamplerKind::NearestRepeat;
+            if (isClamp)               return SamplerKind::LinearClamp;
+            return SamplerKind::LinearRepeat;
+        }
+
         // Extract embedded texture data from tinygltf image
         void extractEmbeddedTextures(const tinygltf::Model &model, Scene &scene)
         {
@@ -205,6 +243,8 @@ namespace tracey
                 if (!texPath.empty())
                 {
                     material.setTexture(TEXTURE_ALBEDO, texPath);
+                    material.setTextureSampler(TEXTURE_ALBEDO,
+                        samplerKindForTexture(model, pbr.baseColorTexture.index));
                     std::cout << "  Albedo texture: " << texPath << std::endl;
                 }
             }
@@ -220,6 +260,8 @@ namespace tracey
                 if (!texPath.empty())
                 {
                     material.setTexture(TEXTURE_METALLIC_ROUGHNESS, texPath);
+                    material.setTextureSampler(TEXTURE_METALLIC_ROUGHNESS,
+                        samplerKindForTexture(model, pbr.metallicRoughnessTexture.index));
                     std::cout << "  Metallic/Roughness texture: " << texPath << std::endl;
                 }
             }
@@ -231,6 +273,8 @@ namespace tracey
                 if (!texPath.empty())
                 {
                     material.setTexture(TEXTURE_NORMAL, texPath);
+                    material.setTextureSampler(TEXTURE_NORMAL,
+                        samplerKindForTexture(model, gltfMat.normalTexture.index));
                     std::cout << "  Normal texture: " << texPath << std::endl;
                 }
             }
@@ -251,6 +295,8 @@ namespace tracey
                 if (!texPath.empty())
                 {
                     material.setTexture(TEXTURE_EMISSIVE, texPath);
+                    material.setTextureSampler(TEXTURE_EMISSIVE,
+                        samplerKindForTexture(model, gltfMat.emissiveTexture.index));
                     std::cout << "  Emissive texture: " << texPath << std::endl;
                 }
             }
@@ -262,6 +308,8 @@ namespace tracey
                 if (!texPath.empty())
                 {
                     material.setTexture(TEXTURE_OCCLUSION, texPath);
+                    material.setTextureSampler(TEXTURE_OCCLUSION,
+                        samplerKindForTexture(model, gltfMat.occlusionTexture.index));
                     std::cout << "  Occlusion texture: " << texPath << std::endl;
                 }
             }

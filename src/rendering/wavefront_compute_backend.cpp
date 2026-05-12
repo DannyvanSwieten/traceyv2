@@ -111,8 +111,14 @@ namespace tracey
         lightStructure.addMember({"data", "vec4", 0, true, 0});
         m_pipelineLayout->addStorageBuffer("lights", ShaderStage::ClosestHit, lightStructure);
 
-        m_pipelineLayout->addSampler("linearSampler", ShaderStage::ClosestHit);
-        m_pipelineLayout->addSampler("nearestSampler", ShaderStage::ClosestHit);
+        // Four sampler combos: filter (linear/nearest) × wrap (repeat/clamp).
+        // The hit shader picks one per texture access from a 2-bit field on
+        // the material; glTF's per-texture sampler info round-trips through
+        // here unchanged.
+        m_pipelineLayout->addSampler("linearRepeatSampler",  ShaderStage::ClosestHit);
+        m_pipelineLayout->addSampler("linearClampSampler",   ShaderStage::ClosestHit);
+        m_pipelineLayout->addSampler("nearestRepeatSampler", ShaderStage::ClosestHit);
+        m_pipelineLayout->addSampler("nearestClampSampler",  ShaderStage::ClosestHit);
         // Cap by the device's bindless texture budget. On macOS/MoltenVK the
         // whole compute pipeline's resources must fit under maxPerStageResources
         // (287), which leaves ~220 slots once the wavefront's fixed bindings
@@ -187,8 +193,10 @@ namespace tracey
                 descriptorSet->setBuffer("lights", scene.lightBuffer.get());
             }
 
-            descriptorSet->setSampler("linearSampler", true);
-            descriptorSet->setSampler("nearestSampler", false);
+            descriptorSet->setSampler("linearRepeatSampler",  SamplerKind::LinearRepeat);
+            descriptorSet->setSampler("linearClampSampler",   SamplerKind::LinearClamp);
+            descriptorSet->setSampler("nearestRepeatSampler", SamplerKind::NearestRepeat);
+            descriptorSet->setSampler("nearestClampSampler",  SamplerKind::NearestClamp);
 
             if (!scene.textures.empty())
             {

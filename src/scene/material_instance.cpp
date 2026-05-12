@@ -37,6 +37,17 @@ namespace tracey
         m_properties[name] = texturePath;
     }
 
+    void MaterialInstance::setTextureSampler(const std::string &name, SamplerKind kind)
+    {
+        m_textureSamplers[name] = kind;
+    }
+
+    SamplerKind MaterialInstance::getTextureSampler(const std::string &name) const
+    {
+        auto it = m_textureSamplers.find(name);
+        return it != m_textureSamplers.end() ? it->second : SamplerKind::LinearRepeat;
+    }
+
     std::optional<float> MaterialInstance::getFloat(const std::string &name) const
     {
         auto it = m_properties.find(name);
