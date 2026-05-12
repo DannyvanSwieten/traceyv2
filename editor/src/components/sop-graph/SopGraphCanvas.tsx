@@ -301,9 +301,44 @@ export const SopGraphCanvas: Component = () => {
       return el.isContentEditable === true;
     };
     const onDown = (e: KeyboardEvent) => {
-      if ((e.key === ' ' || e.code === 'Space') && !isTextEditing(e.target)) {
+      // Skip everything if the user is typing in an input — typing "o" in a
+      // parameter field shouldn't fire connectToObjectOutput, Delete in a
+      // number input shouldn't nuke selected nodes, etc.
+      if (isTextEditing(e.target)) return;
+
+      if (e.key === ' ' || e.code === 'Space') {
         e.preventDefault();
         if (!e.repeat) setSpaceDown(true);
+        return;
+      }
+
+      // Delete / Backspace / Escape / O all used to be scoped to keydown on
+      // the SVG element, which only fired when the canvas had keyboard
+      // focus. As soon as the user clicked the inspector, palette, or any
+      // other panel, focus moved and the keys went nowhere. Promoting these
+      // to a window listener — gated by the selection state and a panel
+      // mounted-check (this listener cleans up on unmount) — gives the
+      // expected "press Delete and the selected nodes vanish" UX regardless
+      // of where focus currently sits.
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        const uids = [...selectedNodes()];
+        if (uids.length === 0) return;
+        e.preventDefault();
+        for (const u of uids) removeNode(u);
+        setSelectedNode(null);
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        exitSubnet();
+        return;
+      }
+      if (e.key === 'o' || e.key === 'O') {
+        const uid = selectedNode();
+        if (uid === null) return;
+        e.preventDefault();
+        connectToObjectOutput(uid);
+        return;
       }
     };
     const onUp = (e: KeyboardEvent) => {
@@ -321,31 +356,6 @@ export const SopGraphCanvas: Component = () => {
       window.removeEventListener('blur', onBlur);
     });
   });
-
-  function onCanvasKeyDown(e: KeyboardEvent) {
-    if (e.key === 'Delete' || e.key === 'Backspace') {
-      // Copy the selection first — removeNode walks the graph signal which
-      // may invalidate iteration order if we read it lazily, and the
-      // selection itself clears once each uid is gone.
-      const uids = [...selectedNodes()];
-      if (uids.length > 0) {
-        e.preventDefault();
-        for (const u of uids) removeNode(u);
-        setSelectedNode(null);
-      }
-    } else if (e.key === 'Escape') {
-      // Pop one level of nested subgraph navigation. No-op at root.
-      e.preventDefault();
-      exitSubnet();
-    } else if (e.key === 'o' || e.key === 'O') {
-      // Wire the selected node into the current sub-graph's object_output.
-      // Replaces any existing input on the output (single-edge sink).
-      const uid = selectedNode();
-      if (uid === null) return;
-      e.preventDefault();
-      connectToObjectOutput(uid);
-    }
-  }
 
   // Houdini-style "dive into" — double-click the node body. Subnets push a
   // crumb and swap the visible graph; attribute_vop opens the docked VOP
@@ -372,8 +382,6 @@ export const SopGraphCanvas: Component = () => {
       onPointerDown={onSvgPointerDown}
       onPointerMove={onSvgPointerMove}
       onWheel={onWheel}
-      onKeyDown={onCanvasKeyDown}
-      tabIndex={0}
     >
       <defs>
         <pattern id="grid-sop" width="40" height="40" patternUnits="userSpaceOnUse">

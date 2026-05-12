@@ -250,9 +250,20 @@ export const VopGraphCanvas: Component = () => {
       return el.isContentEditable === true;
     };
     const onDown = (e: KeyboardEvent) => {
-      if ((e.key === ' ' || e.code === 'Space') && !isTextEditing(e.target)) {
+      if (isTextEditing(e.target)) return;
+      if (e.key === ' ' || e.code === 'Space') {
         e.preventDefault();
         if (!e.repeat) setSpaceDown(true);
+        return;
+      }
+      // Delete on window (not SVG focus) so the key still works after the
+      // user clicks the inspector — same rationale as SopGraphCanvas.
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        const uids = [...selectedNodes()];
+        if (uids.length === 0) return;
+        e.preventDefault();
+        for (const u of uids) removeNode(u);
+        setSelectedNode(null);
       }
     };
     const onUp = (e: KeyboardEvent) => {
@@ -269,17 +280,6 @@ export const VopGraphCanvas: Component = () => {
     });
   });
 
-  function onCanvasKeyDown(e: KeyboardEvent) {
-    if (e.key === 'Delete' || e.key === 'Backspace') {
-      const uids = [...selectedNodes()];
-      if (uids.length > 0) {
-        e.preventDefault();
-        for (const u of uids) removeNode(u);
-        setSelectedNode(null);
-      }
-    }
-  }
-
   return (
     <svg
       class="graph-canvas"
@@ -288,8 +288,6 @@ export const VopGraphCanvas: Component = () => {
       onPointerDown={onSvgPointerDown}
       onPointerMove={onSvgPointerMove}
       onWheel={onWheel}
-      onKeyDown={onCanvasKeyDown}
-      tabIndex={0}
     >
       <defs>
         <pattern id="grid-vop" width="40" height="40" patternUnits="userSpaceOnUse">
