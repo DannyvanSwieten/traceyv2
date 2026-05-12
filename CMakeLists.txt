@@ -143,6 +143,7 @@ add_library(tracey
     src/vops/nodes/bind_attr_vops.cpp
     src/vops/nodes/math_vops.cpp
     src/vops/nodes/noise_vops.cpp
+    src/vops/nodes/displacement_vops.cpp
 
     src/graph/graphs/shader_graph/shader_graph.hpp
     src/graph/graphs/shader_graph/shader_graph.cpp

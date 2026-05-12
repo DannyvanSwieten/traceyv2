@@ -145,10 +145,17 @@ namespace tracey
 
         void VopGraph::evaluatePoint(size_t pointIdx, Geometry &geo) const
         {
+            std::vector<Value> slots;
+            evaluatePoint(pointIdx, geo, slots);
+        }
+
+        void VopGraph::evaluatePoint(size_t pointIdx, Geometry &geo,
+                                     std::vector<Value> &slots) const
+        {
             compile();
             if (m_topoOrder.empty()) return;
 
-            std::vector<Value> slots(m_slotCount, Value{});
+            slots.assign(m_slotCount, Value{});
             EvalContext ctx;
             ctx.pointIndex = pointIdx;
             ctx.geometry = &geo;
@@ -168,11 +175,22 @@ namespace tracey
                                                  size_t inputPortIdx) const
         {
             auto src = incomingTo(nodeUid, inputPortIdx);
-            if (!src) return std::nullopt;
-            const size_t slot = slotIndex(src->first, src->second);
-            if (slot == std::numeric_limits<size_t>::max() || !ctx.slots) return std::nullopt;
-            if (slot >= ctx.slots->size()) return std::nullopt;
-            return (*ctx.slots)[slot];
+            if (src)
+            {
+                const size_t slot = slotIndex(src->first, src->second);
+                if (slot == std::numeric_limits<size_t>::max() || !ctx.slots) return std::nullopt;
+                if (slot >= ctx.slots->size()) return std::nullopt;
+                return (*ctx.slots)[slot];
+            }
+            // No wire — fall back to the node's per-port stored constant.
+            // Keeps the value_or(Value{0.0f}) safety net in nodes happy when
+            // the user hasn't set a default either; we just return nullopt
+            // and let the node decide what to do.
+            if (const auto *node = findNode(nodeUid))
+            {
+                return node->inputDefault(inputPortIdx);
+            }
+            return std::nullopt;
         }
 
         void VopGraph::writeOutput(EvalContext &ctx, size_t nodeUid,

@@ -26,6 +26,13 @@ namespace tracey
             std::string name;
             ParamType type;
             std::string defaultRepr; // stringified default
+            // Optional UI hints — see src/sops/sop_registry.hpp ParamSpec
+            // for full semantics. Default to "no hint" so existing
+            // registrations keep working unchanged.
+            double rangeMin = 0.0;
+            double rangeMax = 0.0;
+            double rangeStep = 0.0;
+            std::vector<std::string> options;
         };
 
         struct CatalogEntry

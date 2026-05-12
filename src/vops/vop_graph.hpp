@@ -65,6 +65,13 @@ namespace tracey
             // compile() at least once; we call it lazily here too.
             void evaluatePoint(size_t pointIdx, Geometry &geo) const;
 
+            // Same, but the caller supplies the per-point slot buffer so
+            // it can be reused across points (and per-thread for the
+            // parallel-cook path). The buffer is unconditionally resized
+            // + zeroed to slotCount() each call.
+            void evaluatePoint(size_t pointIdx, Geometry &geo,
+                               std::vector<Value> &slots) const;
+
             // Resolve the upstream (nodeUid, outputPort) feeding this node's
             // input port, then read its slot. Returns nullopt if unconnected.
             std::optional<Value> readInput(const EvalContext &ctx,

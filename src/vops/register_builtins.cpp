@@ -11,6 +11,7 @@ namespace tracey
         void registerBindAttrVops();
         void registerMathVops();
         void registerNoiseVops();
+        void registerDisplacementVops();
 
         void registerBuiltinVops()
         {
@@ -18,6 +19,7 @@ namespace tracey
             registerBindAttrVops();
             registerMathVops();
             registerNoiseVops();
+            registerDisplacementVops();
         }
     }
 }

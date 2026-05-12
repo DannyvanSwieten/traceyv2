@@ -166,6 +166,43 @@ namespace tracey
                 }
             }
 
+            // Per-input default Value → typed JSON. Mirrors paramValueToJson
+            // shape (`type` discriminator + `value`) so the frontend uses one
+            // decoder for both.
+            json valueToJson(const Value &v)
+            {
+                json out;
+                if (std::holds_alternative<float>(v))
+                {
+                    out["type"] = "float";
+                    out["value"] = std::get<float>(v);
+                }
+                else if (std::holds_alternative<int>(v))
+                {
+                    out["type"] = "int";
+                    out["value"] = std::get<int>(v);
+                }
+                else
+                {
+                    const Vec3 &vv = std::get<Vec3>(v);
+                    out["type"] = "vec3";
+                    out["value"] = {vv.x, vv.y, vv.z};
+                }
+                return out;
+            }
+
+            std::optional<Value> valueFromJson(const json &j)
+            {
+                if (!j.contains("type") || !j.contains("value")) return std::nullopt;
+                const std::string t = j.at("type").get<std::string>();
+                const auto &v = j.at("value");
+                if (t == "float" && v.is_number()) return Value{v.get<float>()};
+                if (t == "int"   && v.is_number_integer()) return Value{v.get<int>()};
+                if (t == "vec3"  && v.is_array() && v.size() == 3)
+                    return Value{Vec3(v[0].get<float>(), v[1].get<float>(), v[2].get<float>())};
+                return std::nullopt;
+            }
+
             json nodeToJson(const VopNode &node)
             {
                 json j;
@@ -179,6 +216,19 @@ namespace tracey
                     params[p.name] = paramValueToJson(p);
                 }
                 j["params"] = std::move(params);
+
+                // Only emit input_defaults when at least one is set so old
+                // graphs stay byte-identical after a round-trip with no input
+                // edits.
+                if (!node.inputDefaults().empty())
+                {
+                    json defs = json::object();
+                    for (const auto &[port, v] : node.inputDefaults())
+                    {
+                        defs[std::to_string(port)] = valueToJson(v);
+                    }
+                    j["input_defaults"] = std::move(defs);
+                }
                 return j;
             }
 
@@ -262,6 +312,18 @@ namespace tracey
                         for (auto it = nj["params"].begin(); it != nj["params"].end(); ++it)
                         {
                             applyParamFromJson(*node, it.key(), it.value());
+                        }
+                    }
+                    if (nj.contains("input_defaults") && nj["input_defaults"].is_object())
+                    {
+                        for (auto it = nj["input_defaults"].begin();
+                             it != nj["input_defaults"].end(); ++it)
+                        {
+                            const size_t port = std::stoull(it.key());
+                            if (auto v = valueFromJson(it.value()))
+                            {
+                                node->setInputDefault(port, *v);
+                            }
                         }
                     }
                     graph->addNode(std::move(node));

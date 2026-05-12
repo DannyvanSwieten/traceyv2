@@ -5,8 +5,10 @@
 #include "eval_context.hpp"
 #include "parameter.hpp"
 
+#include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 namespace tracey
@@ -64,6 +66,28 @@ namespace tracey
             void setParamVec3  (std::string_view name, Vec3 v);
             void setParamString(std::string_view name, std::string v);
 
+            // ── Per-input default constants ──
+            // When an input port has no incoming wire, the graph's readInput
+            // falls back to whatever value is stored here for that port
+            // (otherwise nullopt, and the node falls back to its own 0
+            // default). Lets the user dial a constant into an input without
+            // having to drop a Constant node and wire it up — same UX as
+            // Houdini VOP / Blender shader nodes.
+            //
+            // Map shape: { portIdx → Value }. Absence means "no constant set
+            // for this port"; the graph short-circuits and returns nullopt
+            // so the node keeps using its built-in zero fallback (which
+            // preserves the existing v1 behaviour for unset ports).
+            const std::unordered_map<size_t, Value> &inputDefaults() const { return m_inputDefaults; }
+            std::optional<Value> inputDefault(size_t portIdx) const
+            {
+                auto it = m_inputDefaults.find(portIdx);
+                if (it == m_inputDefaults.end()) return std::nullopt;
+                return it->second;
+            }
+            void setInputDefault(size_t portIdx, Value v) { m_inputDefaults[portIdx] = v; }
+            void clearInputDefault(size_t portIdx) { m_inputDefaults.erase(portIdx); }
+
             // ── Graph editor cosmetic state ──
             float posX() const { return m_posX; }
             float posY() const { return m_posY; }
@@ -71,6 +95,7 @@ namespace tracey
 
         private:
             std::vector<Parameter> m_params;
+            std::unordered_map<size_t, Value> m_inputDefaults;
             float m_posX = 0.0f;
             float m_posY = 0.0f;
         };

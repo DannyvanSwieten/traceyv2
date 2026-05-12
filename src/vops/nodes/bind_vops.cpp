@@ -98,15 +98,20 @@ namespace tracey
 
         void registerBindVops()
         {
+            // Categories split bind nodes into Houdini-style "Input
+            // Attributes" / "Output Attributes" groups so the context-menu
+            // submenus read naturally — "browse what's available coming in"
+            // vs. "what can I write out". Position passthrough (bind_in_p /
+            // bind_out_p) is the canonical first wire users add.
             auto &reg = VopRegistry::instance();
             reg.registerType(
-                {"bind_in_p", "Bind In P", "Bind",
+                {"bind_in_p", "Position (P)", "Input Attributes",
                  /*inputs*/ {},
                  /*outputs*/ {{"P"}},
                  /*params*/ {}},
                 makeFactory<BindInPVop>());
             reg.registerType(
-                {"bind_out_p", "Bind Out P", "Bind",
+                {"bind_out_p", "Position (P)", "Output Attributes",
                  /*inputs*/ {{"P"}},
                  /*outputs*/ {},
                  /*params*/ {}},
