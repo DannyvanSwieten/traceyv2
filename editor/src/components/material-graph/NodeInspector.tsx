@@ -1,4 +1,4 @@
-import { Component, Show } from 'solid-js';
+import { Component, For, Show } from 'solid-js';
 import {
   Node,
   Vec4Tuple,
@@ -10,8 +10,10 @@ import {
   UnaryOpNode,
   TernaryOpNode,
   OutputNode,
+  inputPortCount,
+  inputPortName,
 } from '../../lib/material_graph';
-import { materialGraph, selectedNode, updateNode } from '../../stores/materials';
+import { materialGraph, selectedNode, setInputDefault, updateNode } from '../../stores/materials';
 import './NodeInspector.css';
 
 const INPUT_ATTRIBUTE_OPS = [
@@ -112,117 +114,156 @@ export const NodeInspector: Component = () => {
     <div class="node-inspector">
       <div class="node-inspector-header">Inspector</div>
       <Show when={node()} fallback={<div class="node-inspector-empty">Select a node to edit its parameters.</div>}>
-        {(n) => {
-          const cur = n();
-          return (
-            <div class="node-inspector-body">
-              <div class="inspector-row inspector-row-readonly">
-                <div class="inspector-row-label">Kind</div>
-                <div class="inspector-row-value">{cur.kind}</div>
-              </div>
-              <div class="inspector-row inspector-row-readonly">
-                <div class="inspector-row-label">UID</div>
-                <div class="inspector-row-value">{cur.uid}</div>
-              </div>
-
-              <Show when={cur.kind === 'Constant'}>
-                {(() => {
-                  const c = cur as ConstantNode;
-                  return (
-                    <Vec4Editor
-                      label="Value"
-                      value={() => (findNode(cur.uid) as ConstantNode).value}
-                      onChange={(next) => updateNode<ConstantNode>(c.uid, { value: next })}
-                    />
-                  );
-                })()}
-              </Show>
-
-              <Show when={cur.kind === 'Parameter'}>
-                {(() => {
-                  const p = cur as ParameterNode;
-                  return (
-                    <>
-                      <div class="inspector-row">
-                        <div class="inspector-row-label">Name</div>
-                        <input
-                          class="inspector-text"
-                          type="text"
-                          value={(findNode(cur.uid) as ParameterNode).name}
-                          onInput={(e) =>
-                            updateNode<ParameterNode>(p.uid, { name: e.currentTarget.value })
-                          }
-                        />
-                      </div>
-                      <Vec4Editor
-                        label="Default"
-                        value={() => (findNode(cur.uid) as ParameterNode).default}
-                        onChange={(next) =>
-                          updateNode<ParameterNode>(p.uid, { default: next })
-                        }
-                      />
-                    </>
-                  );
-                })()}
-              </Show>
-
-              <Show when={cur.kind === 'InputAttribute'}>
-                <OpSelect
-                  label="Op"
-                  options={INPUT_ATTRIBUTE_OPS}
-                  value={() => (findNode(cur.uid) as InputAttributeNode).op}
-                  onChange={(op) => updateNode<InputAttributeNode>(cur.uid, { op })}
-                />
-              </Show>
-
-              <Show when={cur.kind === 'SurfaceAttribute'}>
-                <OpSelect
-                  label="Op"
-                  options={SURFACE_ATTRIBUTE_OPS}
-                  value={() => (findNode(cur.uid) as SurfaceAttributeNode).op}
-                  onChange={(op) => updateNode<SurfaceAttributeNode>(cur.uid, { op })}
-                />
-              </Show>
-
-              <Show when={cur.kind === 'BinaryOp'}>
-                <OpSelect
-                  label="Op"
-                  options={BINARY_OPS}
-                  value={() => (findNode(cur.uid) as BinaryOpNode).op}
-                  onChange={(op) => updateNode<BinaryOpNode>(cur.uid, { op })}
-                />
-              </Show>
-
-              <Show when={cur.kind === 'UnaryOp'}>
-                <OpSelect
-                  label="Op"
-                  options={UNARY_OPS}
-                  value={() => (findNode(cur.uid) as UnaryOpNode).op}
-                  onChange={(op) => updateNode<UnaryOpNode>(cur.uid, { op })}
-                />
-              </Show>
-
-              <Show when={cur.kind === 'TernaryOp'}>
-                <OpSelect
-                  label="Op"
-                  options={TERNARY_OPS}
-                  value={() => (findNode(cur.uid) as TernaryOpNode).op}
-                  onChange={(op) => updateNode<TernaryOpNode>(cur.uid, { op })}
-                />
-              </Show>
-
-              <Show when={cur.kind === 'Output'}>
-                <OpSelect
-                  label="Op"
-                  options={OUTPUT_OPS}
-                  value={() => (findNode(cur.uid) as OutputNode).op}
-                  onChange={(op) => updateNode<OutputNode>(cur.uid, { op })}
-                />
-              </Show>
+        {(n) => (
+          // Every read goes through n() rather than a captured snapshot:
+          // Solid's non-keyed <Show> re-runs this callback only when the
+          // truthiness of `when` flips, not when it changes from one node
+          // to another. Capturing `n()` into a const froze the uid at the
+          // first selected node, so subsequent selections kept editing &
+          // displaying the old node ("the same modification appears on
+          // every node box").
+          <div class="node-inspector-body">
+            <div class="inspector-row inspector-row-readonly">
+              <div class="inspector-row-label">Kind</div>
+              <div class="inspector-row-value">{n().kind}</div>
             </div>
-          );
-        }}
+            <div class="inspector-row inspector-row-readonly">
+              <div class="inspector-row-label">UID</div>
+              <div class="inspector-row-value">{n().uid}</div>
+            </div>
+
+            <Show when={n().kind === 'Constant'}>
+              <Vec4Editor
+                label="Value"
+                value={() => (findNode(n().uid) as ConstantNode).value}
+                onChange={(next) => updateNode<ConstantNode>(n().uid, { value: next })}
+              />
+            </Show>
+
+            <Show when={n().kind === 'Parameter'}>
+              <div class="inspector-row">
+                <div class="inspector-row-label">Name</div>
+                <input
+                  class="inspector-text"
+                  type="text"
+                  aria-label="Parameter name"
+                  placeholder="param"
+                  value={(findNode(n().uid) as ParameterNode).name}
+                  onInput={(e) =>
+                    updateNode<ParameterNode>(n().uid, { name: e.currentTarget.value })
+                  }
+                />
+              </div>
+              <Vec4Editor
+                label="Default"
+                value={() => (findNode(n().uid) as ParameterNode).default}
+                onChange={(next) => updateNode<ParameterNode>(n().uid, { default: next })}
+              />
+            </Show>
+
+            <Show when={n().kind === 'InputAttribute'}>
+              <OpSelect
+                label="Op"
+                options={INPUT_ATTRIBUTE_OPS}
+                value={() => (findNode(n().uid) as InputAttributeNode).op}
+                onChange={(op) => updateNode<InputAttributeNode>(n().uid, { op })}
+              />
+            </Show>
+
+            <Show when={n().kind === 'SurfaceAttribute'}>
+              <OpSelect
+                label="Op"
+                options={SURFACE_ATTRIBUTE_OPS}
+                value={() => (findNode(n().uid) as SurfaceAttributeNode).op}
+                onChange={(op) => updateNode<SurfaceAttributeNode>(n().uid, { op })}
+              />
+            </Show>
+
+            <Show when={n().kind === 'BinaryOp'}>
+              <OpSelect
+                label="Op"
+                options={BINARY_OPS}
+                value={() => (findNode(n().uid) as BinaryOpNode).op}
+                onChange={(op) => updateNode<BinaryOpNode>(n().uid, { op })}
+              />
+            </Show>
+
+            <Show when={n().kind === 'UnaryOp'}>
+              <OpSelect
+                label="Op"
+                options={UNARY_OPS}
+                value={() => (findNode(n().uid) as UnaryOpNode).op}
+                onChange={(op) => updateNode<UnaryOpNode>(n().uid, { op })}
+              />
+            </Show>
+
+            <Show when={n().kind === 'TernaryOp'}>
+              <OpSelect
+                label="Op"
+                options={TERNARY_OPS}
+                value={() => (findNode(n().uid) as TernaryOpNode).op}
+                onChange={(op) => updateNode<TernaryOpNode>(n().uid, { op })}
+              />
+            </Show>
+
+            <Show when={n().kind === 'Output'}>
+              <OpSelect
+                label="Op"
+                options={OUTPUT_OPS}
+                value={() => (findNode(n().uid) as OutputNode).op}
+                onChange={(op) => updateNode<OutputNode>(n().uid, { op })}
+              />
+            </Show>
+            <InputDefaultsSection node={n()} />
+          </div>
+        )}
       </Show>
     </div>
+  );
+};
+
+// Per-input constant editors (Houdini-style "type into the input").
+// One Vec4Editor per *unconnected* input port. Connected ports are
+// hidden — the wire is the source of truth. Reads/writes the node's
+// `input_defaults[port]` map, which the compiler honours when no wire
+// is present.
+const InputDefaultsSection: Component<{ node: Node }> = (props) => {
+  const ports = (): number[] => {
+    const n = inputPortCount(props.node.kind);
+    return Array.from({ length: n }, (_, i) => i);
+  };
+  // Reactive: reading materialGraph().connections inside the closure
+  // keeps Solid tracking it, so the editor appears/disappears as the
+  // user wires up the inputs.
+  const isConnected = (portIdx: number): boolean =>
+    materialGraph().connections.some(
+      (c) => c.to_node === props.node.uid && c.to_port === portIdx,
+    );
+  return (
+    <Show when={ports().length > 0}>
+      <div class="inspector-section-label">Inputs</div>
+      <For each={ports()}>
+        {(portIdx) => (
+          <Show when={!isConnected(portIdx)}>
+            <InputDefaultRow node={props.node} portIdx={portIdx} />
+          </Show>
+        )}
+      </For>
+    </Show>
+  );
+};
+
+const InputDefaultRow: Component<{ node: Node; portIdx: number }> = (props) => {
+  const stored = (): Vec4Tuple => {
+    const live = findNode(props.node.uid);
+    const v = live?.input_defaults?.[String(props.portIdx)];
+    return (v ?? [0, 0, 0, 1]) as Vec4Tuple;
+  };
+  return (
+    <Vec4Editor
+      label={inputPortName(props.node.kind, props.portIdx) || `in ${props.portIdx}`}
+      value={stored}
+      onChange={(next) => setInputDefault(props.node.uid, props.portIdx, next)}
+    />
   );
 };

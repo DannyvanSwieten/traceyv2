@@ -29,6 +29,18 @@
   gap: 10px;
 }
 
+/* Inline header for the per-input default editors section — separates
+   the "Inputs" block from the static op/value rows above. */
+.inspector-section-label {
+  margin-top: 6px;
+  padding-top: 8px;
+  border-top: 1px solid #2c2c2c;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #888;
+}
+
 .inspector-row,
 .inspector-vec4 {
   display: flex;

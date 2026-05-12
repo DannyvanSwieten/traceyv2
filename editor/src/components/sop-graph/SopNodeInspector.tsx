@@ -2,7 +2,7 @@
 // catalog's param specs — each parameter renders an input typed by its
 // declared ParamType (float / int / bool / vec3 / string).
 
-import { Component, For, Show, createMemo } from 'solid-js';
+import { Component, For, Index, Show, createMemo } from 'solid-js';
 import {
   ParamSpec,
   ParamType,
@@ -36,15 +36,41 @@ export const SopNodeInspector: Component = () => {
   // "promote to host" path — promoted params don't exist in the catalog
   // because the catalog is per-kind and these are per-instance — so we
   // synthesise a ParamSpec from the live param's type.
+  //
+  // For promoted params, we ALSO forward the VOP-side ParamSpec hints
+  // (range / options) so a promoted "frequency" slider stays a slider
+  // on the host SOP. The host emits these alongside each promotion in
+  // `extra.promotions` — see attribute_vop_sop.cpp serializeExtraJson().
   const renderedParams = createMemo<ParamSpec[]>(() => {
     const n = node();
     if (!n) return [];
     const fromCatalog = entry()?.params ?? [];
     const known = new Set(fromCatalog.map((p) => p.name));
+    // Index promotions by host param name so we can pull range / options
+    // when synthesising the extra ParamSpec.
+    type Promo = {
+      host_param_name?: string;
+      range?: { min: number; max: number; step: number };
+      options?: string[];
+    };
+    const extra = (n as { extra?: { promotions?: Promo[] } }).extra;
+    const promotionByHostName = new Map<string, Promo>();
+    if (extra?.promotions) {
+      for (const p of extra.promotions) {
+        if (p.host_param_name) promotionByHostName.set(p.host_param_name, p);
+      }
+    }
     const extras: ParamSpec[] = [];
     for (const [name, value] of Object.entries(n.params)) {
       if (known.has(name)) continue;
-      extras.push({ name, type: value.type as ParamType, default: '' });
+      const promo = promotionByHostName.get(name);
+      extras.push({
+        name,
+        type: value.type as ParamType,
+        default: '',
+        range: promo?.range,
+        options: promo?.options,
+      });
     }
     return [...fromCatalog, ...extras];
   });
@@ -89,16 +115,23 @@ export const SopNodeInspector: Component = () => {
               <div class="sop-inspector-uid">uid {n().uid}</div>
             </div>
             <div class="sop-inspector-params">
-              <For each={renderedParams()}>
+              {/* Index (not For): the rendered-params array gets a fresh
+                  identity on every setParam (the memo synthesises new
+                  ParamSpec objects for promoted extras), and For would
+                  unmount/remount each row on every drag tick — killing
+                  the slider's pointer capture mid-drag. Index keeps the
+                  row mounted as long as the array length is stable, and
+                  reactivity propagates spec changes via the accessor. */}
+              <Index each={renderedParams()}>
                 {(spec) => (
                   <ParamRow
                     node={n()}
-                    spec={spec}
-                    promoted={promotedHostParamNames().has(spec.name)}
-                    onDemote={() => demote(spec.name)}
+                    spec={spec()}
+                    promoted={promotedHostParamNames().has(spec().name)}
+                    onDemote={() => demote(spec().name)}
                   />
                 )}
-              </For>
+              </Index>
             </div>
             <Show when={n().kind === 'attribute_vop'}>
               <button
@@ -176,8 +209,50 @@ const ParamRow: Component<ParamRowProps> = (props) => {
   // hover (Houdini behaviour) and it satisfies the a11y lint rule that
   // expects every form element to have some textual labelling beyond the
   // sibling <label> (which isn't `htmlFor`-linked).
+  // Render hints from the catalog: a `range` field turns numeric inputs
+  // into a slider with a live numeric readout; an `options` array turns
+  // a string/int input into a named dropdown. Both fall back to the
+  // plain input when the hint is absent.
+  const range = () => props.spec.range;
+  const options = () => props.spec.options;
+
   switch (props.spec.type) {
-    case 'float':
+    case 'float': {
+      const value = () => (cur() as { value: number } | undefined)?.value ?? 0;
+      const r = range();
+      if (r && r.min !== r.max) {
+        const step = r.step > 0 ? r.step : (r.max - r.min) / 200;
+        return (
+          <div class="sop-param-row sop-param-slider-row">
+            <label>{props.spec.name}</label>
+            <div class="sop-param-slider-group">
+              <input
+                type="range"
+                class="sop-param-slider"
+                title={props.spec.name}
+                min={r.min}
+                max={r.max}
+                step={step}
+                value={value()}
+                onInput={(e) =>
+                  patch({ type: 'float', value: parseFloat(e.currentTarget.value) || 0 })
+                }
+              />
+              <input
+                type="number"
+                class="sop-param-slider-readout"
+                step={step}
+                title={`${props.spec.name} (value)`}
+                value={value()}
+                onChange={(e) =>
+                  patch({ type: 'float', value: parseFloat(e.currentTarget.value) || 0 })
+                }
+              />
+            </div>
+            <DemoteBtn />
+          </div>
+        );
+      }
       return (
         <div class="sop-param-row">
           <label>{props.spec.name}</label>
@@ -185,7 +260,7 @@ const ParamRow: Component<ParamRowProps> = (props) => {
             type="number"
             step="0.01"
             title={props.spec.name}
-            value={(cur() as { value: number } | undefined)?.value ?? 0}
+            value={value()}
             onChange={(e) =>
               patch({ type: 'float', value: parseFloat(e.currentTarget.value) || 0 })
             }
@@ -193,7 +268,65 @@ const ParamRow: Component<ParamRowProps> = (props) => {
           <DemoteBtn />
         </div>
       );
-    case 'int':
+    }
+    case 'int': {
+      const value = () => (cur() as { value: number } | undefined)?.value ?? 0;
+      const opts = options();
+      // Dropdown when options are provided: each entry's index becomes
+      // the int value, matching the C++ ParamSpec.options contract.
+      if (opts && opts.length > 0) {
+        return (
+          <div class="sop-param-row">
+            <label>{props.spec.name}</label>
+            <select
+              title={props.spec.name}
+              value={String(value())}
+              onChange={(e) =>
+                patch({ type: 'int', value: parseInt(e.currentTarget.value, 10) || 0 })
+              }
+            >
+              <For each={opts}>
+                {(label, i) => <option value={String(i())}>{label}</option>}
+              </For>
+            </select>
+            <DemoteBtn />
+          </div>
+        );
+      }
+      const r = range();
+      if (r && r.min !== r.max) {
+        const step = r.step > 0 ? r.step : 1;
+        return (
+          <div class="sop-param-row sop-param-slider-row">
+            <label>{props.spec.name}</label>
+            <div class="sop-param-slider-group">
+              <input
+                type="range"
+                class="sop-param-slider"
+                title={props.spec.name}
+                min={r.min}
+                max={r.max}
+                step={step}
+                value={value()}
+                onInput={(e) =>
+                  patch({ type: 'int', value: parseInt(e.currentTarget.value, 10) || 0 })
+                }
+              />
+              <input
+                type="number"
+                class="sop-param-slider-readout"
+                step={step}
+                title={`${props.spec.name} (value)`}
+                value={value()}
+                onChange={(e) =>
+                  patch({ type: 'int', value: parseInt(e.currentTarget.value, 10) || 0 })
+                }
+              />
+            </div>
+            <DemoteBtn />
+          </div>
+        );
+      }
       return (
         <div class="sop-param-row">
           <label>{props.spec.name}</label>
@@ -201,7 +334,7 @@ const ParamRow: Component<ParamRowProps> = (props) => {
             type="number"
             step="1"
             title={props.spec.name}
-            value={(cur() as { value: number } | undefined)?.value ?? 0}
+            value={value()}
             onChange={(e) =>
               patch({ type: 'int', value: parseInt(e.currentTarget.value, 10) || 0 })
             }
@@ -209,6 +342,7 @@ const ParamRow: Component<ParamRowProps> = (props) => {
           <DemoteBtn />
         </div>
       );
+    }
     case 'bool':
       return (
         <div class="sop-param-row">
@@ -249,18 +383,38 @@ const ParamRow: Component<ParamRowProps> = (props) => {
         </div>
       );
     }
-    case 'string':
+    case 'string': {
+      const value = () => (cur() as { value: string } | undefined)?.value ?? '';
+      const opts = options();
+      if (opts && opts.length > 0) {
+        return (
+          <div class="sop-param-row">
+            <label>{props.spec.name}</label>
+            <select
+              title={props.spec.name}
+              value={value()}
+              onChange={(e) => patch({ type: 'string', value: e.currentTarget.value })}
+            >
+              <For each={opts}>
+                {(label) => <option value={label}>{label}</option>}
+              </For>
+            </select>
+            <DemoteBtn />
+          </div>
+        );
+      }
       return (
         <div class="sop-param-row">
           <label>{props.spec.name}</label>
           <input
             type="text"
             title={props.spec.name}
-            value={(cur() as { value: string } | undefined)?.value ?? ''}
+            value={value()}
             onChange={(e) => patch({ type: 'string', value: e.currentTarget.value })}
           />
           <DemoteBtn />
         </div>
       );
+    }
   }
 };
