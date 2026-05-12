@@ -75,9 +75,9 @@ export const VopGraphCanvas: Component = () => {
   const [zoom, setZoom] = createSignal(1);
   const [pendingFrom, setPendingFrom] = createSignal<PortRef | null>(null);
   const [mouseWorld, setMouseWorld] = createSignal<[number, number]>([0, 0]);
-  // Houdini-style: hold Space to pan; empty-canvas drag without Space starts
+  // Houdini-style: hold Alt to pan; empty-canvas drag without Alt starts
   // a rubber-band selection.
-  const [spaceDown, setSpaceDown] = createSignal(false);
+  const [panKeyDown, setPanKeyDown] = createSignal(false);
   const [marquee, setMarquee] = createSignal<MarqueeRect | null>(null);
 
   let svgRef: SVGSVGElement | undefined;
@@ -95,7 +95,9 @@ export const VopGraphCanvas: Component = () => {
   function onSvgPointerDown(e: PointerEvent) {
     if (e.button !== 0) return;
     e.preventDefault();
-    if (spaceDown()) { startCanvasPan(e); return; }
+    // Alt-held drag pans (e.altKey covers the case where Alt was pressed
+    // while focus was elsewhere and the keydown listener missed it).
+    if (panKeyDown() || e.altKey) { startCanvasPan(e); return; }
     const targetEl = e.target as Element;
     if (targetEl.closest?.('[data-port-kind]')) return;
     const nodeEl = targetEl.closest?.('[data-node-uid]');
@@ -238,7 +240,7 @@ export const VopGraphCanvas: Component = () => {
     setPendingFrom(null);
   }
 
-  // Window-level Space tracking — see SopGraphCanvas for the rationale (SVG
+  // Window-level Alt tracking — see SopGraphCanvas for the rationale (SVG
   // focus is too narrow for a global hold-to-pan gesture; window listeners
   // catch the key regardless of which panel actually owns focus).
   onMount(() => {
@@ -251,9 +253,9 @@ export const VopGraphCanvas: Component = () => {
     };
     const onDown = (e: KeyboardEvent) => {
       if (isTextEditing(e.target)) return;
-      if (e.key === ' ' || e.code === 'Space') {
-        e.preventDefault();
-        if (!e.repeat) setSpaceDown(true);
+      // Alt = pan modifier (timeline uses Space).
+      if (e.key === 'Alt' || e.altKey) {
+        if (!e.repeat) setPanKeyDown(true);
         return;
       }
       // Delete on window (not SVG focus) so the key still works after the
@@ -267,9 +269,9 @@ export const VopGraphCanvas: Component = () => {
       }
     };
     const onUp = (e: KeyboardEvent) => {
-      if (e.key === ' ' || e.code === 'Space') setSpaceDown(false);
+      if (e.key === 'Alt') setPanKeyDown(false);
     };
-    const onBlur = () => setSpaceDown(false);
+    const onBlur = () => setPanKeyDown(false);
     window.addEventListener('keydown', onDown);
     window.addEventListener('keyup', onUp);
     window.addEventListener('blur', onBlur);
@@ -283,7 +285,7 @@ export const VopGraphCanvas: Component = () => {
   return (
     <svg
       class="graph-canvas"
-      classList={{ 'graph-canvas--panning': spaceDown() }}
+      classList={{ 'graph-canvas--panning': panKeyDown() }}
       ref={svgRef}
       onPointerDown={onSvgPointerDown}
       onPointerMove={onSvgPointerMove}

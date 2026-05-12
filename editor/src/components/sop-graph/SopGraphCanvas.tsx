@@ -99,9 +99,10 @@ export const SopGraphCanvas: Component = () => {
   const [zoom, setZoom] = createSignal(1);
   const [pendingFrom, setPendingFrom] = createSignal<PortRef | null>(null);
   const [mouseWorld, setMouseWorld] = createSignal<[number, number]>([0, 0]);
-  // Houdini-style: hold Space to pan. Drag on empty canvas without Space
-  // does a rubber-band (marquee) select instead.
-  const [spaceDown, setSpaceDown] = createSignal(false);
+  // Houdini-style: hold Alt (Option on macOS) to pan. Drag on empty canvas
+  // without Alt does a rubber-band (marquee) select instead. Alt was picked
+  // over Space because the editor's timeline uses Space for play/pause.
+  const [panKeyDown, setPanKeyDown] = createSignal(false);
   const [marquee, setMarquee] = createSignal<MarqueeRect | null>(null);
 
   let svgRef: SVGSVGElement | undefined;
@@ -119,9 +120,12 @@ export const SopGraphCanvas: Component = () => {
   function onSvgPointerDown(e: PointerEvent) {
     if (e.button !== 0) return;
     e.preventDefault();
-    // Space-held drag pans the canvas, even when starting over a node or
-    // port — matches the Houdini convention of Space being a pan modifier.
-    if (spaceDown()) { startCanvasPan(e); return; }
+    // Alt-held drag pans the canvas, even when starting over a node or
+    // port — matches the Houdini convention of Alt being a pan modifier.
+    // Also read e.altKey directly so the pan starts on the very first
+    // pointerdown even if the keydown listener hasn't fired yet (focus on
+    // a different element when Alt was pressed).
+    if (panKeyDown() || e.altKey) { startCanvasPan(e); return; }
     const targetEl = e.target as Element;
     if (targetEl.closest?.('[data-port-kind]')) return;
     const nodeEl = targetEl.closest?.('[data-node-uid]');
@@ -287,7 +291,7 @@ export const SopGraphCanvas: Component = () => {
     setPendingFrom(null);
   }
 
-  // Space-key tracking lives on `window` so the pan-modifier works even when
+  // Alt-key tracking lives on `window` so the pan-modifier works even when
   // focus has wandered to a sibling panel (inspector, palette dropdown, etc.).
   // The SVG-level keydown only sees keys while the canvas itself has focus,
   // which is too narrow for a global "hold to pan" gesture.
@@ -306,9 +310,14 @@ export const SopGraphCanvas: Component = () => {
       // number input shouldn't nuke selected nodes, etc.
       if (isTextEditing(e.target)) return;
 
-      if (e.key === ' ' || e.code === 'Space') {
-        e.preventDefault();
-        if (!e.repeat) setSpaceDown(true);
+      // Alt (Option on macOS) is the pan modifier. Space was the original
+      // choice but it conflicts with timeline play/pause; Alt-drag matches
+      // Houdini's network-editor convention and stays out of the way of
+      // text input (which preempts above via isTextEditing).
+      if (e.key === 'Alt' || e.altKey) {
+        if (!e.repeat) setPanKeyDown(true);
+        // No preventDefault — Alt is a modifier; suppressing it can break
+        // OS-level accelerators that we don't own.
         return;
       }
 
@@ -342,11 +351,11 @@ export const SopGraphCanvas: Component = () => {
       }
     };
     const onUp = (e: KeyboardEvent) => {
-      if (e.key === ' ' || e.code === 'Space') setSpaceDown(false);
+      if (e.key === 'Alt') setPanKeyDown(false);
     };
-    // Window blur / tab-switch can drop the keyup event; treat blur as "Space
+    // Window blur / tab-switch can drop the keyup event; treat blur as "Alt
     // released" so the user doesn't end up stuck in pan mode.
-    const onBlur = () => setSpaceDown(false);
+    const onBlur = () => setPanKeyDown(false);
     window.addEventListener('keydown', onDown);
     window.addEventListener('keyup', onUp);
     window.addEventListener('blur', onBlur);
@@ -377,7 +386,7 @@ export const SopGraphCanvas: Component = () => {
   return (
     <svg
       class="graph-canvas"
-      classList={{ 'graph-canvas--panning': spaceDown() }}
+      classList={{ 'graph-canvas--panning': panKeyDown() }}
       ref={svgRef}
       onPointerDown={onSvgPointerDown}
       onPointerMove={onSvgPointerMove}

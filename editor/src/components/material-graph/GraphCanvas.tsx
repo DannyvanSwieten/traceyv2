@@ -264,7 +264,7 @@ export const GraphCanvas: Component = () => {
     setPendingFrom(null);
   }
 
-  // Window-level Space tracking — see SopGraphCanvas for the rationale.
+  // Window-level Alt tracking — see SopGraphCanvas for the rationale.
   onMount(() => {
     const isTextEditing = (target: EventTarget | null): boolean => {
       const el = target as HTMLElement | null;
@@ -275,8 +275,8 @@ export const GraphCanvas: Component = () => {
     };
     const onDown = (e: KeyboardEvent) => {
       if (isTextEditing(e.target)) return;
-      if (e.key === ' ' || e.code === 'Space') {
-        e.preventDefault();
+      // Alt = pan modifier (Space is reserved for the timeline).
+      if (e.key === 'Alt' || e.altKey) {
         if (!e.repeat) setPanKeyDown(true);
         return;
       }
@@ -290,7 +290,7 @@ export const GraphCanvas: Component = () => {
       }
     };
     const onUp = (e: KeyboardEvent) => {
-      if (e.key === ' ' || e.code === 'Space') setPanKeyDown(false);
+      if (e.key === 'Alt') setPanKeyDown(false);
     };
     const onBlur = () => setPanKeyDown(false);
     window.addEventListener('keydown', onDown);
