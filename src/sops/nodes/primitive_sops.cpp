@@ -67,6 +67,8 @@ namespace tracey
                 {
                     declareParam(Parameter::makeFloat("width", 1.0f));
                     declareParam(Parameter::makeFloat("depth", 1.0f));
+                    declareParam(Parameter::makeInt("cols", 1));
+                    declareParam(Parameter::makeInt("rows", 1));
                 }
                 std::string kind() const override { return "primitive_plane"; }
                 InputsAndOutputs ports() const override
@@ -77,8 +79,11 @@ namespace tracey
                 }
                 Geometry cook(std::span<const Geometry *const>) const override
                 {
+                    const int cols = std::max(1, paramInt("cols", 1));
+                    const int rows = std::max(1, paramInt("rows", 1));
                     return GeometryConverter::fromSceneObject(SceneObject::createPlane(
-                        paramFloat("width", 1.0f), paramFloat("depth", 1.0f)));
+                        paramFloat("width", 1.0f), paramFloat("depth", 1.0f),
+                        static_cast<uint32_t>(cols), static_cast<uint32_t>(rows)));
                 }
             };
 

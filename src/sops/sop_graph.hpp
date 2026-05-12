@@ -45,18 +45,36 @@ namespace tracey
 
             // Allocate the next node uid. Caller is expected to construct the
             // node with this uid then `addNode(...)` it.
+            //
+            // Inner subnet sub-graphs forward to a root allocator (see
+            // setRoot) so node uids stay globally unique across nesting —
+            // the editor IPC and animation channel system identify nodes by
+            // uid alone with no path qualifier.
             size_t nextUid();
+
+            // Subnet sub-graphs call this with the outer (root) graph so
+            // their nextUid() forwards. Pass nullptr (default) to detach.
+            void setRoot(SopGraph *root) { m_root = root; }
+            SopGraph *root() { return m_root ? m_root : this; }
 
             // Cook the graph.
             //
             //   1. Topological sort over nodes; cycle → diag.ok=false.
             //   2. For each node in order, gather pointers to already-cooked
             //      input geometries (or nullptr if the input port is
-            //      unconnected) and call cook().
+            //      unconnected) and call cookAt(inputs, time).
             //   3. Sweep ObjectOutput nodes; collect their EmittedActors.
+            //   4. Sweep subnet nodes; recursively cook inner graphs with the
+            //      same time, stamping parentNodeUid on each emitted child.
+            //
+            // `time` is the playhead time in seconds. Threading it through the
+            // cook lets time-aware nodes (today: attribute_vop with promoted
+            // host params) sample their parameters at the current frame. Most
+            // SopNode subclasses ignore it and the default `cookAt` delegates
+            // to the time-independent `cook`.
             //
             // Result cache lives until invalidate() is called (on graph edit).
-            CookResult cook(CookDiagnostic *diag = nullptr);
+            CookResult cook(CookDiagnostic *diag = nullptr, double time = 0.0);
 
             // Drop all cached cook results. Call after any structural or
             // parameter change. (Editor host does this implicitly on every
@@ -71,6 +89,10 @@ namespace tracey
 
         private:
             size_t m_nextUid = 1;
+            // Non-null on inner sub-graphs (subnets); the root allocator
+            // owns the canonical uid sequence. nullptr on the outermost
+            // SopGraph.
+            SopGraph *m_root = nullptr;
             // Per-node cooked geometry, keyed on uid. Cleared by invalidate().
             std::unordered_map<size_t, Geometry> m_cache;
         };

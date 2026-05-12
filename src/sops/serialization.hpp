@@ -24,7 +24,23 @@ namespace tracey
         //         "kind": "primitive_cube",
         //         "pos": [120.0, 80.0],
         //         "params": {
-        //            "size": {"type": "float", "value": 1.0}
+        //            "size": {"type": "float", "value": 1.0},
+        //            // Animated parameter: optional `channels` array. Length is
+        //            // 1 for scalar params and 3 for vec3 (one per component);
+        //            // null entries mean that component is not animated.
+        //            "translate": {
+        //              "type": "vec3",
+        //              "value": [0, 0, 0],
+        //              "channels": [
+        //                {
+        //                  "keys": [{"t": 0.0, "v": 0.0, "in": 0.0, "out": 0.0, "i": "linear"}],
+        //                  "pre":  "hold",
+        //                  "post": "hold"
+        //                },
+        //                null,
+        //                null
+        //              ]
+        //            }
         //         }
         //       },
         //       ...

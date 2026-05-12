@@ -28,6 +28,16 @@
     return NO;
 }
 
+// AppKit routes Cmd-key events through the key window's responder chain
+// before falling back to the main menu. The WKWebView in the chain claims
+// most shortcuts (Cmd+I, Cmd+O, …) by returning YES from its own
+// performKeyEquivalent:, so menu items with those equivalents never fire.
+// Give the main menu the first shot here.
+- (BOOL)performKeyEquivalent:(NSEvent*)event {
+    if ([[NSApp mainMenu] performKeyEquivalent:event]) return YES;
+    return [super performKeyEquivalent:event];
+}
+
 - (void)broadcastMenuEvent:(NSString*)eventName {
     if (!_editorWebView)
         return;
@@ -43,6 +53,18 @@
 
 - (void)menuExport:(id)sender {
     [self broadcastMenuEvent:@"menu-export"];
+}
+
+- (void)menuOpenScene:(id)sender {
+    [self broadcastMenuEvent:@"menu-open-scene"];
+}
+
+- (void)menuSaveScene:(id)sender {
+    [self broadcastMenuEvent:@"menu-save-scene"];
+}
+
+- (void)menuSaveSceneAs:(id)sender {
+    [self broadcastMenuEvent:@"menu-save-scene-as"];
 }
 @end
 
@@ -310,6 +332,27 @@ struct MacEditorWindow : EditorWindow {
         NSMenuItem* fileMenuItem = [[NSMenuItem alloc] init];
         [menubar addItem:fileMenuItem];
         NSMenu* fileMenu = [[NSMenu alloc] initWithTitle:@"File"];
+        [fileMenu addItemWithTitle:@"Open Scene..."
+                            action:@selector(menuOpenScene:)
+                     keyEquivalent:@"o"];
+        // "Save Scene" — no ellipsis, no dialog when a current path exists.
+        // The frontend tracks the last-loaded / last-saved path and falls
+        // back to a Save-As prompt only when there's nothing to save to yet.
+        [fileMenu addItemWithTitle:@"Save Scene"
+                            action:@selector(menuSaveScene:)
+                     keyEquivalent:@"s"];
+        // Cmd+Shift+S forces a Save As… dialog. NSMenuItem's
+        // keyEquivalentModifierMask defaults to Cmd; we add Shift so the
+        // capital-S equivalent registers as Cmd+Shift+S (not Cmd+S).
+        {
+            NSMenuItem* saveAs =
+                [fileMenu addItemWithTitle:@"Save Scene As..."
+                                    action:@selector(menuSaveSceneAs:)
+                             keyEquivalent:@"s"];
+            saveAs.keyEquivalentModifierMask =
+                NSEventModifierFlagCommand | NSEventModifierFlagShift;
+        }
+        [fileMenu addItem:[NSMenuItem separatorItem]];
         [fileMenu addItemWithTitle:@"Import..."
                             action:@selector(menuImport:)
                      keyEquivalent:@"i"];
@@ -329,7 +372,13 @@ struct MacEditorWindow : EditorWindow {
 
         [NSApp finishLaunching];
 
-        NSRect frame = NSMakeRect(100, 100, width, height);
+        // Default the window to the main display's full visible area
+        // (excluding menu bar / Dock). The caller's width/height become the
+        // minimum the user can resize back down to. Falls back to the
+        // requested size when no screen is reported (headless tests).
+        NSScreen* screen = [NSScreen mainScreen];
+        NSRect frame = screen ? screen.visibleFrame
+                              : NSMakeRect(100, 100, width, height);
         NSWindowStyleMask style = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
                                   NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable;
 
@@ -380,11 +429,18 @@ struct MacEditorWindow : EditorWindow {
              "};\n"
              "(function() {\n"
              "  var origLog = console.log, origWarn = console.warn, origError = console.error;\n"
+             "  function fmt(a) {\n"
+             "    if (a instanceof Error) {\n"
+             "      return a.stack || (a.name + ': ' + a.message);\n"
+             "    }\n"
+             "    if (a === null || a === undefined) return String(a);\n"
+             "    if (typeof a === 'object') {\n"
+             "      try { return JSON.stringify(a); } catch(e) { return String(a); }\n"
+             "    }\n"
+             "    return String(a);\n"
+             "  }\n"
              "  function forward(level, args) {\n"
-             "    var msg = level + ': ' + Array.from(args).map(function(a) {\n"
-             "      try { return typeof a === 'object' ? JSON.stringify(a) : String(a); }\n"
-             "      catch(e) { return String(a); }\n"
-             "    }).join(' ');\n"
+             "    var msg = level + ': ' + Array.from(args).map(fmt).join(' ');\n"
              "    window.webkit.messageHandlers.consoleLog.postMessage(msg);\n"
              "  }\n"
              "  console.log = function() { forward('LOG', arguments); origLog.apply(console, "

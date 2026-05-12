@@ -24,10 +24,18 @@ set(TRACEY_EDITOR_SRCS
 if(APPLE)
     add_executable(tracey_editor
         ${TRACEY_EDITOR_SRCS}
-        platform/platform_macos.mm)
+        platform/platform_macos.mm
+        video_exporter.mm)
 
     set_source_files_properties(platform/platform_macos.mm
         PROPERTIES COMPILE_FLAGS "-x objective-c++")
+    # video_exporter.mm holds long-lived Objective-C pointers in a C++ struct
+    # (the AVAssetWriter / input / adaptor across many appendFrame calls). MRR
+    # would let the autoreleased convenience-constructor objects deallocate
+    # before the next frame; ARC retains via the implicit __strong members so
+    # they survive the export run.
+    set_source_files_properties(video_exporter.mm
+        PROPERTIES COMPILE_FLAGS "-x objective-c++ -fobjc-arc")
 
     target_link_libraries(tracey_editor PRIVATE
         tracey
@@ -40,6 +48,8 @@ if(APPLE)
         "-framework QuartzCore"
         "-framework Metal"
         "-framework CoreVideo"
+        "-framework CoreMedia"
+        "-framework AVFoundation"
     )
 
     set_target_properties(tracey_editor PROPERTIES
@@ -47,7 +57,10 @@ if(APPLE)
         MACOSX_BUNDLE_BUNDLE_NAME "Tracey Editor"
         MACOSX_BUNDLE_BUNDLE_VERSION "1.0.0"
         MACOSX_BUNDLE_SHORT_VERSION_STRING "1.0"
-        MACOSX_BUNDLE_GUI_IDENTIFIER "com.tracey.editor")
+        MACOSX_BUNDLE_GUI_IDENTIFIER "com.tracey.editor"
+        MACOSX_RPATH ON
+        BUILD_RPATH "/usr/local/lib"
+        INSTALL_RPATH "/usr/local/lib")
 
     if(EXISTS "${TRACEY_EDITOR_FRONTEND_DIR}/package.json")
         add_custom_command(TARGET tracey_editor POST_BUILD

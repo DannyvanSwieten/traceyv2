@@ -84,5 +84,38 @@ namespace tracey
         {
             if (auto *p = findParam(m_params, name)) { p->type = ParamType::String; p->value = std::move(v); }
         }
+
+        float SopNode::paramFloatAt(std::string_view name, double time, float def) const
+        {
+            const auto *p = findParam(m_params, name);
+            if (!p || p->type != ParamType::Float) return def;
+            auto v = p->evaluateAt(time);
+            if (auto *fv = std::get_if<float>(&v)) return *fv;
+            return def;
+        }
+        int SopNode::paramIntAt(std::string_view name, double time, int def) const
+        {
+            const auto *p = findParam(m_params, name);
+            if (!p || p->type != ParamType::Int) return def;
+            auto v = p->evaluateAt(time);
+            if (auto *iv = std::get_if<int>(&v)) return *iv;
+            return def;
+        }
+        bool SopNode::paramBoolAt(std::string_view name, double time, bool def) const
+        {
+            const auto *p = findParam(m_params, name);
+            if (!p || p->type != ParamType::Bool) return def;
+            auto v = p->evaluateAt(time);
+            if (auto *bv = std::get_if<bool>(&v)) return *bv;
+            return def;
+        }
+        Vec3 SopNode::paramVec3At(std::string_view name, double time, Vec3 def) const
+        {
+            const auto *p = findParam(m_params, name);
+            if (!p || p->type != ParamType::Vec3) return def;
+            auto v = p->evaluateAt(time);
+            if (auto *vv = std::get_if<Vec3>(&v)) return *vv;
+            return def;
+        }
     }
 }

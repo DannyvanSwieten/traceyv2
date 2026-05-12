@@ -13,16 +13,28 @@ namespace tracey
         void registerMergeSop();
         void registerObjectOutputSop();
         void registerGltfImportSop();
+        void registerSubnetSop();
+        void registerAttributeVopSop();
+        void registerPointsGridSop();
+        void registerCopyToPointsSop();
+        void registerScatterSop();
+        void registerLightSop();
 
         void registerBuiltinSops()
         {
-            // Categories run in this order for the palette UI:
-            //   Generators → Modifiers → Combiners → Output
+            // Palette category order: Generators → Cloners → Modifiers →
+            // Combiners → Output → Lights → Subnet.
             registerPrimitiveSops();
             registerGltfImportSop();
+            registerPointsGridSop();
+            registerScatterSop();
+            registerCopyToPointsSop();
             registerTransformSop();
+            registerAttributeVopSop();
             registerMergeSop();
             registerObjectOutputSop();
+            registerLightSop();
+            registerSubnetSop();
         }
     }
 }

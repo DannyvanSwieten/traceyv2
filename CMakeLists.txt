@@ -74,6 +74,16 @@ add_library(tracey
     src/rendering/wavefront_compute_backend.cpp
     src/rendering/post_processing.hpp
     src/rendering/post_processing.cpp
+    src/rendering/rasterizer.hpp
+    src/rendering/rasterizer.cpp
+    src/rendering/graphics_pipeline.hpp
+    src/rendering/graphics_pipeline_layout.hpp
+    src/rendering/graphics_pipeline_layout.cpp
+    src/rendering/graphics_command_buffer.hpp
+    src/rendering/gpu/vulkan_graphics_pipeline.hpp
+    src/rendering/gpu/vulkan_graphics_pipeline.cpp
+    src/rendering/gpu/vulkan_graphics_command_buffer.hpp
+    src/rendering/gpu/vulkan_graphics_command_buffer.cpp
 
     src/graph/graph.hpp
     src/graph/graph.cpp
@@ -88,6 +98,7 @@ add_library(tracey
     src/graph/prototype.hpp
 
     src/sops/parameter.hpp
+    src/sops/parameter.cpp
     src/sops/sop_node.hpp
     src/sops/sop_node.cpp
     src/sops/sop_registry.hpp
@@ -102,6 +113,30 @@ add_library(tracey
     src/sops/nodes/merge_sop.cpp
     src/sops/nodes/object_output_sop.cpp
     src/sops/nodes/gltf_import_sop.cpp
+    src/sops/nodes/subnet_sop.cpp
+    src/sops/nodes/attribute_vop_sop.cpp
+    src/sops/nodes/points_grid_sop.cpp
+    src/sops/nodes/copy_to_points_sop.cpp
+    src/sops/nodes/scatter_sop.cpp
+    src/sops/nodes/light_sop.cpp
+
+    # ── VOPs (per-point attribute graph hosted inside attribute_vop SOP) ──
+    src/vops/parameter.hpp
+    src/vops/eval_context.hpp
+    src/vops/vop_node.hpp
+    src/vops/vop_node.cpp
+    src/vops/vop_graph.hpp
+    src/vops/vop_graph.cpp
+    src/vops/vop_registry.hpp
+    src/vops/vop_registry.cpp
+    src/vops/register_builtins.hpp
+    src/vops/register_builtins.cpp
+    src/vops/serialization.hpp
+    src/vops/serialization.cpp
+    src/vops/nodes/bind_vops.cpp
+    src/vops/nodes/bind_attr_vops.cpp
+    src/vops/nodes/math_vops.cpp
+    src/vops/nodes/noise_vops.cpp
 
     src/graph/graphs/shader_graph/shader_graph.hpp
     src/graph/graphs/shader_graph/shader_graph.cpp

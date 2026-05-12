@@ -2,6 +2,8 @@
 
 #include "../graph/connection.hpp"
 
+#include <glm/gtc/quaternion.hpp>
+
 #include <algorithm>
 #include <unordered_set>
 
@@ -44,6 +46,10 @@ namespace tracey
 
         size_t SopGraph::nextUid()
         {
+            // Inner sub-graphs forward to the root allocator so uids stay
+            // globally unique across nesting — the keyframe IPC identifies
+            // nodes by uid only.
+            if (m_root) return m_root->nextUid();
             return m_nextUid++;
         }
 
@@ -58,6 +64,25 @@ namespace tracey
         {
             m_cache.clear();
         }
+
+        namespace
+        {
+            // Compose an euler-deg vec3 (Houdini convention: ZYX intrinsic
+            // applied in the order Rx then Ry then Rz, which translates to
+            // q = qz * qy * qx in glm). Stored on the EmittedActor as a
+            // wxyz Vec4 so the cook output stays POD-friendly. Mirrors the
+            // identical conversion in nodes/transform_sop.cpp.
+            inline Vec4 eulerDegToQuatWxyz(const Vec3 &deg)
+            {
+                constexpr float kDeg2Rad = 3.1415926535f / 180.0f;
+                const Vec3 rad = deg * kDeg2Rad;
+                glm::quat qx = glm::angleAxis(rad.x, glm::vec3(1, 0, 0));
+                glm::quat qy = glm::angleAxis(rad.y, glm::vec3(0, 1, 0));
+                glm::quat qz = glm::angleAxis(rad.z, glm::vec3(0, 0, 1));
+                glm::quat q  = qz * qy * qx;
+                return Vec4(q.w, q.x, q.y, q.z);
+            }
+        } // anon
 
         // ── Topological sort ───────────────────────────────────────────────
         namespace
@@ -116,7 +141,7 @@ namespace tracey
             }
         } // anon
 
-        CookResult SopGraph::cook(CookDiagnostic *diag)
+        CookResult SopGraph::cook(CookDiagnostic *diag, double time)
         {
             if (diag) *diag = {};
             invalidate();
@@ -152,7 +177,9 @@ namespace tracey
                 Geometry result;
                 try
                 {
-                    result = node->cook(std::span<const Geometry *const>{inputs.data(), inputs.size()});
+                    result = node->cookAt(
+                        std::span<const Geometry *const>{inputs.data(), inputs.size()},
+                        time);
                 }
                 catch (const std::exception &e)
                 {
@@ -174,20 +201,88 @@ namespace tracey
                     a.sourceNodeUid = uid;
                     a.name = node->paramString("name", "actor_" + std::to_string(uid));
                     a.translate = node->paramVec3("translate", Vec3(0.0f));
-                    Vec3 rotEuler = node->paramVec3("rotate_euler_deg", Vec3(0.0f));
-                    // Treat rotation as identity unless someone wires a
-                    // proper quaternion path later. For now we expose euler
-                    // params and ignore them at emission time so transforms
-                    // remain Vec3-only. (Plan note: will revisit when a
-                    // dedicated TransformParam type lands.)
-                    (void)rotEuler;
+                    a.rotation  = eulerDegToQuatWxyz(
+                        node->paramVec3("rotate_euler_deg", Vec3(0.0f)));
                     a.scale = node->paramVec3("scale", Vec3(1.0f));
                     a.materialLibraryName = node->paramString("material_library_name", "");
                     if (!inputs.empty() && inputs[0]) a.geometry = *inputs[0];
                     emitted.push_back(std::move(a));
                 }
+                else if (node->kind() == "light")
+                {
+                    // Houdini-style /obj light terminal — emits a
+                    // transform-only actor with a Light payload. apply_emitted
+                    // attaches the component; the SceneCompiler picks it up
+                    // into its light list later. No geometry, no instance.
+                    EmittedActor a;
+                    a.sourceNodeUid = uid;
+                    a.isLight = true;
+                    a.name = node->paramString("name", "light_" + std::to_string(uid));
+                    a.translate = node->paramVec3("translate", Vec3(0.0f));
+                    a.rotation  = eulerDegToQuatWxyz(
+                        node->paramVec3("rotate_euler_deg", Vec3(0.0f)));
+                    a.scale = node->paramVec3("scale", Vec3(1.0f));
+                    a.lightType = node->paramInt("type", 0);
+                    a.lightColor = node->paramVec3("color", Vec3(1.0f));
+                    a.lightIntensity = node->paramFloat("intensity", 1.0f);
+                    emitted.push_back(std::move(a));
+                }
 
                 m_cache[uid] = std::move(result);
+            }
+
+            // ── Subnet pass ────────────────────────────────────────────────
+            // After the main topo cook, walk subnet nodes in deterministic
+            // (sorted-by-uid) order. For each subnet:
+            //   1. Push a marker EmittedActor (transform-only parent — the
+            //      editor host creates a live Actor with no SceneInstance).
+            //   2. Recursively cook the inner graph and append its emits,
+            //      stamping ea.parentNodeUid = subnet->uid() — but only if
+            //      it's still 0, so nested subnets keep their innermost
+            //      parent (the inner cook already stamped it).
+            //
+            // The marker actor lands BEFORE its children, which apply_emitted
+            // relies on so addChild can find the parent in m_sop_node_to_actor.
+            std::vector<size_t> subnetUids;
+            for (const auto &n : nodes())
+            {
+                if (auto *sn = dynamic_cast<SopNode *>(n.get()); sn && sn->kind() == "subnet")
+                {
+                    subnetUids.push_back(sn->uid());
+                }
+            }
+            std::sort(subnetUids.begin(), subnetUids.end());
+
+            for (size_t uid : subnetUids)
+            {
+                auto *node = findNode(uid);
+                if (!node) continue;
+
+                EmittedActor marker;
+                marker.sourceNodeUid = uid;
+                marker.isSubnetMarker = true;
+                marker.name = node->paramString("name", "subnet_" + std::to_string(uid));
+                marker.translate = node->paramVec3("translate", Vec3(0.0f));
+                marker.rotation  = eulerDegToQuatWxyz(
+                    node->paramVec3("rotate_euler_deg", Vec3(0.0f)));
+                marker.scale = node->paramVec3("scale", Vec3(1.0f));
+                emitted.push_back(std::move(marker));
+
+                if (auto *inner = node->innerGraph())
+                {
+                    CookDiagnostic innerDiag;
+                    auto innerEmitted = inner->cook(&innerDiag, time);
+                    if (!innerDiag.ok)
+                    {
+                        if (diag) { diag->ok = false; diag->nodeUid = uid; diag->message = innerDiag.message; }
+                        return {};
+                    }
+                    for (auto &child : innerEmitted)
+                    {
+                        if (child.parentNodeUid == 0) child.parentNodeUid = uid;
+                        emitted.push_back(std::move(child));
+                    }
+                }
             }
 
             return emitted;

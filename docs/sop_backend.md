@@ -109,7 +109,7 @@ from the toolbar's **SOP Graph** button.
 | 2 — SOP framework | ✅ shipped | `SopGraph`, `SopNode`, registry, serialization, 11 built-in nodes |
 | 3 — Editor host integration | ✅ shipped | `sop_*` commands, scene save/load v2, camera preserved across cooks, stable actor↔SOP mapping via threaded `sourceNodeUid` |
 | 4 — Frontend graph editor UI | ✅ shipped | Canvas / palette / inspector / modal — all under [editor/src/components/sop-graph/](../editor/src/components/sop-graph/) |
-| 5 — Cleanup (`add_primitive` removal) | ⏸ deferred | Coexists with SOP for now so you can validate before tearing the imperative path out |
+| 5 — Cleanup (`add_primitive` removal) | ✅ shipped | Imperative add/import/parenting handlers removed from `editor_server.cpp`; `<AddObjectMenu>` UI deleted; `RenderEngine::load_gltf` removed (dead). Top-level Import menu now only registers the asset; geometry comes in via `gltf_import` SOP node. |
 | 6 — Graph → C++/dylib codegen | ⏸ future | Architectural invariants in v1 keep this option open; not implemented |
 
 ---
@@ -256,39 +256,39 @@ bugs. Specific things to look for:
 - Save / reload round-trip after editing material library assignments via
   ObjectOutput's `material_library_name` parameter.
 
-### 2. Worker-thread cook
+### 2. Worker-thread cook ✅
 
-`set_sop_graph` synchronously cooks on the message thread. A
-100k-vertex glTF import would block the UI for seconds. Move the cook off-
-thread; main thread does only the final `Scene` rebuild + path tracer
-recompile (which already requires main thread for Vulkan).
+`set_sop_graph` no longer cooks synchronously on the message thread.
+[editor_server.cpp](../editor/native/editor_server.cpp) now runs a single
+worker thread (`cook_worker_loop`) that owns its own deserialized SopGraph
+copy for the duration of each cook; `m_sop_graph` stays canonical for the
+message thread (read by `get_sop_graph`, written by `set_actor_transform`).
 
-Sketch:
+- `set_sop_graph` parses the JSON synchronously (so parse errors surface
+  in the response), replaces `m_sop_graph`, calls `post_cook_request(json)`
+  which hands the JSON to the worker, and returns ok.
+- `cook_worker_loop` waits on a CV, deserializes a private SopGraph from
+  the JSON, cooks it, and pushes the resulting `vector<EmittedActor>` into
+  `m_pending_cook_result` (latest-wins).
+- `render_tick` calls `drain_cook_result` once per frame on the main
+  thread; if a result is waiting it runs `apply_emitted` (scene rebuild +
+  path tracer recompile + `scene_changed` broadcast). One frame of
+  latency between cook completion and visibility, capped by the display
+  link tick.
+- `cook_and_apply` is kept as the synchronous path used by `load_scene`,
+  where blocking on a one-shot file load is fine.
 
-- [editor_server.cpp:cook_and_apply()](../editor/native/editor_server.cpp)
-  splits into `cook_on_worker()` returning `vector<EmittedActor>` and
-  `apply_on_main()` rebuilding `Scene`.
-- `set_sop_graph` posts the cook to a `std::thread` (or thread-pool, but
-  one is fine since cooks are sequential anyway). On completion the worker
-  enqueues `apply_on_main` via a main-thread runloop hook.
-- The SopGraph itself stays single-threaded — only the worker touches it
-  during cook.
+Mid-cook race notes (acceptable for v1):
 
-### 3. Phase 5 cleanup — remove `add_primitive` flow
+- Rapid edits during a long cook just overwrite `m_pending_cook_request`;
+  the worker only ever cooks the most recently posted JSON. Intermediate
+  edits never produce visible frames.
+- `set_actor_transform` writeback to ObjectOutput's translate/scale
+  parameters happens on `m_sop_graph` while a worker cook is in flight —
+  the writeback persists for the *next* cook, not the in-flight one.
+  Visible delta is one cook cycle, same as today's debounced model.
 
-Once SOP authoring feels solid:
-
-- Delete the `add_primitive` / `delete_actor` / `add_child` / `remove_child`
-  / `set_actor_name` / `import_gltf` command handlers in
-  [editor_server.cpp](../editor/native/editor_server.cpp).
-- Delete [editor/src/components/add-object-menu/](../editor/src/components/add-object-menu/)
-  and the `<AddObjectMenu>` import + render in
-  [App.tsx](../editor/src/App.tsx).
-- Delete the corresponding typed wrappers in
-  [editor/src/lib/api.ts](../editor/src/lib/api.ts).
-- Verify: `grep -rn "add_primitive\|AddObjectMenu" editor/ src/` is empty.
-
-### 4. Additional SOPs
+### 3. Additional SOPs
 
 The framework is ready; each new node is a single `.cpp` under
 [src/sops/nodes/](../src/sops/nodes/) plus one line in
@@ -304,7 +304,7 @@ soon:
   a constant default.
 - **`normalize_normals`** — re-normalises `N` (Houdini's NormalAdjust).
 
-### 5. UI polish (low priority)
+### 4. UI polish (low priority)
 
 - Empty-state message in `SopGraphPanel` for new users ("Drag a node from
   the palette →").
@@ -312,7 +312,7 @@ soon:
   starter `Cube → ObjectOutput` template.
 - Right-click on a node for a context menu (Delete, Disconnect inputs).
 
-### 6. Phase 4a refactor (was deferred)
+### 5. Phase 4a refactor (was deferred)
 
 The plan called for promoting `GraphCanvas` / `NodePalette` /
 `NodeInspector` into a shared `editor/src/components/graph/` directory so
@@ -320,7 +320,7 @@ both the material and SOP editors use the same components. We instead
 copied + adapted to keep the material editor untouched. Worth doing when
 the duplication starts costing more than the refactor risk.
 
-### 7. Future: graph → C++/dylib codegen (Phase 6)
+### 6. Future: graph → C++/dylib codegen (Phase 6)
 
 v1 invariants are already in place (pure cook, string `kind`, typed param
 table, no `std::function` in nodes, one TU per node). To add codegen later:
@@ -335,7 +335,7 @@ table, no `std::function` in nodes, one TU per node). To add codegen later:
 
 `gltf_import` is the one node that stays interpreted (file IO is opaque).
 
-### 8. Future: DOPs (particle / physics simulation)
+### 7. Future: DOPs (particle / physics simulation)
 
 Out of scope for this work. Architecturally compatible:
 
@@ -344,14 +344,12 @@ Out of scope for this work. Architecturally compatible:
   inheriting `tracey::Graph`. Per-frame cook with time delta, persistent
   state attribute table.
 - Same UI scaffolding (canvas / palette / inspector) once the components
-  are properly extracted (see follow-up #6).
+  are properly extracted (see follow-up #5).
 
 ---
 
 ## Known issues / non-issues
 
-- **Cook on message thread** — see follow-up #2. Will block the UI on
-  expensive gltf imports.
 - **Mid-edit race after `set_actor_transform`** — frontend SOP store
   refresh is best-effort. If you're typing in the SOP inspector at the
   exact moment `set_actor_transform` fires from the actor panel, the
