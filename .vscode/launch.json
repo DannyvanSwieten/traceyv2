@@ -82,15 +82,6 @@
         {
             "type": "lldb",
             "request": "launch",
-            "name": "Wavefront ISF Example",
-            "program": "${workspaceFolder}/build/Debug/examples/wavefront_isf",
-            "args": [],
-            "cwd": "${workspaceFolder}",
-            "preLaunchTask": "CMake: build"
-        },
-        {
-            "type": "lldb",
-            "request": "launch",
             "name": "Scene Renderer Example",
             "program": "${workspaceFolder}/build/Debug/examples/scene_renderer",
             "args": [],

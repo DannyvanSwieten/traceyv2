@@ -6,7 +6,7 @@
 // later refactor (the existing material canvas is intentionally left alone
 // to keep this change contained).
 
-import { Component, For, createSignal, Show } from 'solid-js';
+import { Component, For, createSignal, onCleanup, onMount, Show } from 'solid-js';
 import {
   SopNode,
   SopConnection,
@@ -15,49 +15,80 @@ import {
   lookupCatalog,
 } from '../../lib/sop_graph';
 import {
-  sopGraph,
+  connectToObjectOutput,
+  currentGraph,
+  enterSubnet,
+  exitSubnet,
   moveNode,
   addConnection,
   removeNode,
   selectedNode,
+  selectedNodes,
   setSelectedNode,
+  setSelectedNodes,
+  toggleSelectedNode,
+  isNodeSelected,
 } from '../../stores/sops';
+import { openVopEditor } from '../../stores/vops';
+import {
+  rectFromCorners,
+  nodesInRect,
+  type MarqueeRect,
+  type NodeBox,
+} from '../../lib/graph_canvas_marquee';
 import '../material-graph/GraphCanvas.css';
 
-const NODE_WIDTH = 200;
-const NODE_HEADER_HEIGHT = 28;
-const PORT_ROW_HEIGHT = 22;
-const PORT_RADIUS = 6;
+// SOPs flow top-to-bottom (Houdini-classic): inputs sit on the node's top
+// edge, outputs on the bottom edge, multiple ports of the same kind spread
+// evenly along that edge. Bezier control points are along the Y axis so
+// wires curve down between rows of nodes rather than left↔right.
+const NODE_WIDTH = 140;
+const NODE_HEADER_HEIGHT = 24;
+const NODE_BODY_PADDING = 10;
+const PORT_RADIUS = 5;
 
-function inputPortY(idx: number): number {
-  return NODE_HEADER_HEIGHT + idx * PORT_ROW_HEIGHT + PORT_ROW_HEIGHT / 2;
+function portX(idx: number, total: number): number {
+  // Spread N ports evenly across the node's width, with margins on the ends
+  // so a single port lands at the centre.
+  const n = Math.max(total, 1);
+  return ((idx + 1) / (n + 1)) * NODE_WIDTH;
 }
-function outputPortY(idx: number): number {
-  return NODE_HEADER_HEIGHT + idx * PORT_ROW_HEIGHT + PORT_ROW_HEIGHT / 2;
-}
-function nodeHeight(node: SopNode): number {
-  const ins = inputPortCount(node.kind);
-  const outs = outputPortCount(node.kind);
-  return NODE_HEADER_HEIGHT + Math.max(ins, outs, 1) * PORT_ROW_HEIGHT + 8;
+function nodeHeight(_node: SopNode): number {
+  // Compact, fixed-height node since ports no longer stack as rows.
+  return NODE_HEADER_HEIGHT + NODE_BODY_PADDING;
 }
 function nodeOrigin(node: SopNode): [number, number] {
   return [node.pos?.[0] ?? 0, node.pos?.[1] ?? 0];
 }
 function inputAnchor(node: SopNode, portIdx: number): [number, number] {
   const [x, y] = nodeOrigin(node);
-  return [x, y + inputPortY(portIdx)];
+  const total = inputPortCount(node.kind);
+  return [x + portX(portIdx, total), y];
 }
 function outputAnchor(node: SopNode, portIdx: number): [number, number] {
   const [x, y] = nodeOrigin(node);
-  return [x + NODE_WIDTH, y + outputPortY(portIdx)];
+  const total = outputPortCount(node.kind);
+  return [x + portX(portIdx, total), y + nodeHeight(node)];
 }
 function bezier(from: [number, number], to: [number, number]): string {
+  // Vertical bezier: control handles offset on Y so the curve flows
+  // downward between source-bottom and destination-top.
   const [x1, y1] = from;
   const [x2, y2] = to;
-  const dx = Math.max(40, Math.abs(x2 - x1) * 0.5);
-  return `M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`;
+  const dy = Math.max(40, Math.abs(y2 - y1) * 0.5);
+  return `M ${x1} ${y1} C ${x1} ${y1 + dy}, ${x2} ${y2 - dy}, ${x2} ${y2}`;
 }
 function nodeLabel(n: SopNode): string {
+  // Prefer the node's `name` param when present — subnets and object_outputs
+  // carry it as a user-facing identifier (the glTF importer fills it with
+  // each node's name, the palette seeds defaults). Falls back to the catalog
+  // label / kind for nodes without a name param (primitives, transforms,
+  // gltf_import, etc.) so they keep their generic "Primitive Cube" / "glTF
+  // Import" titles.
+  const named = n.params['name'];
+  if (named && named.type === 'string' && typeof named.value === 'string' && named.value) {
+    return named.value;
+  }
   return lookupCatalog(n.kind)?.label ?? n.kind;
 }
 
@@ -68,6 +99,10 @@ export const SopGraphCanvas: Component = () => {
   const [zoom, setZoom] = createSignal(1);
   const [pendingFrom, setPendingFrom] = createSignal<PortRef | null>(null);
   const [mouseWorld, setMouseWorld] = createSignal<[number, number]>([0, 0]);
+  // Houdini-style: hold Space to pan. Drag on empty canvas without Space
+  // does a rubber-band (marquee) select instead.
+  const [spaceDown, setSpaceDown] = createSignal(false);
+  const [marquee, setMarquee] = createSignal<MarqueeRect | null>(null);
 
   let svgRef: SVGSVGElement | undefined;
 
@@ -84,6 +119,9 @@ export const SopGraphCanvas: Component = () => {
   function onSvgPointerDown(e: PointerEvent) {
     if (e.button !== 0) return;
     e.preventDefault();
+    // Space-held drag pans the canvas, even when starting over a node or
+    // port — matches the Houdini convention of Space being a pan modifier.
+    if (spaceDown()) { startCanvasPan(e); return; }
     const targetEl = e.target as Element;
     if (targetEl.closest?.('[data-port-kind]')) return;
     const nodeEl = targetEl.closest?.('[data-node-uid]');
@@ -98,7 +136,7 @@ export const SopGraphCanvas: Component = () => {
       setPendingFrom(null);
       return;
     }
-    startCanvasPan(e);
+    startMarqueeSelect(e);
   }
 
   function onSvgPointerMove(e: PointerEvent) {
@@ -106,7 +144,6 @@ export const SopGraphCanvas: Component = () => {
   }
 
   function startCanvasPan(e: PointerEvent) {
-    setSelectedNode(null);
     const startPan = pan();
     const startX = e.clientX;
     const startY = e.clientY;
@@ -116,6 +153,48 @@ export const SopGraphCanvas: Component = () => {
     const onUp = () => {
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', onUp);
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+  }
+
+  function startMarqueeSelect(e: PointerEvent) {
+    const additive = e.metaKey || e.ctrlKey || e.shiftKey;
+    // Without a modifier, clearing first matches "drag a fresh box, replace
+    // selection". With a modifier we keep what's there and extend it on up.
+    const preExisting = additive ? [...selectedNodes()] : [];
+    if (!additive) setSelectedNode(null);
+
+    const startWorld = clientToWorld(e.clientX, e.clientY);
+    setMarquee(rectFromCorners(startWorld, startWorld));
+
+    const onMove = (mv: PointerEvent) => {
+      const cur = clientToWorld(mv.clientX, mv.clientY);
+      setMarquee(rectFromCorners(startWorld, cur));
+    };
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      const rect = marquee();
+      setMarquee(null);
+      if (!rect) return;
+      // Treat a near-zero drag as a click — no selection change in that case
+      // (the modifier-less click already cleared above).
+      const dx = rect.maxX - rect.minX;
+      const dy = rect.maxY - rect.minY;
+      if (dx < 1 && dy < 1) return;
+
+      // Build the node-box list from the current sub-graph; the canvas only
+      // renders/selects nodes in the visible level.
+      const boxes: NodeBox<number>[] = currentGraph().nodes.map((n) => ({
+        uid: n.uid,
+        x: nodeOrigin(n)[0],
+        y: nodeOrigin(n)[1],
+        width: NODE_WIDTH,
+        height: nodeHeight(n),
+      }));
+      const hits = nodesInRect(rect, boxes);
+      setSelectedNodes(additive ? [...preExisting, ...hits] : hits);
     };
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp);
@@ -138,15 +217,41 @@ export const SopGraphCanvas: Component = () => {
   }
 
   function startNodeDrag(e: PointerEvent, uid: number) {
-    setSelectedNode(uid);
+    const multi = e.metaKey || e.ctrlKey || e.shiftKey;
+    if (multi) {
+      // Modifier-click: toggle membership in the selection and don't start a
+      // drag. Matches Maya/Houdini ergonomics — drag-with-modifier is a
+      // marquee operation (not implemented here yet), not a per-node move.
+      toggleSelectedNode(uid);
+      return;
+    }
+
+    // No modifier: if the clicked node isn't already part of the selection,
+    // make it the sole selection. If it IS already selected (as part of a
+    // multi-selection), keep the whole set so the upcoming drag translates
+    // every selected node by the same delta.
+    if (!isNodeSelected(uid)) {
+      setSelectedNode(uid);
+    }
+
+    // Snapshot starting positions for every selected node so the drag math
+    // stays stable across `moveNode` updates (those rewrite `currentGraph()`
+    // and would otherwise drift as the loop re-reads positions).
     const [startX, startY] = clientToWorld(e.clientX, e.clientY);
-    const node = sopGraph().nodes.find((n) => n.uid === uid);
-    if (!node) return;
-    const [origX, origY] = nodeOrigin(node);
+    const origPositions = new Map<number, [number, number]>();
+    for (const u of selectedNodes()) {
+      const n = currentGraph().nodes.find((nd) => nd.uid === u);
+      if (n) origPositions.set(u, nodeOrigin(n));
+    }
+    if (origPositions.size === 0) return;
 
     const onMove = (mv: PointerEvent) => {
       const [wx, wy] = clientToWorld(mv.clientX, mv.clientY);
-      moveNode(uid, origX + (wx - startX), origY + (wy - startY));
+      const dx = wx - startX;
+      const dy = wy - startY;
+      for (const [u, [ox, oy]] of origPositions) {
+        moveNode(u, ox + dx, oy + dy);
+      }
     };
     const onUp = () => {
       window.removeEventListener('pointermove', onMove);
@@ -182,20 +287,87 @@ export const SopGraphCanvas: Component = () => {
     setPendingFrom(null);
   }
 
+  // Space-key tracking lives on `window` so the pan-modifier works even when
+  // focus has wandered to a sibling panel (inspector, palette dropdown, etc.).
+  // The SVG-level keydown only sees keys while the canvas itself has focus,
+  // which is too narrow for a global "hold to pan" gesture.
+  onMount(() => {
+    const isTextEditing = (target: EventTarget | null): boolean => {
+      const el = target as HTMLElement | null;
+      if (!el) return false;
+      const tag = el.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
+      // contenteditable / web-components used by some inspectors.
+      return el.isContentEditable === true;
+    };
+    const onDown = (e: KeyboardEvent) => {
+      if ((e.key === ' ' || e.code === 'Space') && !isTextEditing(e.target)) {
+        e.preventDefault();
+        if (!e.repeat) setSpaceDown(true);
+      }
+    };
+    const onUp = (e: KeyboardEvent) => {
+      if (e.key === ' ' || e.code === 'Space') setSpaceDown(false);
+    };
+    // Window blur / tab-switch can drop the keyup event; treat blur as "Space
+    // released" so the user doesn't end up stuck in pan mode.
+    const onBlur = () => setSpaceDown(false);
+    window.addEventListener('keydown', onDown);
+    window.addEventListener('keyup', onUp);
+    window.addEventListener('blur', onBlur);
+    onCleanup(() => {
+      window.removeEventListener('keydown', onDown);
+      window.removeEventListener('keyup', onUp);
+      window.removeEventListener('blur', onBlur);
+    });
+  });
+
   function onCanvasKeyDown(e: KeyboardEvent) {
     if (e.key === 'Delete' || e.key === 'Backspace') {
-      const uid = selectedNode();
-      if (uid !== null) {
+      // Copy the selection first — removeNode walks the graph signal which
+      // may invalidate iteration order if we read it lazily, and the
+      // selection itself clears once each uid is gone.
+      const uids = [...selectedNodes()];
+      if (uids.length > 0) {
         e.preventDefault();
-        removeNode(uid);
+        for (const u of uids) removeNode(u);
         setSelectedNode(null);
       }
+    } else if (e.key === 'Escape') {
+      // Pop one level of nested subgraph navigation. No-op at root.
+      e.preventDefault();
+      exitSubnet();
+    } else if (e.key === 'o' || e.key === 'O') {
+      // Wire the selected node into the current sub-graph's object_output.
+      // Replaces any existing input on the output (single-edge sink).
+      const uid = selectedNode();
+      if (uid === null) return;
+      e.preventDefault();
+      connectToObjectOutput(uid);
+    }
+  }
+
+  // Houdini-style "dive into" — double-click the node body. Subnets push a
+  // crumb and swap the visible graph; attribute_vop opens the docked VOP
+  // editor for that host. Anything else is a no-op (regular SOPs have no
+  // child graph to enter).
+  function onNodeDoubleClick(e: MouseEvent, node: SopNode) {
+    if (node.kind === 'subnet') {
+      e.stopPropagation();
+      enterSubnet(node.uid);
+      return;
+    }
+    if (node.kind === 'attribute_vop') {
+      e.stopPropagation();
+      openVopEditor(node.uid);
+      return;
     }
   }
 
   return (
     <svg
       class="graph-canvas"
+      classList={{ 'graph-canvas--panning': spaceDown() }}
       ref={svgRef}
       onPointerDown={onSvgPointerDown}
       onPointerMove={onSvgPointerMove}
@@ -211,10 +383,10 @@ export const SopGraphCanvas: Component = () => {
       <rect width="100%" height="100%" fill="url(#grid-sop)" />
       <g transform={`translate(${pan()[0]} ${pan()[1]}) scale(${zoom()})`}>
         {/* Edges */}
-        <For each={sopGraph().connections}>
+        <For each={currentGraph().connections}>
           {(c: SopConnection) => {
-            const fromNode = () => sopGraph().nodes.find((n) => n.uid === c.from_node);
-            const toNode = () => sopGraph().nodes.find((n) => n.uid === c.to_node);
+            const fromNode = () => currentGraph().nodes.find((n) => n.uid === c.from_node);
+            const toNode = () => currentGraph().nodes.find((n) => n.uid === c.to_node);
             return (
               <Show when={fromNode() && toNode()}>
                 <path
@@ -232,7 +404,7 @@ export const SopGraphCanvas: Component = () => {
         <Show when={pendingFrom()}>
           {() => {
             const ref = pendingFrom()!;
-            const node = sopGraph().nodes.find((n) => n.uid === ref.nodeUid);
+            const node = currentGraph().nodes.find((n) => n.uid === ref.nodeUid);
             if (!node) return null;
             return (
               <path
@@ -244,19 +416,20 @@ export const SopGraphCanvas: Component = () => {
         </Show>
 
         {/* Nodes */}
-        <For each={sopGraph().nodes}>
+        <For each={currentGraph().nodes}>
           {(node: SopNode) => {
             const [x, y] = nodeOrigin(node);
             const h = nodeHeight(node);
             const ins = inputPortCount(node.kind);
             const outs = outputPortCount(node.kind);
-            const selected = () => selectedNode() === node.uid;
+            const selected = () => isNodeSelected(node.uid);
             const category = () => lookupCatalog(node.kind)?.category ?? '';
             return (
               <g
                 transform={`translate(${x} ${y})`}
                 data-node-uid={node.uid}
                 class={`graph-node graph-node-sop-${category()} ${selected() ? 'graph-node-selected' : ''}`}
+                onDblClick={(e) => onNodeDoubleClick(e, node)}
               >
                 <rect class="graph-node-body" width={NODE_WIDTH} height={h} rx={6} />
                 <rect class="graph-node-header" width={NODE_WIDTH} height={NODE_HEADER_HEIGHT} rx={6} />
@@ -268,8 +441,8 @@ export const SopGraphCanvas: Component = () => {
                     <circle
                       class="graph-port graph-port-input"
                       data-port-kind="input"
-                      cx={0}
-                      cy={inputPortY(i)}
+                      cx={portX(i, ins)}
+                      cy={0}
                       r={PORT_RADIUS}
                       onClick={(e) => onInputPortClick(e, node.uid, i)}
                     />
@@ -280,8 +453,8 @@ export const SopGraphCanvas: Component = () => {
                     <circle
                       class="graph-port graph-port-output"
                       data-port-kind="output"
-                      cx={NODE_WIDTH}
-                      cy={outputPortY(i)}
+                      cx={portX(i, outs)}
+                      cy={h}
                       r={PORT_RADIUS}
                       onClick={(e) => onOutputPortClick(e, node.uid, i)}
                     />
@@ -291,6 +464,23 @@ export const SopGraphCanvas: Component = () => {
             );
           }}
         </For>
+
+        {/* Marquee rectangle. Rendered last so it overlays nodes; the
+            pointer-events:none CSS keeps it from intercepting clicks. */}
+        <Show when={marquee()}>
+          {() => {
+            const r = marquee()!;
+            return (
+              <rect
+                class="graph-marquee"
+                x={r.minX}
+                y={r.minY}
+                width={r.maxX - r.minX}
+                height={r.maxY - r.minY}
+              />
+            );
+          }}
+        </Show>
       </g>
     </svg>
   );

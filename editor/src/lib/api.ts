@@ -41,6 +41,24 @@ export interface Actor {
   // default). Backend doesn't ship the actual JSON — the frontend only needs
   // to know "assigned vs not" + the library entry list to render the picker.
   material_assigned?: boolean;
+  // uid of the object_output SOP node that emitted this actor (null when the
+  // actor wasn't produced by the cook). Used to target keyframe edits at the
+  // matching SOP parameter without an extra round-trip.
+  sop_node_uid?: number | null;
+  // Display flag toggled via the hierarchy's eye icon. Hidden actors are
+  // skipped by the SceneCompiler, so they appear in neither the path tracer
+  // nor the rasterizer overlay. Defaults to true server-side.
+  visible?: boolean;
+  // Houdini-style /obj light component. Present when the actor was emitted
+  // by a `light` SOP terminal; the hierarchy panel swaps the actor's icon
+  // and the inspector exposes light params instead of the geometry
+  // transform/material rows.
+  light?: {
+    // 0 = Point, 1 = Distant. Matches tracey::LightType on the engine side.
+    type: number;
+    color: Vec3;
+    intensity: number;
+  } | null;
 }
 
 export interface InstanceInfo {
@@ -73,20 +91,6 @@ export interface RenderResult {
   sample_count: number;
   render_time_ms: number;
 }
-
-export type PrimitiveParams =
-  | { type: 'cube'; size?: number }
-  | { type: 'sphere'; radius?: number; segments?: number; rings?: number }
-  | {
-      type: 'torus';
-      major_radius?: number;
-      minor_radius?: number;
-      major_segments?: number;
-      minor_segments?: number;
-    }
-  | { type: 'plane'; width?: number; depth?: number }
-  | { type: 'cylinder'; radius?: number; height?: number; segments?: number }
-  | { type: 'cone'; radius?: number; height?: number; segments?: number };
 
 export interface FileFilter {
   description: string;
@@ -144,21 +148,43 @@ export function listen(event: string, fn: EventListener): () => void {
 // ─── Scene management ──────────────────────────────────────────────────────
 
 export const createActor = (name: string) => send<number>('create_actor', { name });
-export const deleteActor = (actorId: number) =>
-  send<boolean>('delete_actor', { actor_id: actorId });
 export const getAllActors = () => send<Actor[]>('get_all_actors');
 export const getActor = (actorId: number) =>
   send<Actor | null>('get_actor', { actor_id: actorId });
 export const setActorTransform = (actorId: number, transform: Transform) =>
   send<boolean>('set_actor_transform', { actor_id: actorId, transform });
-export const setActorName = (actorId: number, name: string) =>
-  send<boolean>('set_actor_name', { actor_id: actorId, name });
+
+// Toggle an actor's visibility in the live scene. The flag is also remembered
+// against the source SOP node so it survives a re-cook.
+export const setActorVisible = (actorId: number, visible: boolean) =>
+  send<boolean>('set_actor_visible', { actor_id: actorId, visible });
+
+// Rotation edits go through this sibling IPC (rather than set_actor_transform)
+// because the SOP-side storage is per-axis euler-degrees. The server converts
+// to quaternion for the live actor and writes the euler back to the source
+// node's `rotate_euler_deg` param so the edit survives the next cook.
+export const setActorRotationEuler = (actorId: number, eulerDeg: Vec3) =>
+  send<boolean>('set_actor_rotation_euler', { actor_id: actorId, euler_deg: eulerDeg });
 export const setCamera = (camera: Camera) => send<null>('set_camera', { camera });
 export const getCamera = () => send<Camera>('get_camera');
-export const addChild = (parentId: number, childId: number) =>
-  send<boolean>('add_child', { parent_id: parentId, child_id: childId });
-export const removeChild = (parentId: number, childId: number) =>
-  send<boolean>('remove_child', { parent_id: parentId, child_id: childId });
+// Push the active selection to the server so the orbital viewport camera can
+// pivot around it. Pass null to clear.
+export const selectActor = (actorId: number | null) =>
+  send<null>('select_actor', { actor_id: actorId });
+
+// Snap the orbital camera to a named preset. The server keeps the current
+// pivot + zoom distance so pressing Top while focused on an actor reframes
+// that actor from above (rather than teleporting to world origin).
+export type CameraView =
+  | 'top'
+  | 'bottom'
+  | 'front'
+  | 'back'
+  | 'left'
+  | 'right'
+  | 'persp';
+export const setCameraView = (view: CameraView) =>
+  send<null>('set_camera_view', { view });
 
 // ─── Scene resource queries ────────────────────────────────────────────────
 
@@ -170,11 +196,6 @@ export const getAllMeshes = () => send<MeshInfo[]>('get_all_meshes');
 export const getTextureIds = () => send<string[]>('get_texture_ids');
 export const getTextureInfo = (id: string) => send<TextureInfo>('get_texture_info', { id });
 export const getAllTextures = () => send<TextureInfo[]>('get_all_textures');
-
-// ─── Primitive creation ────────────────────────────────────────────────────
-
-export const addPrimitive = (name: string, params: PrimitiveParams) =>
-  send<Actor>('add_primitive', { name, params });
 
 // ─── Rendering ─────────────────────────────────────────────────────────────
 
@@ -192,12 +213,36 @@ export const getViewportResolution = () =>
   send<[number, number]>('get_viewport_resolution');
 export const setViewportResolution = (width: number, height: number) =>
   send<null>('set_viewport_resolution', { width, height });
-export const getSamplesPerFrame = () => send<number>('get_samples_per_frame');
-export const setSamplesPerFrame = (samples: number) =>
-  send<null>('set_samples_per_frame', { samples });
+// Path-tracer accumulation cap. The editor renders one sample per tick and
+// stops once `max_samples` is reached, leaving the converged image on screen.
+// Camera / scene / settings changes reset the accumulator automatically.
+export const getMaxSamples = () => send<number>('get_max_samples');
+export const setMaxSamples = (samples: number) =>
+  send<null>('set_max_samples', { samples });
+// Current accumulated sample count; useful for showing progress in the UI.
+export const getCurrentSamples = () => send<number>('get_current_samples');
 export const getMaxBounces = () => send<number>('get_max_bounces');
 export const setMaxBounces = (bounces: number) =>
   send<null>('set_max_bounces', { bounces });
+
+// Toggle the rasterizer's antialiased point-sprite overlay (drawn on top of
+// the triangle pass in the main view). PiP path-tracer view is unaffected.
+export const getShowPoints = () => send<boolean>('get_show_points');
+export const setShowPoints = (value: boolean) =>
+  send<null>('set_show_points', { value });
+
+// Toggle the rasterizer's wireframe overlay (triangle edges drawn over the
+// filled triangles using POLYGON_MODE_LINE). PiP path-tracer view is unaffected.
+export const getShowEdges = () => send<boolean>('get_show_edges');
+export const setShowEdges = (value: boolean) =>
+  send<null>('set_show_edges', { value });
+
+// Toggle the rasterizer's reference ground-grid overlay (anti-aliased grid
+// on the y=0 plane, alpha-blended over the scene). PiP path-tracer view is
+// unaffected — the ground is a viewport reference, not real geometry.
+export const getShowGround = () => send<boolean>('get_show_ground');
+export const setShowGround = (value: boolean) =>
+  send<null>('set_show_ground', { value });
 
 // ─── Material graphs ───────────────────────────────────────────────────────
 
@@ -250,7 +295,6 @@ export const setActorMaterial = (actorId: number, libraryName: string) =>
 
 export const saveScene = (path: string) => send<null>('save_scene', { path });
 export const loadScene = (path: string) => send<null>('load_scene', { path });
-export const importGltf = (path: string) => send<null>('import_gltf', { path });
 export const exportImage = (path: string, format: string) =>
   send<null>('export_image', { path, format });
 
@@ -277,6 +321,165 @@ export const saveFileDialog = (
   });
 export const openFolderDialog = (title: string) =>
   send<string | null>('open_folder_dialog', { title });
+
+// ─── glTF peek (structural import helper) ──────────────────────────────────
+// Returns the node hierarchy of a glTF file in the shape the importer needs
+// to build a recursive subnet tree: one entry per glTF node with local TRS
+// (rotation pre-converted to ZYX euler-degrees so it lands in the SOP
+// `rotate_euler_deg` param with no client-side conversion), the
+// SceneObject name to feed into `gltf_import`'s `mesh_name`, and recursive
+// children. Reads structural metadata only — no buffers, accessors or
+// images — so even large files peek quickly.
+
+export interface GltfHierarchyNode {
+  name: string;
+  translate: [number, number, number];
+  rotate_euler_deg: [number, number, number];
+  scale: [number, number, number];
+  // SceneObject names this node's mesh expands into, one per primitive of
+  // the referenced mesh. Empty when the node is a transform-only container
+  // (no mesh). Multi-primitive meshes return multiple names so the
+  // importer can create one `gltf_import` per primitive instead of
+  // dropping all but the first.
+  mesh_names: string[];
+  children: GltfHierarchyNode[];
+}
+
+export interface GltfPeekResult {
+  path: string;
+  roots: GltfHierarchyNode[];
+}
+
+export const peekGltf = (path: string) =>
+  send<GltfPeekResult>('peek_gltf', { path });
+
+// ─── Video export ──────────────────────────────────────────────────────────
+// Drives an offline render at the timeline frame range. The native worker
+// broadcasts `video_export_progress`, `video_export_done`, and
+// `video_export_error` events while running; subscribe via listen().
+
+export type VideoCodec = 'h264' | 'prores';
+
+export interface VideoExportRequest {
+  path: string;
+  frame_start: number;
+  frame_end: number;
+  fps: number;
+  samples_per_frame: number;
+  // Max ray bounces per sample. 0 leaves the engine's current setting alone.
+  max_bounces: number;
+  // Output resolution. 0 means "use the current path-tracer viewport size".
+  width: number;
+  height: number;
+  codec: VideoCodec;
+}
+
+export const exportVideoStart = (req: VideoExportRequest) =>
+  send<null>('export_video_start', req as unknown as Record<string, unknown>);
+export const exportVideoCancel = () => send<null>('export_video_cancel');
+
+// ─── Timeline / playback ───────────────────────────────────────────────────
+// The playhead is owned by the native side (advances in render_tick), so the
+// frontend only sends transport commands and listens for `timeline_tick`
+// broadcasts via listen('timeline_tick', ...).
+
+export type LoopMode = 'once' | 'loop' | 'pingpong';
+export type Interp = 'step' | 'linear' | 'bezier';
+
+export interface TimelineState {
+  fps: number;
+  frame_start: number;
+  frame_end: number;
+  current_time: number;  // seconds
+  playing: boolean;
+  loop: LoopMode;
+}
+
+export const timelineGet = () => send<TimelineState>('timeline_get');
+
+export const timelineSetRange = (fps: number, frameStart: number, frameEnd: number) =>
+  send<null>('timeline_set_range', {
+    fps,
+    frame_start: frameStart,
+    frame_end: frameEnd,
+  });
+
+// Either `time` (seconds) or `frame` (1-based) is accepted; prefer `frame` from
+// the playbar UI so the snap-to-frame conversion happens server-side.
+export const timelineSetPlayhead = (input: { time?: number; frame?: number }) =>
+  send<null>('timeline_set_playhead', input);
+
+export const timelinePlay  = () => send<null>('timeline_play');
+export const timelinePause = () => send<null>('timeline_pause');
+export const timelineSetLoop = (mode: LoopMode) =>
+  send<null>('timeline_set_loop', { mode });
+
+// ─── Keyframe edits ────────────────────────────────────────────────────────
+// Keys live on SOP node parameters. `component` is 0 for scalar params and
+// 0..2 for vec3 (per-component, Houdini-style). `time` is seconds.
+
+export const paramSetKeyframe = (args: {
+  nodeUid: number;
+  paramName: string;
+  component?: number;
+  time: number;
+  value: number;
+  interp?: Interp;
+  inTangent?: number;
+  outTangent?: number;
+}) =>
+  send<null>('param_set_keyframe', {
+    node_uid: args.nodeUid,
+    param_name: args.paramName,
+    component: args.component ?? 0,
+    time: args.time,
+    value: args.value,
+    interp: args.interp ?? 'linear',
+    in_tangent: args.inTangent ?? 0,
+    out_tangent: args.outTangent ?? 0,
+  });
+
+// Retime a key while preserving value + tangents + interpolation. Returns
+// false if no key existed at `fromTime`.
+export const paramMoveKeyframe = (args: {
+  nodeUid: number;
+  paramName: string;
+  component?: number;
+  fromTime: number;
+  toTime: number;
+}) =>
+  send<boolean>('param_move_keyframe', {
+    node_uid: args.nodeUid,
+    param_name: args.paramName,
+    component: args.component ?? 0,
+    from_time: args.fromTime,
+    to_time: args.toTime,
+  });
+
+export const paramDeleteKeyframe = (args: {
+  nodeUid: number;
+  paramName: string;
+  component?: number;
+  time: number;
+}) =>
+  send<boolean>('param_delete_keyframe', {
+    node_uid: args.nodeUid,
+    param_name: args.paramName,
+    component: args.component ?? 0,
+    time: args.time,
+  });
+
+// component < 0 (default) clears all components.
+export const paramClearChannel = (args: {
+  nodeUid: number;
+  paramName: string;
+  component?: number;
+}) =>
+  send<null>('param_clear_channel', {
+    node_uid: args.nodeUid,
+    param_name: args.paramName,
+    component: args.component ?? -1,
+  });
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
 

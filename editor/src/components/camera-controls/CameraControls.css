@@ -13,6 +13,27 @@
   letter-spacing: 0.5px;
 }
 
+.camera-view-presets {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 4px;
+  margin-bottom: 12px;
+}
+
+.camera-view-preset {
+  padding: 5px 0;
+  background: #2c2c2c;
+  border: 1px solid #3a3a3a;
+  color: #ddd;
+  border-radius: 3px;
+  font: 11px system-ui, -apple-system, sans-serif;
+  cursor: pointer;
+}
+.camera-view-preset:hover {
+  background: #383838;
+  border-color: #4a4a4a;
+}
+
 .camera-inputs {
   display: flex;
   flex-direction: column;

@@ -1,11 +1,18 @@
-// Top-level SOP graph panel. Three-column layout:
-//   [palette] [canvas] [inspector]
-// All three share the SOP store; mutations there debounce-push the full
-// graph JSON back to the host, which re-cooks and broadcasts scene_changed.
+// Top-level SOP graph panel. New stack layout:
+//   inspector (top, full width, fixed-ish height)
+//   toolbar with node-add dropdown
+//   canvas (fills the rest)
+// The old left-rail palette has been replaced with a compact dropdown so
+// the canvas gets the full dock width.
 
 import { Component, onMount } from 'solid-js';
-import { fetchCatalog, syncNextUid } from '../../lib/sop_graph';
-import { loadSopGraphFromEngine, sopGraph } from '../../stores/sops';
+import { fetchCatalog, makeNode, syncNextUidRecursive } from '../../lib/sop_graph';
+import {
+  addNode,
+  currentGraph,
+  loadSopGraphFromEngine,
+  sopGraph,
+} from '../../stores/sops';
 import { SopGraphCanvas } from './SopGraphCanvas';
 import { SopNodePalette } from './SopNodePalette';
 import { SopNodeInspector } from './SopNodeInspector';
@@ -22,20 +29,30 @@ export const SopGraphPanel: Component = () => {
       console.error('Failed to fetch SOP node catalog:', e);
     }
     await loadSopGraphFromEngine();
-    // Make sure the local uid allocator is past everything the host shipped.
-    for (const n of sopGraph().nodes) syncNextUid(n.uid);
+    // Seed the uid allocator past every uid in the (potentially nested)
+    // tree so locally-allocated uids don't collide with nested ones.
+    syncNextUidRecursive(sopGraph());
+
+    // Seed a default object_output when the root graph is empty so a fresh
+    // scene is immediately renderable (the path tracer needs at least one
+    // emitted actor). A subsequent glTF import lands as additional subnets
+    // alongside this output — the leftover orphan is a minor UX cost, much
+    // smaller than the "blank scene, no idea why nothing renders" foot-gun
+    // that comes from leaving the graph empty.
+    if (currentGraph().nodes.length === 0) {
+      const out = makeNode('object_output', [120, 120]);
+      if (out) addNode(out);
+    }
   });
 
   return (
     <div class="sop-graph-panel">
-      <div class="sop-graph-palette-col">
-        <SopNodePalette />
+      <div class="sop-graph-inspector-row">
+        <SopNodeInspector />
       </div>
       <div class="sop-graph-canvas-col">
+        <SopNodePalette />
         <SopGraphCanvas />
-      </div>
-      <div class="sop-graph-inspector-col">
-        <SopNodeInspector />
       </div>
     </div>
   );

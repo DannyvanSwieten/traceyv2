@@ -12,7 +12,6 @@ export interface CameraPosition {
 }
 
 export interface ViewportHandle {
-  loadScene: (path: string) => Promise<void>;
   render: () => void;
 }
 
@@ -73,25 +72,12 @@ export const Viewport: Component<ViewportProps> = (props) => {
     }
   };
 
-  const loadScene = async (scenePath: string) => {
-    try {
-      setStatus('Loading scene...');
-      await api.importGltf(scenePath);
-      setStatus('Compiling scene...');
-      await api.compileScene();
-      setStatus('Ready');
-    } catch (e) {
-      setStatus(`Error: ${e}`);
-      console.error('Failed to load scene:', e);
-    }
-  };
-
   let resizeObserver: ResizeObserver | undefined;
   let scrollListener: (() => void) | undefined;
 
   onMount(() => {
-    props.ref?.({ loadScene, render: () => {} });
-    setStatus('Select a scene to begin');
+    props.ref?.({ render: () => {} });
+    setStatus('Ready');
     reportRect();
 
     if (placeholderRef) {

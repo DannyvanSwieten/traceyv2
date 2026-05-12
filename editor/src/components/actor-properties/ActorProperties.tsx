@@ -1,6 +1,10 @@
 import { Component, createSignal, createEffect, For, Show, Accessor, onMount } from 'solid-js';
 import * as api from '../../lib/api';
 import { materialLibraryEntries, refreshMaterialLibrary } from '../../stores/materials';
+import { KeyframeDot } from '../keyframe-dot/KeyframeDot';
+import { sopGraph } from '../../stores/sops';
+import { findNodeRecursive } from '../../lib/sop_graph';
+import { autoKey, setKeyAtPlayhead } from '../../stores/timeline';
 import './ActorProperties.css';
 
 export type InstanceInfo = api.InstanceInfo;
@@ -80,6 +84,21 @@ export const ActorProperties: Component<ActorPropertiesProps> = (props) => {
     try {
       await api.setActorTransform(actor.id, newTransform);
       props.onTransformChange?.(actor.id, newTransform);
+      // Auto-key: if the playbar's AK toggle is on, write a keyframe for
+      // the edited component on the matching SOP node. Maps the inspector
+      // field name to the SOP param name (`position` → `translate`, `scale`
+      // → `scale`) and the axis to a 0..2 component index. No-op when the
+      // actor has no SOP source.
+      if (autoKey() && actor.sop_node_uid != null) {
+        const componentIdx = axis === 'x' ? 0 : axis === 'y' ? 1 : 2;
+        const paramName = field === 'position' ? 'translate' : 'scale';
+        await setKeyAtPlayhead({
+          nodeUid: actor.sop_node_uid,
+          paramName,
+          component: componentIdx,
+          value,
+        });
+      }
     } catch (error) {
       console.error('Failed to update transform:', error);
     }
@@ -94,6 +113,45 @@ export const ActorProperties: Component<ActorPropertiesProps> = (props) => {
     const value = parseFloat(inputValue);
     if (!isNaN(value)) {
       updateTransform(actor, field, axis, value);
+    }
+  };
+
+  // Read the actor's `rotate_euler_deg` straight off its source SOP node so
+  // the inspector mirrors the storage shape exactly (no quat → euler
+  // conversion to gimbal-mangle the user's edits). Returns [0,0,0] when the
+  // actor has no SOP source — those actors aren't rotatable through the
+  // current UI anyway.
+  const rotationEuler = (actor: Actor): [number, number, number] => {
+    if (actor.sop_node_uid == null) return [0, 0, 0];
+    const node = findNodeRecursive(sopGraph(), actor.sop_node_uid);
+    const p = node?.params['rotate_euler_deg'];
+    if (p && p.type === 'vec3') return p.value;
+    return [0, 0, 0];
+  };
+
+  const handleRotationChange = async (
+    actor: Actor,
+    axis: 0 | 1 | 2,
+    inputValue: string,
+  ) => {
+    const value = parseFloat(inputValue);
+    if (Number.isNaN(value)) return;
+    const cur = rotationEuler(actor);
+    const next: [number, number, number] = [cur[0], cur[1], cur[2]];
+    next[axis] = value;
+    try {
+      await api.setActorRotationEuler(actor.id, { x: next[0], y: next[1], z: next[2] });
+      // Auto-key the rotated axis on rotate_euler_deg's channel.
+      if (autoKey() && actor.sop_node_uid != null) {
+        await setKeyAtPlayhead({
+          nodeUid: actor.sop_node_uid,
+          paramName: 'rotate_euler_deg',
+          component: axis,
+          value,
+        });
+      }
+    } catch (e) {
+      console.error('Failed to update rotation:', e);
     }
   };
 
@@ -133,6 +191,12 @@ export const ActorProperties: Component<ActorPropertiesProps> = (props) => {
                         handleInputChange(actor(), 'position', 'x', e.currentTarget.value)
                       }
                     />
+                    <KeyframeDot
+                      nodeUid={actor().sop_node_uid}
+                      paramName="translate"
+                      component={0}
+                      value={() => actor().transform.position.x}
+                    />
                   </div>
                   <div class="transform-input-row">
                     <label for={`pos-y-${actor().id}`}>Y</label>
@@ -145,6 +209,12 @@ export const ActorProperties: Component<ActorPropertiesProps> = (props) => {
                         handleInputChange(actor(), 'position', 'y', e.currentTarget.value)
                       }
                     />
+                    <KeyframeDot
+                      nodeUid={actor().sop_node_uid}
+                      paramName="translate"
+                      component={1}
+                      value={() => actor().transform.position.y}
+                    />
                   </div>
                   <div class="transform-input-row">
                     <label for={`pos-z-${actor().id}`}>Z</label>
@@ -156,6 +226,71 @@ export const ActorProperties: Component<ActorPropertiesProps> = (props) => {
                       onChange={(e) =>
                         handleInputChange(actor(), 'position', 'z', e.currentTarget.value)
                       }
+                    />
+                    <KeyframeDot
+                      nodeUid={actor().sop_node_uid}
+                      paramName="translate"
+                      component={2}
+                      value={() => actor().transform.position.z}
+                    />
+                  </div>
+                </div>
+              </div>
+              <div class="transform-group">
+                <span class="transform-label">Rotation (deg)</span>
+                <div class="transform-inputs">
+                  <div class="transform-input-row">
+                    <label for={`rot-x-${actor().id}`}>X</label>
+                    <input
+                      id={`rot-x-${actor().id}`}
+                      type="number"
+                      step="1"
+                      value={rotationEuler(actor())[0].toFixed(2)}
+                      onChange={(e) =>
+                        handleRotationChange(actor(), 0, e.currentTarget.value)
+                      }
+                    />
+                    <KeyframeDot
+                      nodeUid={actor().sop_node_uid}
+                      paramName="rotate_euler_deg"
+                      component={0}
+                      value={() => rotationEuler(actor())[0]}
+                    />
+                  </div>
+                  <div class="transform-input-row">
+                    <label for={`rot-y-${actor().id}`}>Y</label>
+                    <input
+                      id={`rot-y-${actor().id}`}
+                      type="number"
+                      step="1"
+                      value={rotationEuler(actor())[1].toFixed(2)}
+                      onChange={(e) =>
+                        handleRotationChange(actor(), 1, e.currentTarget.value)
+                      }
+                    />
+                    <KeyframeDot
+                      nodeUid={actor().sop_node_uid}
+                      paramName="rotate_euler_deg"
+                      component={1}
+                      value={() => rotationEuler(actor())[1]}
+                    />
+                  </div>
+                  <div class="transform-input-row">
+                    <label for={`rot-z-${actor().id}`}>Z</label>
+                    <input
+                      id={`rot-z-${actor().id}`}
+                      type="number"
+                      step="1"
+                      value={rotationEuler(actor())[2].toFixed(2)}
+                      onChange={(e) =>
+                        handleRotationChange(actor(), 2, e.currentTarget.value)
+                      }
+                    />
+                    <KeyframeDot
+                      nodeUid={actor().sop_node_uid}
+                      paramName="rotate_euler_deg"
+                      component={2}
+                      value={() => rotationEuler(actor())[2]}
                     />
                   </div>
                 </div>
@@ -174,6 +309,12 @@ export const ActorProperties: Component<ActorPropertiesProps> = (props) => {
                         handleInputChange(actor(), 'scale', 'x', e.currentTarget.value)
                       }
                     />
+                    <KeyframeDot
+                      nodeUid={actor().sop_node_uid}
+                      paramName="scale"
+                      component={0}
+                      value={() => actor().transform.scale.x}
+                    />
                   </div>
                   <div class="transform-input-row">
                     <label for={`scale-y-${actor().id}`}>Y</label>
@@ -186,6 +327,12 @@ export const ActorProperties: Component<ActorPropertiesProps> = (props) => {
                         handleInputChange(actor(), 'scale', 'y', e.currentTarget.value)
                       }
                     />
+                    <KeyframeDot
+                      nodeUid={actor().sop_node_uid}
+                      paramName="scale"
+                      component={1}
+                      value={() => actor().transform.scale.y}
+                    />
                   </div>
                   <div class="transform-input-row">
                     <label for={`scale-z-${actor().id}`}>Z</label>
@@ -197,6 +344,12 @@ export const ActorProperties: Component<ActorPropertiesProps> = (props) => {
                       onChange={(e) =>
                         handleInputChange(actor(), 'scale', 'z', e.currentTarget.value)
                       }
+                    />
+                    <KeyframeDot
+                      nodeUid={actor().sop_node_uid}
+                      paramName="scale"
+                      component={2}
+                      value={() => actor().transform.scale.z}
                     />
                   </div>
                 </div>

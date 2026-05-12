@@ -1,13 +1,14 @@
-// Left rail of the SOP graph panel. Server-driven catalog: groups come from
-// the C++ list_sop_node_catalog command. Click → drop a fresh node at a
-// default position; the user drags it where they want.
+// Compact node-add dropdown that sits in the SOP canvas toolbar (replacing
+// the old left-rail palette). Native <select> with <optgroup>s for category
+// grouping — cheap and matches the catalog's natural shape.
 
-import { Component, For, createMemo } from 'solid-js';
+import { Component, For, createMemo, createSignal } from 'solid-js';
 import { catalog, makeNode } from '../../lib/sop_graph';
 import { addNode, setSelectedNode } from '../../stores/sops';
 
 export const SopNodePalette: Component = () => {
-  // Group entries by category, preserving the order they were registered in.
+  const [pending, setPending] = createSignal('');
+
   const groups = createMemo(() => {
     const byCategory = new Map<string, { kind: string; label: string }[]>();
     for (const e of catalog()) {
@@ -18,8 +19,9 @@ export const SopNodePalette: Component = () => {
   });
 
   function spawn(kind: string) {
-    // Drop new nodes near the origin with a small jitter so successive
-    // creations don't perfectly overlap. The user can drag from there.
+    if (!kind) return;
+    // Slight jitter so successive creations don't perfectly overlap; the
+    // user drags from there.
     const jitter = (): [number, number] => [
       40 + Math.random() * 80,
       40 + Math.random() * 80,
@@ -31,21 +33,31 @@ export const SopNodePalette: Component = () => {
   }
 
   return (
-    <div class="sop-palette">
-      <For each={groups()}>
-        {([category, entries]) => (
-          <div class="sop-palette-group">
-            <h4 class="sop-palette-heading">{category}</h4>
-            <For each={entries}>
-              {(e) => (
-                <button class="sop-palette-item" onClick={() => spawn(e.kind)}>
-                  {e.label}
-                </button>
-              )}
-            </For>
-          </div>
-        )}
-      </For>
+    <div class="sop-palette-toolbar">
+      <select
+        class="sop-palette-select"
+        title="Add a SOP node"
+        value={pending()}
+        onChange={(e) => {
+          const v = e.currentTarget.value;
+          spawn(v);
+          // Reset back to the placeholder so the same kind can be picked
+          // again immediately (an unchanged select fires no `change`).
+          setPending('');
+          e.currentTarget.value = '';
+        }}
+      >
+        <option value="" disabled>Add Node…</option>
+        <For each={groups()}>
+          {([category, entries]) => (
+            <optgroup label={category}>
+              <For each={entries}>
+                {(en) => <option value={en.kind}>{en.label}</option>}
+              </For>
+            </optgroup>
+          )}
+        </For>
+      </select>
     </div>
   );
 };

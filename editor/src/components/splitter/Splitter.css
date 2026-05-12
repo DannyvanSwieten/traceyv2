@@ -1,0 +1,21 @@
+.splitter {
+  background: #1e1e1e;
+  flex-shrink: 0;
+  user-select: none;
+  transition: background 80ms ease;
+}
+
+.splitter-vertical {
+  width: 4px;
+  cursor: col-resize;
+}
+
+.splitter-horizontal {
+  height: 4px;
+  cursor: row-resize;
+}
+
+.splitter:hover,
+.splitter.dragging {
+  background: #007acc;
+}

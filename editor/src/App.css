@@ -4,6 +4,17 @@
   display: flex;
   flex-direction: column;
   background: #1e1e1e;
+  /* Editor chrome behaves like a native app — text is for reading, not
+     copying. Inputs/textareas opt back in via the rule below so users can
+     still edit param fields normally. */
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.app input,
+.app textarea {
+  -webkit-user-select: text;
+  user-select: text;
 }
 
 .toolbar {
@@ -36,6 +47,39 @@
   background: #353535;
 }
 
+/* Cooking status — surfaces while the native SOP cook worker is parsing or
+   decoding. Right-aligned so it sits at the trailing edge of the toolbar
+   without rearranging the other buttons. */
+.toolbar-cook-status {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  background: #2a2a2a;
+  border: 1px solid #444;
+  border-radius: 12px;
+  color: #cccccc;
+  font: 12px system-ui, -apple-system, sans-serif;
+}
+
+.toolbar-cook-spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid #555;
+  border-top-color: #cccccc;
+  border-radius: 50%;
+  animation: toolbar-cook-spin 0.9s linear infinite;
+  /* Promote to its own layer so the rotation animates on the GPU — silences
+     the linter's "transform triggers composite/paint" hint and matches the
+     standard cheap-spinner pattern. */
+  will-change: transform;
+}
+
+@keyframes toolbar-cook-spin {
+  to { transform: rotate(360deg); }
+}
+
 .main-content {
   flex: 1;
   display: flex;
@@ -52,15 +96,24 @@
 }
 
 .left-panel {
-  width: 250px;
-  min-width: 250px;
+  width: var(--left-panel-w, 250px);
+  min-width: 0;
+  flex-shrink: 0;
 }
 
 .right-panel {
-  width: 300px;
-  min-width: 300px;
+  width: var(--right-panel-w, 300px);
+  min-width: 0;
+  flex-shrink: 0;
   border-right: none;
   border-left: 1px solid #3c3c3c;
+}
+
+.resources-wrapper {
+  height: var(--browser-h, 150px);
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .panel h3 {
@@ -89,5 +142,13 @@
   flex: 1;
   display: flex;
   background: #1e1e1e;
+  overflow: hidden;
+}
+
+.dopesheet-wrapper {
+  height: var(--dopesheet-h, 180px);
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
 }

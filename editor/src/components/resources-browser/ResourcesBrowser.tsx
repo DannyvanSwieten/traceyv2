@@ -12,6 +12,11 @@ interface ResourcesBrowserProps {
   assets: () => ImportedAsset[];
   currentAssetPath: Accessor<string | null>;
   onAssetSelect: (asset: ImportedAsset) => void;
+  // Pull the asset's contents into the live SOP graph (for glTF: a recursive
+  // subnet tree mirroring the node hierarchy). Separate from onAssetSelect
+  // so registering an asset stays cheap and the user picks the moment to
+  // actually materialise it.
+  onAssetLoad: (asset: ImportedAsset) => void;
   onAssetRemove: (id: string) => void;
 }
 
@@ -91,11 +96,21 @@ export const ResourcesBrowser: Component<ResourcesBrowserProps> = (props) => {
                       'resource-item--active':
                         props.currentAssetPath() === asset.path,
                     }}
-                    onDblClick={() => props.onAssetSelect(asset)}
-                    title={asset.path}
+                    onDblClick={() => props.onAssetLoad(asset)}
+                    title={`${asset.path}\nDouble-click or press Load to drop the hierarchy into the SOP graph.`}
                   >
                     <div class="resource-icon">📦</div>
                     <div class="resource-name">{asset.name}</div>
+                    <button
+                      class="resource-load"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        props.onAssetLoad(asset);
+                      }}
+                      title="Load — add a subnet hierarchy mirroring this glTF to the SOP graph"
+                    >
+                      Load
+                    </button>
                     <button
                       class="resource-remove"
                       onClick={(e) => {
