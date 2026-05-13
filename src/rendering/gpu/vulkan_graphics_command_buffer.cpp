@@ -3,6 +3,7 @@
 #include "../../device/gpu/vulkan_compute_device.hpp"
 #include "../../device/gpu/vulkan_buffer.hpp"
 #include "../../device/gpu/vulkan_image_2d.hpp"
+#include "../../gpu/vulkan_queue_sync.hpp"
 #include "../../ray_tracing/ray_tracing_pipeline/descriptor_set.hpp"
 #include "../../ray_tracing/ray_tracing_pipeline/gpu/vulkan_compute_raytracing_descriptor_set.hpp"
 #include <stdexcept>
@@ -127,6 +128,15 @@ namespace tracey
         if (!vkPipeline->hasGroundPipeline()) return;
         vkCmdBindPipeline(m_commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                           vkPipeline->vkGroundPipeline());
+        m_currentPipeline = pipeline;
+    }
+
+    void VulkanGraphicsCommandBuffer::bindGizmoPipeline(GraphicsPipeline* pipeline)
+    {
+        auto* vkPipeline = static_cast<VulkanGraphicsPipeline*>(pipeline);
+        if (!vkPipeline->hasGizmoPipeline()) return;
+        vkCmdBindPipeline(m_commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                          vkPipeline->vkGizmoPipeline());
         m_currentPipeline = pipeline;
     }
 

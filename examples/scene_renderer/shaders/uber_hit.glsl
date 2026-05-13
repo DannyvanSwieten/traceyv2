@@ -53,7 +53,7 @@ void shader(HitInfo hitInfo, inout RayPayloads payloads) {
     vmIn.uv0 = uv;
     vmIn.uv1 = uv;
 
-    uint programId = instanceProgramIndex.indices[hitInfo.instanceIndex];
+    uint programId = instanceData.data[hitInfo.instanceIndex].x;
     MatResult mat = runMaterialProgram(programId, vmIn);
 
     vec3 albedo = mat.albedo;

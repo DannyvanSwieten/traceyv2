@@ -52,7 +52,23 @@ public:
     const tracey::Scene& scene() const { return *m_scene; }
 
     void compile_scene();
-    RenderResult render_frame(bool clear_accumulation);
+
+    // Controls whether subsequent compile_scene() calls build BLAS / TLAS
+    // and upload the material programs. Off → the rasterizer still works
+    // (vertex + color buffers are uploaded), but the path tracer is
+    // intentionally non-functional. The editor flips this with the PT
+    // inset preview toggle; flipping it back on triggers an explicit
+    // recompile so the BVH is rebuilt. Defaults to true so headless
+    // callers (smoke tests, scene_renderer example) keep working.
+    bool build_acceleration_structures() const { return m_build_acceleration_structures; }
+    void set_build_acceleration_structures(bool v) { m_build_acceleration_structures = v; }
+    // `want_pixels` controls whether the GPU output is copied back to
+    // CPU into RenderResult::pixels. The live viewport composites
+    // path_tracer()->outputImage() directly from the GPU and passes
+    // false, avoiding a fullscreen vkCmdCopyImageToBuffer plus a
+    // mapForReading stall + heap alloc every tick. The export / JSON
+    // render_frame command paths pass true.
+    RenderResult render_frame(bool clear_accumulation, bool want_pixels = true);
 
     // Run a rasterizer pass into m_rasterizer's color image. Cheap (no
     // accumulation, no readback). The image is presented straight to the
@@ -98,6 +114,19 @@ public:
         return m_compiled_scene && !m_compiled_scene->instances.empty();
     }
 
+    // Profiler-tab counters. Cheap inline accessors that pull directly
+    // from the compiled scene; safe to call every render_tick. Zero
+    // when no scene has been compiled yet.
+    size_t total_triangles() const {
+        return m_compiled_scene ? m_compiled_scene->totalTriangles : 0;
+    }
+    size_t total_instances() const {
+        return m_compiled_scene ? m_compiled_scene->instances.size() : 0;
+    }
+    size_t total_bvh_nodes() const {
+        return m_compiled_scene ? m_compiled_scene->totalNodes : 0;
+    }
+
     tracey::Device& device() { return *m_device; }
     tracey::PathTracer* path_tracer() { return m_path_tracer.get(); }
     tracey::Rasterizer* rasterizer() { return m_rasterizer.get(); }
@@ -110,6 +139,21 @@ public:
 
     bool show_ground() const { return m_show_ground; }
     void set_show_ground(bool v);
+
+    // Translate-gizmo overlay (three colored world-axis lines anchored at
+    // the selected actor). The selection state lives on the editor side;
+    // this just exposes "where + visible".
+    void set_gizmo_visible(bool v);
+    void set_gizmo_anchor(float x, float y, float z, float length);
+
+    // Rasterizer viewport background color. Linear [0,1] components;
+    // the rasterizer's colorFormat handles the sRGB encoding for
+    // display. Default is the previous hardcoded blue-grey so saved
+    // scenes look the same on first launch.
+    void background_color(float &r, float &g, float &b, float &a) const {
+        r = m_bg_r; g = m_bg_g; b = m_bg_b; a = m_bg_a;
+    }
+    void set_background_color(float r, float g, float b, float a);
 
     // Material graph (single global graph for now -- shared by all instances).
     // The editor stores the raw JSON so client-side metadata (node positions,
@@ -126,6 +170,11 @@ private:
     bool m_show_points = false;
     bool m_show_edges = false;
     bool m_show_ground = true;
+    bool m_build_acceleration_structures = true;
+    float m_bg_r = 0.2f;
+    float m_bg_g = 0.3f;
+    float m_bg_b = 0.4f;
+    float m_bg_a = 1.0f;
     std::unique_ptr<tracey::Device> m_device;
     std::unique_ptr<tracey::Scene> m_scene;
     std::unique_ptr<tracey::PathTracer> m_path_tracer;

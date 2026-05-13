@@ -47,6 +47,10 @@ namespace tracey
         /// if the pipeline wasn't configured with ground shaders.
         virtual void bindGroundPipeline(GraphicsPipeline* pipeline) = 0;
 
+        /// Bind the optional "gizmo" pipeline (3 colored world-axis lines).
+        /// No-op if the pipeline wasn't configured with gizmo shaders.
+        virtual void bindGizmoPipeline(GraphicsPipeline* pipeline) = 0;
+
         /// Bind vertex buffer
         /// @param buffer Vertex buffer containing interleaved vertex data
         /// @param offset Byte offset into the buffer

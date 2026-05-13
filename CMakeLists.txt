@@ -14,6 +14,7 @@ endif()
 
 add_library(tracey 
     src/core/types.hpp
+    src/core/parallel.hpp
     src/core/ray.hpp
     src/core/hit.hpp
     src/core/blas.hpp
@@ -41,6 +42,8 @@ add_library(tracey
     src/geometry/attribute_class.hpp
     src/geometry/attribute.hpp
     src/geometry/attribute.cpp
+    src/geometry/attribute_allocator.hpp
+    src/geometry/attribute_allocator.cpp
     src/geometry/attribute_table.hpp
     src/geometry/attribute_table.cpp
     src/geometry/geometry.hpp
@@ -125,6 +128,14 @@ add_library(tracey
     src/sops/nodes/scatter_sop.cpp
     src/sops/nodes/light_sop.cpp
     src/sops/nodes/normal_sop.cpp
+    src/sops/nodes/dop_import_sop.cpp
+    src/sops/nodes/dop_import_sop.hpp
+    src/sops/codegen/copy_to_points_compute.hpp
+    src/sops/codegen/copy_to_points_compute.cpp
+    src/sops/codegen/transform_compute.hpp
+    src/sops/codegen/transform_compute.cpp
+    src/sops/codegen/merge_compute.hpp
+    src/sops/codegen/merge_compute.cpp
 
     # ── VOPs (per-point attribute graph hosted inside attribute_vop SOP) ──
     src/vops/parameter.hpp
@@ -133,17 +144,41 @@ add_library(tracey
     src/vops/vop_node.cpp
     src/vops/vop_graph.hpp
     src/vops/vop_graph.cpp
+    src/vops/typing.hpp
+    src/vops/typing.cpp
     src/vops/vop_registry.hpp
     src/vops/vop_registry.cpp
     src/vops/register_builtins.hpp
     src/vops/register_builtins.cpp
     src/vops/serialization.hpp
     src/vops/serialization.cpp
-    src/vops/nodes/bind_vops.cpp
-    src/vops/nodes/bind_attr_vops.cpp
+    src/vops/nodes/geo_io_vops.cpp
     src/vops/nodes/math_vops.cpp
     src/vops/nodes/noise_vops.cpp
     src/vops/nodes/displacement_vops.cpp
+    src/vops/codegen/glsl_emit.hpp
+    src/vops/codegen/glsl_emit.cpp
+    src/vops/codegen/compute_dispatch.hpp
+    src/vops/codegen/compute_dispatch.cpp
+
+    src/dops/parameter.hpp
+    src/dops/sim_state.hpp
+    src/dops/eval_context.hpp
+    src/dops/dop_node.hpp
+    src/dops/dop_node.cpp
+    src/dops/dop_graph.hpp
+    src/dops/dop_graph.cpp
+    src/dops/dop_registry.hpp
+    src/dops/dop_registry.cpp
+    src/dops/register_builtins.hpp
+    src/dops/register_builtins.cpp
+    src/dops/serialization.hpp
+    src/dops/serialization.cpp
+    src/dops/nodes/pop_source.cpp
+    src/dops/nodes/pop_gravity.cpp
+    src/dops/nodes/pop_solver.cpp
+    src/dops/nodes/pop_force.cpp
+    src/dops/nodes/pop_force.hpp
 
     src/graph/graphs/shader_graph/shader_graph.hpp
     src/graph/graphs/shader_graph/shader_graph.cpp
@@ -159,10 +194,12 @@ add_library(tracey
     src/gpu/vulkan_context.cpp
     src/gpu/vulkan_presenter.hpp
     src/gpu/vulkan_presenter.cpp
+    src/gpu/vulkan_queue_sync.hpp
+    src/gpu/vulkan_queue_sync.cpp
     src/gpu/vulkan_surface_factory.hpp
     src/gpu/vulkan_surface_factory.cpp
-    # src/gpu/shader_compiler.hpp
-    # src/gpu/shader_compiler.cpp
+    src/gpu/shader_compiler.hpp
+    src/gpu/shader_compiler.cpp
 
     src/device/device.hpp
     src/device/device.cpp

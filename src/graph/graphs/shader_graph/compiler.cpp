@@ -128,20 +128,33 @@ namespace tracey
                 outReg[{node->uid(), 0}] = r;
                 break;
             }
-            case ShaderNodeKind::SurfaceAttribute:
+            case ShaderNodeKind::MaterialInput:
             {
-                const auto *s = static_cast<const SurfaceAttributeNode *>(node);
-                uint16_t r = builder.loadSurface(s->opcode());
-                outReg[{node->uid(), 0}] = r;
-                break;
-            }
-            case ShaderNodeKind::InputAttribute:
-            {
-                const auto *i = static_cast<const InputAttributeNode *>(node);
-                // loadSurface is just "alloc reg + emit op with no operands";
-                // the LoadInput* opcodes share that calling convention.
-                uint16_t r = builder.loadSurface(i->opcode());
-                outReg[{node->uid(), 0}] = r;
+                // One output port per attribute (P, N, T, V, uv0, uv1,
+                // InstanceID, Albedo, Metallic, Roughness, Emission,
+                // InNormal). Emit a Load op ONLY for ports that feed at
+                // least one downstream consumer — an unused port costs
+                // no register and no instruction.
+                const auto &spec = materialInputPorts();
+                for (size_t portIdx = 0; portIdx < spec.size(); ++portIdx)
+                {
+                    bool hasConsumer = false;
+                    for (const auto &c : graph.connections())
+                    {
+                        if (c.fromNode == node->uid() && c.fromPort == portIdx)
+                        {
+                            hasConsumer = true;
+                            break;
+                        }
+                    }
+                    if (!hasConsumer) continue;
+                    // loadSurface is "alloc reg + emit op with no
+                    // operands"; the LoadX opcodes (surface attrs +
+                    // pre-fetched material inputs) all share that calling
+                    // convention.
+                    uint16_t r = builder.loadSurface(spec[portIdx].op);
+                    outReg[{node->uid(), portIdx}] = r;
+                }
                 break;
             }
             case ShaderNodeKind::BinaryOp:
@@ -174,11 +187,24 @@ namespace tracey
                 outReg[{node->uid(), 0}] = dst;
                 break;
             }
-            case ShaderNodeKind::Output:
+            case ShaderNodeKind::MaterialOutput:
             {
-                const auto *o = static_cast<const OutputNode *>(node);
-                uint16_t src = sourceRegFor(node,0);
-                builder.emit(o->opcode(), 0, src);
+                // One input port per writable material slot. Emit a
+                // WriteX op only for ports the user actually wired up
+                // (or that carry an inline `input_defaults` literal set
+                // via the inspector). Unconnected slots leave whatever
+                // the host MaterialInputs pre-populated — the standard
+                // shader-graph "passthrough on missing wire" semantics.
+                const auto &spec = materialOutputPorts();
+                for (size_t portIdx = 0; portIdx < spec.size(); ++portIdx)
+                {
+                    auto inc = graph.incomingTo(node->uid(), portIdx);
+                    const bool hasWire = inc.has_value();
+                    const bool hasDefault = node->inputDefault(portIdx).has_value();
+                    if (!hasWire && !hasDefault) continue;
+                    uint16_t src = sourceRegFor(node, portIdx);
+                    builder.emit(spec[portIdx].op, 0, src);
+                }
                 break;
             }
             }

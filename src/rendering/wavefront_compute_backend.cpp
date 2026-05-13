@@ -2,10 +2,12 @@
 
 #include "path_tracer.hpp"
 #include "../ray_tracing/ray_tracing_pipeline/ray_tracing_pipeline_layout.hpp"
+#include "../gpu/vulkan_queue_sync.hpp"
 
 #include <algorithm>
 #include <chrono>
 #include <cstring>
+#include <mutex>
 #include <span>
 #include <stdexcept>
 #include <vector>
@@ -97,7 +99,7 @@ namespace tracey
         m_pipelineLayout->addStorageBuffer("uvBuffer", ShaderStage::ClosestHit, uvStructure);
 
         // Per-vertex normals — same per-vertex indexing as the UV buffer,
-        // looked up at hit time via instanceUvOffset + triIdx*3 + i. The
+        // looked up at hit time via instanceData.data[i].y + triIdx*3 + i. The
         // hit shader interpolates these to get a smooth surface normal
         // (or a per-face one, when the upstream Normal SOP wrote them in
         // flat mode). Falls back to the BLAS face normal when the buffer
@@ -111,20 +113,18 @@ namespace tracey
         normalStructure.addMember({"normals", "vec4", 0, true, 0});
         m_pipelineLayout->addStorageBuffer("normalBuffer", ShaderStage::ClosestHit, normalStructure);
 
-        // Per-instance program lookup. instanceProgramIndex.indices[hit.instanceIndex]
-        // is the programId the hit shader hands to runMaterialProgram, and the
-        // bin key the wavefront sort kernel uses.
-        StructureLayout instanceProgramIndexStructure("InstanceProgramIndex");
-        instanceProgramIndexStructure.addMember({"indices", "uint", 0, true, 0});
-        m_pipelineLayout->addStorageBuffer("instanceProgramIndex", ShaderStage::ClosestHit, instanceProgramIndexStructure);
-
-        // Per-instance UV base offset (in per-vertex slot counts) — translates
-        // the intersection's BLAS-local triangleIndex into the right slice of
-        // the global uvBuffer. Without this, every instance reads BLAS 0's
-        // UVs and multi-object scenes show scrambled texture coordinates.
-        StructureLayout instanceUvOffsetStructure("InstanceUvOffset");
-        instanceUvOffsetStructure.addMember({"offsets", "uint", 0, true, 0});
-        m_pipelineLayout->addStorageBuffer("instanceUvOffset", ShaderStage::ClosestHit, instanceUvOffsetStructure);
+        // Per-instance (programId, uvOffset) packed into a single uvec2[]
+        // SSBO. instanceData.data[hit.instanceIndex].x → programId for the
+        // material VM and the wavefront sort bin key; .y → base offset
+        // into uvBuffer/normalBuffer so a BLAS-local triangleIndex resolves
+        // to the right slice (without it, multi-object scenes alias every
+        // instance to BLAS 0's vertices). Packed because the wavefront
+        // pipeline already runs against MoltenVK's per-stage storage buffer
+        // descriptor cap of 31; two separate uint[] buffers would push us
+        // one over.
+        StructureLayout instanceDataStructure("InstanceData");
+        instanceDataStructure.addMember({"data", "uvec2", 0, true, 0});
+        m_pipelineLayout->addStorageBuffer("instanceData", ShaderStage::ClosestHit, instanceDataStructure);
 
         // Scene lights. The hit shader iterates `shaderInputs.lightCount`
         // entries and samples each (point: 1/r² falloff, distant: parallel
@@ -215,14 +215,9 @@ namespace tracey
                 descriptorSet->setBuffer("normalBuffer", scene.normalBuffer.get());
             }
 
-            if (scene.instanceProgramIndexBuffer)
+            if (scene.instanceDataBuffer)
             {
-                descriptorSet->setBuffer("instanceProgramIndex", scene.instanceProgramIndexBuffer.get());
-            }
-
-            if (scene.instanceUvOffsetBuffer)
-            {
-                descriptorSet->setBuffer("instanceUvOffset", scene.instanceUvOffsetBuffer.get());
+                descriptorSet->setBuffer("instanceData", scene.instanceDataBuffer.get());
             }
 
             if (scene.lightBuffer)
@@ -259,8 +254,17 @@ namespace tracey
 
     double WavefrontComputeBackend::dispatch(const SceneCompiler::CompiledScene &scene,
                                              uint32_t /*accumulatedSampleCount*/,
-                                             bool clearAccumulation)
+                                             bool clearAccumulation,
+                                             bool wantReadback)
     {
+        // Whole-dispatch lock: covers command-buffer begin/record/end
+        // and the submit + wait inside m_commandBuffer->end(). Same
+        // rationale as Rasterizer::render — without it the cook
+        // worker's compute dispatchers race the path-tracer recording
+        // on the shared command pool and Vulkan validation rejects
+        // it as a threading error.
+        std::lock_guard<std::mutex> gpuLock(vulkanQueueMutex());
+
         bindSceneResources(scene);
 
         if (!m_commandBuffer)
@@ -286,7 +290,15 @@ namespace tracey
         traceParams.maxBounces = m_config->maxBounces;
         m_commandBuffer->traceRays(*m_pipelineBuilder->getShaderBindingTable(),
                                    m_config->width, m_config->height, traceParams);
-        m_commandBuffer->copyImageToBuffer(m_outputImage, m_readbackBuffer);
+        // The readback buffer is only consumed by the export / explicit
+        // render_frame command paths. The live viewport composites
+        // outputImage() straight into the swapchain and never maps the
+        // readback buffer, so the full-frame copyImageToBuffer is pure
+        // GPU time + a fence wait downstream for no consumer.
+        if (wantReadback)
+        {
+            m_commandBuffer->copyImageToBuffer(m_outputImage, m_readbackBuffer);
+        }
         m_commandBuffer->end();
 
         auto startTime = std::chrono::high_resolution_clock::now();

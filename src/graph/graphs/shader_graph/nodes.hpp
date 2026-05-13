@@ -3,6 +3,7 @@
 #include "../../../core/types.hpp"
 #include "../../../shading/material_program/opcodes.hpp"
 
+#include <array>
 #include <string>
 
 namespace tracey
@@ -57,50 +58,109 @@ namespace tracey
         Vec4 m_default;
     };
 
-    // Geometry attribute (position/normal/...). m_op must be one of the
-    // surface load opcodes (Op::LoadPosition through Op::LoadUV1).
-    class SurfaceAttributeNode : public ShaderGraphNode
+    // ── Unified Material I/O terminals (Houdini-style) ───────────────────
+    //
+    // MaterialInputNode  exposes ALL surface attributes + pre-fetched
+    //                    material inputs as named output ports on a single
+    //                    node. The compiler emits the matching LoadX op
+    //                    only for ports that actually feed a downstream
+    //                    consumer, so an unused port costs nothing.
+    //
+    // MaterialOutputNode collects ALL material slot writes (Albedo,
+    //                    Metallic, Roughness, etc.) as named input ports
+    //                    on a single node. The compiler emits a WriteX
+    //                    op only for ports that have an incoming wire (or
+    //                    an inline `input_defaults` literal set via the
+    //                    inspector); unconnected ports leave the slot at
+    //                    whatever the host MaterialInputs pre-populated.
+    //
+    // Port order on each node is part of the wire-format contract — the
+    // serializer / editor / compiler all key off these indices. Don't
+    // reorder; only append.
+
+    // ── MaterialInput port spec ──
+    // (portName, opcode emitted when the port has a consumer).
+    struct MaterialInputPortSpec
+    {
+        const char *name;
+        Op op;
+    };
+    inline const std::array<MaterialInputPortSpec, 12> &materialInputPorts()
+    {
+        static const std::array<MaterialInputPortSpec, 12> kPorts = {{
+            // Surface attributes (driven by the host's per-shading-point
+            // SurfaceData).
+            {"P",          Op::LoadPosition},
+            {"N",          Op::LoadNormal},
+            {"T",          Op::LoadTangent},
+            {"V",          Op::LoadViewDir},
+            {"uv0",        Op::LoadUV0},
+            {"uv1",        Op::LoadUV1},
+            {"InstanceID", Op::LoadInstanceIndex},
+            // Pre-fetched material inputs (host fetches textures + factors
+            // and feeds them in via MaterialInputs; the graph passes
+            // through unchanged unless it overrides via a WriteX).
+            {"Albedo",     Op::LoadInputAlbedo},
+            {"Metallic",   Op::LoadInputMetallic},
+            {"Roughness",  Op::LoadInputRoughness},
+            {"Emission",   Op::LoadInputEmission},
+            {"InNormal",   Op::LoadInputNormal},
+        }};
+        return kPorts;
+    }
+
+    class MaterialInputNode : public ShaderGraphNode
     {
     public:
-        SurfaceAttributeNode(size_t uid, Op surfaceOp)
-            : ShaderGraphNode(uid), m_op(surfaceOp) {}
+        explicit MaterialInputNode(size_t uid) : ShaderGraphNode(uid) {}
 
-        ShaderNodeKind kind() const override { return ShaderNodeKind::SurfaceAttribute; }
+        ShaderNodeKind kind() const override { return ShaderNodeKind::MaterialInput; }
 
         InputsAndOutputs ports() const override
         {
             InputsAndOutputs io;
-            io.addOutput(PortInfo::createOutput("value", DataType::Vec4));
+            for (const auto &p : materialInputPorts())
+                io.addOutput(PortInfo::createOutput(p.name, DataType::Vec4));
             return io;
         }
-
-        Op opcode() const { return m_op; }
-
-    private:
-        Op m_op;
     };
 
-    // Pre-fetched material attribute (albedo/metallic/...). m_op must be
-    // one of Op::LoadInputAlbedo through Op::LoadInputNormal.
-    class InputAttributeNode : public ShaderGraphNode
+    // ── MaterialOutput port spec ──
+    // (portName, opcode emitted when the port is wired).
+    struct MaterialOutputPortSpec
+    {
+        const char *name;
+        Op op;
+    };
+    inline const std::array<MaterialOutputPortSpec, 8> &materialOutputPorts()
+    {
+        static const std::array<MaterialOutputPortSpec, 8> kPorts = {{
+            {"Albedo",       Op::WriteAlbedo},
+            {"Metallic",     Op::WriteMetallic},
+            {"Roughness",    Op::WriteRoughness},
+            {"Emission",     Op::WriteEmission},
+            {"Normal",       Op::WriteNormal},
+            {"Alpha",        Op::WriteAlpha},
+            {"IOR",          Op::WriteIor},
+            {"Transmission", Op::WriteTransmission},
+        }};
+        return kPorts;
+    }
+
+    class MaterialOutputNode : public ShaderGraphNode
     {
     public:
-        InputAttributeNode(size_t uid, Op inputOp)
-            : ShaderGraphNode(uid), m_op(inputOp) {}
+        explicit MaterialOutputNode(size_t uid) : ShaderGraphNode(uid) {}
 
-        ShaderNodeKind kind() const override { return ShaderNodeKind::InputAttribute; }
+        ShaderNodeKind kind() const override { return ShaderNodeKind::MaterialOutput; }
 
         InputsAndOutputs ports() const override
         {
             InputsAndOutputs io;
-            io.addOutput(PortInfo::createOutput("value", DataType::Vec4));
+            for (const auto &p : materialOutputPorts())
+                io.addInput(PortInfo::createInput(p.name, DataType::Vec4));
             return io;
         }
-
-        Op opcode() const { return m_op; }
-
-    private:
-        Op m_op;
     };
 
     // Two-input math op (Add, Sub, Mul, Div, Dot3, Cross).
@@ -168,29 +228,6 @@ namespace tracey
             io.addInput(PortInfo::createInput("b", DataType::Vec4));
             io.addInput(PortInfo::createInput("c", DataType::Vec4));
             io.addOutput(PortInfo::createOutput("result", DataType::Vec4));
-            return io;
-        }
-
-        Op opcode() const { return m_op; }
-
-    private:
-        Op m_op;
-    };
-
-    // Sink node: writes its single input into a slot of MaterialEvalResult.
-    // m_op must be one of Op::WriteAlbedo through Op::WriteTransmission.
-    class OutputNode : public ShaderGraphNode
-    {
-    public:
-        OutputNode(size_t uid, Op writeOp)
-            : ShaderGraphNode(uid), m_op(writeOp) {}
-
-        ShaderNodeKind kind() const override { return ShaderNodeKind::Output; }
-
-        InputsAndOutputs ports() const override
-        {
-            InputsAndOutputs io;
-            io.addInput(PortInfo::createInput("value", DataType::Vec4));
             return io;
         }
 

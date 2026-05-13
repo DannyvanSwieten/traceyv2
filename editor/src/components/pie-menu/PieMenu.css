@@ -1,0 +1,36 @@
+.pie-menu {
+  position: fixed;
+  pointer-events: none;
+  z-index: 9500;
+}
+
+.pie-menu-wedge {
+  fill: rgba(28, 28, 28, 0.92);
+  stroke: #2a2a2a;
+  stroke-width: 1;
+}
+.pie-menu-wedge--active {
+  fill: #0e82c8;
+  stroke: #5ab8ec;
+}
+
+.pie-menu-label {
+  fill: #ddd;
+  font: 11px system-ui, -apple-system, sans-serif;
+  pointer-events: none;
+  user-select: none;
+  /* Crisp text against the wedge gradient. */
+  paint-order: stroke;
+  stroke: rgba(0, 0, 0, 0.5);
+  stroke-width: 2;
+}
+.pie-menu-label--active {
+  fill: #fff;
+  stroke: rgba(0, 0, 0, 0.7);
+}
+
+.pie-menu-deadzone {
+  fill: rgba(0, 0, 0, 0.4);
+  stroke: #444;
+  stroke-width: 1;
+}

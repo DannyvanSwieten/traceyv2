@@ -1,8 +1,15 @@
 #include "../sop_node.hpp"
 #include "../sop_registry.hpp"
+#include "../codegen/transform_compute.hpp"
+
+#include "../../geometry/attribute.hpp"
+#include "../../geometry/attribute_table.hpp"
 
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
+#include <glm/gtc/type_ptr.hpp>
+
+#include <cstring>
 
 namespace tracey
 {
@@ -49,35 +56,68 @@ namespace tracey
                     glm::quat q = qz * qy * qx;
                     glm::mat3 R = glm::mat3_cast(q);
 
-                    auto *P = out.points().get<Vec3>("P");
-                    if (P)
-                    {
-                        for (auto &p : P->data())
+                    // Compose full SRT for positions, and a pure-R matrix
+                    // for normals (CPU code ignores scale on normals, so
+                    // we match — non-uniform scale gets the same
+                    // approximation either path).
+                    glm::mat4 Mpos(1.0f);
+                    Mpos[0] = glm::vec4(R[0] * s.x, 0.0f);
+                    Mpos[1] = glm::vec4(R[1] * s.y, 0.0f);
+                    Mpos[2] = glm::vec4(R[2] * s.z, 0.0f);
+                    Mpos[3] = glm::vec4(t.x, t.y, t.z, 1.0f);
+                    glm::mat4 Mn(R);
+
+                    auto *gpu = codegen::TransformCompute::getGlobal();
+                    // Threshold mirrors the VOP compute path: for small
+                    // attributes the CPU loop wins (upload + dispatch +
+                    // wait > a few-hundred iterations of glm). The
+                    // 512-point heuristic comes from attribute_vop_sop.
+                    constexpr size_t kGpuThreshold = 512;
+
+                    auto runGpuOrCpu = [&](Attribute<Vec3> *attr,
+                                           const glm::mat4 &m,
+                                           codegen::TransformCompute::Mode mode,
+                                           bool normalizeAfter) {
+                        if (!attr) return;
+                        const size_t n = attr->size();
+                        if (gpu && n >= kGpuThreshold)
                         {
-                            // S, then R, then T — standard SRT.
-                            p = R * (p * s) + t;
+                            float buf[16];
+                            std::memcpy(buf, glm::value_ptr(m), sizeof(buf));
+                            if (gpu->dispatch(*attr, buf, mode)) return;
+                            // Fall through to CPU on dispatch failure.
                         }
-                    }
-                    auto *N = out.points().get<Vec3>("N");
-                    if (N)
-                    {
-                        // For non-uniform scale, this is approximate; for v1
-                        // we accept the simplification (Houdini's xform SOP
-                        // does the same by default unless "Adjust normals" is
-                        // toggled on).
-                        for (auto &n : N->data())
+                        // CPU fallback. Matches the pre-GPU implementation,
+                        // including the "normals ignore scale" choice.
+                        auto &d = attr->data();
+                        if (mode == codegen::TransformCompute::Mode::Position)
                         {
-                            n = glm::normalize(R * n);
+                            for (auto &p : d)
+                            {
+                                p = R * (p * s) + t;
+                            }
                         }
-                    }
-                    auto *Nv = out.vertices().get<Vec3>("N");
-                    if (Nv)
-                    {
-                        for (auto &n : Nv->data())
+                        else
                         {
-                            n = glm::normalize(R * n);
+                            for (auto &v : d)
+                            {
+                                glm::vec3 r = R * glm::vec3(v.x, v.y, v.z);
+                                if (normalizeAfter)
+                                {
+                                    const float l = glm::length(r);
+                                    if (l > 0.0f) r /= l;
+                                }
+                                v = Vec3(r.x, r.y, r.z);
+                            }
                         }
-                    }
+                    };
+
+                    runGpuOrCpu(out.points().get<Vec3>("P"), Mpos,
+                                codegen::TransformCompute::Mode::Position, false);
+                    runGpuOrCpu(out.points().get<Vec3>("N"), Mn,
+                                codegen::TransformCompute::Mode::Normal, true);
+                    runGpuOrCpu(out.vertices().get<Vec3>("N"), Mn,
+                                codegen::TransformCompute::Mode::Normal, true);
                     return out;
                 }
             };

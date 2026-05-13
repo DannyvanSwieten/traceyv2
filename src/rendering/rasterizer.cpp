@@ -1,6 +1,7 @@
 #include "rasterizer.hpp"
 #include "../device/buffer.hpp"
 #include "../device/gpu/vulkan_compute_device.hpp"
+#include "../gpu/vulkan_queue_sync.hpp"
 #include "gpu/vulkan_graphics_pipeline.hpp"
 #include "gpu/vulkan_graphics_command_buffer.hpp"
 #include <chrono>
@@ -46,6 +47,8 @@ namespace tracey
         pipelineConfig.linesFragmentShader = m_config.linesFragmentShader;
         pipelineConfig.groundVertexShader = m_config.groundVertexShader;
         pipelineConfig.groundFragmentShader = m_config.groundFragmentShader;
+        pipelineConfig.gizmoVertexShader = m_config.gizmoVertexShader;
+        pipelineConfig.gizmoFragmentShader = m_config.gizmoFragmentShader;
         pipelineConfig.colorFormat = m_config.colorFormat;
         pipelineConfig.useDepthBuffer = m_config.useDepthBuffer;
         pipelineConfig.depthTestEnable = m_config.depthTestEnable;
@@ -80,16 +83,26 @@ namespace tracey
     double Rasterizer::render(const SceneCompiler::CompiledScene &scene,
                               const Camera &camera)
     {
+        // Whole-render lock: every Vulkan command-buffer call below
+        // (begin / record / end / submit / wait) touches the shared
+        // command pool, which Vulkan requires to be externally
+        // synchronised. Without this, the cook worker's compute
+        // dispatchers racing against the rasterizer trip
+        // "THREADING ERROR: VkCommandPool simultaneously used".
+        std::lock_guard<std::mutex> gpuLock(vulkanQueueMutex());
+
         auto startTime = std::chrono::high_resolution_clock::now();
 
         // Begin command recording
         m_commandBuffer->begin();
 
-        // Begin render pass with clear color
-        const float clearColor[4] = {0.2f, 0.3f, 0.4f, 1.0f};
+        // Begin render pass with the configured background color.
+        // Driven by RenderEngine::set_rasterizer_background_color so
+        // the editor toolbar can offer preset / picker controls
+        // without rebuilding the pipeline.
         m_commandBuffer->beginRenderPass(
             m_pipeline.get(),
-            clearColor[0], clearColor[1], clearColor[2], clearColor[3],
+            m_clearR, m_clearG, m_clearB, m_clearA,
             1.0f  // clear depth
         );
 
@@ -326,6 +339,31 @@ namespace tracey
                 m_commandBuffer->bindVertexBuffer(vb, 0);
                 m_commandBuffer->pushConstants(&pc, sizeof(pc), 0);
                 m_commandBuffer->draw(vertexCount, 1, 0, 0);
+            }
+        }
+
+        // Translate-gizmo overlay. Drawn last so the depth-test-OFF
+        // pipeline reads on top of everything (including PiP path-tracer
+        // composite — the gizmo lives entirely in the rasterizer view).
+        // Anchor + length are pushed via the standard PushConstants slot
+        // shared with ground/points/lines.
+        if (m_gizmoVisible)
+        {
+            auto* vkPipeline = static_cast<VulkanGraphicsPipeline*>(m_pipeline.get());
+            if (vkPipeline->hasGizmoPipeline())
+            {
+                m_commandBuffer->bindGizmoPipeline(m_pipeline.get());
+                struct PushConstants {
+                    glm::mat4 mvp;
+                    glm::vec4 baseColor;
+                } pc;
+                pc.mvp = m_projectionMatrix * m_viewMatrix;
+                pc.baseColor = glm::vec4(m_gizmoAnchor.x, m_gizmoAnchor.y,
+                                          m_gizmoAnchor.z, m_gizmoLength);
+                m_commandBuffer->pushConstants(&pc, sizeof(pc), 0);
+                // 6 vertices: three axis lines (2 verts each).
+                m_commandBuffer->draw(6, 1, 0, 0);
+                m_commandBuffer->bindPipeline(m_pipeline.get());
             }
         }
     }

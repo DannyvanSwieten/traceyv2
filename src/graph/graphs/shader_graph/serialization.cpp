@@ -85,14 +85,13 @@ namespace tracey
         {
             switch (k)
             {
-            case ShaderNodeKind::Constant:         return "Constant";
-            case ShaderNodeKind::Parameter:        return "Parameter";
-            case ShaderNodeKind::SurfaceAttribute: return "SurfaceAttribute";
-            case ShaderNodeKind::InputAttribute:   return "InputAttribute";
-            case ShaderNodeKind::BinaryOp:         return "BinaryOp";
-            case ShaderNodeKind::UnaryOp:          return "UnaryOp";
-            case ShaderNodeKind::TernaryOp:        return "TernaryOp";
-            case ShaderNodeKind::Output:           return "Output";
+            case ShaderNodeKind::Constant:       return "Constant";
+            case ShaderNodeKind::Parameter:      return "Parameter";
+            case ShaderNodeKind::MaterialInput:  return "MaterialInput";
+            case ShaderNodeKind::MaterialOutput: return "MaterialOutput";
+            case ShaderNodeKind::BinaryOp:       return "BinaryOp";
+            case ShaderNodeKind::UnaryOp:        return "UnaryOp";
+            case ShaderNodeKind::TernaryOp:      return "TernaryOp";
             }
             throw std::runtime_error("kindToString: unknown kind");
         }
@@ -120,11 +119,12 @@ namespace tracey
                 j["default"] = {d.x, d.y, d.z, d.w};
                 break;
             }
-            case ShaderNodeKind::SurfaceAttribute:
-                j["op"] = opToString(static_cast<const SurfaceAttributeNode &>(node).opcode());
-                break;
-            case ShaderNodeKind::InputAttribute:
-                j["op"] = opToString(static_cast<const InputAttributeNode &>(node).opcode());
+            case ShaderNodeKind::MaterialInput:
+            case ShaderNodeKind::MaterialOutput:
+                // Single-instance terminal nodes: no per-node opcode.
+                // Their port order (in nodes.hpp) defines which opcode
+                // gets emitted per port. Only `uid`, `kind`, optional
+                // `position`, and optional `input_defaults` are stored.
                 break;
             case ShaderNodeKind::BinaryOp:
                 j["op"] = opToString(static_cast<const BinaryOpNode &>(node).opcode());
@@ -134,9 +134,6 @@ namespace tracey
                 break;
             case ShaderNodeKind::TernaryOp:
                 j["op"] = opToString(static_cast<const TernaryOpNode &>(node).opcode());
-                break;
-            case ShaderNodeKind::Output:
-                j["op"] = opToString(static_cast<const OutputNode &>(node).opcode());
                 break;
             }
             // Per-input default constants for unconnected inputs. Keyed
@@ -193,15 +190,15 @@ namespace tracey
                                                        require(j, "name").get<std::string>(),
                                                        readVec4(require(j, "default"), "default"));
             }
+            if (kind == "MaterialInput")  return std::make_unique<MaterialInputNode>(uid);
+            if (kind == "MaterialOutput") return std::make_unique<MaterialOutputNode>(uid);
+
             const auto opStr = require(j, "op").get<std::string>();
             const Op op = opFromString(opStr);
 
-            if (kind == "SurfaceAttribute") return std::make_unique<SurfaceAttributeNode>(uid, op);
-            if (kind == "InputAttribute")   return std::make_unique<InputAttributeNode>(uid, op);
             if (kind == "BinaryOp")         return std::make_unique<BinaryOpNode>(uid, op);
             if (kind == "UnaryOp")          return std::make_unique<UnaryOpNode>(uid, op);
             if (kind == "TernaryOp")        return std::make_unique<TernaryOpNode>(uid, op);
-            if (kind == "Output")           return std::make_unique<OutputNode>(uid, op);
 
             throw std::runtime_error("deserializeShaderGraph: unknown kind '" + kind + "'");
         }

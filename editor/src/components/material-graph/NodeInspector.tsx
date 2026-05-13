@@ -4,70 +4,40 @@ import {
   Vec4Tuple,
   ConstantNode,
   ParameterNode,
-  InputAttributeNode,
-  SurfaceAttributeNode,
   BinaryOpNode,
   UnaryOpNode,
   TernaryOpNode,
-  OutputNode,
+  MATERIAL_OUTPUT_PORTS,
   inputPortCount,
   inputPortName,
 } from '../../lib/material_graph';
 import { materialGraph, selectedNode, setInputDefault, updateNode } from '../../stores/materials';
 import './NodeInspector.css';
 
-const INPUT_ATTRIBUTE_OPS = [
-  'LoadInputAlbedo',
-  'LoadInputMetallic',
-  'LoadInputRoughness',
-  'LoadInputEmission',
-  'LoadInputNormal',
-];
-const SURFACE_ATTRIBUTE_OPS = [
-  'LoadPosition',
-  'LoadNormal',
-  'LoadTangent',
-  'LoadViewDir',
-  'LoadUV0',
-  'LoadUV1',
-];
 const BINARY_OPS = ['Add', 'Sub', 'Mul', 'Div', 'Dot3', 'Cross'];
 const UNARY_OPS = ['Neg', 'Saturate', 'Normalize3', 'Length3', 'Splat'];
 const TERNARY_OPS = ['Mix', 'Clamp'];
-const OUTPUT_OPS = [
-  'WriteAlbedo',
-  'WriteMetallic',
-  'WriteRoughness',
-  'WriteEmission',
-  'WriteNormal',
-  'WriteAlpha',
-  'WriteIor',
-  'WriteTransmission',
-];
 
 function findNode(uid: number | null): Node | undefined {
   if (uid === null) return undefined;
   return materialGraph().nodes.find((n) => n.uid === uid);
 }
 
-// Per-(node, port) editor-type hint. Output nodes know their sink semantics
-// (Albedo is colour, IOR is scalar, …) so the inspector swaps the generic
-// Vec4 editor for a colour picker or a single-float field. Everything else
-// keeps the Vec4 editor — the four-lane register is the canonical shape.
+// Per-(node, port) editor-type hint. MaterialOutput's slots have known
+// semantics (Albedo is colour, IOR is scalar, …) so the inspector swaps
+// the generic Vec4 editor for a colour picker or a single-float field.
+// Everything else keeps the Vec4 editor — the four-lane register is the
+// canonical shape.
 type EditorType = 'float' | 'color' | 'vec4';
 function inputEditorType(node: Node, portIdx: number): EditorType {
-  if (node.kind === 'Output' && portIdx === 0) {
-    switch (node.op) {
-      case 'WriteAlbedo':
-      case 'WriteEmission':
-        return 'color';
-      case 'WriteMetallic':
-      case 'WriteRoughness':
-      case 'WriteAlpha':
-      case 'WriteIor':
-      case 'WriteTransmission':
-        return 'float';
-    }
+  if (node.kind === 'MaterialOutput') {
+    const portName = MATERIAL_OUTPUT_PORTS[portIdx];
+    if (portName === 'Albedo' || portName === 'Emission') return 'color';
+    if (
+      portName === 'Metallic' || portName === 'Roughness' ||
+      portName === 'Alpha'    || portName === 'IOR' ||
+      portName === 'Transmission'
+    ) return 'float';
   }
   return 'vec4';
 }
@@ -253,24 +223,6 @@ export const NodeInspector: Component = () => {
               />
             </Show>
 
-            <Show when={n().kind === 'InputAttribute'}>
-              <OpSelect
-                label="Op"
-                options={INPUT_ATTRIBUTE_OPS}
-                value={() => (findNode(n().uid) as InputAttributeNode).op}
-                onChange={(op) => updateNode<InputAttributeNode>(n().uid, { op })}
-              />
-            </Show>
-
-            <Show when={n().kind === 'SurfaceAttribute'}>
-              <OpSelect
-                label="Op"
-                options={SURFACE_ATTRIBUTE_OPS}
-                value={() => (findNode(n().uid) as SurfaceAttributeNode).op}
-                onChange={(op) => updateNode<SurfaceAttributeNode>(n().uid, { op })}
-              />
-            </Show>
-
             <Show when={n().kind === 'BinaryOp'}>
               <OpSelect
                 label="Op"
@@ -295,15 +247,6 @@ export const NodeInspector: Component = () => {
                 options={TERNARY_OPS}
                 value={() => (findNode(n().uid) as TernaryOpNode).op}
                 onChange={(op) => updateNode<TernaryOpNode>(n().uid, { op })}
-              />
-            </Show>
-
-            <Show when={n().kind === 'Output'}>
-              <OpSelect
-                label="Op"
-                options={OUTPUT_OPS}
-                value={() => (findNode(n().uid) as OutputNode).op}
-                onChange={(op) => updateNode<OutputNode>(n().uid, { op })}
               />
             </Show>
             <InputDefaultsSection node={n()} />

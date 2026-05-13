@@ -7,25 +7,20 @@ interface RenderSettingsProps {
 }
 
 export const RenderSettings: Component<RenderSettingsProps> = (props) => {
+  // Path-tracer-only settings live here. Rasterizer overlays (points,
+  // edges, ground) moved to a dedicated sub-toolbar under the main
+  // toolbar so they're always reachable regardless of which workspace
+  // is active — see RasterizerToolbar.tsx.
   const [maxSamples, setMaxSamplesSignal] = createSignal(1024);
   const [maxBounces, setMaxBounces] = createSignal(8);
-  const [showPoints, setShowPoints] = createSignal(false);
-  const [showEdges, setShowEdges] = createSignal(false);
-  const [showGround, setShowGround] = createSignal(false);
   const [isLoading, setIsLoading] = createSignal(true);
 
   onMount(async () => {
     try {
       const samples = await api.getMaxSamples();
       const bounces = await api.getMaxBounces();
-      const points = await api.getShowPoints();
-      const edges = await api.getShowEdges().catch(() => false);
-      const ground = await api.getShowGround().catch(() => false);
       setMaxSamplesSignal(samples);
       setMaxBounces(bounces);
-      setShowPoints(points);
-      setShowEdges(edges);
-      setShowGround(ground);
     } catch (error) {
       console.error('Failed to load render settings:', error);
     } finally {
@@ -50,36 +45,6 @@ export const RenderSettings: Component<RenderSettingsProps> = (props) => {
       props.onSettingsChange?.();
     } catch (error) {
       console.error('Failed to set max bounces:', error);
-    }
-  };
-
-  const handleShowPointsChange = async (value: boolean) => {
-    setShowPoints(value);
-    try {
-      await api.setShowPoints(value);
-      props.onSettingsChange?.();
-    } catch (error) {
-      console.error('Failed to set show points:', error);
-    }
-  };
-
-  const handleShowEdgesChange = async (value: boolean) => {
-    setShowEdges(value);
-    try {
-      await api.setShowEdges(value);
-      props.onSettingsChange?.();
-    } catch (error) {
-      console.error('Failed to set show edges:', error);
-    }
-  };
-
-  const handleShowGroundChange = async (value: boolean) => {
-    setShowGround(value);
-    try {
-      await api.setShowGround(value);
-      props.onSettingsChange?.();
-    } catch (error) {
-      console.error('Failed to set show ground:', error);
     }
   };
 
@@ -117,39 +82,6 @@ export const RenderSettings: Component<RenderSettingsProps> = (props) => {
                 onInput={(e) => handleBouncesChange(parseInt(e.currentTarget.value))}
               />
               <span class="setting-value">{maxBounces()}</span>
-            </div>
-          </div>
-          <div class="setting-row">
-            <label for="show-points">Show Points</label>
-            <div class="setting-control">
-              <input
-                id="show-points"
-                type="checkbox"
-                checked={showPoints()}
-                onChange={(e) => handleShowPointsChange(e.currentTarget.checked)}
-              />
-            </div>
-          </div>
-          <div class="setting-row">
-            <label for="show-edges">Show Edges</label>
-            <div class="setting-control">
-              <input
-                id="show-edges"
-                type="checkbox"
-                checked={showEdges()}
-                onChange={(e) => handleShowEdgesChange(e.currentTarget.checked)}
-              />
-            </div>
-          </div>
-          <div class="setting-row">
-            <label for="show-ground">Show Ground</label>
-            <div class="setting-control">
-              <input
-                id="show-ground"
-                type="checkbox"
-                checked={showGround()}
-                onChange={(e) => handleShowGroundChange(e.currentTarget.checked)}
-              />
             </div>
           </div>
         </>

@@ -1,0 +1,31 @@
+.workspace-tabs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: 12px;
+  margin-right: 12px;
+}
+
+.workspace-tab {
+  background: transparent;
+  color: #aaa;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  padding: 4px 12px;
+  font: 12px system-ui, -apple-system, sans-serif;
+  cursor: pointer;
+  user-select: none;
+}
+.workspace-tab:hover {
+  background: rgba(255, 255, 255, 0.04);
+  color: #ddd;
+}
+.workspace-tab--active {
+  background: #0e82c8;
+  color: #fff;
+  border-color: #5ab8ec;
+}
+.workspace-tab--active:hover {
+  background: #0e82c8;
+  color: #fff;
+}

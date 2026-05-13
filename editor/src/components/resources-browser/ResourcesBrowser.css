@@ -185,6 +185,50 @@
  * Layout is a 4-column grid: a slim bar (% of total cook time), the
  * numeric ms, the node's name/uid, and its kind. */
 
+/* Live render-stats strip at the top of the profiler tab. Sits above
+ * the cook-history block. Compact horizontal layout — each stat is a
+ * stacked label + value pair so the live numbers (FPS, triangle
+ * count, sample count, etc.) are scannable at a glance without
+ * dominating the tab. */
+.profiler-live-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px;
+  padding: 10px 12px;
+  border-bottom: 1px solid #2a2a2a;
+  background: #181818;
+}
+.profiler-live-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 60px;
+}
+.profiler-live-label {
+  font: 10px system-ui, -apple-system, sans-serif;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #777;
+}
+.profiler-live-value {
+  font: 13px / 1 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  color: #f0f0f0;
+}
+.profiler-live-sub {
+  color: #777;
+  font-size: 11px;
+  margin-left: 3px;
+}
+/* Second row of live stats (per-tick timing buckets). Same chrome
+   as the first row but with a subtle accent on the "Tick" total so
+   the relationship between total + slices is visually clear. */
+.profiler-live-stats--row2 {
+  border-top: 1px solid #1f1f1f;
+}
+.profiler-live-stat--total .profiler-live-value {
+  color: #ffd76a;
+}
+
 .profiler-summary {
   display: flex;
   align-items: baseline;

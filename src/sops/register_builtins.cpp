@@ -21,6 +21,7 @@ namespace tracey
         void registerScatterSop();
         void registerLightSop();
         void registerNormalSop();
+        void registerDopImportSop();
 
         void registerBuiltinSops()
         {
@@ -39,6 +40,7 @@ namespace tracey
             registerObjectOutputSop();
             registerLightSop();
             registerSubnetSop();
+            registerDopImportSop();
         }
     }
 }

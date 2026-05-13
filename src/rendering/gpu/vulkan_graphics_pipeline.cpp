@@ -63,6 +63,9 @@ namespace tracey
         if (!m_config.groundVertexShader.empty() && !m_config.groundFragmentShader.empty()) {
             createGroundPipeline();
         }
+        if (!m_config.gizmoVertexShader.empty() && !m_config.gizmoFragmentShader.empty()) {
+            createGizmoPipeline();
+        }
     }
 
     VulkanGraphicsPipeline::~VulkanGraphicsPipeline()
@@ -77,6 +80,8 @@ namespace tracey
             vkDestroyPipeline(vkDevice, m_linesPipeline, nullptr);
         if (m_groundPipeline != VK_NULL_HANDLE)
             vkDestroyPipeline(vkDevice, m_groundPipeline, nullptr);
+        if (m_gizmoPipeline != VK_NULL_HANDLE)
+            vkDestroyPipeline(vkDevice, m_gizmoPipeline, nullptr);
 
         if (m_pipelineLayout != VK_NULL_HANDLE)
             vkDestroyPipelineLayout(vkDevice, m_pipelineLayout, nullptr);
@@ -813,6 +818,103 @@ namespace tracey
             vkDestroyShaderModule(vkDevice, vert, nullptr);
             vkDestroyShaderModule(vkDevice, frag, nullptr);
             throw std::runtime_error("Failed to create ground pipeline");
+        }
+        vkDestroyShaderModule(vkDevice, vert, nullptr);
+        vkDestroyShaderModule(vkDevice, frag, nullptr);
+    }
+
+    void VulkanGraphicsPipeline::createGizmoPipeline()
+    {
+        VkDevice vkDevice = m_device.vkDevice();
+
+        auto vertCode = readShaderFile(m_config.gizmoVertexShader);
+        auto fragCode = readShaderFile(m_config.gizmoFragmentShader);
+        VkShaderModule vert = createShaderModule(vkDevice, vertCode);
+        VkShaderModule frag = createShaderModule(vkDevice, fragCode);
+
+        VkPipelineShaderStageCreateInfo stages[2]{};
+        stages[0].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[0].stage  = VK_SHADER_STAGE_VERTEX_BIT;
+        stages[0].module = vert;
+        stages[0].pName  = "main";
+        stages[1].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[1].stage  = VK_SHADER_STAGE_FRAGMENT_BIT;
+        stages[1].module = frag;
+        stages[1].pName  = "main";
+
+        // No vertex buffer — the vertex shader emits 6 verts (3 axis lines)
+        // procedurally from gl_VertexIndex.
+        VkPipelineVertexInputStateCreateInfo vertexInput{};
+        vertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+
+        VkPipelineInputAssemblyStateCreateInfo ia{};
+        ia.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+        ia.topology = VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
+
+        VkViewport viewport{};
+        viewport.width  = static_cast<float>(m_config.width);
+        viewport.height = static_cast<float>(m_config.height);
+        viewport.minDepth = 0.0f; viewport.maxDepth = 1.0f;
+        VkRect2D scissor{};
+        scissor.extent = {m_config.width, m_config.height};
+        VkPipelineViewportStateCreateInfo vpState{};
+        vpState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+        vpState.viewportCount = 1; vpState.pViewports = &viewport;
+        vpState.scissorCount  = 1; vpState.pScissors  = &scissor;
+
+        // lineWidth must be 1.0 unless the device's wideLines feature is
+        // enabled (or LINE_WIDTH is part of dynamic state). MoltenVK +
+        // validation flags any other value as an error; we don't pay for
+        // the feature for one cosmetic gizmo. The translate gizmo is
+        // still readable at 1px against the muted background.
+        VkPipelineRasterizationStateCreateInfo rast{};
+        rast.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+        rast.polygonMode = VK_POLYGON_MODE_LINE;
+        rast.lineWidth = 1.0f;
+        rast.cullMode = VK_CULL_MODE_NONE;
+        rast.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+
+        VkPipelineMultisampleStateCreateInfo ms{};
+        ms.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+        ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+        // Depth-test OFF so the gizmo always reads on top of geometry,
+        // even when the anchor is behind a wall. Maya/Blender both do this.
+        VkPipelineDepthStencilStateCreateInfo depth{};
+        depth.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+        depth.depthTestEnable  = VK_FALSE;
+        depth.depthWriteEnable = VK_FALSE;
+        depth.depthCompareOp   = VK_COMPARE_OP_ALWAYS;
+
+        VkPipelineColorBlendAttachmentState blend{};
+        blend.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                               VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+        blend.blendEnable = VK_FALSE;
+        VkPipelineColorBlendStateCreateInfo cb{};
+        cb.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+        cb.attachmentCount = 1;
+        cb.pAttachments = &blend;
+
+        VkGraphicsPipelineCreateInfo info{};
+        info.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+        info.stageCount = 2;
+        info.pStages = stages;
+        info.pVertexInputState = &vertexInput;
+        info.pInputAssemblyState = &ia;
+        info.pViewportState = &vpState;
+        info.pRasterizationState = &rast;
+        info.pMultisampleState = &ms;
+        info.pDepthStencilState = m_config.useDepthBuffer ? &depth : nullptr;
+        info.pColorBlendState = &cb;
+        info.layout = m_pipelineLayout;
+        info.renderPass = m_renderPass;
+        info.subpass = 0;
+
+        if (vkCreateGraphicsPipelines(vkDevice, VK_NULL_HANDLE, 1, &info, nullptr, &m_gizmoPipeline) != VK_SUCCESS)
+        {
+            vkDestroyShaderModule(vkDevice, vert, nullptr);
+            vkDestroyShaderModule(vkDevice, frag, nullptr);
+            throw std::runtime_error("Failed to create gizmo pipeline");
         }
         vkDestroyShaderModule(vkDevice, vert, nullptr);
         vkDestroyShaderModule(vkDevice, frag, nullptr);

@@ -65,10 +65,16 @@ namespace tracey
         /// @param scene The compiled scene to render
         /// @param camera The camera to render from
         /// @param clearAccumulation If true, clears previous samples (default true)
+        /// @param wantReadback If true the dispatch also enqueues a copy of
+        ///        the output image into the readback buffer, so a subsequent
+        ///        readback() observes this frame. The live viewport skips
+        ///        this; only the export / explicit render_frame command
+        ///        paths set it to true.
         /// @return Rendering time in milliseconds
         double render(const SceneCompiler::CompiledScene &scene,
                       const Camera &camera,
-                      bool clearAccumulation = true);
+                      bool clearAccumulation = true,
+                      bool wantReadback = true);
 
         /// Get the output image (HDR or LDR depending on config)
         /// Valid after calling render()

@@ -24,9 +24,9 @@ namespace tracey
         const auto *pointN = geo.points().get<Vec3>("N");
         const auto *vertexUV = geo.vertices().get<Vec2>("uv");
         const auto *pointUV = geo.points().get<Vec2>("uv");
-        // Vertex color "Cd" — the VOP bind_out_attr_vec3 emits it as a Point
-        // attribute; we also honour a Vertex-class Cd for per-corner shading
-        // when present.
+        // Vertex color "Cd" — the VOP geo_output.Cd port emits it as a
+        // Point attribute; we also honour a Vertex-class Cd for per-corner
+        // shading when present.
         const auto *vertexCd = geo.vertices().get<Vec3>("Cd");
         const auto *pointCd = geo.points().get<Vec3>("Cd");
 

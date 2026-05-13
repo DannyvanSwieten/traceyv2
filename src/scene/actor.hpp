@@ -66,6 +66,15 @@ namespace tracey
         const std::string &materialGraphJson() const { return m_materialGraphJson; }
         void setMaterialGraphJson(const std::string &json) { m_materialGraphJson = json; }
 
+        // Name of the library entry this actor's material came from, when
+        // the user bound it via set_actor_material or the SOP's
+        // material_library_name param. Empty means "no library binding"
+        // (passthrough, glTF source, or scratchpad). Stored so editor-side
+        // "save material" can find every actor that needs to reload its
+        // JSON from disk without re-cooking the SOP graph.
+        const std::string &materialLibraryName() const { return m_materialLibraryName; }
+        void setMaterialLibraryName(const std::string &name) { m_materialLibraryName = name; }
+
         // Per-actor display flag. Hidden actors are skipped entirely by the
         // SceneCompiler, so they appear in neither the path tracer's TLAS nor
         // the rasterizer's compiled instance list. Defaults to visible.
@@ -93,6 +102,7 @@ namespace tracey
         std::vector<size_t> m_children;
         std::vector<SceneInstance> m_instances;
         std::string m_materialGraphJson;
+        std::string m_materialLibraryName;
         bool m_visible = true;
         std::optional<Light> m_light;
     };

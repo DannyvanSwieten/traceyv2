@@ -10,12 +10,11 @@
 export type NodeKind =
   | 'Constant'
   | 'Parameter'
-  | 'SurfaceAttribute'
-  | 'InputAttribute'
+  | 'MaterialInput'
+  | 'MaterialOutput'
   | 'BinaryOp'
   | 'UnaryOp'
-  | 'TernaryOp'
-  | 'Output';
+  | 'TernaryOp';
 
 export interface Vec4Tuple extends Array<number> {
   0: number; 1: number; 2: number; 3: number; length: 4;
@@ -48,16 +47,21 @@ export interface ParameterNode extends BaseNode {
   default: Vec4Tuple;
 }
 
-// All op-bearing kinds share the same shape: a single `op` field with an
-// enumerator name (e.g. "Add", "WriteAlbedo", "LoadInputAlbedo").
-export interface SurfaceAttributeNode extends BaseNode {
-  kind: 'SurfaceAttribute';
-  op: string;
+// Unified Material I/O terminals. MaterialInput exposes every surface
+// attribute + pre-fetched material input as a named output port;
+// MaterialOutput collects every writable material slot as a named input
+// port. Port order is fixed (see MATERIAL_INPUT_PORTS / MATERIAL_OUTPUT_PORTS
+// below) and must match materialInputPorts() / materialOutputPorts() in
+// src/graph/graphs/shader_graph/nodes.hpp.
+export interface MaterialInputNode extends BaseNode {
+  kind: 'MaterialInput';
 }
-export interface InputAttributeNode extends BaseNode {
-  kind: 'InputAttribute';
-  op: string;
+export interface MaterialOutputNode extends BaseNode {
+  kind: 'MaterialOutput';
 }
+
+// Op-bearing math kinds: single `op` field with an enumerator name
+// (e.g. "Add", "Mix", "Saturate").
 export interface BinaryOpNode extends BaseNode {
   kind: 'BinaryOp';
   op: string;
@@ -70,16 +74,11 @@ export interface TernaryOpNode extends BaseNode {
   kind: 'TernaryOp';
   op: string;
 }
-export interface OutputNode extends BaseNode {
-  kind: 'Output';
-  op: string;
-}
 
 export type Node =
   | ConstantNode | ParameterNode
-  | SurfaceAttributeNode | InputAttributeNode
-  | BinaryOpNode | UnaryOpNode | TernaryOpNode
-  | OutputNode;
+  | MaterialInputNode | MaterialOutputNode
+  | BinaryOpNode | UnaryOpNode | TernaryOpNode;
 
 export interface Connection {
   from_node: number;
@@ -95,37 +94,67 @@ export interface ShaderGraph {
   connections: Connection[];
 }
 
+// ── Material I/O port specs ───────────────────────────────────────────────
+// Must stay in lockstep with materialInputPorts() / materialOutputPorts()
+// in src/graph/graphs/shader_graph/nodes.hpp — the compiler keys off these
+// indices when emitting the matching LoadX / WriteX opcode.
+
+export const MATERIAL_INPUT_PORTS: readonly string[] = [
+  'P', 'N', 'T', 'V', 'uv0', 'uv1', 'InstanceID',
+  'Albedo', 'Metallic', 'Roughness', 'Emission', 'InNormal',
+] as const;
+
+export const MATERIAL_OUTPUT_PORTS: readonly string[] = [
+  'Albedo', 'Metallic', 'Roughness', 'Emission',
+  'Normal', 'Alpha', 'IOR', 'Transmission',
+] as const;
+
 // ── Port introspection ────────────────────────────────────────────────────
 // How many input ports does a node of this kind have? Mirrors the C++ side
-// (nodes.hpp). Output ports: 0 for Output, 1 for everything else.
+// (nodes.hpp). Output ports: 0 for MaterialOutput, 1 for math/value kinds,
+// MATERIAL_INPUT_PORTS.length for MaterialInput.
 
 export function inputPortCount(kind: NodeKind): number {
   switch (kind) {
-    case 'Constant':         return 0;
-    case 'Parameter':        return 0;
-    case 'SurfaceAttribute': return 0;
-    case 'InputAttribute':   return 0;
-    case 'BinaryOp':         return 2;
-    case 'UnaryOp':          return 1;
-    case 'TernaryOp':        return 3;
-    case 'Output':           return 1;
+    case 'Constant':        return 0;
+    case 'Parameter':       return 0;
+    case 'MaterialInput':   return 0;
+    case 'MaterialOutput':  return MATERIAL_OUTPUT_PORTS.length;
+    case 'BinaryOp':        return 2;
+    case 'UnaryOp':         return 1;
+    case 'TernaryOp':       return 3;
   }
 }
 
 export function outputPortCount(kind: NodeKind): number {
-  return kind === 'Output' ? 0 : 1;
+  switch (kind) {
+    case 'MaterialInput':  return MATERIAL_INPUT_PORTS.length;
+    case 'MaterialOutput': return 0;
+    default:               return 1;
+  }
 }
 
 // Input port name per kind/index. Mirrors the names returned by the
 // C++ ports() implementations (see src/graph/graphs/shader_graph/nodes.hpp).
-// Used by the inspector to label per-input default editors.
+// Used by the inspector to label per-input default editors and by the
+// canvas to show port tooltips.
 export function inputPortName(kind: NodeKind, idx: number): string {
   switch (kind) {
-    case 'BinaryOp':  return ['a', 'b'][idx] ?? '';
-    case 'UnaryOp':   return ['a'][idx] ?? '';
-    case 'TernaryOp': return ['a', 'b', 'c'][idx] ?? '';
-    case 'Output':    return ['value'][idx] ?? '';
-    default:          return '';
+    case 'BinaryOp':       return ['a', 'b'][idx] ?? '';
+    case 'UnaryOp':        return ['a'][idx] ?? '';
+    case 'TernaryOp':      return ['a', 'b', 'c'][idx] ?? '';
+    case 'MaterialOutput': return MATERIAL_OUTPUT_PORTS[idx] ?? '';
+    default:               return '';
+  }
+}
+
+// Output port name per kind/index. Single-output kinds always return
+// "out" / "value" / "result" (kept as the empty string so callers fall
+// back to their default label); MaterialInput uses MATERIAL_INPUT_PORTS.
+export function outputPortName(kind: NodeKind, idx: number): string {
+  switch (kind) {
+    case 'MaterialInput': return MATERIAL_INPUT_PORTS[idx] ?? '';
+    default:              return '';
   }
 }
 
@@ -146,7 +175,13 @@ export function makeConstantNode(value: Vec4Tuple = [1, 1, 1, 1], position?: Pos
 export function makeParameterNode(name: string, def: Vec4Tuple = [0.5, 0.5, 0.5, 1], position?: PositionTuple): ParameterNode {
   return { uid: nextUid(), kind: 'Parameter', name, default: def, position };
 }
-export function makeOpNode<K extends 'SurfaceAttribute' | 'InputAttribute' | 'BinaryOp' | 'UnaryOp' | 'TernaryOp' | 'Output'>(
+export function makeMaterialInputNode(position?: PositionTuple): MaterialInputNode {
+  return { uid: nextUid(), kind: 'MaterialInput', position };
+}
+export function makeMaterialOutputNode(position?: PositionTuple): MaterialOutputNode {
+  return { uid: nextUid(), kind: 'MaterialOutput', position };
+}
+export function makeOpNode<K extends 'BinaryOp' | 'UnaryOp' | 'TernaryOp'>(
   kind: K, op: string, position?: PositionTuple
 ): Node {
   return { uid: nextUid(), kind, op, position } as Node;
@@ -170,23 +205,10 @@ export interface PaletteEntry {
 
 export const PALETTE: { group: string; entries: PaletteEntry[] }[] = [
   {
-    group: 'Inputs',
+    group: 'Terminals',
     entries: [
-      { label: 'Albedo (input)',    factory: (p) => makeOpNode('InputAttribute', 'LoadInputAlbedo',    p) },
-      { label: 'Metallic (input)',  factory: (p) => makeOpNode('InputAttribute', 'LoadInputMetallic',  p) },
-      { label: 'Roughness (input)', factory: (p) => makeOpNode('InputAttribute', 'LoadInputRoughness', p) },
-      { label: 'Emission (input)',  factory: (p) => makeOpNode('InputAttribute', 'LoadInputEmission',  p) },
-      { label: 'Normal (input)',    factory: (p) => makeOpNode('InputAttribute', 'LoadInputNormal',    p) },
-    ],
-  },
-  {
-    group: 'Surface',
-    entries: [
-      { label: 'World Position', factory: (p) => makeOpNode('SurfaceAttribute', 'LoadPosition',      p) },
-      { label: 'World Normal',   factory: (p) => makeOpNode('SurfaceAttribute', 'LoadNormal',        p) },
-      { label: 'View Direction', factory: (p) => makeOpNode('SurfaceAttribute', 'LoadViewDir',       p) },
-      { label: 'UV0',            factory: (p) => makeOpNode('SurfaceAttribute', 'LoadUV0',           p) },
-      { label: 'Instance ID',    factory: (p) => makeOpNode('SurfaceAttribute', 'LoadInstanceIndex', p) },
+      { label: 'Material Input',  factory: (p) => makeMaterialInputNode(p) },
+      { label: 'Material Output', factory: (p) => makeMaterialOutputNode(p) },
     ],
   },
   {
@@ -212,19 +234,6 @@ export const PALETTE: { group: string; entries: PaletteEntry[] }[] = [
       { label: 'Splat',       factory: (p) => makeOpNode('UnaryOp',   'Splat',       p) },
       { label: 'Mix',         factory: (p) => makeOpNode('TernaryOp', 'Mix',         p) },
       { label: 'Clamp',       factory: (p) => makeOpNode('TernaryOp', 'Clamp',       p) },
-    ],
-  },
-  {
-    group: 'Outputs',
-    entries: [
-      { label: 'Write Albedo',       factory: (p) => makeOpNode('Output', 'WriteAlbedo',       p) },
-      { label: 'Write Metallic',     factory: (p) => makeOpNode('Output', 'WriteMetallic',     p) },
-      { label: 'Write Roughness',    factory: (p) => makeOpNode('Output', 'WriteRoughness',    p) },
-      { label: 'Write Emission',     factory: (p) => makeOpNode('Output', 'WriteEmission',     p) },
-      { label: 'Write Normal',       factory: (p) => makeOpNode('Output', 'WriteNormal',       p) },
-      { label: 'Write Alpha',        factory: (p) => makeOpNode('Output', 'WriteAlpha',        p) },
-      { label: 'Write IOR',          factory: (p) => makeOpNode('Output', 'WriteIor',          p) },
-      { label: 'Write Transmission', factory: (p) => makeOpNode('Output', 'WriteTransmission', p) },
     ],
   },
 ];

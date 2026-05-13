@@ -84,7 +84,8 @@ namespace tracey
 
     double PathTracer::render(const SceneCompiler::CompiledScene &scene,
                               const Camera &camera,
-                              bool clearAccumulation)
+                              bool clearAccumulation,
+                              bool wantReadback)
     {
         if (clearAccumulation)
         {
@@ -93,7 +94,7 @@ namespace tracey
 
         updateCameraUniforms(camera, scene.lightCount);
 
-        const double t = m_backend->dispatch(scene, m_sampleCount, clearAccumulation);
+        const double t = m_backend->dispatch(scene, m_sampleCount, clearAccumulation, wantReadback);
 
         m_sampleCount++;
         return t;

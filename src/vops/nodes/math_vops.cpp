@@ -70,6 +70,29 @@ namespace tracey
             }
         };
 
+        // ── constant_vec3 ────────────────────────────────────────────────────
+        // Emits its `value` parameter unchanged. Zero inputs, one Vec3 output.
+        class ConstantVec3Vop : public VopNode
+        {
+        public:
+            explicit ConstantVec3Vop(size_t uid) : VopNode(uid)
+            {
+                declareParam(Parameter::makeVec3("value", Vec3(0.0f)));
+            }
+            std::string kind() const override { return "constant_vec3"; }
+            InputsAndOutputs ports() const override
+            {
+                InputsAndOutputs io;
+                io.addOutput(PortInfo::createOutput("out", DataType::Vec3));
+                return io;
+            }
+            void evaluate(EvalContext &ctx) const override
+            {
+                if (!ctx.graph) return;
+                ctx.graph->writeOutput(ctx, uid(), 0, paramVec3("value", Vec3(0.0f)));
+            }
+        };
+
         namespace
         {
             // Scalar-level binary op kernels. The template below dispatches
@@ -350,14 +373,48 @@ namespace tracey
             void evaluate(EvalContext &ctx) const override
             {
                 if (!ctx.graph) return;
-                const float v = asFloat(ctx.graph->readInput(ctx, uid(), 0).value_or(Value{0.0f}));
-                const float sa = asFloat(ctx.graph->readInput(ctx, uid(), 1).value_or(Value{0.0f}));
-                const float sb = asFloat(ctx.graph->readInput(ctx, uid(), 2).value_or(Value{1.0f}));
-                const float da = asFloat(ctx.graph->readInput(ctx, uid(), 3).value_or(Value{0.0f}));
-                const float db = asFloat(ctx.graph->readInput(ctx, uid(), 4).value_or(Value{1.0f}));
-                const float span = sb - sa;
-                const float t = (std::abs(span) > 1e-12f) ? (v - sa) / span : 0.0f;
-                ctx.graph->writeOutput(ctx, uid(), 0, da + (db - da) * t);
+                // The inferer (typing.cpp) declares fit as T(0)→T(0)
+                // across all 5 inputs + 1 output, so the output type
+                // matches whatever the widest connected input is. If
+                // any input is vec3, we run the fit component-wise;
+                // otherwise scalar. This keeps the CPU evaluator
+                // perfectly in lockstep with what the GPU emitter
+                // already produces — the previous `asFloat` everywhere
+                // silently took `vec.x` from a Vec3 input.
+                const TypeKind outType = ctx.graph->portType(uid(), 0, /*isOutput=*/true);
+                auto v_in  = ctx.graph->readInput(ctx, uid(), 0).value_or(Value{0.0f});
+                auto sa_in = ctx.graph->readInput(ctx, uid(), 1).value_or(Value{0.0f});
+                auto sb_in = ctx.graph->readInput(ctx, uid(), 2).value_or(Value{1.0f});
+                auto da_in = ctx.graph->readInput(ctx, uid(), 3).value_or(Value{0.0f});
+                auto db_in = ctx.graph->readInput(ctx, uid(), 4).value_or(Value{1.0f});
+
+                if (outType == TypeKind::Vec3)
+                {
+                    const Vec3 v  = asVec3(v_in);
+                    const Vec3 sa = asVec3(sa_in);
+                    const Vec3 sb = asVec3(sb_in);
+                    const Vec3 da = asVec3(da_in);
+                    const Vec3 db = asVec3(db_in);
+                    auto one = [](float span, float v, float sa) {
+                        return (std::abs(span) > 1e-12f) ? (v - sa) / span : 0.0f;
+                    };
+                    const Vec3 result(
+                        da.x + (db.x - da.x) * one(sb.x - sa.x, v.x, sa.x),
+                        da.y + (db.y - da.y) * one(sb.y - sa.y, v.y, sa.y),
+                        da.z + (db.z - da.z) * one(sb.z - sa.z, v.z, sa.z));
+                    ctx.graph->writeOutput(ctx, uid(), 0, result);
+                }
+                else
+                {
+                    const float v  = asFloat(v_in);
+                    const float sa = asFloat(sa_in);
+                    const float sb = asFloat(sb_in);
+                    const float da = asFloat(da_in);
+                    const float db = asFloat(db_in);
+                    const float span = sb - sa;
+                    const float t = (std::abs(span) > 1e-12f) ? (v - sa) / span : 0.0f;
+                    ctx.graph->writeOutput(ctx, uid(), 0, da + (db - da) * t);
+                }
             }
         };
 
@@ -677,6 +734,11 @@ namespace tracey
                  /*inputs*/ {}, /*outputs*/ {{"out"}},
                  /*params*/ {{"value", ParamType::Float, "0.0"}}},
                 makeFactory<ConstantFloatVop>());
+            reg.registerType(
+                {"constant_vec3", "Constant Vec3", "Constants",
+                 /*inputs*/ {}, /*outputs*/ {{"out"}},
+                 /*params*/ {{"value", ParamType::Vec3, "[0, 0, 0]"}}},
+                makeFactory<ConstantVec3Vop>());
 
             reg.registerType(
                 {"add", "Add", "Math",

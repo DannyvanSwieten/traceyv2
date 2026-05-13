@@ -2,6 +2,7 @@
 
 #include "../scene/scene_compiler.hpp"
 #include "../scene/camera.hpp"
+#include "../core/types.hpp"
 #include "../device/device.hpp"
 #include "../device/image_2d.hpp"
 #include "graphics_pipeline.hpp"
@@ -39,6 +40,12 @@ namespace tracey
         // runtime via setShowGround.
         std::filesystem::path groundVertexShader;
         std::filesystem::path groundFragmentShader;
+
+        // Optional translate-gizmo overlay (three colored world-axis lines
+        // anchored at the selected actor). Toggled at runtime via
+        // setGizmoVisible; anchor + length via setGizmoAnchor.
+        std::filesystem::path gizmoVertexShader;
+        std::filesystem::path gizmoFragmentShader;
 
         // Rendering options
         bool useDepthBuffer = true;
@@ -106,6 +113,32 @@ namespace tracey
         void setShowGround(bool v) { m_showGround = v; }
         bool showGround() const { return m_showGround; }
 
+        /// Translate-gizmo overlay (three world-axis lines at the anchor).
+        /// Visible only when both `visible` is true AND the gizmo pipeline
+        /// was configured at construction. Anchor and length live alongside
+        /// so the rasterizer can draw without a per-frame IPC round-trip.
+        void setGizmoVisible(bool v) { m_gizmoVisible = v; }
+        bool gizmoVisible() const { return m_gizmoVisible; }
+        void setGizmoAnchor(const Vec3 &p) { m_gizmoAnchor = p; }
+        const Vec3 &gizmoAnchor() const { return m_gizmoAnchor; }
+        void setGizmoLength(float L) { m_gizmoLength = L; }
+        float gizmoLength() const { return m_gizmoLength; }
+
+        /// Viewport background. Used as the render pass's clear color before
+        /// any geometry / ground draws. Default is a muted blue-grey so a
+        /// fresh scene looks like a viewport rather than the path tracer's
+        /// black background. Components are linear [0,1]; the colorFormat
+        /// (Unorm or Srgb) controls whether the framebuffer encodes them
+        /// for display.
+        void setBackgroundColor(float r, float g, float b, float a = 1.0f)
+        {
+            m_clearR = r; m_clearG = g; m_clearB = b; m_clearA = a;
+        }
+        void backgroundColor(float &r, float &g, float &b, float &a) const
+        {
+            r = m_clearR; g = m_clearG; b = m_clearB; a = m_clearA;
+        }
+
     private:
         // Setup methods called from constructor
         void createPipeline();
@@ -131,6 +164,17 @@ namespace tracey
         bool m_showPoints = false;
         bool m_showEdges = false;
         bool m_showGround = false;
+
+        bool m_gizmoVisible = false;
+        Vec3 m_gizmoAnchor{0.0f, 0.0f, 0.0f};
+        float m_gizmoLength = 1.0f;
+
+        // Mutable clear color. Defaults match the original hardcoded
+        // values so existing scenes look identical at first launch.
+        float m_clearR = 0.2f;
+        float m_clearG = 0.3f;
+        float m_clearB = 0.4f;
+        float m_clearA = 1.0f;
 
         // Camera matrices (computed in updateCameraUniforms, used in renderScene)
         glm::mat4 m_viewMatrix;

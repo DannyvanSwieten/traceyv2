@@ -1,0 +1,52 @@
+/* DOP-specific toolbar additions on top of SopGraphPanel.css's chrome.
+   The toolbar row sits above the canvas and carries the palette dropdown,
+   the cache-status text, and the Reset Sim button. */
+
+.dop-toolbar-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--panel-border, #2a2a2a);
+  background: var(--panel-bg, #1c1c1c);
+}
+
+.dop-cache-status {
+  color: var(--text-muted, #888);
+  font-size: 11px;
+  font-family: var(--font-mono, monospace);
+  margin-left: 4px;
+}
+
+.dop-reset-btn {
+  margin-left: auto;
+  padding: 2px 10px;
+  font-size: 11px;
+  background: var(--btn-bg, #2a2a2a);
+  color: var(--text, #ddd);
+  border: 1px solid var(--btn-border, #3a3a3a);
+  border-radius: 3px;
+  cursor: pointer;
+}
+.dop-reset-btn:hover {
+  background: var(--btn-hover-bg, #3a3a3a);
+}
+
+/* "Edit Force VOP…" button in the pop_force inspector row. Matches the
+   inspector header chrome. */
+.sop-inspector-action {
+  padding: 4px 12px 8px;
+  border-bottom: 1px solid var(--panel-border, #2a2a2a);
+}
+.sop-inspector-edit-btn {
+  padding: 4px 10px;
+  font-size: 12px;
+  background: var(--btn-accent-bg, #2d4a6d);
+  color: var(--text, #ddd);
+  border: 1px solid var(--btn-accent-border, #4070a0);
+  border-radius: 3px;
+  cursor: pointer;
+}
+.sop-inspector-edit-btn:hover {
+  background: var(--btn-accent-hover-bg, #3a5d85);
+}

@@ -1,4 +1,5 @@
 #include "vulkan_context.hpp"
+#include "vulkan_queue_sync.hpp"
 #include <vector>
 #include <stdexcept>
 #include <fstream>
@@ -402,7 +403,10 @@ namespace tracey
         VkFence fence;
         vkCreateFence(m_device, &fenceInfo, nullptr, &fence);
 
-        vkQueueSubmit(m_computeQueue, 1, &submit, fence);
+        {
+            std::lock_guard<std::mutex> queueLock(vulkanQueueMutex());
+            vkQueueSubmit(m_computeQueue, 1, &submit, fence);
+        }
         vkWaitForFences(m_device, 1, &fence, VK_TRUE, UINT64_MAX);
 
         vkDestroyFence(m_device, fence, nullptr);

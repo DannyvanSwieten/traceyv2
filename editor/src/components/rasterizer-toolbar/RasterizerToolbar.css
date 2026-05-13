@@ -1,0 +1,89 @@
+/* Thin sub-toolbar under the main toolbar. Matches the main toolbar's
+   dark chrome but tighter padding so it reads as a secondary strip
+   rather than a peer. */
+.rasterizer-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 12px;
+  background: #1f1f1f;
+  border-bottom: 1px solid #2a2a2a;
+  /* Fixed height so the layout doesn't reflow when the buttons are
+     loading their initial state (the Show fallback below). */
+  min-height: 28px;
+  box-sizing: border-box;
+}
+
+.rasterizer-toolbar-button {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: #aaa;
+  font: 11px system-ui, -apple-system, sans-serif;
+  padding: 3px 10px;
+  cursor: pointer;
+  transition: background 80ms ease-out, border-color 80ms ease-out, color 80ms ease-out;
+}
+
+.rasterizer-toolbar-button:hover {
+  background: #2a2a2a;
+  color: #ddd;
+}
+
+.rasterizer-toolbar-button--active,
+.rasterizer-toolbar-button--active:hover {
+  background: #2d4a6a;
+  border-color: #3d6a92;
+  color: #e0eaf5;
+}
+
+/* Group separator. Just a thin vertical rule between the toggle
+   buttons and the color picker so the two clusters read as distinct
+   without splitting them into separate toolbars. */
+.rasterizer-toolbar-sep {
+  width: 1px;
+  height: 16px;
+  background: #2f2f2f;
+  margin: 0 6px;
+}
+
+/* Inline color-picker control. The label wraps text + swatch as a
+   single click target so users can interact with either. */
+.rasterizer-toolbar-color {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  -webkit-user-select: none;
+  user-select: none;
+  color: #aaa;
+  font: 11px system-ui, -apple-system, sans-serif;
+}
+.rasterizer-toolbar-color:hover {
+  color: #ddd;
+}
+.rasterizer-toolbar-color-label {
+  /* Slight letter-spacing reads as a label rather than a value. */
+  letter-spacing: 0.01em;
+}
+/* The native <input type="color"> renders a system color swatch.
+   We strip the default browser chrome where possible so the swatch
+   blends with the toolbar's flat style. */
+.rasterizer-toolbar-color-input {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 22px;
+  height: 16px;
+  padding: 0;
+  border: 1px solid #444;
+  border-radius: 3px;
+  background: transparent;
+  cursor: pointer;
+}
+.rasterizer-toolbar-color-input::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+.rasterizer-toolbar-color-input::-webkit-color-swatch {
+  border: none;
+  border-radius: 2px;
+}

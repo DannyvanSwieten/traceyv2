@@ -26,6 +26,7 @@ namespace tracey
         void bindPointsPipeline(GraphicsPipeline* pipeline) override;
         void bindLinesPipeline(GraphicsPipeline* pipeline) override;
         void bindGroundPipeline(GraphicsPipeline* pipeline) override;
+        void bindGizmoPipeline(GraphicsPipeline* pipeline) override;
         void bindVertexBuffer(const Buffer* buffer, uint32_t offset) override;
         void bindVertexBufferAt(const Buffer* buffer, uint32_t binding, uint32_t offset) override;
         void bindIndexBuffer(const Buffer* buffer, uint32_t offset) override;

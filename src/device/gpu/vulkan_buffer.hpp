@@ -30,5 +30,15 @@ namespace tracey
         VkDevice m_device;
         VkBuffer m_buffer;
         VkDeviceMemory m_memory;
+        // Persistently mapped pointer. vkMapMemory is called once at
+        // construction and held for the buffer's lifetime; mapForWriting
+        // and mapForReading just return this. The previous design called
+        // vkMapMemory on every map and required a matching vkUnmapMemory;
+        // any path that map'd twice without unmap'ing in between would
+        // trip "Memory is already mapped" on the second call. With
+        // HOST_COHERENT memory (which is what we allocate) holding the
+        // map for the buffer's lifetime is zero-cost on UMA architectures
+        // and avoids the brittle map/unmap discipline entirely.
+        void *m_mapped = nullptr;
     };
 } // namespace tracey

@@ -2,7 +2,8 @@
 //
 // Builds the SOP graph:  cube → attribute_vop → object_output
 // Populates the attribute_vop's child VopGraph with:
-//   bind_in_p → noise_perlin → multiply(constant_float 0.1) → add(bind_in_p) → bind_out_p
+//   geo_input.P → noise_perlin → multiply(constant_float 0.1)
+//               → add(geo_input.P) → geo_output.P
 // Cooks the SOP graph, asserts:
 //   • Exactly one EmittedActor came back.
 //   • The emitted geometry has the cube's original triangle count.
@@ -85,44 +86,45 @@ int main()
     check(vop != nullptr, "host exposes VopGraph");
     if (!vop) { return failures > 0 ? 1 : 0; }
 
-    auto bindIn = vops::VopRegistry::instance().create("bind_in_p", vop->nextUid());
+    auto geoIn  = vops::VopRegistry::instance().create("geo_input",  vop->nextUid());
     auto noise  = vops::VopRegistry::instance().create("noise_perlin", vop->nextUid());
     auto kf     = vops::VopRegistry::instance().create("constant_float", vop->nextUid());
     auto mul    = vops::VopRegistry::instance().create("multiply", vop->nextUid());
     auto add    = vops::VopRegistry::instance().create("add", vop->nextUid());
-    auto bindOut = vops::VopRegistry::instance().create("bind_out_p", vop->nextUid());
-    check(bindIn && noise && kf && mul && add && bindOut, "create all VOP nodes");
+    auto geoOut = vops::VopRegistry::instance().create("geo_output", vop->nextUid());
+    check(geoIn && noise && kf && mul && add && geoOut, "create all VOP nodes");
 
     noise->setParamFloat("frequency", 1.5f);
     noise->setParamFloat("amplitude", 1.0f);
     kf->setParamFloat("value", 0.2f);
 
-    const size_t bindInUid  = bindIn->uid();
-    const size_t noiseUid   = noise->uid();
-    const size_t kfUid      = kf->uid();
-    const size_t mulUid     = mul->uid();
-    const size_t addUid     = add->uid();
-    const size_t bindOutUid = bindOut->uid();
+    const size_t geoInUid  = geoIn->uid();
+    const size_t noiseUid  = noise->uid();
+    const size_t kfUid     = kf->uid();
+    const size_t mulUid    = mul->uid();
+    const size_t addUid    = add->uid();
+    const size_t geoOutUid = geoOut->uid();
 
-    vop->addNode(std::move(bindIn));
+    vop->addNode(std::move(geoIn));
     vop->addNode(std::move(noise));
     vop->addNode(std::move(kf));
     vop->addNode(std::move(mul));
     vop->addNode(std::move(add));
-    vop->addNode(std::move(bindOut));
+    vop->addNode(std::move(geoOut));
 
-    // bind_in_p (P)         → noise.input
-    vop->createConnection(bindInUid, 0, noiseUid, 0);
+    // Port 0 on geo_input is P (Vec3); port 0 on geo_output is also P.
+    // geo_input.P → noise.input
+    vop->createConnection(geoInUid, 0, noiseUid, 0);
     // noise.out → multiply.a
     vop->createConnection(noiseUid, 0, mulUid, 0);
     // constant_float.out → multiply.b
     vop->createConnection(kfUid, 0, mulUid, 1);
-    // bind_in_p.P → add.a   (P)
-    vop->createConnection(bindInUid, 0, addUid, 0);
+    // geo_input.P → add.a
+    vop->createConnection(geoInUid, 0, addUid, 0);
     // multiply.out → add.b  (the perturbation along world axes — broadcasts to Vec3)
     vop->createConnection(mulUid, 0, addUid, 1);
-    // add.out → bind_out_p (write back perturbed P)
-    vop->createConnection(addUid, 0, bindOutUid, 0);
+    // add.out → geo_output.P (write back perturbed P)
+    vop->createConnection(addUid, 0, geoOutUid, 0);
 
     // ── Cook the SOP graph ──
     sops::CookDiagnostic diag;

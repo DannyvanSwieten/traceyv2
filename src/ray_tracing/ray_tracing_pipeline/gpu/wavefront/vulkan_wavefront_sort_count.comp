@@ -5,7 +5,7 @@
 // those counts into materialBinOffsets[]. Single 64-thread workgroup so
 // the scan can stay in shared memory without atomics.
 //
-// Bin key: instanceProgramIndex.indices[hitInfos.hits[rayIndex].instanceIndex]
+// Bin key: instanceData.data[hitInfos.hits[rayIndex].instanceIndex].x
 // % NUM_BINS. Hit lanes that share a material program land in the same bin,
 // giving the hit kernel SIMT-coherent VM execution -- the whole point of
 // the sort.
@@ -16,8 +16,8 @@
 // The fallback below keeps the file parseable by IDE/static GLSL tooling that
 // don't see the injection; at runtime the injected value wins because it
 // lands earlier in the source.
-#ifndef INSTANCE_PROGRAM_INDEX_BINDING
-#define INSTANCE_PROGRAM_INDEX_BINDING 14
+#ifndef INSTANCE_DATA_BINDING
+#define INSTANCE_DATA_BINDING 14
 #endif
 
 layout (local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
@@ -59,9 +59,11 @@ layout(std430, set = 0, binding = 62) buffer MaterialBinCursors {
 
 // User-side SSBO; binding number injected at compile time by
 // VulkanWaveFrontPipeline because user bindings depend on declaration order.
-layout(std430, set = 0, binding = INSTANCE_PROGRAM_INDEX_BINDING) readonly buffer InstanceProgramIndex {
-    uint indices[];
-} instanceProgramIndex;
+// .x = programId (bin key for the sort pass), .y = uvOffset (unused here,
+// consumed by the hit shader's UV lookup).
+layout(std430, set = 0, binding = INSTANCE_DATA_BINDING) readonly buffer InstanceData {
+    uvec2 data[];
+} instanceData;
 
 shared uint sharedCounts[NUM_BINS];
 
@@ -78,7 +80,7 @@ void main() {
     for (uint i = tid; i < total; i += NUM_BINS) {
         uint rayIndex = hitQueue.rayIndices[i];
         uint instanceIdx = hitInfos.hits[rayIndex].instanceIndex;
-        uint programId = instanceProgramIndex.indices[instanceIdx];
+        uint programId = instanceData.data[instanceIdx].x;
         uint bin = programId % NUM_BINS;
         atomicAdd(sharedCounts[bin], 1u);
     }

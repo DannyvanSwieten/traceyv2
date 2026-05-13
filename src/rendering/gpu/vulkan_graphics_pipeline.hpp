@@ -32,9 +32,11 @@ namespace tracey
         VkPipeline vkPointsPipeline() const { return m_pointsPipeline; }
         VkPipeline vkLinesPipeline() const { return m_linesPipeline; }
         VkPipeline vkGroundPipeline() const { return m_groundPipeline; }
+        VkPipeline vkGizmoPipeline() const { return m_gizmoPipeline; }
         bool hasPointsPipeline() const { return m_pointsPipeline != VK_NULL_HANDLE; }
         bool hasLinesPipeline() const { return m_linesPipeline != VK_NULL_HANDLE; }
         bool hasGroundPipeline() const { return m_groundPipeline != VK_NULL_HANDLE; }
+        bool hasGizmoPipeline() const { return m_gizmoPipeline != VK_NULL_HANDLE; }
         VkPipelineLayout vkPipelineLayout() const { return m_pipelineLayout; }
         VkRenderPass vkRenderPass() const { return m_renderPass; }
         VkFramebuffer vkFramebuffer() const { return m_framebuffer; }
@@ -56,6 +58,11 @@ namespace tracey
         // (procedural quad in the vertex shader, alpha-blended, depth-test on,
         // depth-write off).
         void createGroundPipeline();
+        // Optional sibling pipeline drawing three colored world-axis lines
+        // anchored at a push-constant world position (procedural verts in
+        // the vertex shader, LINE_LIST topology, depth-test OFF so the
+        // gizmo always reads on top of geometry).
+        void createGizmoPipeline();
 
         VulkanComputeDevice& m_device;
         GraphicsPipelineConfig m_config;
@@ -67,6 +74,7 @@ namespace tracey
         VkPipeline m_pointsPipeline = VK_NULL_HANDLE;
         VkPipeline m_linesPipeline = VK_NULL_HANDLE;
         VkPipeline m_groundPipeline = VK_NULL_HANDLE;
+        VkPipeline m_gizmoPipeline = VK_NULL_HANDLE;
         VkPipelineLayout m_pipelineLayout = VK_NULL_HANDLE;
         VkDescriptorSetLayout m_descriptorSetLayout = VK_NULL_HANDLE;
         VkFramebuffer m_framebuffer = VK_NULL_HANDLE;

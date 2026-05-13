@@ -265,10 +265,10 @@ namespace
 
     int testCompileConstantToAlbedo()
     {
-        // Graph: ConstantNode((1,0,0,0)) -> OutputNode(WriteAlbedo)
+        // Graph: ConstantNode((1,0,0,0)) -> MaterialOutput.Albedo (port 0).
         ShaderGraph g(0);
         g.addNode(std::make_unique<ConstantNode>(1, Vec4(1.0f, 0.0f, 0.0f, 0.0f)));
-        g.addNode(std::make_unique<OutputNode>(2, Op::WriteAlbedo));
+        g.addNode(std::make_unique<MaterialOutputNode>(2));
         g.createConnection(/*fromNode*/1, /*fromPort*/0, /*toNode*/2, /*toPort*/0);
 
         MaterialProgram prog = compileShaderGraph(g);
@@ -288,27 +288,26 @@ namespace
 
     int testCompilePassthroughEquivalence()
     {
-        // Graph mirrors makePassthroughProgram: each InputAttribute feeds the
-        // corresponding Output. Result must match running the hand-built passthrough
+        // Graph mirrors makePassthroughProgram: a single MaterialInput
+        // → MaterialOutput passthrough wired one-to-one for each PBR
+        // slot. Result must match running the hand-built passthrough
         // with the same inputs.
+        //
+        // Port indices come from materialInputPorts() / materialOutputPorts()
+        // in src/graph/graphs/shader_graph/nodes.hpp.
         ShaderGraph g(0);
-        struct Pair { Op input; Op output; };
+        struct Pair { size_t inPort, outPort; };
         const Pair pairs[] = {
-            {Op::LoadInputAlbedo,    Op::WriteAlbedo},
-            {Op::LoadInputMetallic,  Op::WriteMetallic},
-            {Op::LoadInputRoughness, Op::WriteRoughness},
-            {Op::LoadInputEmission,  Op::WriteEmission},
-            {Op::LoadInputNormal,    Op::WriteNormal},
+            {7,  0},  // Albedo (input port 7)    → Albedo (output port 0)
+            {8,  1},  // Metallic                  → Metallic
+            {9,  2},  // Roughness                 → Roughness
+            {10, 3},  // Emission                  → Emission
+            {11, 4},  // InNormal                  → Normal
         };
-        size_t uid = 1;
+        g.addNode(std::make_unique<MaterialInputNode>(1));
+        g.addNode(std::make_unique<MaterialOutputNode>(2));
         for (const auto &p : pairs)
-        {
-            const size_t inUid = uid++;
-            const size_t outUid = uid++;
-            g.addNode(std::make_unique<InputAttributeNode>(inUid, p.input));
-            g.addNode(std::make_unique<OutputNode>(outUid, p.output));
-            g.createConnection(inUid, 0, outUid, 0);
-        }
+            g.createConnection(1, p.inPort, 2, p.outPort);
 
         MaterialProgram graphProg = compileShaderGraph(g);
         MaterialProgram handProg = makePassthroughProgram();
@@ -339,13 +338,14 @@ namespace
 
     int testCompileParameterCarriesDefault()
     {
-        // Graph: ParameterNode("albedo", default=(0.2,0.4,0.6,0)) -> Output(WriteAlbedo).
-        // Compiled program should expose 1 parameter, carry the default, and
-        // produce the default when evaluated with that as the parameter value.
+        // Graph: ParameterNode("albedo", default=(0.2,0.4,0.6,0)) →
+        // MaterialOutput.Albedo (port 0). Compiled program should
+        // expose 1 parameter, carry the default, and produce the
+        // default when evaluated with that as the parameter value.
         ShaderGraph g(0);
         const Vec4 defaultColor(0.2f, 0.4f, 0.6f, 0.0f);
         g.addNode(std::make_unique<ParameterNode>(1, "albedo", defaultColor));
-        g.addNode(std::make_unique<OutputNode>(2, Op::WriteAlbedo));
+        g.addNode(std::make_unique<MaterialOutputNode>(2));
         g.createConnection(1, 0, 2, 0);
 
         MaterialProgram prog = compileShaderGraph(g);
@@ -384,15 +384,16 @@ namespace
 
     int testCompileBinaryOp()
     {
-        // Graph: ConstantNode((0.2,0.3,0.4,0)) + ConstantNode((0.5,0.5,0.5,0)) -> Add -> WriteAlbedo
+        // Graph: ConstantNode((0.2,0.3,0.4,0)) + ConstantNode((0.5,0.5,0.5,0))
+        //          → Add → MaterialOutput.Albedo (port 0)
         ShaderGraph g(0);
         g.addNode(std::make_unique<ConstantNode>(1, Vec4(0.2f, 0.3f, 0.4f, 0.0f)));
         g.addNode(std::make_unique<ConstantNode>(2, Vec4(0.5f, 0.5f, 0.5f, 0.0f)));
         g.addNode(std::make_unique<BinaryOpNode>(3, Op::Add));
-        g.addNode(std::make_unique<OutputNode>(4, Op::WriteAlbedo));
+        g.addNode(std::make_unique<MaterialOutputNode>(4));
         g.createConnection(1, 0, 3, 0);  // constA -> add.a
         g.createConnection(2, 0, 3, 1);  // constB -> add.b
-        g.createConnection(3, 0, 4, 0);  // add -> writeAlbedo
+        g.createConnection(3, 0, 4, 0);  // add -> MaterialOutput.Albedo
 
         MaterialProgram prog = compileShaderGraph(g);
         SurfaceData s{};
@@ -436,7 +437,7 @@ namespace
         ShaderGraph g(0);
         g.addNode(std::make_unique<ConstantNode>(1, Vec4(1.0f)));
         g.addNode(std::make_unique<BinaryOpNode>(2, Op::Add));
-        g.addNode(std::make_unique<OutputNode>(3, Op::WriteAlbedo));
+        g.addNode(std::make_unique<MaterialOutputNode>(3));
         g.createConnection(1, 0, 2, 0);  // only input port 0 of Add is connected
         g.createConnection(2, 0, 3, 0);
 
@@ -459,21 +460,14 @@ namespace
         // Both compiled programs must produce the same MaterialEvalResult for
         // the same inputs.
         ShaderGraph original(0);
-        struct Pair { Op input; Op output; };
-        const Pair pairs[] = {
-            {Op::LoadInputAlbedo,    Op::WriteAlbedo},
-            {Op::LoadInputMetallic,  Op::WriteMetallic},
-            {Op::LoadInputRoughness, Op::WriteRoughness},
-        };
-        size_t uid = 1;
+        // Port indices: Albedo=7→0, Metallic=8→1, Roughness=9→2 (see
+        // materialInputPorts() / materialOutputPorts() in nodes.hpp).
+        struct Pair { size_t inPort, outPort; };
+        const Pair pairs[] = {{7, 0}, {8, 1}, {9, 2}};
+        original.addNode(std::make_unique<MaterialInputNode>(1));
+        original.addNode(std::make_unique<MaterialOutputNode>(2));
         for (const auto &p : pairs)
-        {
-            const size_t inUid = uid++;
-            const size_t outUid = uid++;
-            original.addNode(std::make_unique<InputAttributeNode>(inUid, p.input));
-            original.addNode(std::make_unique<OutputNode>(outUid, p.output));
-            original.createConnection(inUid, 0, outUid, 0);
-        }
+            original.createConnection(1, p.inPort, 2, p.outPort);
 
         const std::string jsonText = serializeShaderGraph(original);
         std::unique_ptr<ShaderGraph> reloaded = deserializeShaderGraph(jsonText);
@@ -508,8 +502,8 @@ namespace
         ShaderGraph original(42);
         const Vec4 def(0.2f, 0.4f, 0.6f, 1.0f);
         original.addNode(std::make_unique<ParameterNode>(1, "albedoTint", def));
-        original.addNode(std::make_unique<OutputNode>(2, Op::WriteAlbedo));
-        original.createConnection(1, 0, 2, 0);
+        original.addNode(std::make_unique<MaterialOutputNode>(2));
+        original.createConnection(1, 0, 2, 0);  // → Albedo (port 0)
 
         const std::string jsonText = serializeShaderGraph(original);
         auto reloaded = deserializeShaderGraph(jsonText);
@@ -538,13 +532,13 @@ namespace
     {
         // Parse a JSON string the user might hand-edit. Compile and evaluate
         // to check the result matches what the JSON describes:
-        //   ConstantNode(1, 0, 0, 0) -> WriteAlbedo
+        //   ConstantNode(1, 0, 0, 0) -> MaterialOutput.Albedo (port 0)
         const std::string jsonText = R"({
             "version": 1,
             "uid": 0,
             "nodes": [
-                {"uid": 1, "kind": "Constant", "value": [1.0, 0.0, 0.0, 0.0]},
-                {"uid": 2, "kind": "Output",   "op": "WriteAlbedo"}
+                {"uid": 1, "kind": "Constant",       "value": [1.0, 0.0, 0.0, 0.0]},
+                {"uid": 2, "kind": "MaterialOutput"}
             ],
             "connections": [
                 {"from_node": 1, "from_port": 0, "to_node": 2, "to_port": 0}

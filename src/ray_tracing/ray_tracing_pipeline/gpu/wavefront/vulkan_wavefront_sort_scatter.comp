@@ -10,8 +10,8 @@
 #define NUM_BINS 64u
 
 // See vulkan_wavefront_sort_count.comp for the rationale.
-#ifndef INSTANCE_PROGRAM_INDEX_BINDING
-#define INSTANCE_PROGRAM_INDEX_BINDING 14
+#ifndef INSTANCE_DATA_BINDING
+#define INSTANCE_DATA_BINDING 14
 #endif
 
 layout (local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
@@ -51,9 +51,9 @@ layout(std430, set = 0, binding = 62) buffer MaterialBinCursors {
     uint cursors[];
 } materialBinCursors;
 
-layout(std430, set = 0, binding = INSTANCE_PROGRAM_INDEX_BINDING) readonly buffer InstanceProgramIndex {
-    uint indices[];
-} instanceProgramIndex;
+layout(std430, set = 0, binding = INSTANCE_DATA_BINDING) readonly buffer InstanceData {
+    uvec2 data[];
+} instanceData;
 
 void main() {
     uint tid = gl_GlobalInvocationID.x;
@@ -61,7 +61,7 @@ void main() {
 
     uint rayIndex = hitQueue.rayIndices[tid];
     uint instanceIdx = hitInfos.hits[rayIndex].instanceIndex;
-    uint programId = instanceProgramIndex.indices[instanceIdx];
+    uint programId = instanceData.data[instanceIdx].x;
     uint bin = programId % NUM_BINS;
 
     uint slot = atomicAdd(materialBinCursors.cursors[bin], 1u);

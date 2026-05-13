@@ -19,7 +19,17 @@ namespace tracey
     {
         VkDescriptorPoolCreateInfo poolInfo{};
         poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-        poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;  // Required for bindless textures
+        // UPDATE_AFTER_BIND: required by the bindless-texture path on the
+        // hit shader. FREE_DESCRIPTOR_SET: required so the per-cook
+        // dispatchers (VopComputeDispatcher / CopyToPointsCompute) can
+        // vkFreeDescriptorSets the transient sets they allocate every
+        // dispatch. Without the latter the pool fills up after a few
+        // hundred cooks and allocations start failing with
+        // VK_ERROR_OUT_OF_POOL_MEMORY — surfaces as "[ctp:compute] GPU
+        // dispatch failed, CPU fallback" once the pool is exhausted.
+        // The two flags are independent and compatible.
+        poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT
+                       | VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
         poolInfo.maxSets = 1000;
         std::array<VkDescriptorPoolSize, 6> poolSizes{};
         poolSizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;

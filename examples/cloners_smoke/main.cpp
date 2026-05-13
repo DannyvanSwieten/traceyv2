@@ -16,12 +16,16 @@
 #include "geometry/geometry.hpp"
 #include "geometry/attribute.hpp"
 #include "geometry/attribute_table.hpp"
+#include "geometry/attribute_allocator.hpp"
 #include "geometry/geometry_converter.hpp"
 #include "scene/scene_object.hpp"
 
 #include "sops/sop_graph.hpp"
 #include "sops/sop_node.hpp"
 #include "sops/sop_registry.hpp"
+#include "sops/codegen/copy_to_points_compute.hpp"
+
+#include "device/device.hpp"
 
 #include <cmath>
 #include <cstdio>
@@ -252,6 +256,100 @@ int main()
             }
         }
         check(deterministic, "scatter is deterministic given the same seed");
+    }
+
+    // ───────────────────────────────────────────────────────────────────
+    // 5) GPU copy_to_points: same cube+grid scenario as test (2), routed
+    //    through the CopyToPointsCompute dispatcher. Validates equivalence
+    //    on the standard particle case (P, N, uv on stamp; P on template).
+    //    Silently skipped when no Vulkan device is available.
+    // ───────────────────────────────────────────────────────────────────
+    {
+        std::unique_ptr<tracey::Device> device;
+        try
+        {
+            device.reset(tracey::createDevice(tracey::DeviceType::Gpu,
+                                              tracey::DeviceBackend::Compute));
+        }
+        catch (const std::exception &e)
+        {
+            std::printf("\n[gpu] device unavailable (%s) — skipping CTP GPU compare\n",
+                        e.what());
+        }
+        if (device)
+        {
+            tracey::AttributeAllocator::setDevice(device.get());
+            tracey::sops::codegen::CopyToPointsCompute gpu(device.get());
+            tracey::sops::codegen::CopyToPointsCompute::setGlobal(&gpu);
+
+            std::printf("\n── CTP CPU↔GPU equivalence ──\n");
+
+            Geometry stamp = GeometryConverter::fromSceneObject(SceneObject::createCube(0.4f));
+            Geometry tmpl;
+            {
+                auto &pts = tmpl.points();
+                auto *P = pts.add<Vec3>("P", Vec3(0.0f));
+                pts.add<Vec3>("N", Vec3(0, 1, 0));
+                pts.add<float>("pscale", 1.0f);
+                tmpl.resizePoints(8);
+                size_t k = 0;
+                for (int z = 0; z < 2; ++z)
+                    for (int y = 0; y < 2; ++y)
+                        for (int x = 0; x < 2; ++x)
+                            P->data()[k++] = Vec3(float(x) - 0.5f,
+                                                  float(y) - 0.5f,
+                                                  float(z) - 0.5f);
+            }
+
+            auto copy = SopRegistry::instance().create("copy_to_points", 0);
+            const Geometry *inputs[] = {&stamp, &tmpl};
+
+            Geometry gpu_out = copy->cook(
+                std::span<const Geometry *const>{inputs, 2});
+            check(gpu_out.vertexCount() == 8 * 36, "GPU: 288 vertices (8 cubes × 36)");
+            check(gpu_out.primitiveCount() == 8 * 12, "GPU: 96 triangles");
+
+            // Deregister to force CPU path for the reference.
+            tracey::sops::codegen::CopyToPointsCompute::setGlobal(nullptr);
+            Geometry cpu_out = copy->cook(
+                std::span<const Geometry *const>{inputs, 2});
+
+            check(cpu_out.vertexCount() == gpu_out.vertexCount(),
+                  "GPU vs CPU: vertex counts match");
+            const auto &gP = gpu_out.positions();
+            const auto &cP = cpu_out.positions();
+            bool p_match = (gP.size() == cP.size());
+            for (size_t i = 0; i < gP.size() && p_match; ++i)
+            {
+                if (!(approxEq(gP[i].x, cP[i].x) &&
+                      approxEq(gP[i].y, cP[i].y) &&
+                      approxEq(gP[i].z, cP[i].z)))
+                {
+                    p_match = false;
+                    std::printf("    P[%zu]: gpu=(%.4f,%.4f,%.4f) cpu=(%.4f,%.4f,%.4f)\n",
+                                i, gP[i].x, gP[i].y, gP[i].z, cP[i].x, cP[i].y, cP[i].z);
+                }
+            }
+            check(p_match, "GPU vs CPU: per-vertex P matches");
+
+            const auto *gN = gpu_out.points().get<Vec3>("N");
+            const auto *cN = cpu_out.points().get<Vec3>("N");
+            check(gN && cN, "GPU vs CPU: both produced N");
+            if (gN && cN)
+            {
+                bool n_match = (gN->data().size() == cN->data().size());
+                for (size_t i = 0; i < gN->data().size() && n_match; ++i)
+                {
+                    const Vec3 &a = gN->data()[i];
+                    const Vec3 &b = cN->data()[i];
+                    if (!(approxEq(a.x, b.x) && approxEq(a.y, b.y) &&
+                          approxEq(a.z, b.z))) n_match = false;
+                }
+                check(n_match, "GPU vs CPU: per-vertex N matches");
+            }
+
+            tracey::AttributeAllocator::setDevice(nullptr);
+        }
     }
 
     if (failures == 0) std::printf("[cloners_smoke] all checks passed\n");

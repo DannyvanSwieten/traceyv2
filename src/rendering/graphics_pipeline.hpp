@@ -56,6 +56,12 @@ namespace tracey
         std::filesystem::path groundVertexShader;
         std::filesystem::path groundFragmentShader;
 
+        // Optional fifth sibling pipeline drawing the translate gizmo (three
+        // colored world-axis lines anchored at a push-constant position).
+        // LINE_LIST topology, depth-test off so the gizmo overlays everything.
+        std::filesystem::path gizmoVertexShader;
+        std::filesystem::path gizmoFragmentShader;
+
         // Vertex input layout (position only — vec3 per vertex, tight stride)
     };
 

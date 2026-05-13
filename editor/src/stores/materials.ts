@@ -11,6 +11,7 @@ import {
   Vec4Tuple,
   reseedUidsFrom,
 } from '../lib/material_graph';
+import { History } from '../lib/history';
 
 const EMPTY_GRAPH: ShaderGraph = {
   version: 1,
@@ -68,10 +69,13 @@ export function isNodeSelected(uid: number): boolean {
   return selectedNodeIds().includes(uid);
 }
 
-// Per-user material library, kept in a shared signal so the modal's library
+// Material library, kept in a shared signal so the modal's library
 // panel and the actor-inspector dropdown both refresh when an entry is added
-// or removed -- regardless of which component triggered the change.
-const [libraryEntries, setLibraryEntries] = createSignal<string[]>([]);
+// or removed -- regardless of which component triggered the change. Entries
+// carry a `scope` ("project" or "global") so the picker can group them and
+// the actor-inspector knows which scope a name resolves through (a project
+// entry shadows a same-named global one at cook time).
+const [libraryEntries, setLibraryEntries] = createSignal<api.MaterialLibraryEntry[]>([]);
 export const materialLibraryEntries = libraryEntries;
 
 // Name of the library entry the active graph is currently associated with,
@@ -114,17 +118,20 @@ export function setMaterialEditorOpen(v: boolean): void {
 // graph compiles to a single Halt op and the actor renders as the
 // engine fallback, which is confusing right after "New Material".
 export async function createBlankMaterialInLibrary(): Promise<string> {
-  const existing = new Set(libraryEntries());
+  const existing = new Set(libraryEntries().map((e) => e.name));
   let n = 1;
   let name = `Material ${n}`;
   while (existing.has(name)) { n++; name = `Material ${n}`; }
 
+  // Blank material: a white Constant fed into MaterialOutput.Albedo
+  // (port 0). User can re-color via the inspector or replace the
+  // constant with a Parameter / Texture / etc.
   const blank: ShaderGraph = {
     version: 1,
     uid: 0,
     nodes: [
-      { uid: 1, kind: 'Constant', value: [1, 1, 1, 1], position: [180, 200] },
-      { uid: 2, kind: 'Output',   op: 'WriteAlbedo',  position: [420, 200] },
+      { uid: 1, kind: 'Constant',       value: [1, 1, 1, 1], position: [180, 200] },
+      { uid: 2, kind: 'MaterialOutput',                      position: [420, 200] },
     ] as Node[],
     connections: [
       { from_node: 1, from_port: 0, to_node: 2, to_port: 0 },
@@ -149,6 +156,47 @@ export async function createBlankMaterialInLibrary(): Promise<string> {
 let pushTimer: ReturnType<typeof setTimeout> | null = null;
 let dirty = false;
 const PUSH_DEBOUNCE_MS = 50;
+
+// ── Undo / redo ─────────────────────────────────────────────────────────
+// Label-coalesced history of pre-mutation graph snapshots. Consecutive
+// pushes with the same label inside a short window collapse into one
+// undo step — so dragging a node fires many `move:<uid>` snapshots but
+// the user only sees one rewindable entry. Mirrors the SOP store's
+// burst-collapsing but uses explicit labels here because the material
+// debounce (50ms) is too tight to use as the granularity heuristic.
+const history = new History<ShaderGraph>(100, 500);
+const [undoDepth, setUndoDepth] = createSignal(0);
+const [redoDepth, setRedoDepth] = createSignal(0);
+export const canUndoMaterial = (): boolean => undoDepth() > 0;
+export const canRedoMaterial = (): boolean => redoDepth() > 0;
+
+function refreshHistoryDepth(): void {
+  setUndoDepth(history.undoDepth());
+  setRedoDepth(history.redoDepth());
+}
+
+function recordHistory(label?: string): void {
+  history.push(graph(), label);
+  refreshHistoryDepth();
+}
+
+export function undoMaterial(): boolean {
+  const restored = history.undo(graph());
+  if (restored === null) return false;
+  setGraphInternal(restored);
+  schedulePush();
+  refreshHistoryDepth();
+  return true;
+}
+
+export function redoMaterial(): boolean {
+  const restored = history.redo(graph());
+  if (restored === null) return false;
+  setGraphInternal(restored);
+  schedulePush();
+  refreshHistoryDepth();
+  return true;
+}
 
 function schedulePush() {
   dirty = true;
@@ -183,6 +231,7 @@ export async function loadMaterialGraphFromEngine(): Promise<void> {
 // Replace the active graph wholesale (e.g. loading from the library). Schedules
 // a push so the engine re-compiles + re-uploads.
 export function replaceGraph(next: ShaderGraph): void {
+  recordHistory('replace');
   reseedUidsFrom(next);
   setGraphInternal(next);
   setSelectedNode(null);
@@ -192,11 +241,13 @@ export function replaceGraph(next: ShaderGraph): void {
 // Mutators -----------------------------------------------------------------
 
 export function addNode(node: Node): void {
+  recordHistory();
   setGraphInternal((g) => ({ ...g, nodes: [...g.nodes, node] }));
   schedulePush();
 }
 
 export function removeNode(uid: number): void {
+  recordHistory();
   setGraphInternal((g) => {
     // Houdini-style passthrough: bridge to_port=0 → from_port=0 so a node
     // removed mid-chain leaves its neighbours connected.
@@ -229,6 +280,8 @@ export function removeNode(uid: number): void {
 }
 
 export function moveNode(uid: number, x: number, y: number): void {
+  // Coalesce per-uid so a 60-frame drag becomes one undo entry.
+  recordHistory(`move:${uid}`);
   setGraphInternal((g) => ({
     ...g,
     nodes: g.nodes.map((n) =>
@@ -242,6 +295,9 @@ export function moveNode(uid: number, x: number, y: number): void {
 }
 
 export function updateNode<T extends Node>(uid: number, patch: Partial<T>): void {
+  // Coalesce on (uid, patched-keys) so typing in a number field is one undo
+  // step. Object.keys is fine — patches almost always change one key at a time.
+  recordHistory(`update:${uid}:${Object.keys(patch).sort().join(',')}`);
   setGraphInternal((g) => ({
     ...g,
     nodes: g.nodes.map((n) => (n.uid === uid ? ({ ...n, ...patch } as Node) : n)),
@@ -255,6 +311,8 @@ export function updateNode<T extends Node>(uid: number, patch: Partial<T>): void
 // Pass undefined to clear the slot.
 export function setInputDefault(uid: number, port: number,
                                 value: Vec4Tuple | undefined): void {
+  // Coalesce per (uid, port) so a colour-picker drag is one undo entry.
+  recordHistory(`input_default:${uid}:${port}`);
   setGraphInternal((g) => ({
     ...g,
     nodes: g.nodes.map((n) => {
@@ -274,6 +332,7 @@ export function setInputDefault(uid: number, port: number,
 }
 
 export function addConnection(c: Connection): void {
+  recordHistory();
   setGraphInternal((g) => {
     // Replace any existing connection feeding into the same input port -- a
     // sink port can only have one incoming edge.
@@ -286,6 +345,7 @@ export function addConnection(c: Connection): void {
 }
 
 export function removeConnection(c: Connection): void {
+  recordHistory();
   setGraphInternal((g) => ({
     ...g,
     connections: g.connections.filter(

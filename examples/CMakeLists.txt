@@ -42,6 +42,18 @@ add_executable(cloners_smoke
     cloners_smoke/main.cpp
 )
 
+add_executable(dop_smoke
+    dop_smoke/main.cpp
+)
+
+add_executable(vop_codegen_smoke
+    vop_codegen_smoke/main.cpp
+)
+
+add_executable(attribute_gpu_smoke
+    attribute_gpu_smoke/main.cpp
+)
+
 target_link_libraries(blas
     PRIVATE
     tracey
@@ -114,12 +126,34 @@ target_link_libraries(cloners_smoke
     glm
 )
 
+target_link_libraries(dop_smoke
+    PRIVATE
+    tracey
+    glm
+)
+
+target_link_libraries(vop_codegen_smoke
+    PRIVATE
+    tracey
+    glm
+    Vulkan::Vulkan
+    shaderc
+)
+
+target_link_libraries(attribute_gpu_smoke
+    PRIVATE
+    tracey
+    glm
+    Vulkan::Vulkan
+    shaderc
+)
+
 # Set rpath for all executables that link against Vulkan and shaderc.
 # tracey itself transitively depends on libvulkan.1.dylib via the GPU device
 # layer, so even the headless smoke tests need the rpath at runtime.
 set_target_properties(
     device_api wavefront scene_renderer
-    sop_eval_test attribute_vop_smoke cloners_smoke
+    sop_eval_test attribute_vop_smoke cloners_smoke dop_smoke vop_codegen_smoke attribute_gpu_smoke
     PROPERTIES
     MACOSX_RPATH ON
     BUILD_RPATH "/usr/local/lib"

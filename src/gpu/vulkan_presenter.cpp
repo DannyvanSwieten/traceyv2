@@ -1,5 +1,6 @@
 #include "vulkan_presenter.hpp"
 #include "vulkan_context.hpp"
+#include "vulkan_queue_sync.hpp"
 #include "../device/gpu/vulkan_image_2d.hpp"
 #include <algorithm>
 #include <stdexcept>
@@ -360,6 +361,10 @@ namespace tracey
 
     bool VulkanPresenter::present(VulkanImage2D *sourceImage, bool waitForRender)
     {
+        // Whole-present lock — covers swapchain acquire, command-pool
+        // alloc, record, queue submit + present. See vulkan_queue_sync.hpp.
+        std::lock_guard<std::mutex> gpuLock(vulkanQueueMutex());
+
         if (m_needsRecreation)
         {
             recreateSwapchain();
@@ -419,11 +424,6 @@ namespace tracey
         submitInfo.signalSemaphoreCount = 1;
         submitInfo.pSignalSemaphores = signalSemaphores;
 
-        if (vkQueueSubmit(m_context.graphicsQueue(), 1, &submitInfo, m_frameSync[m_currentFrame].inFlightFence) != VK_SUCCESS)
-        {
-            throw std::runtime_error("Failed to submit command buffer");
-        }
-
         // Present
         VkPresentInfoKHR presentInfo{};
         presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
@@ -436,6 +436,11 @@ namespace tracey
         presentInfo.pImageIndices = &imageIndex;
         presentInfo.pResults = nullptr;
 
+        // Lock held since function entry — see top of present().
+        if (vkQueueSubmit(m_context.graphicsQueue(), 1, &submitInfo, m_frameSync[m_currentFrame].inFlightFence) != VK_SUCCESS)
+        {
+            throw std::runtime_error("Failed to submit command buffer");
+        }
         result = vkQueuePresentKHR(m_context.graphicsQueue(), &presentInfo);
 
         if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR)
@@ -459,6 +464,9 @@ namespace tracey
                                          uint32_t dstWidth, uint32_t dstHeight,
                                          bool waitForRender)
     {
+        // Whole-present lock — see vulkan_queue_sync.hpp.
+        std::lock_guard<std::mutex> gpuLock(vulkanQueueMutex());
+
         if (m_needsRecreation)
         {
             recreateSwapchain();
@@ -518,11 +526,6 @@ namespace tracey
         submitInfo.signalSemaphoreCount = 1;
         submitInfo.pSignalSemaphores = signalSemaphores;
 
-        if (vkQueueSubmit(m_context.graphicsQueue(), 1, &submitInfo, m_frameSync[m_currentFrame].inFlightFence) != VK_SUCCESS)
-        {
-            throw std::runtime_error("Failed to submit command buffer");
-        }
-
         // Present
         VkPresentInfoKHR presentInfo{};
         presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
@@ -535,6 +538,11 @@ namespace tracey
         presentInfo.pImageIndices = &imageIndex;
         presentInfo.pResults = nullptr;
 
+        // Lock held since function entry — see top of present().
+        if (vkQueueSubmit(m_context.graphicsQueue(), 1, &submitInfo, m_frameSync[m_currentFrame].inFlightFence) != VK_SUCCESS)
+        {
+            throw std::runtime_error("Failed to submit command buffer");
+        }
         result = vkQueuePresentKHR(m_context.graphicsQueue(), &presentInfo);
 
         if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR)
@@ -559,6 +567,9 @@ namespace tracey
                                           uint32_t insetWidth, uint32_t insetHeight,
                                           bool /*waitForRender*/)
     {
+        // Whole-present lock — see vulkan_queue_sync.hpp.
+        std::lock_guard<std::mutex> gpuLock(vulkanQueueMutex());
+
         if (m_needsRecreation)
         {
             recreateSwapchain();
@@ -698,11 +709,6 @@ namespace tracey
         submitInfo.signalSemaphoreCount = 1;
         submitInfo.pSignalSemaphores = signalSemaphores;
 
-        if (vkQueueSubmit(m_context.graphicsQueue(), 1, &submitInfo, m_frameSync[m_currentFrame].inFlightFence) != VK_SUCCESS)
-        {
-            throw std::runtime_error("Failed to submit command buffer");
-        }
-
         VkPresentInfoKHR presentInfo{};
         presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
         presentInfo.waitSemaphoreCount = 1;
@@ -712,6 +718,11 @@ namespace tracey
         presentInfo.pSwapchains = swapchains;
         presentInfo.pImageIndices = &imageIndex;
 
+        // Lock held since function entry — see top of presentComposite().
+        if (vkQueueSubmit(m_context.graphicsQueue(), 1, &submitInfo, m_frameSync[m_currentFrame].inFlightFence) != VK_SUCCESS)
+        {
+            throw std::runtime_error("Failed to submit command buffer");
+        }
         result = vkQueuePresentKHR(m_context.graphicsQueue(), &presentInfo);
 
         if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR)

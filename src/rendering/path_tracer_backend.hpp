@@ -50,11 +50,17 @@ namespace tracey
         // Record + submit one frame against the given scene. Returns GPU
         // execution time in milliseconds. The façade has already uploaded
         // ShaderInputs (camera + render settings) for this frame; the backend
-        // is responsible for clearing the accumulator when requested and for
-        // copying the final output image into the readback buffer.
+        // is responsible for clearing the accumulator when requested. When
+        // `wantReadback` is true the backend must also enqueue a copy of the
+        // final output image into the readback buffer so a subsequent
+        // PathTracer::readback() observes the current frame; when false the
+        // copy is skipped — the live viewport reads tracer->outputImage()
+        // straight off the GPU and never touches the readback buffer, so
+        // the extra copy + mapForReading stall is pure overhead there.
         virtual double dispatch(const SceneCompiler::CompiledScene &scene,
                                 uint32_t accumulatedSampleCount,
-                                bool clearAccumulation) = 0;
+                                bool clearAccumulation,
+                                bool wantReadback) = 0;
     };
 
     // Factory: pick a backend based on the device. Today returns

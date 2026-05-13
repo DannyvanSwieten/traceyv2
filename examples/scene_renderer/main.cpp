@@ -95,23 +95,22 @@ int main(int argc, char *argv[])
     // output is proof the graph -> bytecode -> GPU VM path works end-to-end.
     {
         tracey::ShaderGraph graph(0);
-        struct StagePair { tracey::Op input; tracey::Op output; };
-        const StagePair pairs[] = {
-            {tracey::Op::LoadInputAlbedo,    tracey::Op::WriteAlbedo},
-            {tracey::Op::LoadInputMetallic,  tracey::Op::WriteMetallic},
-            {tracey::Op::LoadInputRoughness, tracey::Op::WriteRoughness},
-            {tracey::Op::LoadInputEmission,  tracey::Op::WriteEmission},
-            {tracey::Op::LoadInputNormal,    tracey::Op::WriteNormal},
+        // Passthrough graph: a single MaterialInput → MaterialOutput
+        // wired one-to-one for the five PBR slots. Port indices come
+        // from materialInputPorts() / materialOutputPorts() in
+        // src/graph/graphs/shader_graph/nodes.hpp.
+        struct PortPair { size_t inPort, outPort; };
+        const PortPair pairs[] = {
+            {7,  0},  // Albedo
+            {8,  1},  // Metallic
+            {9,  2},  // Roughness
+            {10, 3},  // Emission
+            {11, 4},  // InNormal → Normal
         };
-        size_t uid = 1;
+        graph.addNode(std::make_unique<tracey::MaterialInputNode>(1));
+        graph.addNode(std::make_unique<tracey::MaterialOutputNode>(2));
         for (const auto &p : pairs)
-        {
-            const size_t inUid = uid++;
-            const size_t outUid = uid++;
-            graph.addNode(std::make_unique<tracey::InputAttributeNode>(inUid, p.input));
-            graph.addNode(std::make_unique<tracey::OutputNode>(outUid, p.output));
-            graph.createConnection(inUid, 0, outUid, 0);
-        }
+            graph.createConnection(1, p.inPort, 2, p.outPort);
 
         tracey::MaterialProgram prog = tracey::compileShaderGraph(graph);
         tracey::MaterialProgramBuffer programs;

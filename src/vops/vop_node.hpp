@@ -28,7 +28,8 @@ namespace tracey
         //   • kind() is a stable string id, registered in VopRegistry.
         //   • Parameters are constants (no port wiring) — keeps the model simple.
         //   • prepare(Geometry&) runs once per cook *before* the per-point loop;
-        //     bind_out_attr_* uses it to add the target attribute if missing.
+        //     geo_output uses it to materialise target attributes before the
+        //     per-point write loop touches them.
         class VopNode : public Node
         {
         public:

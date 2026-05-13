@@ -91,25 +91,37 @@ export function isNodeSelected(uid: number): boolean {
 
 let pushTimer: ReturnType<typeof setTimeout> | null = null;
 let dirty = false;
+// `cookOnNextPush` toggles on whenever ANY semantic edit (param, connection,
+// add/remove) has happened since the last push. Position-only moves leave it
+// false, so dragging a node around the canvas pushes the new layout to the
+// native side (it persists into save_scene) but doesn't force the worker
+// thread to re-cook a graph that produces the same output. Coalescing means
+// one cook=true edit anywhere in the debounce window keeps cook=true for
+// the whole batch — correct: any semantic change should re-cook.
+let cookOnNextPush = false;
 // True debounce, not a throttle: every edit restarts the timer so a typing
 // burst coalesces into ONE push once activity stops. Mirrors sops.ts.
 const PUSH_DEBOUNCE_MS = 300;
 
-function schedulePush(): void {
+function schedulePush(cook: boolean = true): void {
   // No host attached → nothing to push (e.g. modal closed mid-edit).
   if (currentHostUidInternal() === null) return;
   dirty = true;
+  if (cook) cookOnNextPush = true;
   if (pushTimer !== null) clearTimeout(pushTimer);
   pushTimer = setTimeout(async () => {
     pushTimer = null;
     if (!dirty) return;
     dirty = false;
+    const willCook = cookOnNextPush;
+    cookOnNextPush = false;
     const host = currentHostUidInternal();
     if (host === null) return;
     try {
       await api.send<null>('set_vop_graph', {
         host_uid: host,
         graph: JSON.stringify(graph()),
+        cook: willCook,
       });
     } catch (e) {
       const msg = e instanceof Error ? e.message : JSON.stringify(e);
@@ -330,7 +342,10 @@ export function moveNode(uid: number, x: number, y: number): void {
     ...g,
     nodes: g.nodes.map((n) => (n.uid === uid ? { ...n, pos: [x, y] } : n)),
   }));
-  schedulePush();
+  // Position is canvas metadata only — the cook doesn't depend on it.
+  // Push (so save_scene round-trips the layout) but tell the worker
+  // not to re-cook.
+  schedulePush(/*cook=*/false);
 }
 
 export function setParam(uid: number, paramName: string, value: ParamValue): void {

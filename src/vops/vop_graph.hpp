@@ -2,6 +2,7 @@
 
 #include "../graph/graph.hpp"
 #include "eval_context.hpp"
+#include "typing.hpp"
 #include "vop_node.hpp"
 
 #include <cstddef>
@@ -24,7 +25,8 @@ namespace tracey
         //   2. evaluatePoint(idx, geo) — for the given point: zero the slot
         //      array, walk nodes in topo order, dispatch each node's
         //      evaluate(EvalContext&). Reads / writes attribute values from
-        //      the geometry directly via bind_in_*/bind_out_* node kinds.
+        //      the geometry directly via the geo_input / geo_output
+        //      terminal node kinds.
         //
         // Mutating the graph (addNode / addConnection / setParamFloat / ...)
         // must call markDirty() so the next compile() rebuilds the slot table.
@@ -61,6 +63,14 @@ namespace tracey
             // mutates only the mutable cache members.
             void compile() const;
 
+            // Inferred per-port types — see typing.hpp. Populated as a side
+            // effect of compile() so both the CPU evaluator and the GPU
+            // emitter consume the same answer for any polymorphic node
+            // (add, fit, clamp, mix, ...). Before this existed each path
+            // ran its own ad-hoc promotion heuristic and the two could
+            // disagree on a graph that wired a vec3 into a "float" port.
+            TypeKind portType(size_t nodeUid, size_t port, bool isOutput) const;
+
             // Per-point evaluation. Caller is expected to have called
             // compile() at least once; we call it lazily here too.
             void evaluatePoint(size_t pointIdx, Geometry &geo) const;
@@ -91,6 +101,7 @@ namespace tracey
             mutable std::vector<size_t> m_topoOrder;
             mutable size_t m_slotCount = 0;
             mutable std::unordered_map<uint64_t, size_t> m_slotIndex; // (uid<<32)|port → slot
+            mutable TypeInferenceResult m_types;
 
             static uint64_t makeSlotKey(size_t nodeUid, size_t port)
             {

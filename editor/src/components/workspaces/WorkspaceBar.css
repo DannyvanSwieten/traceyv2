@@ -1,0 +1,105 @@
+.workspace-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 12px;
+  background: #1c1c1c;
+  border-bottom: 1px solid #2a2a2a;
+  font: 12px system-ui, -apple-system, sans-serif;
+  color: #ddd;
+}
+
+.workspace-bar-toggle,
+.workspace-bar-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: #2c2c2c;
+  color: #ddd;
+  border: 1px solid #3a3a3a;
+  border-radius: 3px;
+  padding: 4px 10px;
+  font: 12px system-ui, -apple-system, sans-serif;
+  cursor: pointer;
+}
+.workspace-bar-toggle:hover,
+.workspace-bar-button:hover {
+  background: #353535;
+  border-color: #4a4a4a;
+}
+
+.workspace-bar-toggle--on {
+  background: #b03030;
+  border-color: #e05050;
+  color: #fff;
+}
+.workspace-bar-toggle--on:hover {
+  background: #c04040;
+}
+
+.workspace-bar-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #555;
+}
+.workspace-bar-dot--on {
+  background: #ff4444;
+  box-shadow: 0 0 4px rgba(255, 60, 60, 0.6);
+}
+
+.workspace-bar-button--accent {
+  background: #0e82c8;
+  border-color: #5ab8ec;
+  color: #fff;
+}
+.workspace-bar-button--accent:hover {
+  background: #1090d8;
+}
+
+.workspace-bar-hint {
+  font-size: 11px;
+  color: #888;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.workspace-bar-button:hover .workspace-bar-hint { color: #aaa; }
+
+.workspace-bar-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.workspace-bar-label {
+  color: #aaa;
+  text-transform: uppercase;
+  font-size: 10px;
+  letter-spacing: 0.05em;
+}
+
+.workspace-bar-row input[type="range"] {
+  width: 120px;
+  accent-color: #5ab8ec;
+}
+
+.workspace-bar-value {
+  min-width: 36px;
+  text-align: right;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: #ccc;
+}
+
+.workspace-bar-select {
+  background: #2c2c2c;
+  color: #ddd;
+  border: 1px solid #3a3a3a;
+  border-radius: 3px;
+  padding: 3px 8px;
+  font: 12px system-ui, -apple-system, sans-serif;
+  cursor: pointer;
+}
+.workspace-bar-select:hover {
+  background: #353535;
+  border-color: #4a4a4a;
+}

@@ -47,28 +47,31 @@ void RenderEngine::initialize_path_tracer() {
 
     // Seed the editor with a passthrough graph so the very first
     // get_material_graph from the frontend returns something useful.
+    //
+    // One MaterialInput, one MaterialOutput, wired port-to-port for the
+    // five PBR slots the editor exposes (Albedo, Metallic, Roughness,
+    // Emission, Normal). Port indices match materialInputPorts() and
+    // materialOutputPorts() in src/graph/graphs/shader_graph/nodes.hpp:
+    //   MaterialInput  outputs: P, N, T, V, uv0, uv1, InstanceID,
+    //                            Albedo(7), Metallic(8), Roughness(9),
+    //                            Emission(10), InNormal(11)
+    //   MaterialOutput inputs:  Albedo(0), Metallic(1), Roughness(2),
+    //                            Emission(3), Normal(4), Alpha(5),
+    //                            IOR(6), Transmission(7)
     if (m_current_graph_json.empty()) {
         m_current_graph_json = R"({
     "version": 1,
     "uid": 0,
     "nodes": [
-        {"uid": 1,  "kind": "InputAttribute", "op": "LoadInputAlbedo",    "position": [80, 60]},
-        {"uid": 2,  "kind": "Output",         "op": "WriteAlbedo",        "position": [380, 60]},
-        {"uid": 3,  "kind": "InputAttribute", "op": "LoadInputMetallic",  "position": [80, 160]},
-        {"uid": 4,  "kind": "Output",         "op": "WriteMetallic",      "position": [380, 160]},
-        {"uid": 5,  "kind": "InputAttribute", "op": "LoadInputRoughness", "position": [80, 260]},
-        {"uid": 6,  "kind": "Output",         "op": "WriteRoughness",     "position": [380, 260]},
-        {"uid": 7,  "kind": "InputAttribute", "op": "LoadInputEmission",  "position": [80, 360]},
-        {"uid": 8,  "kind": "Output",         "op": "WriteEmission",      "position": [380, 360]},
-        {"uid": 9,  "kind": "InputAttribute", "op": "LoadInputNormal",    "position": [80, 460]},
-        {"uid": 10, "kind": "Output",         "op": "WriteNormal",        "position": [380, 460]}
+        {"uid": 1, "kind": "MaterialInput",  "position": [ 80, 60]},
+        {"uid": 2, "kind": "MaterialOutput", "position": [420, 60]}
     ],
     "connections": [
-        {"from_node": 1, "from_port": 0, "to_node": 2,  "to_port": 0},
-        {"from_node": 3, "from_port": 0, "to_node": 4,  "to_port": 0},
-        {"from_node": 5, "from_port": 0, "to_node": 6,  "to_port": 0},
-        {"from_node": 7, "from_port": 0, "to_node": 8,  "to_port": 0},
-        {"from_node": 9, "from_port": 0, "to_node": 10, "to_port": 0}
+        {"from_node": 1, "from_port":  7, "to_node": 2, "to_port": 0},
+        {"from_node": 1, "from_port":  8, "to_node": 2, "to_port": 1},
+        {"from_node": 1, "from_port":  9, "to_node": 2, "to_port": 2},
+        {"from_node": 1, "from_port": 10, "to_node": 2, "to_port": 3},
+        {"from_node": 1, "from_port": 11, "to_node": 2, "to_port": 4}
     ]
 })";
     }
@@ -88,6 +91,8 @@ void RenderEngine::initialize_rasterizer() {
     cfg.linesFragmentShader  = m_config.shader_dir / "rasterizer" / "lines.frag.spv";
     cfg.groundVertexShader   = m_config.shader_dir / "rasterizer" / "ground.vert.spv";
     cfg.groundFragmentShader = m_config.shader_dir / "rasterizer" / "ground.frag.spv";
+    cfg.gizmoVertexShader    = m_config.shader_dir / "rasterizer" / "gizmo.vert.spv";
+    cfg.gizmoFragmentShader  = m_config.shader_dir / "rasterizer" / "gizmo.frag.spv";
     cfg.useDepthBuffer = true;
     cfg.depthTestEnable = true;
     cfg.cullBackFaces = false;  // SOP-cooked geometry can have either winding
@@ -97,6 +102,11 @@ void RenderEngine::initialize_rasterizer() {
     m_rasterizer->setShowPoints(m_show_points);
     m_rasterizer->setShowEdges(m_show_edges);
     m_rasterizer->setShowGround(m_show_ground);
+    // Apply the persisted background colour. The rasterizer's
+    // ctor-default matches m_bg_* so this is a no-op on first launch;
+    // when the user has set a custom colour and then we recreate the
+    // rasterizer (e.g. on viewport resize), it carries through.
+    m_rasterizer->setBackgroundColor(m_bg_r, m_bg_g, m_bg_b, m_bg_a);
 }
 
 void RenderEngine::set_material_graph_json(const std::string& graph_json) {
@@ -135,18 +145,25 @@ void RenderEngine::compile_scene() {
 
     // Mark all cache entries untouched before the compile; any entry whose
     // SceneObject doesn't appear (by name + matching content hash) in this
-    // compile will stay untouched and get evicted below.
+    // compile will stay untouched and get evicted below. The cache itself
+    // is bypassed when raster-only (SceneCompiler::compile ignores it in
+    // that mode) so the markAll/evictUntouched bookkeeping is harmless —
+    // the next PT-mode compile will repopulate everything from scratch.
     m_blas_cache->markAllUntouched();
-    auto compiled = tracey::SceneCompiler::compile(m_device.get(), *m_scene,
-                                                   m_blas_cache.get());
+    auto compiled = tracey::SceneCompiler::compile(
+        m_device.get(), *m_scene, tracey::BVHConfig{}, m_blas_cache.get(),
+        /*buildAccelerationStructures=*/m_build_acceleration_structures);
     m_compiled_scene =
         std::make_unique<tracey::SceneCompiler::CompiledScene>(std::move(compiled));
     m_blas_cache->evictUntouched();
 
     // Per-actor graphs were aggregated into materialPrograms during compile;
     // push them to the GPU so the hit shader's runMaterialProgram(programId, ...)
-    // sees the right code at each programId slot.
-    if (m_path_tracer && !m_compiled_scene->materialPrograms.headers().empty()) {
+    // sees the right code at each programId slot. Skipped in raster-only
+    // mode — the rasterizer doesn't run material programs, and the next
+    // PT-on compile will upload a fresh program buffer anyway.
+    if (m_build_acceleration_structures &&
+        m_path_tracer && !m_compiled_scene->materialPrograms.headers().empty()) {
         m_path_tracer->setMaterialPrograms(m_compiled_scene->materialPrograms);
     }
 }
@@ -164,6 +181,22 @@ void RenderEngine::set_show_edges(bool v) {
 void RenderEngine::set_show_ground(bool v) {
     m_show_ground = v;
     if (m_rasterizer) m_rasterizer->setShowGround(v);
+}
+
+void RenderEngine::set_gizmo_visible(bool v) {
+    if (m_rasterizer) m_rasterizer->setGizmoVisible(v);
+}
+
+void RenderEngine::set_gizmo_anchor(float x, float y, float z, float length) {
+    if (m_rasterizer) {
+        m_rasterizer->setGizmoAnchor(tracey::Vec3(x, y, z));
+        m_rasterizer->setGizmoLength(length);
+    }
+}
+
+void RenderEngine::set_background_color(float r, float g, float b, float a) {
+    m_bg_r = r; m_bg_g = g; m_bg_b = b; m_bg_a = a;
+    if (m_rasterizer) m_rasterizer->setBackgroundColor(r, g, b, a);
 }
 
 void RenderEngine::render_rasterizer() {
@@ -241,7 +274,7 @@ bool RenderEngine::refresh_tlas_only() {
     return true;
 }
 
-RenderResult RenderEngine::render_frame(bool clear_accumulation) {
+RenderResult RenderEngine::render_frame(bool clear_accumulation, bool want_pixels) {
     if (!m_path_tracer)
         throw std::runtime_error("Path tracer not initialized");
     if (!m_compiled_scene)
@@ -263,25 +296,32 @@ RenderResult RenderEngine::render_frame(bool clear_accumulation) {
         result.height = height;
         result.sample_count = m_path_tracer->sampleCount();
         result.render_time_ms = 0.0;
-        result.pixels.assign(static_cast<size_t>(width) * height * bytes_per_pixel, 0);
+        if (want_pixels)
+        {
+            result.pixels.assign(static_cast<size_t>(width) * height * bytes_per_pixel, 0);
+        }
         return result;
     }
 
     const double render_time_ms =
-        m_path_tracer->render(*m_compiled_scene, m_scene->camera(), clear_accumulation);
+        m_path_tracer->render(*m_compiled_scene, m_scene->camera(),
+                              clear_accumulation, want_pixels);
 
     const uint32_t width = m_path_tracer->width();
     const uint32_t height = m_path_tracer->height();
-    const size_t bytes_per_pixel = m_config.hdr_output ? 16 : 4;
-    const size_t buffer_size = static_cast<size_t>(width) * height * bytes_per_pixel;
 
     RenderResult result;
-    result.pixels.resize(buffer_size);
-    m_path_tracer->readback(result.pixels.data());
     result.width = width;
     result.height = height;
     result.sample_count = m_path_tracer->sampleCount();
     result.render_time_ms = render_time_ms;
+    if (want_pixels)
+    {
+        const size_t bytes_per_pixel = m_config.hdr_output ? 16 : 4;
+        const size_t buffer_size = static_cast<size_t>(width) * height * bytes_per_pixel;
+        result.pixels.resize(buffer_size);
+        m_path_tracer->readback(result.pixels.data());
+    }
     return result;
 }
 

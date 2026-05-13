@@ -107,11 +107,11 @@ vec3 getMaterialEmissive(uint instanceIndex, vec2 uv) {
 // ============================================================================
 
 // Get interpolated UV from the UV buffer using barycentric coordinates.
-// `hitInfo.triangleIndex` is BLAS-local; instanceUvOffset[instanceIndex] is
-// the start of this instance's slice of the global UV buffer.
+// `hitInfo.triangleIndex` is BLAS-local; instanceData.data[i].y holds the
+// start of this instance's slice of the global UV buffer.
 vec2 getHitUV(HitInfo hitInfo) {
     uint triIdx = hitInfo.triangleIndex;
-    uint base = instanceUvOffset.offsets[hitInfo.instanceIndex] + triIdx * 3u;
+    uint base = instanceData.data[hitInfo.instanceIndex].y + triIdx * 3u;
 
     vec2 uv0 = uvBuffer.uvs[base + 0u];
     vec2 uv1 = uvBuffer.uvs[base + 1u];
@@ -128,7 +128,7 @@ vec2 getHitUV(HitInfo hitInfo) {
 // Normal Interpolation
 // ============================================================================
 
-// Interpolated per-vertex N at the hit point. Reuses `instanceUvOffset`
+// Interpolated per-vertex N at the hit point. Reuses `instanceData.data[i].y`
 // for addressing (normals are stored parallel to UVs — one entry per
 // vertex). Falls back to the BLAS face normal (always available) when
 // the per-instance slice is all-zero — that's the signal SceneCompiler
@@ -137,7 +137,7 @@ vec2 getHitUV(HitInfo hitInfo) {
 // that has neither flat nor smooth vertex N set up yet.
 vec3 getHitNormal(HitInfo hitInfo) {
     uint triIdx = hitInfo.triangleIndex;
-    uint base = instanceUvOffset.offsets[hitInfo.instanceIndex] + triIdx * 3u;
+    uint base = instanceData.data[hitInfo.instanceIndex].y + triIdx * 3u;
 
     // Stored as vec4 to match std430's 16-byte array stride; we only
     // use xyz.

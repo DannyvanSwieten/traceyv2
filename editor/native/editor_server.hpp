@@ -3,6 +3,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
+#include <filesystem>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -22,6 +23,21 @@
 namespace tracey {
     namespace sops {
         class SopGraph;
+    }
+    namespace dops {
+        class DopGraph;
+    }
+    namespace vops {
+        namespace codegen {
+            class VopComputeDispatcher;
+        }
+    }
+    namespace sops {
+        namespace codegen {
+            class CopyToPointsCompute;
+            class TransformCompute;
+            class MergeCompute;
+        }
     }
 }
 
@@ -54,6 +70,12 @@ private:
     // Lazily build the ViewportRenderer once we know the viewport pixel size.
     // Recreates on size change.
     void ensure_viewport_renderer(uint32_t pixel_w, uint32_t pixel_h);
+
+    // Reapply the PT render size based on (fullscreen flag, override w/h,
+    // viewport size). Called whenever any of those inputs changes. Skips
+    // when the viewport hasn't been initialised yet — the next
+    // ensure_viewport_renderer() will pick up the right size.
+    void apply_pt_resolution();
 
     // Read InputState, update the scene camera, and signal accumulation reset
     // on movement. Returns true if anything changed.
@@ -89,9 +111,78 @@ private:
     bool m_clear_next_frame = true;
     double m_last_tick_time = 0.0;
 
+    // Whether the live viewport composites the path-traced inset preview
+    // on top of the rasterizer. Off by default — the PT pass is by far
+    // the most expensive thing render_tick does, and most editor
+    // sessions spend their time on geometry / material edits where the
+    // rasterizer's preview is sufficient. The user opts in with the
+    // set_pt_preview command (and the future toolbar toggle). When
+    // false, the path tracer is never dispatched and the composite
+    // falls back to a plain rasterizer present.
+    bool m_pt_preview_enabled = false;
+
+    // When true (and m_pt_preview_enabled also true), the path-tracer
+    // output takes the entire viewport instead of the top-right PiP
+    // inset. Used by the Render workspace so the user gets a real
+    // dedicated final-look view. Resolution is bumped to viewport res
+    // on transition so the PT isn't upscaled-blitted.
+    bool m_pt_fullscreen = false;
+
+    // Optional fixed render resolution for the path tracer in fullscreen
+    // (Render workspace) mode. 0 = "match viewport pixel size". When
+    // non-zero, the PT renders at this exact res and the viewport blit
+    // upscales / downscales to fit. Lets the user pick "1080p preview
+    // regardless of window size" so final-look samples match what an
+    // Export would produce.
+    uint32_t m_pt_render_w = 0;
+    uint32_t m_pt_render_h = 0;
+
+    // True while the JS side is running a modal grab (G/R/S transform).
+    // Two effects per render_tick:
+    //   1. update_camera_from_input is skipped so dragging doesn't orbit
+    //      the camera underneath the user's intent.
+    //   2. The native pointer state is broadcast back to JS as
+    //      `viewport_pointer` events so the grab math can run there —
+    //      otherwise the WebView never sees the events because the
+    //      CAMetalLayer captures them first.
+    bool m_viewport_grab_active = false;
+    // Track the last broadcast values so we only fire on change (no
+    // need to spam JS with identical-position events every tick).
+    float m_last_broadcast_mouse_x = 0.0f;
+    float m_last_broadcast_mouse_y = 0.0f;
+    bool  m_last_broadcast_mouse_left  = false;
+    bool  m_last_broadcast_mouse_right = false;
+
+    // Current project folder. Empty when no project is open (fresh
+    // launch, or the user is editing without having saved/opened
+    // anything). When set, project-scoped material lookups read from
+    // `m_project_dir/materials/<name>.json` first, falling back to the
+    // global library; saves can target either scope. save_scene /
+    // load_scene set this implicitly to the file's parent so the legacy
+    // single-file flow gets a sane materials folder for free.
+    std::filesystem::path m_project_dir;
+
     std::vector<uint8_t> m_last_render_pixels;
     uint32_t m_last_render_width = 0;
     uint32_t m_last_render_height = 0;
+
+    // Profiler-tab render-stats broadcast state. Exponentially-
+    // smoothed dt drives a steady FPS readout (raw 1/dt jitters under
+    // load); broadcast is throttled to ~4 Hz so the message bus
+    // doesn't pay 60 events/sec for a counter the UI only needs to
+    // refresh at human-readable cadence.
+    double m_smoothed_dt = 1.0 / 60.0;
+    double m_last_render_stats_broadcast = 0.0;
+    double m_last_render_time_ms = 0.0;
+    // Per-tick wall-clock buckets, EMA-smoothed against the previous
+    // measurement to keep the profiler readout from twitching. tick_ms
+    // is the total render_tick body (excluding the try_lock skip),
+    // and the others slice that into the dominant phases so a missing
+    // bucket immediately surfaces an unmeasured cost.
+    double m_smoothed_tick_ms    = 0.0;
+    double m_smoothed_rebuild_ms = 0.0;
+    double m_smoothed_raster_ms  = 0.0;
+    double m_smoothed_present_ms = 0.0;
     std::mutex m_mutex;
     BroadcastCallback m_broadcast;
 
@@ -99,6 +190,24 @@ private:
     // produces the list of actors the path tracer renders. All actor
     // creation/edits flow through here.
     std::unique_ptr<tracey::sops::SopGraph> m_sop_graph;
+
+    // Top-level DOP graph — the simulation network, peer of the root
+    // SOP graph (NOT nested inside it). Cooks one frame at a time,
+    // caching SimState per frame. SOPs read sim output via a `dop_import`
+    // SOP that names a frame. Always non-null after construction; an
+    // empty DopGraph is a no-op cook.
+    std::unique_ptr<tracey::dops::DopGraph> m_dop_graph;
+
+    // GPU dispatcher for VOP graphs. Created lazily at construction
+    // against the RenderEngine's Vulkan compute device. attribute_vop
+    // SOPs and pop_force DOPs reach this through the process-wide
+    // VopComputeDispatcher::getGlobal() accessor and try a GPU dispatch
+    // before falling through to the CPU evaluator. Null when the
+    // backend isn't compute-capable (host fallback only).
+    std::unique_ptr<tracey::vops::codegen::VopComputeDispatcher> m_vop_dispatcher;
+    std::unique_ptr<tracey::sops::codegen::CopyToPointsCompute> m_ctp_dispatcher;
+    std::unique_ptr<tracey::sops::codegen::TransformCompute> m_xform_dispatcher;
+    std::unique_ptr<tracey::sops::codegen::MergeCompute> m_merge_dispatcher;
 
     // Map from SOP node uid → emitted actor uid in the scene. Covers
     // object_output, light, and subnet nodes (one actor per SOP node) PLUS
@@ -132,6 +241,17 @@ private:
         LoopMode loop = LoopMode::Loop;
         // PingPong direction (+1 forward, -1 backward). Internal.
         double pingpong_dir = 1.0;
+        // Playback policy. Off (default) = "async": render_tick advances
+        // the playhead by wall-clock dt every tick and posts a cook
+        // request at the new time; cooks finishing late silently drop
+        // intermediate frames so the UI never blocks. On = "every
+        // frame": advance_playhead is suppressed entirely and instead
+        // drain_cook_result advances by exactly 1/fps after each cook
+        // is applied, then posts the next cook. Playback speed becomes
+        // cook throughput rather than wall-clock, but no frame is
+        // skipped. The UI thread still tics at vsync in both modes —
+        // never blocking.
+        bool frame_locked = false;
     } m_timeline;
 
     // Set whenever the live override layer needs to re-evaluate (seek, key
@@ -150,6 +270,17 @@ private:
     // Advance the playhead by `dt` seconds, applying loop semantics. Returns
     // true if `current_time` changed.
     bool advance_playhead(double dt);
+    bool advance_playhead_by(double dt);
+
+    // Project-folder helpers. project_material_dir() returns
+    // `m_project_dir/materials` and is only meaningful when a project
+    // is open. resolve_material_path() returns the path the engine
+    // should actually read for a material with the given library
+    // name: project-local wins over global so a project can shadow a
+    // same-named global material. Returns an empty path when neither
+    // scope has the file.
+    std::filesystem::path project_material_dir() const;
+    std::filesystem::path resolve_material_path(const std::string &name) const;
 
     // Cook the current SOP graph and rebuild the live scene from the result.
     // Mutex must be held by the caller; main-thread only because it touches
@@ -183,6 +314,21 @@ private:
     // accurate as the user promotes / demotes / keys params.
     bool detect_animated_vop_promotions() const;
 
+    // True iff the canonical SOP graph contains at least one dop_import
+    // node (recursing into subnets). Refreshed after every cook + on every
+    // set_sop_graph, since either can introduce one. Gates the playhead-
+    // driven DOP re-cook in render_tick so a project without particles
+    // doesn't pay the cook cost on every scrub.
+    bool detect_dop_imports() const;
+    bool m_has_dop_imports = false;
+
+    // Collect per-dop_import stamp pairs from the canonical graphs at the
+    // given playhead time. Cooks the DopGraph to the corresponding frame
+    // (cheap when already cached). Caller must hold m_mutex. Returns an
+    // empty vector when m_has_dop_imports is false.
+    std::vector<std::pair<size_t, tracey::Geometry>>
+        collect_dop_stamps(double time);
+
     // True if any SOP node carries an animated parameter (channel keys
     // anywhere in the tree). Superset of detect_animated_vop_promotions;
     // also includes keyed translate/rotate/scale on subnets and transform
@@ -193,10 +339,17 @@ private:
     std::mutex m_cook_request_mutex;
     std::condition_variable m_cook_request_cv;
     // Worker request: serialized root SopGraph + playhead time. Latest-wins
-    // — both fields get overwritten by each post.
+    // — every field gets overwritten by each post.
+    //
+    // `dop_stamps` is the side channel for dop_import SOPs. The canonical
+    // graph's dop_import nodes carry a `m_stamped` Geometry that the cook()
+    // returns; serializing the graph drops that buffer, so we pass it
+    // alongside the JSON and the worker re-stamps after deserialize. Empty
+    // when the graph has no dop_import nodes (the common case).
     struct CookRequest {
         std::string graph_json;
         double      time = 0.0;
+        std::vector<std::pair<size_t, tracey::Geometry>> dop_stamps;
     };
     std::optional<CookRequest> m_pending_cook_request;
     // Most recently pushed root graph JSON, kept under m_mutex. Reused by

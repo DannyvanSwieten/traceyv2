@@ -5,6 +5,7 @@
 #include "../../../ray_tracing/ray_tracing_pipeline/gpu/vulkan_compute_raytracing_descriptor_set.hpp"
 #include "../../../device/gpu/vulkan_buffer.hpp"
 #include "../../../device/gpu/vulkan_image_2d.hpp"
+#include "../../../gpu/vulkan_queue_sync.hpp"
 #include <iostream>
 
 namespace tracey
@@ -56,6 +57,11 @@ namespace tracey
         submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
         submitInfo.commandBufferCount = 1;
         submitInfo.pCommandBuffers = &m_vkCommandBuffer;
+        // Lock is held by the dispatch path that owns this command
+        // buffer (wavefront backend / ray-tracing pipeline test) — see
+        // vulkan_queue_sync.hpp. Nesting a second std::mutex acquisition
+        // here would self-deadlock, so the submit just runs under the
+        // caller's lock.
         if (vkQueueSubmit(m_device.computeQueue(), 1, &submitInfo, VK_NULL_HANDLE) != VK_SUCCESS)
         {
             throw std::runtime_error("Failed to submit command buffer");

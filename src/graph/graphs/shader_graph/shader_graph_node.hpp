@@ -12,14 +12,19 @@ namespace tracey
     // this and downcasts to the concrete subclass to read its data.
     enum class ShaderNodeKind
     {
-        Constant,         // ConstantNode    — embedded vec4 literal (LoadConst)
-        Parameter,        // ParameterNode   — runtime-mutable slot   (LoadParam)
-        SurfaceAttribute, // SurfaceAttrNode — Position, Normal, ViewDir, UV0, ...
-        InputAttribute,   // InputAttrNode   — pre-fetched material albedo/metallic/...
-        BinaryOp,         // BinaryOpNode    — Add, Sub, Mul, Div, Dot3, Cross
-        UnaryOp,          // UnaryOpNode     — Neg, Saturate, Normalize3, Length3, Splat
-        TernaryOp,        // TernaryOpNode   — Mix, Clamp
-        Output,           // OutputNode      — WriteAlbedo, WriteMetallic, ...
+        Constant,       // ConstantNode       — embedded vec4 literal (LoadConst)
+        Parameter,      // ParameterNode      — runtime-mutable slot (LoadParam)
+        MaterialInput,  // MaterialInputNode  — single terminal exposing every
+                        //                       surface attribute + pre-fetched
+                        //                       material input as a named output
+                        //                       port (LoadPosition, LoadNormal,
+                        //                       LoadInputAlbedo, …)
+        MaterialOutput, // MaterialOutputNode — single sink with one input port
+                        //                       per writable material slot
+                        //                       (WriteAlbedo, WriteMetallic, …)
+        BinaryOp,       // BinaryOpNode    — Add, Sub, Mul, Div, Dot3, Cross
+        UnaryOp,        // UnaryOpNode     — Neg, Saturate, Normalize3, Length3, Splat
+        TernaryOp,      // TernaryOpNode   — Mix, Clamp
     };
 
     class ShaderGraphNode : public Node

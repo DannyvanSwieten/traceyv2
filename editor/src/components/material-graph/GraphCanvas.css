@@ -92,12 +92,11 @@
 }
 .graph-node-Constant .graph-node-header,
 .graph-node-Parameter .graph-node-header { fill: #4a3a2a; }
-.graph-node-InputAttribute .graph-node-header,
-.graph-node-SurfaceAttribute .graph-node-header { fill: #2a4a3a; }
+.graph-node-MaterialInput .graph-node-header { fill: #2a4a3a; }
 .graph-node-BinaryOp .graph-node-header,
 .graph-node-UnaryOp .graph-node-header,
 .graph-node-TernaryOp .graph-node-header { fill: #2a3a4a; }
-.graph-node-Output .graph-node-header { fill: #4a2a3a; }
+.graph-node-MaterialOutput .graph-node-header { fill: #4a2a3a; }
 
 .graph-node-title {
   fill: #eee;

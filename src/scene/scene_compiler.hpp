@@ -127,22 +127,24 @@ namespace tracey
             // Instance data for reference
             std::vector<Tlas::Instance> instances;
 
-            // Per-instance material program lookup. instanceProgramIndex[i] is
-            // the index into materialPrograms.headers() (== the GPU programId)
-            // for TLAS instance i. instanceProgramIndexBuffer is the SSBO the
-            // hit shader and the sort kernel read from.
+            // Per-instance material program lookup and UV base offset.
+            // instanceProgramIndex[i] is the GPU programId (= index into
+            // materialPrograms.headers()); instanceUvOffset[i] is the
+            // per-vertex base offset into the global uvBuffer/normalBuffer
+            // for TLAS instance i. The hit shader's hitInfo.triangleIndex
+            // is BLAS-local so we add this offset before stepping into the
+            // global arrays — otherwise every instance's lookups alias to
+            // BLAS 0 and multi-object scenes show scrambled UVs/normals.
+            //
+            // On the GPU side these two parallel uint arrays are uploaded
+            // as a single uvec2[] (instanceDataBuffer) so the wavefront
+            // compute pipeline doesn't blow the per-stage storage-buffer
+            // descriptor budget on MoltenVK / Apple GPUs (31 SSBs/stage).
+            // .x = programId, .y = uvOffset.
             MaterialProgramBuffer materialPrograms;
             std::vector<uint32_t> instanceProgramIndex;
-            std::unique_ptr<Buffer> instanceProgramIndexBuffer;
-
-            // Per-instance UV-buffer base offset, in *per-vertex* slot
-            // counts. The hit shader's `hitInfo.triangleIndex` is local to
-            // the BLAS that was hit, so we add this offset before stepping
-            // into the global uvBuffer — otherwise every instance's UV
-            // lookups would alias to BLAS 0's UVs and produce visibly
-            // scrambled texturing on multi-object scenes (e.g. glTF Sponza).
             std::vector<uint32_t> instanceUvOffset;
-            std::unique_ptr<Buffer> instanceUvOffsetBuffer;
+            std::unique_ptr<Buffer> instanceDataBuffer;
 
             // Maps object name to BLAS index
             std::unordered_map<std::string, size_t> objectToBlasIndex;
@@ -169,6 +171,19 @@ namespace tracey
         static CompiledScene compile(Device *device, const Scene &scene,
                                      const BVHConfig &bvhConfig, BlasCache *cache);
 
+        /// Compile scene with full control. When `buildAccelerationStructures`
+        /// is false the BLAS BVH build and TLAS construction are both skipped
+        /// — the resulting CompiledScene still carries vertex / color buffers
+        /// and instance transforms (the rasterizer's full input set), but no
+        /// `blases` entries, no `tlas`, and `totalNodes` reports zero. The
+        /// editor sets this to false when the path-traced inset preview is
+        /// off, since the rasterizer doesn't traverse a BVH. The `cache`
+        /// parameter is also ignored in that mode — there's nothing to cache
+        /// because cached entries are inseparable from their BLAS.
+        static CompiledScene compile(Device *device, const Scene &scene,
+                                     const BVHConfig &bvhConfig, BlasCache *cache,
+                                     bool buildAccelerationStructures);
+
     private:
         struct ObjectData
         {
@@ -182,7 +197,12 @@ namespace tracey
             bool hasNormals = false;
         };
 
-        static ObjectData compileObject(Device *device, const SceneObject &obj, const BVHConfig &bvhConfig);
+        // When `buildAccelerationStructures` is false the BLAS build is
+        // skipped — vertex / color / uv / normal data is still uploaded
+        // because the rasterizer needs it.
+        static ObjectData compileObject(Device *device, const SceneObject &obj,
+                                        const BVHConfig &bvhConfig,
+                                        bool buildAccelerationStructures = true);
         static Mat4 computeWorldTransform(const Scene &scene, const Actor &actor);
 
         // Load a texture and return its index, or -1 if failed. `isColorData`

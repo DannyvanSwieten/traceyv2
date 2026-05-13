@@ -2,7 +2,15 @@ import { Component, For, Show, createSignal, createEffect, createMemo, Accessor 
 import * as api from '../../lib/api';
 import { ImportedAsset } from '../../stores/assets';
 import { cookProfile, NodeCookTimingRow } from '../../stores/cook_profiler';
+import { renderStats } from '../../stores/render_stats';
 import './ResourcesBrowser.css';
+
+// Render a number with thousands separators. The triangle / BVH-node
+// counts get into the millions for dense scenes, so spaces every 3
+// digits keep them scannable.
+function fmtCount(n: number): string {
+  return new Intl.NumberFormat('en-US').format(Math.round(n));
+}
 
 type MeshInfo = api.MeshInfo;
 type TextureInfo = api.TextureInfo;
@@ -202,6 +210,69 @@ export const ResourcesBrowser: Component<ResourcesBrowserProps> = (props) => {
         </Show>
 
         <Show when={activeTab() === 'profiler'}>
+          {/* Live render stats — broadcast ~4 Hz from the native
+              render_tick. Always visible (no fallback) so the user
+              can read FPS / triangle counts even before the first
+              cook completes. */}
+          <Show when={renderStats()}>
+            {(stats) => (
+              <>
+              <div class="profiler-live-stats">
+                <div class="profiler-live-stat">
+                  <span class="profiler-live-label">FPS</span>
+                  <span class="profiler-live-value">{stats().fps.toFixed(1)}</span>
+                </div>
+                <div class="profiler-live-stat">
+                  <span class="profiler-live-label">Triangles</span>
+                  <span class="profiler-live-value">{fmtCount(stats().triangles)}</span>
+                </div>
+                <div class="profiler-live-stat">
+                  <span class="profiler-live-label">Instances</span>
+                  <span class="profiler-live-value">{fmtCount(stats().instances)}</span>
+                </div>
+                <div class="profiler-live-stat">
+                  <span class="profiler-live-label">BVH nodes</span>
+                  <span class="profiler-live-value">{fmtCount(stats().bvh_nodes)}</span>
+                </div>
+                <div class="profiler-live-stat">
+                  <span class="profiler-live-label">Samples</span>
+                  <span class="profiler-live-value">
+                    {stats().samples}
+                    <span class="profiler-live-sub">/ {stats().max_samples}</span>
+                  </span>
+                </div>
+                <div class="profiler-live-stat">
+                  <span class="profiler-live-label">PT dispatch</span>
+                  <span class="profiler-live-value">{stats().render_time_ms.toFixed(2)}<span class="profiler-live-sub"> ms</span></span>
+                </div>
+              </div>
+              {/* Per-tick wall-clock breakdown. `tick` is the whole
+                  render_tick body; the slices below it are the
+                  dominant phases. A gap between tick and the sum is
+                  unmeasured cost — vsync stall, cook worker
+                  contention, or anything else outside the
+                  instrumented spans. */}
+              <div class="profiler-live-stats profiler-live-stats--row2">
+                <div class="profiler-live-stat profiler-live-stat--total">
+                  <span class="profiler-live-label">Tick</span>
+                  <span class="profiler-live-value">{stats().tick_ms.toFixed(2)}<span class="profiler-live-sub"> ms</span></span>
+                </div>
+                <div class="profiler-live-stat">
+                  <span class="profiler-live-label">Rebuild</span>
+                  <span class="profiler-live-value">{stats().rebuild_ms.toFixed(2)}<span class="profiler-live-sub"> ms</span></span>
+                </div>
+                <div class="profiler-live-stat">
+                  <span class="profiler-live-label">Raster</span>
+                  <span class="profiler-live-value">{stats().raster_ms.toFixed(2)}<span class="profiler-live-sub"> ms</span></span>
+                </div>
+                <div class="profiler-live-stat">
+                  <span class="profiler-live-label">Present</span>
+                  <span class="profiler-live-value">{stats().present_ms.toFixed(2)}<span class="profiler-live-sub"> ms</span></span>
+                </div>
+              </div>
+              </>
+            )}
+          </Show>
           <Show
             when={profilerRows().length > 0}
             fallback={

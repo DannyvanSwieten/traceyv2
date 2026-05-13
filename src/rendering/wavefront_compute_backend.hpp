@@ -28,7 +28,8 @@ namespace tracey
         void uploadMaterialParameters(const MaterialProgramBuffer &programs) override;
         double dispatch(const SceneCompiler::CompiledScene &scene,
                         uint32_t accumulatedSampleCount,
-                        bool clearAccumulation) override;
+                        bool clearAccumulation,
+                        bool wantReadback) override;
 
     private:
         void buildPipeline();

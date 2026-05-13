@@ -140,7 +140,20 @@ namespace tracey
                 }
             }
             m_slotCount = cursor;
+
+            // Type-inference pass piggybacks on the same compile()
+            // trigger so callers don't have to remember to invoke it
+            // separately. Both the CPU evaluator and the GLSL emitter
+            // read from m_types — see typing.hpp for the rationale.
+            m_types = inferGraphTypes(*this);
+
             m_dirty = false;
+        }
+
+        TypeKind VopGraph::portType(size_t nodeUid, size_t port, bool isOutput) const
+        {
+            compile();  // ensure m_types is current
+            return m_types.portType(nodeUid, static_cast<uint32_t>(port), isOutput);
         }
 
         void VopGraph::evaluatePoint(size_t pointIdx, Geometry &geo) const

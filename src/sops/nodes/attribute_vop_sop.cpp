@@ -20,8 +20,8 @@
 //   • Single Geometry input, single Geometry output.
 //   • Cook clones the input, stamps any promoted host params back into the
 //     matching VOP nodes (time-sampled), calls each VopNode::prepare(geo)
-//     once so bind_out_attr_* nodes can add target attributes, then
-//     iterates points and calls VopGraph::evaluatePoint(idx, geo) per point.
+//     once so geo_output materialises target attributes, then iterates
+//     points and calls VopGraph::evaluatePoint(idx, geo) per point.
 
 #include "attribute_vop_sop.hpp"
 
@@ -29,17 +29,19 @@
 #include "../sop_node.hpp"
 #include "../sop_registry.hpp"
 
+#include "../../core/parallel.hpp"
 #include "../../vops/vop_graph.hpp"
 #include "../../vops/vop_node.hpp"
 #include "../../vops/vop_registry.hpp"
 #include "../../vops/serialization.hpp"
+#include "../../vops/codegen/compute_dispatch.hpp"
 
 #include "json.hpp" // nlohmann/json (bundled via deps/tinygltf)
 
 #include <algorithm>
+#include <cstdio>
 #include <memory>
 #include <string>
-#include <thread>
 #include <variant>
 #include <vector>
 
@@ -90,12 +92,12 @@ namespace tracey
                         stampPromotedParams(time);
                     }
 
-                    // Run prepare() once before the per-point loop so bind_out_*
-                    // nodes can ensure their target attribute exists. Must
-                    // happen serially BEFORE the parallel section: prepare()
-                    // can `add<>` an attribute, which reallocates the
-                    // attribute table's storage. Doing that concurrently
-                    // with reads in evaluate() would race.
+                    // Run prepare() once before the per-point loop so
+                    // geo_output can materialise any attribute it's about
+                    // to write. Must happen serially BEFORE the parallel
+                    // section: prepare() can `add<>` an attribute, which
+                    // reallocates the attribute table's storage. Doing
+                    // that concurrently with reads in evaluate() would race.
                     for (const auto &n : m_vopGraph->nodes())
                     {
                         if (auto *vn = dynamic_cast<vops::VopNode *>(n.get()))
@@ -106,46 +108,47 @@ namespace tracey
                     // the parallel workers from racing into the first compile().
                     m_vopGraph->compile();
 
-                    const size_t pointCount = out.points().size();
-
-                    // Parallel-for across points. Each evaluate() reads
-                    // attributes at ctx.pointIndex and writes to the same
-                    // index — no aliasing across threads. Per-thread
-                    // slot buffer is reused across points in the chunk to
-                    // avoid a heap allocation per point.
-                    //
-                    // Skip threading for small geometries: starting a few
-                    // hundred µs of threads to evaluate a 100-point graph
-                    // is a net slowdown. The threshold is conservative.
-                    constexpr size_t kSerialThreshold = 1024;
-                    if (pointCount < kSerialThreshold)
+                    // Try GPU dispatch first when the editor wired up a
+                    // VopComputeDispatcher and the point count justifies
+                    // the upload / dispatch overhead. The threshold is
+                    // tuned around where CPU loops match a single GPU
+                    // dispatch on M-series hardware; below it the host
+                    // path is faster. On any failure (unsupported node,
+                    // shader compile error, transient GPU issue) we log
+                    // once and fall through to the CPU evaluator so the
+                    // cook still completes.
+                    constexpr size_t kGpuThreshold = 512;
+                    auto *dispatcher = vops::codegen::VopComputeDispatcher::getGlobal();
+                    if (dispatcher && out.points().size() >= kGpuThreshold)
                     {
-                        std::vector<vops::Value> slots;
-                        for (size_t i = 0; i < pointCount; ++i)
-                            m_vopGraph->evaluatePoint(i, out, slots);
-                        return out;
+                        try
+                        {
+                            dispatcher->dispatch(*m_vopGraph, out);
+                            return out;
+                        }
+                        catch (const std::exception &e)
+                        {
+                            std::fprintf(stderr,
+                                "[attribute_vop] GPU dispatch failed, CPU fallback: %s\n",
+                                e.what());
+                        }
                     }
 
-                    const size_t numThreads = std::max<size_t>(
-                        1, std::thread::hardware_concurrency());
-                    const size_t chunkSize =
-                        (pointCount + numThreads - 1) / numThreads;
-
-                    std::vector<std::thread> threads;
-                    threads.reserve(numThreads);
-                    auto runChunk = [&](size_t begin, size_t end) {
-                        std::vector<vops::Value> slots;
-                        for (size_t i = begin; i < end; ++i)
-                            m_vopGraph->evaluatePoint(i, out, slots);
-                    };
-                    for (size_t t = 0; t < numThreads; ++t)
-                    {
-                        const size_t begin = t * chunkSize;
-                        const size_t end = std::min(pointCount, begin + chunkSize);
-                        if (begin >= end) break;
-                        threads.emplace_back(runChunk, begin, end);
-                    }
-                    for (auto &th : threads) th.join();
+                    // Parallel-for across points via the shared
+                    // parallel_for_chunks helper (src/core/parallel.hpp).
+                    // Each evaluate() reads + writes attributes at its
+                    // own pointIndex, so no aliasing across threads.
+                    // Per-thread slot buffer is reused across points in
+                    // the chunk to avoid a heap allocation per point.
+                    // The helper short-circuits to serial below the
+                    // chunk threshold so tiny graphs don't pay thread-
+                    // startup cost.
+                    tracey::parallel_for_chunks(out.points().size(),
+                        [this, &out](size_t begin, size_t end) {
+                            std::vector<vops::Value> slots;
+                            for (size_t i = begin; i < end; ++i)
+                                m_vopGraph->evaluatePoint(i, out, slots);
+                        });
                     return out;
                 }
 
@@ -216,66 +219,53 @@ namespace tracey
                     return *m_vopGraph;
                 }
 
-                // Build a fresh VopGraph seeded with passthroughs for all
-                // the Houdini-standard point attributes (P, N, Cd, Alpha,
-                // uv, v). Diving into a brand-new attribute_vop drops you
-                // into a fully-wired graph that emits the same geometry as
-                // it received, so you can immediately insert nodes between
-                // any input/output pair via the right-click "insert on wire"
-                // menu — mirroring Houdini's "Input/Output node always
-                // present" feel.
+                // Build a fresh VopGraph with a single geo_input → geo_output
+                // pair, pre-wired one-to-one for the standard point
+                // attributes (P, N, Cd, uv, v, Alpha). Diving into a brand-
+                // new attribute_vop drops you into a fully-wired graph
+                // that emits the same geometry as it received, so the user
+                // can immediately right-click any wire and "insert on wire"
+                // to splice in a node between input and output.
                 //
-                // Layout: one row per attribute, input node on the left,
-                // output node on the right, horizontal wire between them.
-                // VOPs flow left-to-right in the UI (inputs on the left
-                // edge of a node, outputs on the right edge), so a single
-                // bezier hop is the natural shape — column-style top-to-
-                // bottom layout would force the wire to do an L-bend.
+                // VOPs flow left-to-right in the UI; one bezier hop per
+                // wire is the natural shape. We position geo_input on the
+                // left and geo_output on the right, both at the same y.
                 //
-                // If the registered VOP catalog hasn't loaded yet (unlikely
-                // at runtime, possible during tests), pairs whose factory
-                // returns null are silently skipped.
+                // The port indices below must stay in lockstep with the
+                // kVecPorts / kFloatPorts tables in geo_io_vops.cpp.
                 static std::unique_ptr<vops::VopGraph> makeSeededVopGraph()
                 {
                     auto g = std::make_unique<vops::VopGraph>(0);
                     auto &reg = vops::VopRegistry::instance();
 
-                    // (inKind, outKind) pairs in top-to-bottom row order.
-                    // Match the kinds registered in src/vops/nodes/bind_*_vops.cpp.
-                    struct Pair { const char *in; const char *out; };
-                    static constexpr Pair kStandardPairs[] = {
-                        {"bind_in_p",     "bind_out_p"},
-                        {"bind_in_N",     "bind_out_N"},
-                        {"bind_in_Cd",    "bind_out_Cd"},
-                        {"bind_in_Alpha", "bind_out_Alpha"},
-                        {"bind_in_uv",    "bind_out_uv"},
-                        {"bind_in_v",     "bind_out_v"},
-                    };
-                    // Spacings match VopGraphCanvas's NODE_WIDTH (110) so
-                    // the input/output nodes sit with a comfortable gap and
-                    // the bezier wire has room to curve. kRowSpacing leaves
-                    // room for the tallest single-port node + a margin.
-                    constexpr float kInputX     =  80.0f;
-                    constexpr float kOutputX    = 280.0f;
-                    constexpr float kRowY0      =  60.0f;
-                    constexpr float kRowSpacing =  80.0f;
+                    auto inNode  = reg.create("geo_input",  g->nextUid());
+                    auto outNode = reg.create("geo_output", g->nextUid());
+                    if (!inNode || !outNode) return g;
 
-                    int row = 0;
-                    for (const auto &p : kStandardPairs)
-                    {
-                        auto inNode  = reg.create(p.in,  g->nextUid());
-                        auto outNode = reg.create(p.out, g->nextUid());
-                        if (!inNode || !outNode) continue;
-                        const float y = kRowY0 + static_cast<float>(row) * kRowSpacing;
-                        inNode->setPos(kInputX,  y);
-                        outNode->setPos(kOutputX, y);
-                        const size_t inUid  = inNode->uid();
-                        const size_t outUid = outNode->uid();
-                        g->addNode(std::move(inNode));
-                        g->addNode(std::move(outNode));
-                        g->addConnection({inUid, 0, outUid, 0});
-                        ++row;
-                    }
+                    inNode->setPos( 80.0f, 60.0f);
+                    outNode->setPos(360.0f, 60.0f);
+                    const size_t inUid  = inNode->uid();
+                    const size_t outUid = outNode->uid();
+                    g->addNode(std::move(inNode));
+                    g->addNode(std::move(outNode));
+
+                    // (port index on geo_input, same index on geo_output).
+                    // Both nodes order their vec3 ports identically (P, N,
+                    // Cd, uv, v, force) followed by float ports (Alpha,
+                    // pscale). We pre-wire the six the user most often
+                    // edits; force / pscale stay unconnected with their
+                    // default passthrough=true.
+                    static constexpr size_t kPassthroughPorts[] = {
+                        0, // P
+                        1, // N
+                        2, // Cd
+                        3, // uv
+                        4, // v
+                        6, // Alpha
+                    };
+                    for (size_t port : kPassthroughPorts)
+                        g->addConnection({inUid, port, outUid, port});
+
                     return g;
                 }
 

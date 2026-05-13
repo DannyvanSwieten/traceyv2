@@ -2,9 +2,13 @@
 #include "blas_cache.hpp"
 #include "material_instance.hpp"
 #include "../graph/graphs/shader_graph/compiler.hpp"
+#include "../graph/graphs/shader_graph/nodes.hpp"
 #include "../graph/graphs/shader_graph/serialization.hpp"
+#include "../graph/graphs/shader_graph/shader_graph.hpp"
+#include "../shading/material_program/opcodes.hpp"
 #include <cstring>
 #include <iostream>
+#include <optional>
 #include <stdexcept>
 #include <unordered_map>
 
@@ -13,6 +17,67 @@
 
 namespace tracey
 {
+    namespace
+    {
+        // Best-effort viewport-preview color extraction from a compiled
+        // shader graph. The rasterizer can't run the full bytecode VM that
+        // the path tracer uses, so it needs a single representative
+        // baseColor per actor — the equivalent of Houdini's "display
+        // color" hint. We look for the Albedo input on the graph's
+        // MaterialOutput terminal and try to resolve it: a literal
+        // ConstantNode upstream, or an `input_defaults[Albedo]` set on
+        // the output via the inspector. Anything more complex (an
+        // attribute lookup, a math chain, a noise texture) returns no
+        // preview — the rasterizer keeps using the SceneObject
+        // material's albedo (or default white).
+        std::optional<Vec3> extractGraphPreviewAlbedo(const ShaderGraph &graph)
+        {
+            // Port index of "Albedo" on MaterialOutput — must match
+            // materialOutputPorts()[0] in nodes.hpp.
+            constexpr size_t kAlbedoPort = 0;
+
+            const MaterialOutputNode *out = nullptr;
+            size_t outUid = 0;
+            for (const auto &nodePtr : graph.nodes())
+            {
+                const auto *node = dynamic_cast<const ShaderGraphNode *>(nodePtr.get());
+                if (!node) continue;
+                if (node->kind() != ShaderNodeKind::MaterialOutput) continue;
+                out = static_cast<const MaterialOutputNode *>(node);
+                outUid = out->uid();
+                break;
+            }
+            if (!out) return std::nullopt;
+
+            // Wired upstream?
+            for (const auto &c : graph.connections())
+            {
+                if (c.toNode != outUid || c.toPort != kAlbedoPort) continue;
+                const ShaderGraphNode *src = nullptr;
+                for (const auto &nodePtr : graph.nodes())
+                {
+                    const auto *n = dynamic_cast<const ShaderGraphNode *>(nodePtr.get());
+                    if (n && n->uid() == c.fromNode) { src = n; break; }
+                }
+                if (!src) continue;
+                if (src->kind() == ShaderNodeKind::Constant)
+                {
+                    const Vec4 &v = static_cast<const ConstantNode *>(src)->value();
+                    return Vec3(v.x, v.y, v.z);
+                }
+                // Anything else (Parameter, math op, attribute lookup):
+                // can't statically resolve, bail.
+                return std::nullopt;
+            }
+
+            // No upstream wire — fall back to the per-port inspector
+            // default (the "drag out MaterialOutput and set Albedo" case).
+            const auto def = out->inputDefault(kAlbedoPort);
+            if (def.has_value()) return Vec3(def->x, def->y, def->z);
+            return std::nullopt;
+        }
+    }  // anon
+
     int32_t SceneCompiler::loadTexture(Device *device, CompiledScene &result, const Scene &scene, const std::string &texturePath, bool isColorData)
     {
         // Cache key folds in the format hint so the same source file can
@@ -235,7 +300,9 @@ namespace tracey
 
         return gpuMat;
     }
-    SceneCompiler::ObjectData SceneCompiler::compileObject(Device *device, const SceneObject &obj, const BVHConfig &bvhConfig)
+    SceneCompiler::ObjectData SceneCompiler::compileObject(Device *device, const SceneObject &obj,
+                                                            const BVHConfig &bvhConfig,
+                                                            bool buildAccelerationStructures)
     {
         ObjectData data;
         data.vertexCount = obj.vertexCount();
@@ -310,17 +377,24 @@ namespace tracey
             data.normals.resize(data.vertexCount, Vec3(0.0f));
         }
 
-        // Create BLAS with custom BVH configuration
-        data.blas = std::unique_ptr<BottomLevelAccelerationStructure>(
-            device->createBottomLevelAccelerationStructure(
-                data.vertexBuffer.get(),
-                static_cast<uint32_t>(data.vertexCount),
-                sizeof(Vec3),
-                nullptr, 0,
-                bvhConfig));
+        // BLAS construction is the most expensive piece of per-object
+        // compile. When the caller isn't going to ray-trace this scene
+        // (live viewport with the PT inset preview disabled) we skip the
+        // BVH build and leave data.blas / data.nodeCount at their
+        // defaults — vertex / color / uv / normal data above is still
+        // populated because the rasterizer needs all of it.
+        if (buildAccelerationStructures)
+        {
+            data.blas = std::unique_ptr<BottomLevelAccelerationStructure>(
+                device->createBottomLevelAccelerationStructure(
+                    data.vertexBuffer.get(),
+                    static_cast<uint32_t>(data.vertexCount),
+                    sizeof(Vec3),
+                    nullptr, 0,
+                    bvhConfig));
 
-        // Get node count from the BLAS for statistics
-        data.nodeCount = data.blas->nodeCount();
+            data.nodeCount = data.blas->nodeCount();
+        }
 
         return data;
     }
@@ -349,6 +423,13 @@ namespace tracey
 
     SceneCompiler::CompiledScene SceneCompiler::compile(Device *device, const Scene &scene,
                                                         const BVHConfig &bvhConfig, BlasCache *cache)
+    {
+        return compile(device, scene, bvhConfig, cache, /*buildAccelerationStructures=*/true);
+    }
+
+    SceneCompiler::CompiledScene SceneCompiler::compile(Device *device, const Scene &scene,
+                                                        const BVHConfig &bvhConfig, BlasCache *cache,
+                                                        bool buildAccelerationStructures)
     {
         CompiledScene result;
 
@@ -390,16 +471,84 @@ namespace tracey
             }
 
             const uint64_t hash = objPtr->contentHash();
-            const BlasCache::Entry *entry = nullptr;
-            if (cache)
+            BlasCache::Entry *entry = nullptr;
+            // The BlasCache contract is "cache hit ⇒ entry->blas non-null".
+            // When skipping AS we'd be inserting null-blas entries that a
+            // later PT-on recompile would happily reuse without building
+            // BVHs — so bypass the cache entirely in raster-only mode.
+            // Vertex buffers get re-uploaded each cook in that mode, which
+            // is cheap relative to the BVH cost we just elided.
+            if (cache && buildAccelerationStructures)
             {
                 entry = cache->lookup(name, hash);
+                // Cache contentHash only covers positions + indices —
+                // a Cd / N / UV edit (e.g. an attribute_vop writing
+                // geo_output.Cd) doesn't change topology and shouldn't
+                // invalidate the BLAS. Refresh the entry's shading
+                // data in place so the rasterizer / hit shader picks
+                // up the new values without paying for a BVH rebuild.
+                if (entry)
+                {
+                    // colorBuffer (per-vertex Cd, always allocated; default
+                    // white when the SceneObject has no colors).
+                    const size_t vCount = entry->vertexCount;
+                    if (entry->colorBuffer && vCount > 0)
+                    {
+                        auto *colorMapped = static_cast<Vec3 *>(
+                            entry->colorBuffer->mapForWriting());
+                        if (objPtr->hasColors())
+                        {
+                            const auto &colors = objPtr->colors();
+                            const size_t n = std::min(colors.size(), vCount);
+                            std::copy(colors.begin(), colors.begin() + n, colorMapped);
+                            for (size_t i = n; i < vCount; ++i)
+                                colorMapped[i] = Vec3(1.0f);
+                        }
+                        else
+                        {
+                            for (size_t i = 0; i < vCount; ++i)
+                                colorMapped[i] = Vec3(1.0f);
+                        }
+                        entry->colorBuffer->flush();
+                    }
+                    // uvs / normals live as CPU vectors on the entry
+                    // and get concatenated into the global uv /
+                    // normal buffers below — replace them with fresh
+                    // copies from the SceneObject so VOP-written
+                    // values flow through.
+                    if (objPtr->hasUvs())
+                    {
+                        entry->uvs = objPtr->uvs();
+                        if (entry->uvs.size() < vCount)
+                            entry->uvs.resize(vCount, Vec2(0.0f));
+                    }
+                    entry->hasUvs = objPtr->hasUvs();
+                    if (objPtr->hasNormals())
+                    {
+                        entry->normals = objPtr->normals();
+                        if (entry->normals.size() < vCount)
+                            entry->normals.resize(vCount, Vec3(0.0f));
+                    }
+                    else
+                    {
+                        // Object lost its normals between cooks; zero
+                        // out so the hit shader's "all-zero ⇒ face
+                        // normal" fallback still kicks in cleanly.
+                        std::fill(entry->normals.begin(), entry->normals.end(), Vec3(0.0f));
+                    }
+                    entry->hasNormals = objPtr->hasNormals();
+                }
             }
 
             if (!entry)
             {
-                ObjectData objData = compileObject(device, *objPtr, bvhConfig);
-                if (!objData.blas) continue;
+                ObjectData objData =
+                    compileObject(device, *objPtr, bvhConfig,
+                                  buildAccelerationStructures);
+                // Empty SceneObjects produce vertexCount==0 + no blas; non-
+                // empty objects with buildAS=false also have no blas but
+                // are valid. Use vertexCount as the validity check.
+                if (objData.vertexCount == 0) continue;
 
                 BlasCache::Entry fresh;
                 fresh.blas = std::move(objData.blas);
@@ -411,7 +560,7 @@ namespace tracey
                 fresh.normals = std::move(objData.normals);
                 fresh.hasNormals = objData.hasNormals;
                 fresh.contentHash = hash;
-                if (cache)
+                if (cache && buildAccelerationStructures)
                 {
                     entry = cache->insert(name, std::move(fresh));
                 }
@@ -465,7 +614,11 @@ namespace tracey
             }
         }
 
-        if (result.blases.empty())
+        // In raster-only mode result.blases is empty by design (entries are
+        // pushed as nullptr to keep the parallel-index contract with
+        // vertexBuffers / colorBuffers, but we don't bother growing the
+        // vector). Use vertexBuffers as the "has geometry" check instead.
+        if (result.vertexBuffers.empty())
         {
             throw std::runtime_error("Scene has no valid geometry objects");
         }
@@ -512,7 +665,17 @@ namespace tracey
         // are added on first encounter of a unique graph JSON. The lookup
         // table keyed by JSON string lets us dedupe across actors.
         result.materialPrograms.addProgram(makePassthroughProgram());
-        std::unordered_map<std::string, uint32_t> graphJsonToProgramId;
+        // Each entry pairs the programId (consumed by the path tracer)
+        // with an optional viewport preview color extracted from the
+        // graph's WriteAlbedo output. The rasterizer can't run the full
+        // material program, so the preview color is its fallback when
+        // the SceneObject's own material doesn't carry an albedo. See
+        // extractGraphPreviewAlbedo above for the resolution rules.
+        struct ActorMaterialEntry {
+            uint32_t programId = 0;
+            std::optional<Vec3> previewAlbedo;
+        };
+        std::unordered_map<std::string, ActorMaterialEntry> graphJsonToEntry;
 
         for (const auto &node : sceneNodes)
         {
@@ -530,13 +693,15 @@ namespace tracey
             // Resolve this actor's program id once -- all instances under the
             // actor share it. Empty graph -> passthrough at index 0.
             uint32_t actorProgramId = 0;
+            std::optional<Vec3> actorPreviewAlbedo;
             const std::string &graphJson = actor->materialGraphJson();
             if (!graphJson.empty())
             {
-                auto cached = graphJsonToProgramId.find(graphJson);
-                if (cached != graphJsonToProgramId.end())
+                auto cached = graphJsonToEntry.find(graphJson);
+                if (cached != graphJsonToEntry.end())
                 {
-                    actorProgramId = cached->second;
+                    actorProgramId = cached->second.programId;
+                    actorPreviewAlbedo = cached->second.previewAlbedo;
                 }
                 else
                 {
@@ -547,7 +712,9 @@ namespace tracey
                         {
                             MaterialProgram program = compileShaderGraph(*graph);
                             actorProgramId = result.materialPrograms.addProgram(program);
-                            graphJsonToProgramId.emplace(graphJson, actorProgramId);
+                            actorPreviewAlbedo = extractGraphPreviewAlbedo(*graph);
+                            graphJsonToEntry.emplace(graphJson,
+                                ActorMaterialEntry{actorProgramId, actorPreviewAlbedo});
                         }
                     }
                     catch (const std::exception &e)
@@ -594,6 +761,24 @@ namespace tracey
 
                 // Convert material and load textures
                 GPUMaterial gpuMat = convertMaterial(device, result, scene, sceneInstance.material());
+                // Viewport preview color: when an actor's material graph
+                // statically resolves to a constant baseColor, that
+                // wins over whatever the SceneObject material carried.
+                // The path tracer already treats the graph as
+                // authoritative when present (it runs the program
+                // bytecode at hit time), so the rasterizer doing the
+                // same just brings the preview in line with the final
+                // render. The graph-assignment handler upstream leaves
+                // a default 0.8-gray albedo on the SceneObject when a
+                // graph is attached — that's a fallback for the
+                // no-graph case, not a value the rasterizer should
+                // prefer over the user's actual material choice.
+                if (actorPreviewAlbedo)
+                {
+                    gpuMat.baseColorR = actorPreviewAlbedo->x;
+                    gpuMat.baseColorG = actorPreviewAlbedo->y;
+                    gpuMat.baseColorB = actorPreviewAlbedo->z;
+                }
                 result.materials.push_back(gpuMat);
 
                 materialIndex++;
@@ -668,11 +853,18 @@ namespace tracey
             return result;
         }
 
-        // Step 3: Create TLAS
-        result.tlas = std::unique_ptr<TopLevelAccelerationStructure>(
-            device->createTopLevelAccelerationStructure(
-                std::span<const BottomLevelAccelerationStructure *>(blasPtrs),
-                std::span<const Tlas::Instance>(result.instances)));
+        // Step 3: Create TLAS — gated on PT mode. blasPtrs contains nullptrs
+        // when buildAccelerationStructures was false, so we'd build a TLAS
+        // over invalid handles otherwise. The path tracer is the only
+        // consumer of result.tlas; the rasterizer drives instancing from
+        // result.instances directly.
+        if (buildAccelerationStructures)
+        {
+            result.tlas = std::unique_ptr<TopLevelAccelerationStructure>(
+                device->createTopLevelAccelerationStructure(
+                    std::span<const BottomLevelAccelerationStructure *>(blasPtrs),
+                    std::span<const Tlas::Instance>(result.instances)));
+        }
 
         // Step 4: Create material buffer
         if (!result.materials.empty())
@@ -689,33 +881,35 @@ namespace tracey
             std::cout << "Loaded " << result.textures.size() << " textures" << std::endl;
         }
 
-        // Step 5: Create instance->program SSBO so the hit shader and the
-        // material-ID sort kernel can resolve programId from instanceIndex.
-        if (!result.instanceProgramIndex.empty())
+        // Step 5: Pack the two per-instance lookup tables (programId,
+        // uvOffset) into a single uvec2[] SSBO. We used to upload them as
+        // two separate buffers (instanceProgramIndexBuffer /
+        // instanceUvOffsetBuffer) but the wavefront compute pipeline was
+        // hitting maxPerStageDescriptorStorageBuffers=31 on MoltenVK, so
+        // merging is the cheapest way to claw back a binding without
+        // restructuring the rest of the layout. Shader: `instanceData.data[i].x`
+        // is programId, `.y` is uvOffset.
+        if (!result.instanceProgramIndex.empty() || !result.instanceUvOffset.empty())
         {
-            const size_t bytes = result.instanceProgramIndex.size() * sizeof(uint32_t);
-            result.instanceProgramIndexBuffer = std::unique_ptr<Buffer>(
+            const size_t count = std::max(result.instanceProgramIndex.size(),
+                                          result.instanceUvOffset.size());
+            struct Pair { uint32_t programId; uint32_t uvOffset; };
+            std::vector<Pair> packed(count, Pair{0u, 0u});
+            for (size_t i = 0; i < result.instanceProgramIndex.size(); ++i)
+                packed[i].programId = result.instanceProgramIndex[i];
+            for (size_t i = 0; i < result.instanceUvOffset.size(); ++i)
+                packed[i].uvOffset = result.instanceUvOffset[i];
+
+            const size_t bytes = packed.size() * sizeof(Pair);
+            result.instanceDataBuffer = std::unique_ptr<Buffer>(
                 device->createBuffer(static_cast<uint32_t>(bytes), BufferUsage::StorageBuffer));
-            std::memcpy(result.instanceProgramIndexBuffer->mapForWriting(),
-                        result.instanceProgramIndex.data(), bytes);
-            result.instanceProgramIndexBuffer->flush();
-            std::cout << "Created instanceProgramIndex buffer for "
-                      << result.instanceProgramIndex.size() << " instances across "
+            std::memcpy(result.instanceDataBuffer->mapForWriting(),
+                        packed.data(), bytes);
+            result.instanceDataBuffer->flush();
+            std::cout << "Created instanceData buffer for "
+                      << count << " instances across "
                       << result.materialPrograms.headers().size() << " program(s)"
                       << std::endl;
-        }
-
-        // Step 5b: Per-instance UV start offset SSBO. Parallel to
-        // instanceProgramIndex — same length, same indexing scheme. Shader
-        // does `uvBuffer.uvs[instanceUvOffset[instanceIndex] + triIdx*3 + i]`.
-        if (!result.instanceUvOffset.empty())
-        {
-            const size_t bytes = result.instanceUvOffset.size() * sizeof(uint32_t);
-            result.instanceUvOffsetBuffer = std::unique_ptr<Buffer>(
-                device->createBuffer(static_cast<uint32_t>(bytes), BufferUsage::StorageBuffer));
-            std::memcpy(result.instanceUvOffsetBuffer->mapForWriting(),
-                        result.instanceUvOffset.data(), bytes);
-            result.instanceUvOffsetBuffer->flush();
         }
 
         // Output BVH statistics

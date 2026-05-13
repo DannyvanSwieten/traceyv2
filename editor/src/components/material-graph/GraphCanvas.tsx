@@ -4,6 +4,8 @@ import {
   Connection,
   inputPortCount,
   outputPortCount,
+  inputPortName,
+  outputPortName,
   PALETTE,
   allocNodeUid,
 } from '../../lib/material_graph';
@@ -20,6 +22,8 @@ import {
   setSelectedNodes,
   toggleSelectedNode,
   isNodeSelected,
+  undoMaterial,
+  redoMaterial,
 } from '../../stores/materials';
 import {
   rectFromCorners,
@@ -28,6 +32,7 @@ import {
   type NodeBox,
 } from '../../lib/graph_canvas_marquee';
 import { ContextMenu, type MenuEntry } from '../context-menu/ContextMenu';
+import { registerCommands } from '../../lib/command_palette';
 import {
   sampleCubicBezier,
   intersectingConnections,
@@ -77,14 +82,19 @@ function bezier(from: [number, number], to: [number, number]): string {
   return `M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`;
 }
 
-// Short label for a node header. Kinds with `op` show the op; the others show
-// kind-specific data (the constant/parameter value or name).
+// Short label for a node header. Kinds with `op` show the op; constants and
+// parameters show their value/name; the unified Material I/O terminals show
+// a fixed label since they're singletons.
 function nodeLabel(n: Node): string {
   switch (n.kind) {
     case 'Constant':
       return `Const (${n.value.map((v) => v.toFixed(2)).join(', ')})`;
     case 'Parameter':
       return `Param: ${n.name}`;
+    case 'MaterialInput':
+      return 'Material Input';
+    case 'MaterialOutput':
+      return 'Material Output';
     default:
       return n.op;
   }
@@ -552,6 +562,15 @@ export const GraphCanvas: Component = () => {
           duplicateSelection();
           return;
         }
+        // Undo / redo. Cmd+Z = undo, Cmd+Shift+Z = redo. Materials have
+        // their own snapshot stack (separate from the SOP one) since the
+        // graph isn't part of the scene tree.
+        if (k === 'z') {
+          e.preventDefault();
+          if (e.shiftKey) redoMaterial();
+          else            undoMaterial();
+          return;
+        }
         return;
       }
       // Delete on window (not SVG focus) — same rationale as SopGraphCanvas.
@@ -597,6 +616,26 @@ export const GraphCanvas: Component = () => {
       window.removeEventListener('keyup', onUp);
       window.removeEventListener('blur', onBlur);
     });
+
+    // Flatten the static PALETTE into one command per entry. Group prefix
+    // mirrors the palette grouping (Math, Texturing, …) so the user can
+    // type "math add" and land on Add directly.
+    const matCommands = PALETTE.flatMap((g) =>
+      g.entries.map((entry) => ({
+        id: `material.add.${g.group}.${entry.label}`,
+        label: `Add Material: ${entry.label}`,
+        group: 'Material',
+        keywords: g.group,
+        run: () => {
+          const node = entry.factory([120 + Math.random() * 80,
+                                       80 + Math.random() * 80]);
+          addNode(node);
+          setSelectedNode(node.uid);
+        },
+      })),
+    );
+    const unregisterNodeCommands = registerCommands(matCommands);
+    onCleanup(unregisterNodeCommands);
   });
 
   // Right-click menus — material graph version. Uses the static PALETTE
@@ -903,17 +942,27 @@ export const GraphCanvas: Component = () => {
                       return s !== null && s.nodeUid === node.uid &&
                              s.portIdx === i && s.kind === 'input';
                     };
+                    const label = inputPortName(node.kind, i);
                     return (
-                    <circle
-                      class="graph-port graph-port-input"
-                      classList={{ 'graph-port-snap': isSnap() }}
-                      data-port-kind="input"
-                      data-port-idx={i}
-                      cx={0}
-                      cy={inputPortY(i)}
-                      r={PORT_RADIUS}
-                      onPointerDown={(e) => startPortDrag(e, node.uid, i, 'input')}
-                    />
+                    <>
+                      <circle
+                        class="graph-port graph-port-input"
+                        classList={{ 'graph-port-snap': isSnap() }}
+                        data-port-kind="input"
+                        data-port-idx={i}
+                        cx={0}
+                        cy={inputPortY(i)}
+                        r={PORT_RADIUS}
+                        onPointerDown={(e) => startPortDrag(e, node.uid, i, 'input')}
+                      />
+                      <Show when={label}>
+                        <text
+                          class="graph-port-label graph-port-label-input"
+                          x={PORT_RADIUS + 6}
+                          y={inputPortY(i) + 3}
+                        >{label}</text>
+                      </Show>
+                    </>
                     );
                   }}
                 </For>
@@ -925,17 +974,28 @@ export const GraphCanvas: Component = () => {
                       return s !== null && s.nodeUid === node.uid &&
                              s.portIdx === i && s.kind === 'output';
                     };
+                    const label = outputPortName(node.kind, i);
                     return (
-                    <circle
-                      class="graph-port graph-port-output"
-                      classList={{ 'graph-port-snap': isSnap() }}
-                      data-port-kind="output"
-                      data-port-idx={i}
-                      cx={NODE_WIDTH}
-                      cy={outputPortY(i)}
-                      r={PORT_RADIUS}
-                      onPointerDown={(e) => startPortDrag(e, node.uid, i, 'output')}
-                    />
+                    <>
+                      <circle
+                        class="graph-port graph-port-output"
+                        classList={{ 'graph-port-snap': isSnap() }}
+                        data-port-kind="output"
+                        data-port-idx={i}
+                        cx={NODE_WIDTH}
+                        cy={outputPortY(i)}
+                        r={PORT_RADIUS}
+                        onPointerDown={(e) => startPortDrag(e, node.uid, i, 'output')}
+                      />
+                      <Show when={label}>
+                        <text
+                          class="graph-port-label graph-port-label-output"
+                          x={NODE_WIDTH - PORT_RADIUS - 6}
+                          y={outputPortY(i) + 3}
+                          text-anchor="end"
+                        >{label}</text>
+                      </Show>
+                    </>
                     );
                   }}
                 </For>

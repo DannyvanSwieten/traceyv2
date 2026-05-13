@@ -1,5 +1,6 @@
 #include "vulkan_image_2d.hpp"
 #include "vulkan_compute_device.hpp"
+#include "../../gpu/vulkan_queue_sync.hpp"
 #include <stdexcept>
 #include <cstring>
 
@@ -147,6 +148,11 @@ namespace tracey
         // uploadData, so skip this for that path.
         if (!forTexture)
         {
+            // Whole-transition lock — alloc + record + submit + wait +
+            // free all touch the shared command pool / queue. Texture
+            // uploads (the other code path) take the same lock below.
+            std::lock_guard<std::mutex> gpuLock(vulkanQueueMutex());
+
             VkCommandBufferAllocateInfo cmdAllocInfo{};
             cmdAllocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
             cmdAllocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
@@ -222,6 +228,9 @@ namespace tracey
         // for high-throughput streaming.
         uploadData(device, data, dataSize);
         if (finalLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) return;
+
+        // Whole-transition lock.
+        std::lock_guard<std::mutex> gpuLock(vulkanQueueMutex());
 
         // Single-time transition to the requested final layout.
         VkCommandBufferAllocateInfo cmdAllocInfo{};
@@ -302,6 +311,12 @@ namespace tracey
         vkMapMemory(m_device, stagingMemory, 0, dataSize, 0, &mappedData);
         std::memcpy(mappedData, data, dataSize);
         vkUnmapMemory(m_device, stagingMemory);
+
+        // Whole-transition lock spans the command-buffer alloc through
+        // submit + wait + free. Sharing the device command pool with
+        // the cook worker / rasterizer means any of these touches
+        // needs the global GPU command lock.
+        std::lock_guard<std::mutex> gpuLock(vulkanQueueMutex());
 
         // Create command buffer for transfer
         VkCommandBufferAllocateInfo cmdAllocInfo{};

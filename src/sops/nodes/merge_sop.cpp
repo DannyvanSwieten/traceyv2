@@ -1,5 +1,8 @@
 #include "../sop_node.hpp"
 #include "../sop_registry.hpp"
+#include "../codegen/merge_compute.hpp"
+
+#include "../../geometry/geometry.hpp"
 
 namespace tracey
 {
@@ -29,6 +32,26 @@ namespace tracey
 
                 Geometry cook(std::span<const Geometry *const> inputs) const override
                 {
+                    // GPU fast path. Handles the common "two GPU-stage
+                    // outputs concatenated" case — vkCmdCopyBuffer per
+                    // attribute, no per-element CPU memcpy. The
+                    // dispatcher silently returns false for unsupported
+                    // scope (anything outside the standard P/N/uv/Cd
+                    // set, non-identity vertexToPoint, primitive
+                    // attributes) and we fall through. Skipped when no
+                    // dispatcher is registered (headless smoke tests).
+                    if (inputs.size() >= 2 && inputs[0] && inputs[1])
+                    {
+                        if (auto *gpu = codegen::MergeCompute::getGlobal())
+                        {
+                            Geometry out;
+                            if (gpu->dispatch(*inputs[0], *inputs[1], out))
+                            {
+                                return out;
+                            }
+                        }
+                    }
+
                     Geometry out;
                     if (!inputs.empty() && inputs[0]) out = *inputs[0];
                     if (inputs.size() >= 2 && inputs[1])

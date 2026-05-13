@@ -172,6 +172,23 @@ export const getCamera = () => send<Camera>('get_camera');
 export const selectActor = (actorId: number | null) =>
   send<null>('select_actor', { actor_id: actorId });
 
+// Tell the native side that a JS modal grab (G/R/S) is active. While
+// true the engine suppresses camera orbit/pan/dolly and instead
+// broadcasts `viewport_pointer` events so the JS grab can drive the
+// transform. The WebView never sees pointer events over the Metal layer,
+// so without this the grab silently does nothing.
+export const setViewportGrabActive = (active: boolean) =>
+  send<null>('set_viewport_grab_active', { value: active });
+
+// Translate-gizmo overlay. Visibility + anchor go through separate IPCs
+// so the editor can hide it during a tab-switch without re-sending the
+// position. `length` controls the axis-line length in world units;
+// frontend picks a value based on camera distance for screen-stable size.
+export const setGizmoVisible = (visible: boolean) =>
+  send<null>('set_gizmo_visible', { value: visible });
+export const setGizmoAnchor = (x: number, y: number, z: number, length: number) =>
+  send<null>('set_gizmo_anchor', { x, y, z, length });
+
 // Snap the orbital camera to a named preset. The server keeps the current
 // pivot + zoom distance so pressing Top while focused on an actor reframes
 // that actor from above (rather than teleporting to world origin).
@@ -244,6 +261,46 @@ export const getShowGround = () => send<boolean>('get_show_ground');
 export const setShowGround = (value: boolean) =>
   send<null>('set_show_ground', { value });
 
+// Rasterizer viewport background. Returned/passed as [r,g,b,a] in linear
+// [0,1]. The set command accepts either 3 or 4 components — 3-element
+// payloads default alpha to 1.0 so the frontend's color picker can stay
+// RGB without owning the alpha channel.
+export const getBackgroundColor = () =>
+  send<[number, number, number, number]>('get_background_color');
+export const setBackgroundColor = (
+  rgba: [number, number, number] | [number, number, number, number],
+) => send<null>('set_background_color', { value: rgba });
+
+// Toggle the path-traced inset preview. Off by default (the live viewport
+// runs raster-only, which also lets the engine skip BLAS/TLAS construction
+// during compile_scene). Turning it on triggers a synchronous engine
+// recompile so the BVH is ready by the next render_tick.
+export const getPtPreview = () => send<boolean>('get_pt_preview');
+export const setPtPreview = (value: boolean) =>
+  send<null>('set_pt_preview', { value });
+
+// When true, the path tracer takes the entire viewport instead of the
+// top-right PiP inset. The Render workspace flips this on entry; other
+// workspaces leave it off so the PiP composite returns. Requires
+// setPtPreview(true) to have any visible effect — the PT pass still has
+// to actually run.
+export const getPtFullscreen = () => send<boolean>('get_pt_fullscreen');
+export const setPtFullscreen = (value: boolean) =>
+  send<null>('set_pt_fullscreen', { value });
+
+// Clear the path tracer's accumulator on the next tick. Equivalent to
+// camera-moved invalidation but explicit — for "Reset Render" buttons.
+export const resetPtAccumulator = () =>
+  send<null>('reset_pt_accumulator');
+
+// Optional fixed render resolution for the path tracer in fullscreen
+// (Render workspace) mode. Width=0, Height=0 returns to "match viewport".
+export interface RenderResolution { width: number; height: number; }
+export const getPtRenderResolution = () =>
+  send<RenderResolution>('get_pt_render_resolution');
+export const setPtRenderResolution = (width: number, height: number) =>
+  send<null>('set_pt_render_resolution', { width, height });
+
 // ─── Material graphs ───────────────────────────────────────────────────────
 
 // Returns the active material graph as a JSON string. The schema lives in
@@ -269,21 +326,76 @@ export const setMaterialParameter = (
     value,
   });
 
-// ─── Material library (per-user persistent graphs) ─────────────────────────
-// Graphs are stored as one .json per name in a platform-specific user data
-// directory. Names are sanitized server-side (alphanumerics, ' ', '_', '-').
+// ─── Material library (project + global persistent graphs) ─────────────────
+// Each material lives as one .json per name in either the open project's
+// `materials/` subfolder ("project" scope — moves with the project file)
+// or the user-wide global library ("global" scope — palette shared across
+// projects). Names are sanitized server-side (alphanumerics, ' ', '_', '-').
+// When loading by name, project entries shadow global ones of the same name.
+
+export type MaterialScope = 'project' | 'global';
+
+export interface MaterialLibraryEntry {
+  name: string;
+  scope: MaterialScope;
+}
 
 export const listMaterialLibrary = () =>
-  send<string[]>('list_material_library');
+  send<MaterialLibraryEntry[]>('list_material_library');
 
-export const saveMaterialGraphAs = (name: string, graphJson: string) =>
-  send<null>('save_material_graph_as', { name, graph: graphJson });
+// `scope` defaults to "project" when a project is open, otherwise "global".
+// Passing an explicit scope is required when you want to write a project-
+// scoped material before save_scene has run (no project dir set yet
+// → server returns an error).
+export const saveMaterialGraphAs = (
+  name: string,
+  graphJson: string,
+  scope?: MaterialScope,
+) =>
+  send<null>(
+    'save_material_graph_as',
+    scope ? { name, graph: graphJson, scope } : { name, graph: graphJson },
+  );
 
-export const loadMaterialGraphFromLibrary = (name: string) =>
-  send<string>('load_material_graph_from_library', { name });
+// Without an explicit scope the server resolves project-first, falling back
+// to global — matches the cook-side `resolve_material_path` precedence.
+export const loadMaterialGraphFromLibrary = (
+  name: string,
+  scope?: MaterialScope,
+) =>
+  send<string>(
+    'load_material_graph_from_library',
+    scope ? { name, scope } : { name },
+  );
 
-export const deleteMaterialGraphFromLibrary = (name: string) =>
-  send<null>('delete_material_graph_from_library', { name });
+export const deleteMaterialGraphFromLibrary = (
+  name: string,
+  scope?: MaterialScope,
+) =>
+  send<null>(
+    'delete_material_graph_from_library',
+    scope ? { name, scope } : { name },
+  );
+
+// Project folder. `get_project_dir` returns "" when no project is open
+// (legacy single-file flow before the first save_scene / load_scene).
+// `set_project_dir` with an empty path clears the binding.
+export const getProjectDir = () => send<string>('get_project_dir');
+export const setProjectDir = (path: string) =>
+  send<string>('set_project_dir', { path });
+
+// Consolidate all external references (gltf_import paths + globally-
+// scoped materials) into the project folder so it's portable to another
+// machine. Returns a summary of what was copied + any warnings (missing
+// sources, copy failures, etc.). Requires a project folder to be open.
+export interface ConsolidateResult {
+  project_dir: string;
+  copied_assets: Array<{ from: string; to: string }>;
+  copied_materials: string[];
+  warnings: string[];
+}
+export const consolidateProject = () =>
+  send<ConsolidateResult>('consolidate_project');
 
 // Assign a library graph to an actor. Empty `libraryName` clears the
 // assignment back to the default passthrough. Triggers a scene recompile
@@ -413,6 +525,17 @@ export const timelinePlay  = () => send<null>('timeline_play');
 export const timelinePause = () => send<null>('timeline_pause');
 export const timelineSetLoop = (mode: LoopMode) =>
   send<null>('timeline_set_loop', { mode });
+
+// Frame-lock toggle. When false (default), playback runs in async mode:
+// the playhead advances by wall-clock dt every render_tick and the cook
+// worker keeps up best-effort, dropping frames when it falls behind. When
+// true, the playhead advances by exactly 1/fps after each cook completion
+// so every frame is shown — playback speed becomes cook throughput.
+// Either way the UI thread runs at vsync; nothing blocks the render path.
+export const timelineGetFrameLocked = () =>
+  send<boolean>('timeline_get_frame_locked');
+export const timelineSetFrameLocked = (value: boolean) =>
+  send<null>('timeline_set_frame_locked', { value });
 
 // ─── Keyframe edits ────────────────────────────────────────────────────────
 // Keys live on SOP node parameters. `component` is 0 for scalar params and

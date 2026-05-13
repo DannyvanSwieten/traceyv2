@@ -24,6 +24,7 @@
 
 #include "../sop_node.hpp"
 #include "../sop_registry.hpp"
+#include "../codegen/copy_to_points_compute.hpp"
 
 #include "../../geometry/geometry.hpp"
 #include "../../geometry/attribute.hpp"
@@ -100,17 +101,49 @@ namespace tracey
                     const auto &tplP  = tmpl.positions();
                     if (tplP.empty()) return {};
 
+                    const bool useNormal = paramBool("orient_to_normal", true);
+
+                    // GPU fast path. Handles the common particle-instance
+                    // case (stamp = primitive_cube / glTF mesh, template =
+                    // points_grid / scatter / pop_source output) without
+                    // CPU per-template-point heap allocation. The
+                    // dispatcher silently returns false for stamps that
+                    // need attribute machinery we haven't ported yet —
+                    // see copy_to_points_compute.hpp for the scope — and
+                    // we fall through to the CPU evaluator below. Skipped
+                    // when no dispatcher is registered (headless smoke
+                    // tests, no GPU available).
+                    if (auto *gpu = codegen::CopyToPointsCompute::getGlobal())
+                    {
+                        Geometry out;
+                        if (gpu->dispatch(stamp, tmpl, useNormal, out))
+                        {
+                            return out;
+                        }
+                    }
+
                     const auto *tplPs = tmpl.points().get<float>("pscale");
                     const auto *tplN  = tmpl.points().get<Vec3>("N");
                     const auto *tplCd = tmpl.points().get<Vec3>("Cd");
-                    const bool useNormal = paramBool("orient_to_normal", true);
 
-                    // If the template carries Cd, ensure the output destination
-                    // declares the per-vertex Cd attribute *before* the first
-                    // mergeFrom — otherwise mergeFrom drops it (the merge logic
-                    // only preserves attributes whose name+type exist on the
-                    // destination side).
+                    // mergeFrom only preserves attributes whose name+type exist
+                    // on the destination, so any attribute we want propagated
+                    // from the stamp (or stamped from the template) must be
+                    // pre-declared on `out` before the first merge.
                     Geometry out;
+                    if (stamp.points().get<Vec3>("N"))
+                    {
+                        // Preserve point-N from the stamp so the resulting
+                        // mesh keeps proper shading after the cloning — the
+                        // GPU dispatcher already does this and the
+                        // downstream converter (geometry_converter) honours
+                        // either point- or vertex-class N.
+                        out.points().add<Vec3>("N", Vec3(0.0f, 1.0f, 0.0f));
+                    }
+                    if (stamp.vertices().get<Vec2>("uv"))
+                    {
+                        out.vertices().add<Vec2>("uv", Vec2(0.0f));
+                    }
                     if (tplCd)
                     {
                         out.vertices().add<Vec3>("Cd", Vec3(1.0f));

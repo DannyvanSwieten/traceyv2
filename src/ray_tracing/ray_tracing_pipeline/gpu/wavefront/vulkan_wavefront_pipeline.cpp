@@ -398,12 +398,13 @@ namespace tracey
         // exactly the same way prepare_indirect is -- they're internal to the
         // wavefront pipeline and don't go through the user shader builder.
         //
-        // The sort kernels need to read instanceProgramIndex (a user-side
-        // SSBO whose binding number depends on declaration order); we look it
-        // up here and inject as a #define so the kernel can declare a layout
-        // qualifier with the right number.
-        const uint32_t instanceProgramIndexBinding =
-            static_cast<uint32_t>(layout.indexForBinding("instanceProgramIndex") + 8);
+        // The sort kernels need to read instanceData (a user-side SSBO whose
+        // binding number depends on declaration order); we look it up here
+        // and inject as a #define so the kernel can declare a layout
+        // qualifier with the right number. instanceData packs (programId,
+        // uvOffset) per TLAS instance into a uvec2[].
+        const uint32_t instanceDataBinding =
+            static_cast<uint32_t>(layout.indexForBinding("instanceData") + 8);
 
         auto compileInternal = [&](const char *fileName, PipelineInfo &info) {
             std::filesystem::path path = std::filesystem::path(__FILE__).parent_path() / fileName;
@@ -415,10 +416,10 @@ namespace tracey
             std::string source = stream.str();
 
             // Inject the dynamic binding number right after #version so the
-            // kernel can `layout(set = 0, binding = INSTANCE_PROGRAM_INDEX_BINDING) ...`.
+            // kernel can `layout(set = 0, binding = INSTANCE_DATA_BINDING) ...`.
             const std::string define =
-                "\n#define INSTANCE_PROGRAM_INDEX_BINDING " +
-                std::to_string(instanceProgramIndexBinding) + "\n";
+                "\n#define INSTANCE_DATA_BINDING " +
+                std::to_string(instanceDataBinding) + "\n";
             const size_t versionLineEnd = source.find('\n', source.find("#version"));
             if (versionLineEnd != std::string::npos)
                 source.insert(versionLineEnd + 1, define);

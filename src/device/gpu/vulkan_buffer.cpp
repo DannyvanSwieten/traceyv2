@@ -52,12 +52,30 @@ namespace tracey
         {
             throw std::runtime_error("Failed to bind Vulkan buffer memory");
         }
+
+        // Persistently map for the buffer's lifetime. HOST_COHERENT
+        // memory + a single vkMapMemory call means every subsequent
+        // mapForWriting / mapForReading just returns the cached
+        // pointer — no Vulkan API call, no risk of "already mapped"
+        // / "not mapped" mismatches between map and unmap pairs.
+        // Memory is released by the destructor's vkUnmapMemory.
+        if (vkMapMemory(m_device, m_memory, 0, VK_WHOLE_SIZE, 0, &m_mapped) != VK_SUCCESS)
+        {
+            vkFreeMemory(m_device, m_memory, nullptr);
+            vkDestroyBuffer(m_device, m_buffer, nullptr);
+            throw std::runtime_error("Failed to persistently map Vulkan buffer memory");
+        }
     }
 
     VulkanBuffer::~VulkanBuffer()
     {
         if (m_buffer != VK_NULL_HANDLE)
         {
+            if (m_mapped)
+            {
+                vkUnmapMemory(m_device, m_memory);
+                m_mapped = nullptr;
+            }
             vkDestroyBuffer(m_device, m_buffer, nullptr);
             vkFreeMemory(m_device, m_memory, nullptr);
         }
@@ -65,31 +83,22 @@ namespace tracey
 
     void *VulkanBuffer::mapForWriting()
     {
-        VkMappedMemoryRange mappedRange{};
-        mappedRange.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
-        mappedRange.memory = m_memory;
-        mappedRange.offset = 0;
-        mappedRange.size = VK_WHOLE_SIZE;
-        void *data;
-        vkMapMemory(m_device, m_memory, 0, VK_WHOLE_SIZE, 0, &data);
-        return data;
+        // Persistent map — see ctor. Callers expecting a fresh map
+        // every call now get the same stable pointer; this is what
+        // they wanted anyway for HOST_COHERENT memory.
+        return m_mapped;
     }
 
     const void *VulkanBuffer::mapForReading() const
     {
-        VkMappedMemoryRange mappedRange{};
-        mappedRange.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
-        mappedRange.memory = m_memory;
-        mappedRange.offset = 0;
-        mappedRange.size = VK_WHOLE_SIZE;
-        const void *data;
-        vkMapMemory(m_device, m_memory, 0, VK_WHOLE_SIZE, 0, (void **)&data);
-        return data;
+        return m_mapped;
     }
 
     void VulkanBuffer::unmap() const
     {
-        vkUnmapMemory(m_device, m_memory);
+        // No-op. Persistent mapping means the buffer stays mapped
+        // until destruction. Keeping the method exists so callers
+        // don't have to special-case between Cpu / Vulkan buffers.
     }
 
     void VulkanBuffer::mapRange(uint32_t offset, uint32_t size)
@@ -99,19 +108,26 @@ namespace tracey
     }
     void VulkanBuffer::flush()
     {
+        // HOST_COHERENT memory is auto-flushed on submit, so the
+        // vkFlushMappedMemoryRanges call is a no-op in practice.
+        // Keep the call shape for the rare case the allocator backs
+        // a buffer with non-coherent memory in the future — and
+        // explicitly do NOT unmap (the prior implementation did,
+        // which surfaced as "Memory is already mapped" the next
+        // time a caller mapped this buffer).
         VkMappedMemoryRange mappedRange{};
         mappedRange.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
         mappedRange.memory = m_memory;
         mappedRange.offset = 0;
         mappedRange.size = VK_WHOLE_SIZE;
         vkFlushMappedMemoryRanges(m_device, 1, &mappedRange);
-        vkUnmapMemory(m_device, m_memory);
     }
     void VulkanBuffer::flushRange(uint32_t offset, uint32_t size)
     {
         (void)offset;
         (void)size;
-        vkUnmapMemory(m_device, m_memory);
+        // No-op: persistent-mapped HOST_COHERENT memory needs neither
+        // an explicit range flush nor an unmap.
     }
     VkDeviceAddress VulkanBuffer::deviceAddress() const
     {

@@ -7,7 +7,7 @@
 // that's not exposed here while we settle on the new layout. Re-add if
 // missed — the underlying api.deleteMaterialGraphFromLibrary still exists.
 
-import { Component, For, createSignal, onMount, Show } from 'solid-js';
+import { Component, For, Show, createMemo, createSignal, onMount } from 'solid-js';
 import * as api from '../../lib/api';
 import { ShaderGraph } from '../../lib/material_graph';
 import {
@@ -20,6 +20,22 @@ import {
   setMaterialCurrentName,
 } from '../../stores/materials';
 import './MaterialLibrary.css';
+
+// Encode a scoped entry as a single string for <option value>. The save /
+// load API takes (name, scope) separately, but a flat <select> value needs
+// a single string — pipe is sentinel-safe because is_safe_library_name
+// rejects pipes server-side.
+const encodeEntryValue = (name: string, scope: api.MaterialScope) =>
+  `${scope}|${name}`;
+const decodeEntryValue = (
+  v: string,
+): { name: string; scope: api.MaterialScope } | null => {
+  const i = v.indexOf('|');
+  if (i < 0) return null;
+  const scope = v.slice(0, i) as api.MaterialScope;
+  if (scope !== 'project' && scope !== 'global') return null;
+  return { scope, name: v.slice(i + 1) };
+};
 
 const SAFE_NAME = /^[A-Za-z0-9_\- ]{1,96}$/;
 
@@ -96,15 +112,20 @@ export const MaterialLibrary: Component = () => {
 
   const onLoadChange = async (e: Event) => {
     const select = e.currentTarget as HTMLSelectElement;
-    const name = select.value;
-    if (!name) return;
+    const decoded = decodeEntryValue(select.value);
+    if (!decoded) return;
     setError(null);
     setBusy(true);
     try {
-      const json = await api.loadMaterialGraphFromLibrary(name);
+      // Pass the explicit scope so a project entry named "X" doesn't get
+      // shadowed by a global "X" (resolve_material_path prefers project,
+      // which is normally what we want — but here the user explicitly
+      // picked one or the other from the dropdown and we should honour
+      // that exact choice).
+      const json = await api.loadMaterialGraphFromLibrary(decoded.name, decoded.scope);
       const parsed = JSON.parse(json) as ShaderGraph;
       replaceGraph(parsed);
-      setMaterialCurrentName(name);
+      setMaterialCurrentName(decoded.name);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -113,6 +134,16 @@ export const MaterialLibrary: Component = () => {
       select.value = '';
     }
   };
+
+  // Split the library entries into project / global groups so the
+  // dropdown renders them as two visually-distinct sections.
+  const projectEntries = createMemo(() =>
+    materialLibraryEntries().filter((e) => e.scope === 'project'),
+  );
+  const globalEntries = createMemo(() =>
+    materialLibraryEntries().filter((e) => e.scope === 'global'),
+  );
+  const libraryEmpty = createMemo(() => materialLibraryEntries().length === 0);
 
   return (
     <>
@@ -157,14 +188,33 @@ export const MaterialLibrary: Component = () => {
           title="Load a saved material graph"
           value=""
           onChange={onLoadChange}
-          disabled={busy() || materialLibraryEntries().length === 0}
+          disabled={busy() || libraryEmpty()}
         >
           <option value="" disabled>
-            {materialLibraryEntries().length === 0 ? 'Library empty' : 'Load saved…'}
+            {libraryEmpty() ? 'Library empty' : 'Load saved…'}
           </option>
-          <For each={materialLibraryEntries()}>
-            {(name) => <option value={name}>{name}</option>}
-          </For>
+          <Show when={projectEntries().length > 0}>
+            <optgroup label="Project">
+              <For each={projectEntries()}>
+                {(entry) => (
+                  <option value={encodeEntryValue(entry.name, entry.scope)}>
+                    {entry.name}
+                  </option>
+                )}
+              </For>
+            </optgroup>
+          </Show>
+          <Show when={globalEntries().length > 0}>
+            <optgroup label="Global">
+              <For each={globalEntries()}>
+                {(entry) => (
+                  <option value={encodeEntryValue(entry.name, entry.scope)}>
+                    {entry.name}
+                  </option>
+                )}
+              </For>
+            </optgroup>
+          </Show>
         </select>
         {/* "Save" overwrites the current library entry in place. Disabled
             until either a graph has been loaded or saved-as at least once

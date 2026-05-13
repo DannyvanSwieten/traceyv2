@@ -395,9 +395,28 @@ export const ActorProperties: Component<ActorPropertiesProps> = (props) => {
                 >
                   <option value="__new__">+ New Material…</option>
                   <option value="">— passthrough —</option>
-                  <For each={materialLibraryEntries()}>
-                    {(name) => <option value={name}>{name}</option>}
-                  </For>
+                  {/* Two groups: project-scoped materials (ship with
+                      the project file) and global materials (palette
+                      shared across projects). A project entry of the
+                      same name shadows a global one at cook time, so
+                      we list them by-scope; the select still passes
+                      just the name to setActorMaterial since the
+                      cook-side resolve_material_path handles scope
+                      precedence consistently. */}
+                  <Show when={materialLibraryEntries().some((e) => e.scope === 'project')}>
+                    <optgroup label="Project">
+                      <For each={materialLibraryEntries().filter((e) => e.scope === 'project')}>
+                        {(entry) => <option value={entry.name}>{entry.name}</option>}
+                      </For>
+                    </optgroup>
+                  </Show>
+                  <Show when={materialLibraryEntries().some((e) => e.scope === 'global')}>
+                    <optgroup label="Global">
+                      <For each={materialLibraryEntries().filter((e) => e.scope === 'global')}>
+                        {(entry) => <option value={entry.name}>{entry.name}</option>}
+                      </For>
+                    </optgroup>
+                  </Show>
                 </select>
               </div>
               <Show when={actor().material_assigned}>
