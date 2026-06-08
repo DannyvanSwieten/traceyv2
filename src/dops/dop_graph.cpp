@@ -164,6 +164,7 @@ namespace tracey
                 DopEvalContext ctx;
                 ctx.state = &next;
                 ctx.graph = this;
+                ctx.sopProvider = m_sopProvider;
                 for (size_t uid : m_topoOrder)
                 {
                     const auto *node = findNode(uid);

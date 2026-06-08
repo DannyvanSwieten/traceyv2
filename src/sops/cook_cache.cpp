@@ -19,6 +19,13 @@ namespace tracey
             return e;
         }
 
+        const Geometry *CookCache::findOutput(size_t uid) const
+        {
+            auto it = m_entries.find(uid);
+            if (it == m_entries.end() || !it->second.valid) return nullptr;
+            return &it->second.output;
+        }
+
         void CookCache::markAllUntouched()
         {
             for (auto &[_, e] : m_entries) e.touched = false;

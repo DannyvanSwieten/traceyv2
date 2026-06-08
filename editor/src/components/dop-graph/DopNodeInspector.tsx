@@ -17,8 +17,37 @@ import {
 } from '../../lib/dop_graph';
 import { dopGraph, selectedNode, setParam } from '../../stores/dops';
 import { openVopEditor } from '../../stores/vops';
-import type { ParamValueVec3 } from '../../lib/sop_graph';
+import { sopGraph } from '../../stores/sops';
+import type { ParamValueVec3, SopGraph as SopGraphType, SopNode as SopNodeType } from '../../lib/sop_graph';
 import { NumberInput } from '../number-input/NumberInput';
+
+// Walk every SOP node in the live graph (including subnet children).
+// Used by the "sop_node" picker to populate its option list.
+// dop_import is excluded — a pop_source reading from a dop_import that's
+// reading from this same DOP graph would create a sim-cook cycle.
+function listSopNodesForPicker(g: SopGraphType | null | undefined): SopNodeType[] {
+  if (!g) return [];
+  const out: SopNodeType[] = [];
+  const walk = (graph: SopGraphType) => {
+    for (const n of graph.nodes) {
+      if (n.kind !== 'dop_import') out.push(n);
+      if (n.subgraph) walk(n.subgraph);
+    }
+  };
+  walk(g);
+  return out;
+}
+
+function sopNodeDisplayName(n: SopNodeType): string {
+  // Many terminals (object_output / instance / instance_vop / scatter)
+  // expose a user-visible `name` param. Fall back to "<kind> #<uid>"
+  // when no name is set so the user can still pick.
+  const p = n.params['name'];
+  if (p && p.type === 'string' && typeof p.value === 'string' && p.value.length > 0) {
+    return `${p.value} (${n.kind})`;
+  }
+  return `${n.kind} #${n.uid}`;
+}
 
 export const DopNodeInspector: Component = () => {
   const node = createMemo<DopNode | null>(() => {
@@ -157,6 +186,30 @@ const ParamRow: Component<ParamRowProps> = (props) => {
             );
           }}
         </Show>
+      </Match>
+
+      <Match when={props.spec.type === 'int' && props.spec.picker === 'sop_node'}>
+        {/* SOP-node picker. Dropdown lists every SOP in the live graph
+            (recursing into subnets) so the user can bind a DOP param
+            to "the cooked output of SOP node N". The stored value is
+            the uid; the dropdown label is the node's `name` param when
+            present, else "<kind> #<uid>". `0` is the "(none)" sentinel.
+            See pop_source's emit_mode="geometry" path. */}
+        <div class="sop-param-row">
+          <label>{props.spec.name}</label>
+          <select
+            title={props.spec.name}
+            value={String(intValue())}
+            onChange={(e) =>
+              patch({ type: 'int', value: parseInt(e.currentTarget.value, 10) || 0 })
+            }
+          >
+            <option value="0">— (none) —</option>
+            <For each={listSopNodesForPicker(sopGraph())}>
+              {(sn) => <option value={String(sn.uid)}>{sopNodeDisplayName(sn)}</option>}
+            </For>
+          </select>
+        </div>
       </Match>
 
       <Match when={props.spec.type === 'int'}>

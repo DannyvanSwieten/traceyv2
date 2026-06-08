@@ -67,6 +67,14 @@ namespace tracey
             // Side effect: marks the entry touched on hit.
             Entry *find(size_t uid);
 
+            // Read-only lookup for external consumers (e.g. the DOP
+            // graph's SopGeometryProvider during a sim cook). Returns
+            // the last cooked Geometry for `uid`, or nullptr if absent /
+            // not yet cooked. Does NOT mark the entry touched — the
+            // touched flag is owned by the SOP cook's own visitation
+            // sweep and shouldn't be flipped by side-channel reads.
+            const Geometry *findOutput(size_t uid) const;
+
             // Get-or-create. The returned entry is marked touched; if it's
             // freshly constructed, `valid` is still false until the caller
             // fills in inputKey + output + flips valid = true.

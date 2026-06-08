@@ -333,6 +333,7 @@ EditorServer::EditorServer(std::unique_ptr<RenderEngine> engine, EditorWindow* w
     }
     m_sop_graph = std::make_unique<tracey::sops::SopGraph>(0);
     m_dop_graph = std::make_unique<tracey::dops::DopGraph>(0);
+    wire_dop_sop_provider();
 
     // Register the engine's device with AttributeAllocator so any
     // Attribute<T>::buffer() call across the codebase can lazily
@@ -488,6 +489,10 @@ static InsetRect compute_inset_rect(uint32_t vp_w, uint32_t vp_h) {
     int32_t y = MARGIN;
     if (x < 0) x = 0;
     return {x, y, w, h};
+}
+
+void EditorServer::wire_dop_sop_provider() {
+    if (m_dop_graph) m_dop_graph->setSopProvider(&m_sop_provider);
 }
 
 void EditorServer::ensure_viewport_renderer(uint32_t pixel_w, uint32_t pixel_h) {
@@ -3587,6 +3592,16 @@ std::string EditorServer::handle_command(const std::string& json_request) {
             // collect_dop_stamps in post_cook_request below reads the
             // flag NOW.
             m_has_dop_imports = detect_dop_imports();
+            // Any SOP edit potentially changes the geometry that a
+            // pop_source(emit_mode=geometry) reads from. Blanket-
+            // invalidate the DOP sim cache so the next playhead read
+            // re-cooks from frame 0 with the fresh source geometry.
+            // Cheap when there's no geometry-source DOP (markDirty is
+            // ~free; the re-cook only fires the next time the timeline
+            // actually advances). A surgical check (only invalidate
+            // when the changed SOP is referenced by a source DOP) is a
+            // v2 follow-up.
+            if (cook && m_dop_graph) m_dop_graph->markDirty();
             if (cook) {
                 post_cook_request(graph_json, m_timeline.current_time);
             }
@@ -3928,6 +3943,7 @@ std::string EditorServer::handle_command(const std::string& json_request) {
                         };
                     }
                     if (!p.options.empty()) pj["options"] = p.options;
+                    if (!p.picker.empty()) pj["picker"] = p.picker;
                     params.push_back(std::move(pj));
                 }
                 arr.push_back({
@@ -4592,6 +4608,7 @@ std::string EditorServer::handle_command(const std::string& json_request) {
                         // No dop_graph key at all — pre-DOP save file.
                         m_dop_graph = std::make_unique<tracey::dops::DopGraph>(0);
                     }
+                    wire_dop_sop_provider();
                     // Drop the actors that load_scene_from_file restored from
                     // the file's saved actor list — for any scene with a SOP
                     // graph (v2+) the cook below is the authoritative source
@@ -4646,6 +4663,7 @@ std::string EditorServer::handle_command(const std::string& json_request) {
                 load_scene_from_file(m_engine->scene(), path);
                 m_sop_graph = std::make_unique<tracey::sops::SopGraph>(0);
                 m_dop_graph = std::make_unique<tracey::dops::DopGraph>(0);
+                wire_dop_sop_provider();
                 m_has_dop_imports = false;
             }
 

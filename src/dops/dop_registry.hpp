@@ -30,6 +30,12 @@ namespace tracey
             double rangeMax = 0.0;
             double rangeStep = 0.0;
             std::vector<std::string> options;
+            // Optional inspector-side widget hint. Empty = default widget
+            // for the type. Currently understood values:
+            //   "sop_node" — int param storing a SOP node uid; the inspector
+            //                renders a dropdown listing the SOP graph's
+            //                geometry-producing nodes by name.
+            std::string picker;
         };
 
         struct CatalogEntry

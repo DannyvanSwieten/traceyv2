@@ -20,6 +20,7 @@
 #include "sops/sop_node.hpp"   // tracey::sops::EmittedActor (used in cook-result slot)
 #include "sops/sop_graph.hpp"  // tracey::sops::NodeCookTiming
 #include "sops/cook_cache.hpp"
+#include "dops/eval_context.hpp"   // tracey::dops::SopGeometryProvider
 
 namespace tracey {
     namespace sops {
@@ -68,6 +69,14 @@ public:
     void render_tick();
 
 private:
+    // Re-wire DopGraph's SopGeometryProvider after every m_dop_graph
+    // reset (constructor + load_scene). The provider itself is owned by
+    // the EditorServer and points at m_main_cook_cache; only the raw
+    // pointer inside m_dop_graph needs refreshing when the unique_ptr
+    // gets replaced. Implemented in editor_server.cpp where the full
+    // DopGraph type is in scope.
+    void wire_dop_sop_provider();
+
     // Lazily build the ViewportRenderer once we know the viewport pixel size.
     // Recreates on size change.
     void ensure_viewport_renderer(uint32_t pixel_w, uint32_t pixel_h);
@@ -422,6 +431,23 @@ private:
     // just cost a bit of extra memory while the editor's open.
     tracey::sops::CookCache m_worker_cook_cache;
     tracey::sops::CookCache m_main_cook_cache;
+
+    // SOP-graph back-reference for the DOP graph's pop_source(emit_mode=
+    // geometry). The DOP cook always runs on the main thread (under
+    // m_mutex, inside collect_dop_stamps), so reading the main cache is
+    // race-free. Lifetime: owned by EditorServer; DopGraph holds a raw
+    // pointer set once at construction.
+    class SopProviderImpl : public tracey::dops::SopGeometryProvider {
+    public:
+        explicit SopProviderImpl(const tracey::sops::CookCache *cache) : m_cache(cache) {}
+        const tracey::Geometry *lookupCookedGeometry(uint64_t sopUid) const override {
+            if (!m_cache) return nullptr;
+            return m_cache->findOutput(static_cast<size_t>(sopUid));
+        }
+    private:
+        const tracey::sops::CookCache *m_cache;
+    };
+    SopProviderImpl m_sop_provider{&m_main_cook_cache};
 
     // FNV-1a fingerprint of the previous apply_emitted's input. apply_emitted
     // hashes the new emitted set against this; on a match it skips the scene

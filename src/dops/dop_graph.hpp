@@ -2,6 +2,7 @@
 
 #include "../graph/graph.hpp"
 #include "dop_node.hpp"
+#include "eval_context.hpp"
 #include "sim_state.hpp"
 
 #include <cstddef>
@@ -80,6 +81,15 @@ namespace tracey
             // button and by markDirty().
             void clearCache();
 
+            // Optional SOP-graph back-reference for DOPs that source data
+            // from a cooked SOP node (pop_source's emit_mode="geometry").
+            // The editor sets this once at engine bootstrap; smoke tests
+            // can install a stub provider to drive the geometry path
+            // without spinning up a SOP graph. Cleared by reset()'s of
+            // the engine — provider lifetime is owned by the caller.
+            void setSopProvider(const SopGeometryProvider *provider) { m_sopProvider = provider; }
+            const SopGeometryProvider *sopProvider() const { return m_sopProvider; }
+
         private:
             // One frame's cook, given the prior frame's state. Returns the
             // new SimState. Walks node topo order over `substeps` substeps.
@@ -97,6 +107,11 @@ namespace tracey
             // is the implicit empty initial state. Resized on the fly as we
             // cook forward.
             std::vector<SimState> m_frameCache;
+
+            // Optional. Used by pop_source (and any future geometry-source
+            // DOP) to read the cooked output of a referenced SOP node at
+            // sim time. Null in headless contexts. Not owned.
+            const SopGeometryProvider *m_sopProvider = nullptr;
         };
     }
 }

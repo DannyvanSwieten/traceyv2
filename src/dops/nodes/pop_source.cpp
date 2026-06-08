@@ -14,6 +14,7 @@
 #include "../dop_node.hpp"
 #include "../dop_graph.hpp"
 #include "../dop_registry.hpp"
+#include "../eval_context.hpp"
 #include "../sim_state.hpp"
 
 #include "../../geometry/geometry.hpp"
@@ -81,6 +82,18 @@ namespace tracey
                 declareParam(Parameter::makeVec3 ("initial_v",   Vec3(0.0f, 1.0f, 0.0f)));
                 declareParam(Parameter::makeFloat("pos_jitter",  0.0f));
                 declareParam(Parameter::makeInt  ("seed",        0));
+                // emit_mode = 0 → point (legacy), 1 → geometry (sample from
+                // a source SOP's points). The ParamSpec on the registry
+                // side ships an `options` array so the inspector renders
+                // a named dropdown instead of a raw int.
+                declareParam(Parameter::makeInt  ("emit_mode",     0));
+                declareParam(Parameter::makeInt  ("source_sop_uid", 0));
+                // When emit_mode = geometry, override initial_v with the
+                // source point's N × normal_speed. Setting use_normal=false
+                // falls back to the constant initial_v param.
+                declareParam(Parameter::makeBool ("use_normal",    true));
+                declareParam(Parameter::makeFloat("normal_speed",  1.0f));
+                declareParam(Parameter::makeBool ("inherit_cd",    true));
             }
             std::string kind() const override { return "pop_source"; }
             InputsAndOutputs ports() const override { return InputsAndOutputs{}; }
@@ -96,6 +109,12 @@ namespace tracey
                 ensurePointAttr<float>(g, "life",  1.0f);
                 ensurePointAttr<int>  (g, "id",    0);
                 ensurePointAttr<Vec3> (g, "force", Vec3(0.0f));
+                // Cd materialised eagerly when geometry-source mode might
+                // inherit colour from the source's Cd attribute. Cheaper
+                // than adding it lazily on the first spawn (which would
+                // need to back-fill all pre-existing points with white).
+                if (paramInt("emit_mode", 0) == 1 && paramBool("inherit_cd", true))
+                    ensurePointAttr<Vec3>(g, "Cd", Vec3(1.0f));
                 // Shared monotonic id counter — multiple pop_sources can
                 // coexist; they all draw from the same pool so ids stay
                 // unique across the geometry.
@@ -103,6 +122,11 @@ namespace tracey
                 // Per-source fractional-emission carry. Name keyed by uid
                 // so multiple sources don't collide.
                 ensureDetailAttr<float>(g, "__src_" + std::to_string(uid()) + "_carry", 0.0f);
+                // Per-source rotating index into the source SOP's point
+                // list (geometry mode). Survives substeps so emissions
+                // cycle through the source rather than restarting at 0
+                // every frame.
+                ensureDetailAttr<int>(g, "__src_" + std::to_string(uid()) + "_idx", 0);
             }
 
             void cookFrame(DopEvalContext &ctx) const override
@@ -117,6 +141,7 @@ namespace tracey
                 const Vec3  initialV = paramVec3 ("initial_v", Vec3(0.0f, 1.0f, 0.0f));
                 const float jitter   = std::max(0.0f, paramFloat("pos_jitter", 0.0f));
                 const int   seed     = paramInt  ("seed", 0);
+                const int   emitMode = paramInt  ("emit_mode", 0);
 
                 // Carry-aware emission count. `carry` holds the fractional
                 // particles owed from prior substeps; the integer part of
@@ -135,6 +160,50 @@ namespace tracey
                 if (emit <= 0) return;
                 carry -= static_cast<float>(emit);
 
+                // ── Geometry-source mode setup ──
+                // Look up the source SOP's cooked geometry through the
+                // editor-provided SopGeometryProvider. Falls back to the
+                // legacy point-mode path when:
+                //   • emit_mode != geometry, or
+                //   • no provider is wired (headless / smoke contexts), or
+                //   • the source SOP uid hasn't been cooked / was deleted.
+                // The fallback path matches the behaviour of an earlier
+                // pop_source so existing projects keep working unchanged.
+                const Geometry *src = nullptr;
+                const Attribute<Vec3>  *srcP  = nullptr;
+                const Attribute<Vec3>  *srcN  = nullptr;
+                const Attribute<Vec3>  *srcCd = nullptr;
+                size_t srcCount = 0;
+                if (emitMode == 1 && ctx.sopProvider)
+                {
+                    const uint64_t srcUid = static_cast<uint64_t>(
+                        paramInt("source_sop_uid", 0));
+                    if (srcUid != 0)
+                        src = ctx.sopProvider->lookupCookedGeometry(srcUid);
+                    if (src)
+                    {
+                        srcP  = src->points().get<Vec3>("P");
+                        srcN  = src->points().get<Vec3>("N");
+                        srcCd = src->points().get<Vec3>("Cd");
+                        if (srcP) srcCount = srcP->data().size();
+                    }
+                }
+                const bool geometryEmit = (emitMode == 1 && src && srcCount > 0);
+                const bool useNormal    = paramBool("use_normal", true);
+                const float normalSpeed = paramFloat("normal_speed", 1.0f);
+                const bool inheritCd    = paramBool("inherit_cd", true);
+
+                // Rotating index into the source's point list — survives
+                // substeps so emissions deterministically cycle through
+                // the source rather than restarting at 0 every frame.
+                int *srcIdxPtr = nullptr;
+                if (geometryEmit)
+                {
+                    auto *idxAttr = g.detail().get<int>(
+                        "__src_" + std::to_string(uid()) + "_idx");
+                    if (idxAttr) srcIdxPtr = &idxAttr->data()[0];
+                }
+
                 // Pre-resize attribute storage once rather than emit-by-emit
                 // — addPoint() resizes the whole table for each call, so
                 // bulk-emit cost goes from O(n²) to O(n).
@@ -148,11 +217,45 @@ namespace tracey
                 auto *FORCE = g.points().get<Vec3>("force");
                 if (!P || !V || !AGE || !LIFE || !ID || !FORCE) return;
 
+                // Cd materialised by prepare() when emit_mode=geometry +
+                // inherit_cd=true. Stays absent for the legacy point path.
+                auto *CD = g.points().get<Vec3>("Cd");
+
                 for (int i = 0; i < emit; ++i)
                 {
                     const size_t idx = base + static_cast<size_t>(i);
 
-                    Vec3 p = origin;
+                    // ── Position + velocity per emit mode ──
+                    Vec3 p;
+                    Vec3 v;
+                    Vec3 cd(1.0f);
+
+                    if (geometryEmit)
+                    {
+                        // Deterministic round-robin over the source's
+                        // point list. Cycling (vs. random index) makes
+                        // emission stable across re-cooks and gives the
+                        // user a "uniform sweep across the source" feel
+                        // even at low rates.
+                        const size_t si = static_cast<size_t>(
+                            (*srcIdxPtr) % static_cast<int>(srcCount));
+                        ++(*srcIdxPtr);
+                        p = srcP->data()[si];
+
+                        if (useNormal && srcN && si < srcN->data().size())
+                            v = srcN->data()[si] * normalSpeed;
+                        else
+                            v = initialV;
+
+                        if (inheritCd && srcCd && si < srcCd->data().size())
+                            cd = srcCd->data()[si];
+                    }
+                    else
+                    {
+                        p = origin;
+                        v = initialV;
+                    }
+
                     if (jitter > 0.0f)
                     {
                         // Cheap-ish ball offset: three independent [-1,1]
@@ -176,11 +279,12 @@ namespace tracey
                         p.z += (hashToFloat(hz) * 2.0f - 1.0f) * jitter;
                     }
                     P->data()[idx]     = p;
-                    V->data()[idx]     = initialV;
+                    V->data()[idx]     = v;
                     AGE->data()[idx]   = 0.0f;
                     LIFE->data()[idx]  = lifetime;
                     ID->data()[idx]    = nextId++;
                     FORCE->data()[idx] = Vec3(0.0f);
+                    if (CD) CD->data()[idx] = cd;
                 }
             }
         };
@@ -197,17 +301,31 @@ namespace tracey
         void registerSourceDops()
         {
             auto &reg = DopRegistry::instance();
+            // ParamSpec is aggregate-initialised. Fields after `options`
+            // are referenced by name to keep the diff readable when new
+            // hints land.
+            ParamSpec sourceUidSpec{};
+            sourceUidSpec.name = "source_sop_uid";
+            sourceUidSpec.type = ParamType::Int;
+            sourceUidSpec.defaultRepr = "0";
+            sourceUidSpec.picker = "sop_node";
             reg.registerType(
                 {"pop_source", "Particle Source", "Source",
                  /*inputs*/ {},
                  /*outputs*/ {{"out"}},
                  /*params*/ {
-                    {"rate",       ParamType::Float, "50.0",       0.0,  10000.0, 1.0},
-                    {"lifetime",   ParamType::Float, "2.0",        0.0,  60.0,    0.01},
-                    {"origin",     ParamType::Vec3,  "[0, 0, 0]"},
-                    {"initial_v",  ParamType::Vec3,  "[0, 1, 0]"},
-                    {"pos_jitter", ParamType::Float, "0.0",        0.0,  10.0,    0.01},
-                    {"seed",       ParamType::Int,   "0"},
+                    {"rate",         ParamType::Float, "50.0",       0.0,  10000.0, 1.0},
+                    {"lifetime",     ParamType::Float, "2.0",        0.0,  60.0,    0.01},
+                    {"emit_mode",    ParamType::Int,   "0",          0.0,   0.0,    0.0,
+                                     /*options*/ {"point", "geometry"}},
+                    {"origin",       ParamType::Vec3,  "[0, 0, 0]"},
+                    {"initial_v",    ParamType::Vec3,  "[0, 1, 0]"},
+                    {"pos_jitter",   ParamType::Float, "0.0",        0.0,  10.0,    0.01},
+                    sourceUidSpec,
+                    {"use_normal",   ParamType::Bool,  "true"},
+                    {"normal_speed", ParamType::Float, "1.0",        0.0,  50.0,    0.05},
+                    {"inherit_cd",   ParamType::Bool,  "true"},
+                    {"seed",         ParamType::Int,   "0"},
                  }},
                 makeFactory<PopSourceDop>());
         }

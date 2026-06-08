@@ -49,6 +49,10 @@ export interface ParamSpec  {
   default: string;
   range?: ParamRange;
   options?: string[];
+  // Optional widget hint mirroring the C++ ParamSpec.picker field.
+  //   "sop_node" — int param storing a SOP node uid; the inspector
+  //                renders a dropdown of geometry-producing SOP nodes.
+  picker?: string;
 }
 
 export interface CatalogEntry {
