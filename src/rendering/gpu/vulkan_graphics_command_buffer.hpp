@@ -39,6 +39,8 @@ namespace tracey
         void bindDescriptorSet(DescriptorSet* set, uint32_t setIndex) override;
         void copyImageToBuffer(const Image2D* image, Buffer* buffer) override;
         void waitUntilCompleted() override;
+        void submit() override;
+        void waitForCompletion() override;
 
         // Vulkan-specific accessor
         VkCommandBuffer vkCommandBuffer() const { return m_commandBuffer; }
@@ -47,5 +49,10 @@ namespace tracey
         VulkanComputeDevice& m_device;
         VkCommandBuffer m_commandBuffer = VK_NULL_HANDLE;
         GraphicsPipeline* m_currentPipeline = nullptr;
+
+        // Fence pending from the most recent submit(). Consumed (waited +
+        // destroyed) by waitForCompletion(). VK_NULL_HANDLE means "no
+        // outstanding submit" — waitForCompletion is a no-op in that case.
+        VkFence m_pendingFence = VK_NULL_HANDLE;
     };
 }

@@ -87,21 +87,49 @@ void shader(HitInfo hitInfo, inout RayPayloads payloads) {
         // Glass has a pure delta lobe (reflect + refract), no diffuse — so
         // direct-light NEE contributes nothing through it. Skip the loop
         // for transmissive dielectrics rather than baking a wrong term.
+        //
+        // Stride 6 vec4 per light — matches GPULight in
+        // src/scene/scene_compiler.hpp. Slot mapping:
+        //   0: positionAndType     (xyz pos, w = LightType)
+        //   1: directionAndIntensity (xyz dir, w = intensity)
+        //   2: colorAndExtraX       (xyz colour, w = Point.radius / Area.sizeX)
+        //   3: skyColorAndExtraY    (xyz Dome sky, w = Area.sizeY)
+        //   4: horizonColorAndFlags
+        //   5: groundColorAndPad
+        // Dome lights are sampled via the miss shader (env-radiance);
+        // skip them in NEE so they don't double-count.
         vec3 diffuseBrdf = albedo * (1.0 - metallic) * (1.0 / 3.14159265);
         for (uint li = 0u; li < shaderInputs.lightCount; ++li) {
-            vec4 posType   = lights.data[li * 3u + 0u];
-            vec4 dirIntens = lights.data[li * 3u + 1u];
-            vec4 colorPad  = lights.data[li * 3u + 2u];
+            vec4 posType    = lights.data[li * 6u + 0u];
+            vec4 dirIntens  = lights.data[li * 6u + 1u];
+            vec4 colorExtra = lights.data[li * 6u + 2u];
+
+            int ltype = int(posType.w);
+            if (ltype == 2) continue;  // Dome → miss shader handles it
 
             vec3 Ldir;
             float falloff;
-            int ltype = int(posType.w);
             if (ltype == 0) {
-                // Point: attenuate by inverse-square distance.
+                // Point: attenuate by 1/(d² + r²). r softens the
+                // near-field so the surface doesn't blow out when the
+                // user drags a light through a fragment.
                 vec3 toLight = posType.xyz - hitPos;
                 float distSq = max(dot(toLight, toLight), 1e-4);
+                float r      = colorExtra.w;
                 Ldir = toLight * inversesqrt(distSq);
-                falloff = 1.0 / distSq;
+                falloff = 1.0 / (distSq + r * r);
+            } else if (ltype == 3) {
+                // Area: PT-side approximation matches the rasterizer for
+                // now — treat as a directional along -Z, scaled by
+                // surface area. A proper rectangle-area sample with
+                // shadow occlusion is a follow-up; the data is already
+                // in the SSBO, so future-us can swap the body here
+                // without touching the rest of the pipeline.
+                float w = colorExtra.w;
+                vec4 skyExtraY = lights.data[li * 6u + 3u];
+                float h = skyExtraY.w;
+                Ldir = -normalize(dirIntens.xyz);
+                falloff = max(w * h, 1e-4);
             } else {
                 // Distant: light is at infinity; direction stored in slot
                 // 1.xyz already points from light *toward* the scene
@@ -113,7 +141,7 @@ void shader(HitInfo hitInfo, inout RayPayloads payloads) {
             float NdotLlight = max(dot(N, Ldir), 0.0);
             if (NdotLlight <= 0.0) continue;
 
-            vec3 Li = colorPad.xyz * dirIntens.w * falloff;
+            vec3 Li = colorExtra.xyz * dirIntens.w * falloff;
             payloads.rayPayload.accum +=
                 payloads.rayPayload.color * diffuseBrdf * Li * NdotLlight;
         }

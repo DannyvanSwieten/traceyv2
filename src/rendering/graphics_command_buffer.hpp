@@ -100,7 +100,32 @@ namespace tracey
         /// Copy rendered image to buffer (for readback to CPU)
         virtual void copyImageToBuffer(const Image2D* image, Buffer* buffer) = 0;
 
-        /// Submit commands to GPU and wait for completion
+        /// Submit commands to GPU and wait for completion. Convenience
+        /// shorthand for submit() + waitForCompletion(). Holds whatever
+        /// queue/command-pool synchronisation the impl needs across both
+        /// phases — callers that want to overlap CPU work with the GPU
+        /// fence wait (e.g. release a process-wide queue lock around the
+        /// wait) should call submit() and waitForCompletion() directly.
         virtual void waitUntilCompleted() = 0;
+
+        /// Submit recorded commands to the GPU and return immediately. A
+        /// fence is registered internally so the caller can later call
+        /// waitForCompletion() to block until the GPU has drained.
+        /// Pre-condition: end() was called. Post-condition: the GPU has
+        /// accepted the work but may not have finished executing it.
+        ///
+        /// Splitting submit from wait lets the caller hold any
+        /// queue/command-pool mutex only around the actual Vulkan calls
+        /// (microsecond-scale) and release it before the fence wait
+        /// (millisecond-scale). The render thread + main-thread present
+        /// pipeline relies on this.
+        virtual void submit() = 0;
+
+        /// Block until the GPU has finished executing the work registered
+        /// by the most recent submit(). Safe to call without holding any
+        /// queue/command-pool mutex — fence waits don't need exclusion.
+        /// Idempotent: calling twice after one submit() is a no-op on the
+        /// second call (the fence is consumed).
+        virtual void waitForCompletion() = 0;
     };
 }

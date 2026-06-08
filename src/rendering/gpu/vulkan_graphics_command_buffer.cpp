@@ -264,39 +264,59 @@ namespace tracey
                                &vkDescriptorSet, 0, nullptr);
     }
 
-    void VulkanGraphicsCommandBuffer::waitUntilCompleted()
+    void VulkanGraphicsCommandBuffer::submit()
     {
         VkDevice vkDevice = m_device.vkDevice();
 
-        // Create fence for synchronization
+        // A still-pending fence from a previous submit() with no matching
+        // waitForCompletion() would leak. Consume it here so callers can
+        // safely re-submit the same command buffer without first having
+        // to wait — handy for the path-tracer style "submit, do other
+        // work, eventually wait" pattern.
+        if (m_pendingFence != VK_NULL_HANDLE)
+        {
+            vkWaitForFences(vkDevice, 1, &m_pendingFence, VK_TRUE, UINT64_MAX);
+            vkDestroyFence(vkDevice, m_pendingFence, nullptr);
+            m_pendingFence = VK_NULL_HANDLE;
+        }
+
         VkFenceCreateInfo fenceInfo{};
         fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-
-        VkFence fence;
-        if (vkCreateFence(vkDevice, &fenceInfo, nullptr, &fence) != VK_SUCCESS)
+        if (vkCreateFence(vkDevice, &fenceInfo, nullptr, &m_pendingFence) != VK_SUCCESS)
         {
+            m_pendingFence = VK_NULL_HANDLE;
             throw std::runtime_error("Failed to create fence");
         }
 
-        // Submit command buffer to graphics queue
         VkSubmitInfo submitInfo{};
         submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
         submitInfo.commandBufferCount = 1;
         submitInfo.pCommandBuffers = &m_commandBuffer;
 
-        // Use graphics queue for graphics commands
-        // Note: VulkanComputeDevice needs to expose graphicsQueue()
-        // For now, using compute queue (which should be unified with graphics)
         VkQueue queue = m_device.computeQueue();
-
-        if (vkQueueSubmit(queue, 1, &submitInfo, fence) != VK_SUCCESS)
+        if (vkQueueSubmit(queue, 1, &submitInfo, m_pendingFence) != VK_SUCCESS)
         {
-            vkDestroyFence(vkDevice, fence, nullptr);
+            vkDestroyFence(vkDevice, m_pendingFence, nullptr);
+            m_pendingFence = VK_NULL_HANDLE;
             throw std::runtime_error("Failed to submit graphics command buffer");
         }
+    }
 
-        // Wait for fence
-        vkWaitForFences(vkDevice, 1, &fence, VK_TRUE, UINT64_MAX);
-        vkDestroyFence(vkDevice, fence, nullptr);
+    void VulkanGraphicsCommandBuffer::waitForCompletion()
+    {
+        if (m_pendingFence == VK_NULL_HANDLE) return;  // nothing in flight
+        VkDevice vkDevice = m_device.vkDevice();
+        vkWaitForFences(vkDevice, 1, &m_pendingFence, VK_TRUE, UINT64_MAX);
+        vkDestroyFence(vkDevice, m_pendingFence, nullptr);
+        m_pendingFence = VK_NULL_HANDLE;
+    }
+
+    void VulkanGraphicsCommandBuffer::waitUntilCompleted()
+    {
+        // Combined-shorthand path. Callers that need to release a queue
+        // mutex between submit and wait should call submit() +
+        // waitForCompletion() directly instead.
+        submit();
+        waitForCompletion();
     }
 }

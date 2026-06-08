@@ -38,6 +38,12 @@ namespace tracey
         bool hasGroundPipeline() const { return m_groundPipeline != VK_NULL_HANDLE; }
         bool hasGizmoPipeline() const { return m_gizmoPipeline != VK_NULL_HANDLE; }
         VkPipelineLayout vkPipelineLayout() const { return m_pipelineLayout; }
+        // Descriptor-set layout exposed so the Rasterizer can allocate its
+        // own per-frame descriptor set (binding 0 = lights SSBO). Sharing
+        // the layout keeps the descriptor set compatible with every
+        // pipeline this object owns (triangle / points / lines / ground /
+        // gizmo all share m_pipelineLayout).
+        VkDescriptorSetLayout vkDescriptorSetLayout() const { return m_descriptorSetLayout; }
         VkRenderPass vkRenderPass() const { return m_renderPass; }
         VkFramebuffer vkFramebuffer() const { return m_framebuffer; }
 

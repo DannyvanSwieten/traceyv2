@@ -142,7 +142,7 @@ namespace tracey
             return instanceTransforms[index];
         }
 
-        const auto allInstanceTransforms() const
+        auto allInstanceTransforms() const
         {
             return instanceTransforms;
         }

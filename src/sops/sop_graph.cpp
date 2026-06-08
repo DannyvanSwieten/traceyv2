@@ -354,7 +354,8 @@ namespace tracey
                         node->paramVec3("rotate_euler_deg", Vec3(0.0f)));
                     a.scale = node->paramVec3("scale", Vec3(1.0f));
                     a.materialLibraryName = node->paramString("material_library_name", "");
-                    if (!inputs.empty() && inputs[0]) a.geometry = *inputs[0];
+                    if (!inputs.empty() && inputs[0])
+                        a.geometry = std::make_shared<const Geometry>(*inputs[0]);
                     emitted.push_back(std::move(a));
                 }
                 else if (node->kind() == "light")
@@ -399,27 +400,36 @@ namespace tracey
                         const bool useN   = node->paramBool("orient_to_normal", true);
                         const std::string baseName =
                             node->paramString("name", "instance_" + std::to_string(uid));
+
+                        // Emit ONE EmittedActor with N per-instance entries.
+                        // apply_emitted turns this into a single Scene Actor
+                        // whose `instances()` list grows to N SceneInstances
+                        // — each with its own per-instance TRS and tint. The
+                        // win over the old "N EmittedActors" model is that
+                        // the same Actor stays alive across cooks and
+                        // particle birth/death is just an in-place resize +
+                        // overwrite of the array, not 3000 Actor allocations.
+                        EmittedActor a;
+                        a.sourceNodeUid = uid;
+                        a.instanceIndex = 0;
+                        a.name          = baseName;
+                        a.geometry      = std::make_shared<const Geometry>(*stamp);
+                        a.materialLibraryName =
+                            node->paramString("material_library_name", "");
+                        a.instances.reserve(tplP.size());
+
                         for (size_t i = 0; i < tplP.size(); ++i)
                         {
-                            EmittedActor a;
-                            a.sourceNodeUid = uid;
-                            a.instanceIndex = static_cast<uint32_t>(i);
-                            a.name          = baseName;
-                            a.geometry      = *stamp;
-                            a.translate     = tplP[i];
+                            EmittedActor::InstanceEntry e;
+                            e.translate = tplP[i];
                             const float s = (tplPs && i < tplPs->data().size())
                                                 ? tplPs->data()[i]
                                                 : 1.0f;
-                            a.scale = Vec3(s, s, s);
-                            // Per-instance albedo tint from Cd on the template
-                            // point. Each EmittedActor lands in its own
-                            // materialBuffer slot (TLAS instanceCustomIndex →
-                            // materials[]), so each instance shades with its
-                            // own color even though they share one BLAS.
+                            e.scale = Vec3(s, s, s);
                             if (tplCd && i < tplCd->data().size())
                             {
-                                a.tint = tplCd->data()[i];
-                                a.hasTint = true;
+                                e.tint = tplCd->data()[i];
+                                e.hasTint = true;
                             }
                             if (useN && tplN && i < tplN->data().size())
                             {
@@ -438,17 +448,15 @@ namespace tracey
                                     {
                                         right = right * (1.0f / std::sqrt(rl2));
                                         glm::vec3 up = glm::cross(forward, right);
-                                        // Column-major mat3: X' = right, Y' = up, Z' = forward.
                                         glm::mat3 R(right, up, forward);
                                         glm::quat q = glm::quat_cast(R);
-                                        a.rotation = Vec4(q.w, q.x, q.y, q.z);
+                                        e.rotation = Vec4(q.w, q.x, q.y, q.z);
                                     }
                                 }
                             }
-                            a.materialLibraryName =
-                                node->paramString("material_library_name", "");
-                            emitted.push_back(std::move(a));
+                            a.instances.push_back(e);
                         }
+                        emitted.push_back(std::move(a));
                     }
                 }
                 // Output is already stored — either in cache->upsert(uid)->output

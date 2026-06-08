@@ -55,20 +55,34 @@ namespace tracey
     };
     static_assert(sizeof(GPUMaterial) == 80, "GPUMaterial must be 80 bytes");
 
-    // GPU light record consumed by the path tracer's NEE loop. Three vec4s
-    // chosen so the std430 stride matches sizeof(GPULight) exactly and we can
-    // index `lights.data[i * 3 + k]` from GLSL without per-field padding
-    // headaches. Encoding:
-    //   slot 0: xyz = world position (Point), w = LightType as float
-    //   slot 1: xyz = world direction (Distant), w = intensity scalar
-    //   slot 2: xyz = linear RGB color, w = unused (pad to 16)
+    // GPU light record consumed by the rasterizer's PBR pass AND the path
+    // tracer's NEE / miss shaders. Five vec4s chosen so the std430 stride
+    // matches sizeof(GPULight) exactly — GLSL can index `lights.data[i * 5
+    // + k]` without per-field padding. Type-conditional encoding:
+    //   slot 0: xyz = world position (Point / Area centre); w = LightType
+    //   slot 1: xyz = world direction (Distant / Area normal = +Z);
+    //           w = intensity scalar
+    //   slot 2: xyz = linear RGB color (the multiplier across all types);
+    //           w = Point.radius, or Area.sizeX, or 0 otherwise
+    //   slot 3: xyz = Dome.skyColor (linear RGB); w = Area.sizeY (the Y
+    //           half of the area-light extent — packed alongside sizeX so
+    //           rectangle area lights survive in 80 bytes)
+    //   slot 4: xyz = Dome.horizonColor; w = packed flag bits (reserved
+    //           for future light flags such as cast-shadow toggles)
+    //   slot 5: xyz = Dome.groundColor; w = unused (pad to 16)
+    //
+    // 6 × vec4 = 96 bytes. The shader-side LightRecord struct in
+    // position_only.frag + sky_miss.glsl must mirror this exactly.
     struct GPULight
     {
-        float positionAndType[4]{0.0f, 0.0f, 0.0f, 0.0f};
+        float positionAndType[4]     {0.0f, 0.0f, 0.0f, 0.0f};
         float directionAndIntensity[4]{0.0f, 0.0f, -1.0f, 0.0f};
-        float colorAndPad[4]{0.0f, 0.0f, 0.0f, 0.0f};
+        float colorAndExtraX[4]       {0.0f, 0.0f, 0.0f, 0.0f};
+        float skyColorAndExtraY[4]    {0.0f, 0.0f, 0.0f, 0.0f};
+        float horizonColorAndFlags[4] {0.0f, 0.0f, 0.0f, 0.0f};
+        float groundColorAndPad[4]    {0.0f, 0.0f, 0.0f, 0.0f};
     };
-    static_assert(sizeof(GPULight) == 48, "GPULight must be 48 bytes (3 * vec4)");
+    static_assert(sizeof(GPULight) == 96, "GPULight must be 96 bytes (6 * vec4)");
 
     class BlasCache;
 

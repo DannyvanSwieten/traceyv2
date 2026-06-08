@@ -288,13 +288,25 @@ namespace tracey
     {
         VkDevice vkDevice = m_device.vkDevice();
 
-        // TODO: Build descriptor set layout from GraphicsPipelineLayout bindings
-        // For now, create an empty descriptor set layout as placeholder
+        // Binding 0: lights SSBO (std430). Shared with the path tracer's
+        // CompiledScene::lightBuffer so both renderers source identical
+        // light parameters. Marked optional in the shader (skipped when
+        // pc.lightCount == 0) so a pipeline without a bound lights buffer
+        // still issues — but the binding itself MUST exist in the layout
+        // to keep the descriptor set valid; Rasterizer always binds the
+        // engine's lightBuffer (always at least one dummy entry — see
+        // SceneCompiler::compile).
+        VkDescriptorSetLayoutBinding lightsBinding{};
+        lightsBinding.binding         = 0;
+        lightsBinding.descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        lightsBinding.descriptorCount = 1;
+        lightsBinding.stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+        lightsBinding.pImmutableSamplers = nullptr;
 
         VkDescriptorSetLayoutCreateInfo layoutInfo{};
         layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        layoutInfo.bindingCount = 0;
-        layoutInfo.pBindings = nullptr;
+        layoutInfo.bindingCount = 1;
+        layoutInfo.pBindings    = &lightsBinding;
 
         if (vkCreateDescriptorSetLayout(vkDevice, &layoutInfo, nullptr, &m_descriptorSetLayout) != VK_SUCCESS)
         {
@@ -306,17 +318,21 @@ namespace tracey
     {
         VkDevice vkDevice = m_device.vkDevice();
 
-        // Push constant range for MVP matrix + base color
-        // mat4 (64 bytes) + vec4 (16 bytes) = 80 bytes
+        // Push constant range layout (96 bytes — comfortably under
+        // Vulkan's 128-byte minimum guarantee on every implementation
+        // we ship to, including MoltenVK on Apple Silicon):
+        //   offset  0..63   mat4 viewProj      (shared with vertex shaders)
+        //   offset 64..79   vec4 viewPos       (camera world pos for PBR)
+        //   offset 80..95   uvec4 misc         (.x = lightCount; rest pad)
+        //
+        // Other pipelines that share this layout (ground, points, lines,
+        // gizmo, edges) reinterpret the first 80 bytes via their own
+        // shader structs — none of them read the misc slot, so the
+        // extension is backwards-compatible.
         VkPushConstantRange pushConstantRange{};
-        // The push-constant block (mat4 mvp + vec4 baseColor) is read by every
-        // shader stage: vertex shaders use mvp, several fragment shaders read
-        // baseColor (e.g. the ground shader reads it as camera-position for
-        // distance fade). Listing both stages keeps the layout valid for any
-        // sibling pipeline that wires fragment-side push constants.
         pushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
         pushConstantRange.offset = 0;
-        pushConstantRange.size = 80;  // sizeof(mat4) + sizeof(vec4)
+        pushConstantRange.size = 96;
 
         VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
         pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
@@ -357,31 +373,72 @@ namespace tracey
 
         VkPipelineShaderStageCreateInfo shaderStages[] = {vertShaderStageInfo, fragShaderStageInfo};
 
-        // Vertex input: two parallel buffers.
+        // Vertex input: three buffers — two per-vertex, one per-instance.
         //   binding 0 = position (vec3) — also fed to the path-tracer BLAS.
         //   binding 1 = vertex color Cd (vec3) — written by the VOP graph
         //               and consumed by position_only.vert; the SceneCompiler
         //               always allocates this buffer (defaults to white)
         //               so the pipeline's expectation always holds.
-        std::array<VkVertexInputBindingDescription, 2> bindingDescriptions{};
+        //   binding 2 = per-instance (mat4 model + vec4 color), stride 80,
+        //               INPUT_RATE_INSTANCE. The rasterizer fills this with
+        //               one row per scene-instance and issues a single
+        //               vkCmdDraw(instanceCount=N) per BLAS group — the
+        //               batching path that scales past 10k particles
+        //               without the CPU-side draw-call overhead.
+        // Per-instance stride is now 7 vec4 = 112 bytes:
+        //   loc 2..5: mat4 model
+        //   loc 6:    vec4 albedo (rgb=albedo, a=opacity)
+        //   loc 7:    vec4 mrx    (x=metallic, y=roughness, z=emission strength, w=unused)
+        //   loc 8:    vec4 emissive (rgb=emission color, a=unused)
+        // The rasterizer fragment shader runs a Cook-Torrance/GGX BRDF
+        // off these, so per-particle material variation (tint, roughness
+        // ramp, emissive sparks) shows up live in the preview viewport.
+        std::array<VkVertexInputBindingDescription, 3> bindingDescriptions{};
         bindingDescriptions[0].binding = 0;
         bindingDescriptions[0].stride = sizeof(float) * 3;
         bindingDescriptions[0].inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
         bindingDescriptions[1].binding = 1;
         bindingDescriptions[1].stride = sizeof(float) * 3;
         bindingDescriptions[1].inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+        bindingDescriptions[2].binding = 2;
+        bindingDescriptions[2].stride = sizeof(float) * 28;  // 7 vec4
+        bindingDescriptions[2].inputRate = VK_VERTEX_INPUT_RATE_INSTANCE;
 
-        std::array<VkVertexInputAttributeDescription, 2> attributeDescriptions{};
+        std::array<VkVertexInputAttributeDescription, 9> attributeDescriptions{};
         // Position (location 0, binding 0)
         attributeDescriptions[0].binding = 0;
         attributeDescriptions[0].location = 0;
         attributeDescriptions[0].format = VK_FORMAT_R32G32B32_SFLOAT;
         attributeDescriptions[0].offset = 0;
-        // Color (location 1, binding 1)
+        // Per-vertex color (location 1, binding 1)
         attributeDescriptions[1].binding = 1;
         attributeDescriptions[1].location = 1;
         attributeDescriptions[1].format = VK_FORMAT_R32G32B32_SFLOAT;
         attributeDescriptions[1].offset = 0;
+        // Per-instance model matrix columns (locations 2–5, binding 2).
+        // GLSL mat4 must be split into four vec4 attributes because each
+        // input location can only hold a vec4.
+        for (uint32_t col = 0; col < 4; ++col) {
+            attributeDescriptions[2 + col].binding  = 2;
+            attributeDescriptions[2 + col].location = 2 + col;
+            attributeDescriptions[2 + col].format   = VK_FORMAT_R32G32B32A32_SFLOAT;
+            attributeDescriptions[2 + col].offset   = col * sizeof(float) * 4;
+        }
+        // Per-instance albedo + opacity (location 6, binding 2)
+        attributeDescriptions[6].binding  = 2;
+        attributeDescriptions[6].location = 6;
+        attributeDescriptions[6].format   = VK_FORMAT_R32G32B32A32_SFLOAT;
+        attributeDescriptions[6].offset   = 16 * sizeof(float);
+        // Per-instance metallic / roughness / emissive strength (location 7)
+        attributeDescriptions[7].binding  = 2;
+        attributeDescriptions[7].location = 7;
+        attributeDescriptions[7].format   = VK_FORMAT_R32G32B32A32_SFLOAT;
+        attributeDescriptions[7].offset   = 20 * sizeof(float);
+        // Per-instance emissive colour (location 8)
+        attributeDescriptions[8].binding  = 2;
+        attributeDescriptions[8].location = 8;
+        attributeDescriptions[8].format   = VK_FORMAT_R32G32B32A32_SFLOAT;
+        attributeDescriptions[8].offset   = 24 * sizeof(float);
 
         VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
         vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
@@ -512,22 +569,39 @@ namespace tracey
         stages[1].module = frag;
         stages[1].pName = "main";
 
-        // Same vertex input as the triangle pipeline (position-only vec3).
-        VkVertexInputBindingDescription binding{};
-        binding.binding = 0;
-        binding.stride = sizeof(float) * 3;
-        binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
-        VkVertexInputAttributeDescription attr{};
-        attr.binding = 0;
-        attr.location = 0;
-        attr.format = VK_FORMAT_R32G32B32_SFLOAT;
-        attr.offset = 0;
+        // Two parallel buffers, same shape as the triangle pipeline:
+        //   binding 0 = position (vec3)
+        //   binding 1 = Cd (vec3) — the per-vertex colour the VOP graph
+        //               writes; multiplied with the push-constant
+        //               baseColor in the vertex shader so an
+        //               attribute-VOP-driven Cd actually lights up
+        //               point sprites instead of being silently
+        //               ignored. The SceneCompiler always allocates a
+        //               white-default Cd buffer when Cd is missing on
+        //               the geometry, so this binding is safe even when
+        //               the user hasn't touched colour.
+        std::array<VkVertexInputBindingDescription, 2> bindings{};
+        bindings[0].binding = 0;
+        bindings[0].stride = sizeof(float) * 3;
+        bindings[0].inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+        bindings[1].binding = 1;
+        bindings[1].stride = sizeof(float) * 3;
+        bindings[1].inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+        std::array<VkVertexInputAttributeDescription, 2> attrs{};
+        attrs[0].binding = 0;
+        attrs[0].location = 0;
+        attrs[0].format = VK_FORMAT_R32G32B32_SFLOAT;
+        attrs[0].offset = 0;
+        attrs[1].binding = 1;
+        attrs[1].location = 1;
+        attrs[1].format = VK_FORMAT_R32G32B32_SFLOAT;
+        attrs[1].offset = 0;
         VkPipelineVertexInputStateCreateInfo vertexInput{};
         vertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-        vertexInput.vertexBindingDescriptionCount = 1;
-        vertexInput.pVertexBindingDescriptions = &binding;
-        vertexInput.vertexAttributeDescriptionCount = 1;
-        vertexInput.pVertexAttributeDescriptions = &attr;
+        vertexInput.vertexBindingDescriptionCount = static_cast<uint32_t>(bindings.size());
+        vertexInput.pVertexBindingDescriptions = bindings.data();
+        vertexInput.vertexAttributeDescriptionCount = static_cast<uint32_t>(attrs.size());
+        vertexInput.pVertexAttributeDescriptions = attrs.data();
 
         // POINT_LIST topology — every vertex becomes a point sprite.
         VkPipelineInputAssemblyStateCreateInfo ia{};

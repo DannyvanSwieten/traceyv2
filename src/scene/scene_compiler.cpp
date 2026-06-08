@@ -6,6 +6,7 @@
 #include "../graph/graphs/shader_graph/serialization.hpp"
 #include "../graph/graphs/shader_graph/shader_graph.hpp"
 #include "../shading/material_program/opcodes.hpp"
+#include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <optional>
@@ -433,9 +434,19 @@ namespace tracey
     {
         CompiledScene result;
 
-        std::cout << "BVH Configuration: leafThreshold=" << bvhConfig.leafThreshold
-                  << ", traversalCost=" << bvhConfig.traversalCost
-                  << ", intersectionCost=" << bvhConfig.intersectionCost << std::endl;
+        // Per-compile config + stats logs fired once per compile_scene()
+        // call; with particle sims cooking 60×/sec the stderr flood
+        // drowns out anything actually worth surfacing. Re-enable for a
+        // single run with TRACEY_VERBOSE_COMPILE=1 when triaging BLAS /
+        // material-buffer issues.
+        static const bool verboseCompile =
+            std::getenv("TRACEY_VERBOSE_COMPILE") != nullptr;
+        if (verboseCompile)
+        {
+            std::cout << "BVH Configuration: leafThreshold=" << bvhConfig.leafThreshold
+                      << ", traversalCost=" << bvhConfig.traversalCost
+                      << ", intersectionCost=" << bvhConfig.intersectionCost << std::endl;
+        }
 
         // Step 1: Compile all unique objects to BLAS — or pull them from the
         // cache when the object's positions + indices fingerprint matches a
@@ -635,7 +646,7 @@ namespace tracey
             result.uvBuffer->flush();
 
             result.hasUVs = true;
-            std::cout << "Created UV buffer with " << allUVs.size() << " entries" << std::endl;
+            if (verboseCompile) std::cout << "Created UV buffer with " << allUVs.size() << " entries" << std::endl;
         }
 
         // Create the normal buffer even when no object carries N. The
@@ -813,10 +824,35 @@ namespace tracey
             gpu.directionAndIntensity[2] = dir.z;
             gpu.directionAndIntensity[3] = l->intensity;
 
-            gpu.colorAndPad[0] = l->color.x;
-            gpu.colorAndPad[1] = l->color.y;
-            gpu.colorAndPad[2] = l->color.z;
-            gpu.colorAndPad[3] = 0.0f;
+            // Slot 2 packs the colour multiplier alongside one of the
+            // per-type scalars in .w: Point→radius, Area→sizeX, otherwise
+            // zero. Reading code branches on positionAndType.w (LightType).
+            gpu.colorAndExtraX[0] = l->color.x;
+            gpu.colorAndExtraX[1] = l->color.y;
+            gpu.colorAndExtraX[2] = l->color.z;
+            gpu.colorAndExtraX[3] =
+                (l->type == LightType::Point) ? l->radius :
+                (l->type == LightType::Area)  ? l->size.x : 0.0f;
+
+            // Dome gradient (skyColor / horizonColor / groundColor). For
+            // non-Dome lights these slots stay zero and the shader's Dome
+            // pass skips them via positionAndType.w; the cost is one branch
+            // per fragment, dwarfed by the BRDF.
+            gpu.skyColorAndExtraY[0] = l->skyColor.x;
+            gpu.skyColorAndExtraY[1] = l->skyColor.y;
+            gpu.skyColorAndExtraY[2] = l->skyColor.z;
+            gpu.skyColorAndExtraY[3] =
+                (l->type == LightType::Area) ? l->size.y : 0.0f;
+
+            gpu.horizonColorAndFlags[0] = l->horizonColor.x;
+            gpu.horizonColorAndFlags[1] = l->horizonColor.y;
+            gpu.horizonColorAndFlags[2] = l->horizonColor.z;
+            gpu.horizonColorAndFlags[3] = 0.0f;  // reserved flag bits
+
+            gpu.groundColorAndPad[0] = l->groundColor.x;
+            gpu.groundColorAndPad[1] = l->groundColor.y;
+            gpu.groundColorAndPad[2] = l->groundColor.z;
+            gpu.groundColorAndPad[3] = 0.0f;
 
             result.lights.push_back(gpu);
         }
@@ -877,8 +913,11 @@ namespace tracey
             std::copy(result.materials.begin(), result.materials.end(), mapped);
             result.materialBuffer->flush();
 
-            std::cout << "Created material buffer with " << result.materials.size() << " materials" << std::endl;
-            std::cout << "Loaded " << result.textures.size() << " textures" << std::endl;
+            if (verboseCompile)
+            {
+                std::cout << "Created material buffer with " << result.materials.size() << " materials" << std::endl;
+                std::cout << "Loaded " << result.textures.size() << " textures" << std::endl;
+            }
         }
 
         // Step 5: Pack the two per-instance lookup tables (programId,
@@ -906,19 +945,24 @@ namespace tracey
             std::memcpy(result.instanceDataBuffer->mapForWriting(),
                         packed.data(), bytes);
             result.instanceDataBuffer->flush();
-            std::cout << "Created instanceData buffer for "
-                      << count << " instances across "
-                      << result.materialPrograms.headers().size() << " program(s)"
-                      << std::endl;
+            if (verboseCompile)
+            {
+                std::cout << "Created instanceData buffer for "
+                          << count << " instances across "
+                          << result.materialPrograms.headers().size() << " program(s)"
+                          << std::endl;
+            }
         }
 
-        // Output BVH statistics
-        std::cout << "BVH Statistics: " << result.totalNodes << " nodes, "
-                  << result.totalTriangles << " triangles" << std::endl;
-        if (result.totalTriangles > 0)
+        if (verboseCompile)
         {
-            float nodesPerTri = static_cast<float>(result.totalNodes) / static_cast<float>(result.totalTriangles);
-            std::cout << "  Nodes per triangle: " << nodesPerTri << std::endl;
+            std::cout << "BVH Statistics: " << result.totalNodes << " nodes, "
+                      << result.totalTriangles << " triangles" << std::endl;
+            if (result.totalTriangles > 0)
+            {
+                float nodesPerTri = static_cast<float>(result.totalNodes) / static_cast<float>(result.totalTriangles);
+                std::cout << "  Nodes per triangle: " << nodesPerTri << std::endl;
+            }
         }
 
         return result;

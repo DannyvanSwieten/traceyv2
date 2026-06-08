@@ -5,6 +5,7 @@
 #include "../graph/port_info.hpp"
 #include "parameter.hpp"
 
+#include <memory>
 #include <span>
 #include <string>
 #include <vector>
@@ -58,7 +59,16 @@ namespace tracey
             float lightIntensity = 1.0f;
 
             std::string name;
-            Geometry geometry;
+            // Held by shared_ptr so the `instance` SOP can emit N actors
+            // all referencing the same stamp without N deep-copies. The
+            // 120-particle path-traced case used to memcpy the stamp's
+            // vertex/attribute tables once per particle every cook —
+            // hundreds of KB/cook for what is structurally one mesh.
+            // Now it's one alloc + N shared_ptr copies. Lights and subnet
+            // markers leave this null; consumers either gate on isLight /
+            // isSubnetMarker before dereferencing, or use
+            // `geometry_dedup_hash` which treats null as the empty digest.
+            std::shared_ptr<const Geometry> geometry;
             // Transform is held as PODs so this struct stays trivially
             // copyable and codegen-friendly.
             Vec3 translate{0.0f};
@@ -66,13 +76,38 @@ namespace tracey
             Vec4 rotation{1.0f, 0.0f, 0.0f, 0.0f};
             Vec3 scale{1.0f};
             std::string materialLibraryName;
-            // Distinguishes multiple emitted actors that share the same
-            // sourceNodeUid (the `instance` SOP emits N of these per cook,
-            // one per template point, each carrying the same stamp Geometry
-            // but its own transform). 0 for normal one-actor-per-uid emits.
-            // Combined with sourceNodeUid into a 64-bit composite key by the
-            // editor host so per-actor tracking maps don't collide.
+            // Legacy field — kept for source compatibility with the rest
+            // of the editor's emit pipeline (actor key composition, etc.),
+            // but always 0 for the new instance-group emit path below.
+            // The old "instance emits N EmittedActors" model lives only
+            // as a fallback if some future caller wants it.
             uint32_t instanceIndex = 0;
+
+            // Per-instance overrides for the `instance` SOP. When this
+            // vector is non-empty, the actor represents an instance
+            // group: ONE Scene Actor whose `instances()` list gets one
+            // SceneInstance per entry here, each carrying the entry's
+            // transform and per-instance tint. The `translate`/`rotation`
+            // /`scale`/`tint` fields above are ignored in this case (the
+            // group Actor sits at identity; each TLAS entry carries the
+            // full per-instance transform via SceneInstance::localTransform).
+            //
+            // The win is that apply_emitted goes from O(N) Actor creates
+            // per cook to O(1) — the same Actor stays alive across cooks
+            // and only its instances() vector resizes / updates in place.
+            // At 3000+ particles the slow path was eating ~25 ms/cook;
+            // here it drops to a handful of ms.
+            struct InstanceEntry
+            {
+                Vec3 translate{0.0f};
+                // Quaternion (wxyz). Identity by default.
+                Vec4 rotation{1.0f, 0.0f, 0.0f, 0.0f};
+                Vec3 scale{1.0f};
+                // Per-instance albedo tint. White = no override.
+                Vec3 tint{1.0f, 1.0f, 1.0f};
+                bool hasTint = false;
+            };
+            std::vector<InstanceEntry> instances;
             // Per-instance albedo tint pulled from the template's `Cd`
             // attribute (or anywhere upstream that wants to vary shading
             // per instance). White (1,1,1) means "no override" — the slow

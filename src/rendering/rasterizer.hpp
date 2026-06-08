@@ -10,7 +10,9 @@
 #include "graphics_command_buffer.hpp"
 
 #include <memory>
+#include <vector>
 #include <filesystem>
+#include <volk.h>
 
 namespace tracey
 {
@@ -161,6 +163,13 @@ namespace tracey
         // Color target is owned by m_pipeline; readback buffer is ours.
         std::unique_ptr<Buffer> m_readbackBuffer;
 
+        // Per-batch INPUT_RATE_INSTANCE buffers built each render(). One
+        // entry per BLAS group; they stay alive until the GPU drains
+        // the dispatch (Rasterizer::render waits on its own fence before
+        // returning). Cleared at the top of every render so we don't
+        // accumulate across cooks.
+        std::vector<std::unique_ptr<Buffer>> m_transientInstanceBuffers;
+
         bool m_showPoints = false;
         bool m_showEdges = false;
         bool m_showGround = false;
@@ -179,5 +188,26 @@ namespace tracey
         // Camera matrices (computed in updateCameraUniforms, used in renderScene)
         glm::mat4 m_viewMatrix;
         glm::mat4 m_projectionMatrix;
+        // Camera world position — pushed to fragment shader so the PBR
+        // BRDF can compute view direction per fragment without inverting
+        // the view matrix in the shader.
+        glm::vec3 m_cameraWorldPos{0.0f};
+
+        // Lights descriptor set machinery. The pipeline's set-0 binding 0
+        // is a storage-buffer slot expected to point at
+        // CompiledScene::lightBuffer. We allocate one descriptor set out
+        // of a private pool at construction, then rebind it to the
+        // engine's current lightBuffer at the top of every render()
+        // (the compile_scene path can swap the buffer when the light
+        // count drifts, and a stale binding would dereference freed GPU
+        // memory). One pool, one set — no per-frame churn.
+        VkDescriptorPool m_lightsDescriptorPool = VK_NULL_HANDLE;
+        VkDescriptorSet  m_lightsDescriptorSet  = VK_NULL_HANDLE;
+        Buffer*          m_lastBoundLightBuffer = nullptr;
+
+        // Cached at the top of render() from scene.lightCount so the
+        // batched-draw push-constants don't need a reference to the
+        // current CompiledScene.
+        uint32_t         m_currentLightCount    = 0;
     };
 } // namespace tracey

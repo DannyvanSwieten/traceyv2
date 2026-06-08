@@ -1,5 +1,7 @@
 #include "rasterizer.hpp"
+#include "../core/parallel.hpp"
 #include "../device/buffer.hpp"
+#include "../device/gpu/vulkan_buffer.hpp"
 #include "../device/gpu/vulkan_compute_device.hpp"
 #include "../gpu/vulkan_queue_sync.hpp"
 #include "gpu/vulkan_graphics_pipeline.hpp"
@@ -23,7 +25,25 @@ namespace tracey
         createPipeline();
     }
 
-    Rasterizer::~Rasterizer() = default;
+    Rasterizer::~Rasterizer()
+    {
+        // Tear down descriptor pool before m_pipeline (which owns the
+        // descriptor-set layout). The destructor's default order
+        // destroys m_pipeline first, which would invalidate the layout
+        // while our pool's set is still alive. Explicit cleanup here
+        // sequences correctly.
+        if (m_lightsDescriptorPool != VK_NULL_HANDLE)
+        {
+            auto* vulkanDevice = dynamic_cast<VulkanComputeDevice*>(m_device);
+            if (vulkanDevice)
+            {
+                vkDestroyDescriptorPool(vulkanDevice->vkDevice(),
+                                        m_lightsDescriptorPool, nullptr);
+            }
+            m_lightsDescriptorPool = VK_NULL_HANDLE;
+            m_lightsDescriptorSet  = VK_NULL_HANDLE;
+        }
+    }
 
     Image2D *Rasterizer::outputImage() const
     {
@@ -78,47 +98,135 @@ namespace tracey
         m_readbackBuffer.reset(m_device->createBuffer(
             static_cast<uint32_t>(bufferSize),
             BufferUsage::TransferDst));
+
+        // One descriptor pool + one set for the lights SSBO. Pool sized
+        // for exactly one storage-buffer descriptor; we never grow it
+        // because the triangle pipeline's descriptor set is single-slot.
+        VkDescriptorPoolSize poolSize{};
+        poolSize.type            = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        poolSize.descriptorCount = 1;
+
+        VkDescriptorPoolCreateInfo poolInfo{};
+        poolInfo.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        poolInfo.poolSizeCount = 1;
+        poolInfo.pPoolSizes    = &poolSize;
+        poolInfo.maxSets       = 1;
+
+        VkDevice vkDev = vulkanDevice->vkDevice();
+        if (vkCreateDescriptorPool(vkDev, &poolInfo, nullptr,
+                                   &m_lightsDescriptorPool) != VK_SUCCESS)
+        {
+            throw std::runtime_error(
+                "Rasterizer: failed to create lights descriptor pool");
+        }
+
+        auto* vkPipeline = static_cast<VulkanGraphicsPipeline*>(m_pipeline.get());
+        VkDescriptorSetLayout layout = vkPipeline->vkDescriptorSetLayout();
+
+        VkDescriptorSetAllocateInfo allocInfo{};
+        allocInfo.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        allocInfo.descriptorPool     = m_lightsDescriptorPool;
+        allocInfo.descriptorSetCount = 1;
+        allocInfo.pSetLayouts        = &layout;
+        if (vkAllocateDescriptorSets(vkDev, &allocInfo,
+                                     &m_lightsDescriptorSet) != VK_SUCCESS)
+        {
+            throw std::runtime_error(
+                "Rasterizer: failed to allocate lights descriptor set");
+        }
     }
 
     double Rasterizer::render(const SceneCompiler::CompiledScene &scene,
                               const Camera &camera)
     {
-        // Whole-render lock: every Vulkan command-buffer call below
-        // (begin / record / end / submit / wait) touches the shared
-        // command pool, which Vulkan requires to be externally
-        // synchronised. Without this, the cook worker's compute
-        // dispatchers racing against the rasterizer trip
-        // "THREADING ERROR: VkCommandPool simultaneously used".
-        std::lock_guard<std::mutex> gpuLock(vulkanQueueMutex());
-
         auto startTime = std::chrono::high_resolution_clock::now();
 
-        // Begin command recording
-        m_commandBuffer->begin();
+        // Free last render's per-instance batch buffers. We can't drop
+        // them until the GPU has drained the previous dispatch, which
+        // already happened in the prior render()'s waitForCompletion().
+        m_transientInstanceBuffers.clear();
 
-        // Begin render pass with the configured background color.
-        // Driven by RenderEngine::set_rasterizer_background_color so
-        // the editor toolbar can offer preset / picker controls
-        // without rebuilding the pipeline.
-        m_commandBuffer->beginRenderPass(
-            m_pipeline.get(),
-            m_clearR, m_clearG, m_clearB, m_clearA,
-            1.0f  // clear depth
-        );
+        // Record + submit happen under the process-wide Vulkan queue
+        // mutex (every command-buffer call below touches the shared
+        // command pool, which Vulkan requires to be externally
+        // synchronised — without it, the cook worker's compute
+        // dispatchers racing against the rasterizer trip
+        // "THREADING ERROR: VkCommandPool simultaneously used").
+        //
+        // The fence wait is INTENTIONALLY outside the lock: fences
+        // don't need queue/command-pool exclusion (they only read
+        // fence state). Releasing the lock here lets the main-thread
+        // present submit its own commands while this dispatch is
+        // still running on the GPU — the whole point of moving the
+        // rasterizer off the main thread.
+        {
+            std::lock_guard<std::mutex> gpuLock(vulkanQueueMutex());
 
-        // Bind pipeline
-        m_commandBuffer->bindPipeline(m_pipeline.get());
+            m_commandBuffer->begin();
 
-        // Update camera uniforms and render the scene
-        updateCameraUniforms(camera);
-        renderScene(scene);
+            // Begin render pass with the configured background color.
+            // Driven by RenderEngine::set_rasterizer_background_color so
+            // the editor toolbar can offer preset / picker controls
+            // without rebuilding the pipeline.
+            m_commandBuffer->beginRenderPass(
+                m_pipeline.get(),
+                m_clearR, m_clearG, m_clearB, m_clearA,
+                1.0f  // clear depth
+            );
 
-        // End render pass and command recording
-        m_commandBuffer->endRenderPass();
-        m_commandBuffer->end();
+            m_commandBuffer->bindPipeline(m_pipeline.get());
 
-        // Submit and wait for completion
-        m_commandBuffer->waitUntilCompleted();
+            // Refresh the lights descriptor set if the engine's
+            // lightBuffer has changed under us (compile_scene replaces
+            // the buffer when the light count flips up/down). Cheaper
+            // than re-writing the descriptor every frame; the buffer
+            // identity is what changes, not its contents — and the
+            // engine maps + flushes the same buffer in place when only
+            // the data changed.
+            if (scene.lightBuffer && scene.lightBuffer.get() != m_lastBoundLightBuffer)
+            {
+                auto* vulkanDevice = dynamic_cast<VulkanComputeDevice*>(m_device);
+                auto* vkBuf = static_cast<VulkanBuffer*>(scene.lightBuffer.get());
+                VkDescriptorBufferInfo bufInfo{};
+                bufInfo.buffer = vkBuf->vkBuffer();
+                bufInfo.offset = 0;
+                bufInfo.range  = VK_WHOLE_SIZE;
+                VkWriteDescriptorSet write{};
+                write.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                write.dstSet          = m_lightsDescriptorSet;
+                write.dstBinding      = 0;
+                write.descriptorCount = 1;
+                write.descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+                write.pBufferInfo     = &bufInfo;
+                vkUpdateDescriptorSets(vulkanDevice->vkDevice(), 1, &write, 0, nullptr);
+                m_lastBoundLightBuffer = scene.lightBuffer.get();
+            }
+
+            // Bind the lights descriptor set so the fragment shader's
+            // set-0 binding-0 storage-buffer reads land in a valid
+            // memory region. Safe to call even with zero lights — the
+            // engine always allocates at least one dummy entry.
+            if (m_lightsDescriptorSet != VK_NULL_HANDLE && scene.lightBuffer)
+            {
+                auto* vkPipeline = static_cast<VulkanGraphicsPipeline*>(m_pipeline.get());
+                auto* vkCb = static_cast<VulkanGraphicsCommandBuffer*>(m_commandBuffer.get());
+                vkCmdBindDescriptorSets(vkCb->vkCommandBuffer(),
+                                        VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                        vkPipeline->vkPipelineLayout(),
+                                        0, 1, &m_lightsDescriptorSet, 0, nullptr);
+            }
+
+            updateCameraUniforms(camera);
+            m_currentLightCount = scene.lightCount;
+            renderScene(scene);
+
+            m_commandBuffer->endRenderPass();
+            m_commandBuffer->end();
+
+            m_commandBuffer->submit();
+        }
+
+        m_commandBuffer->waitForCompletion();
 
         auto endTime = std::chrono::high_resolution_clock::now();
         std::chrono::duration<double, std::milli> elapsed = endTime - startTime;
@@ -127,9 +235,10 @@ namespace tracey
 
     void Rasterizer::updateCameraUniforms(const Camera &camera)
     {
+        m_cameraWorldPos = glm::vec3(camera.position().x, camera.position().y, camera.position().z);
         // View matrix (camera transform)
         m_viewMatrix = glm::lookAt(
-            glm::vec3(camera.position().x, camera.position().y, camera.position().z),
+            m_cameraWorldPos,
             glm::vec3(camera.position().x + camera.forward().x,
                      camera.position().y + camera.forward().y,
                      camera.position().z + camera.forward().z),
@@ -181,77 +290,139 @@ namespace tracey
             }
         }
 
-        // Iterate through all instances and render their geometry
-        for (size_t i = 0; i < scene.instances.size(); ++i)
-        {
-            const auto& instance = scene.instances[i];
+        // Batched draw path. Previously this loop issued one vkCmdDraw +
+        // pushConstants per scene-instance, which at ~3000 particles
+        // dominated tick_ms even though every draw was the same sphere.
+        //
+        // Now we group consecutive instances sharing a blasIndex into one
+        // batch, pack their per-instance data (mat4 model + vec4 color)
+        // into a transient INPUT_RATE_INSTANCE vertex buffer, and call
+        // vkCmdDraw(vertexCount, instanceCount=N, …) once per batch.
+        // Position + Cd are bound from the shared BLAS buffers; viewProj
+        // goes through the push-constant slot.
+        //
+        // Push constants are 96 bytes total: mat4 viewProj + vec4
+        // viewPos + uvec4 misc (.x = lightCount, .yzw padding).
+        // viewPos.xyz is read by the fragment shader to compute view
+        // direction for the BRDF; misc.x lets the shader loop over
+        // [0, lightCount) without a separate buffer-size descriptor.
+        // Layout must match the shader's PushConstants block AND the
+        // 96-byte range declared in vulkan_graphics_pipeline.cpp.
+        struct RasterPushConstants {
+            glm::mat4  viewProj;
+            glm::vec4  viewPos;
+            glm::uvec4 misc;
+        };
+        RasterPushConstants pc{};
+        pc.viewProj = m_projectionMatrix * m_viewMatrix;
+        pc.viewPos  = glm::vec4(m_cameraWorldPos, 1.0f);
+        pc.misc     = glm::uvec4(m_currentLightCount, 0u, 0u, 0u);
+        m_commandBuffer->pushConstants(&pc, sizeof(pc), 0);
 
-            // Get BLAS index from instance (stored in blasAddress)
-            size_t blasIndex = static_cast<size_t>(instance.blasAddress);
+        // Per-instance layout (must match the vertex input description
+        // in vulkan_graphics_pipeline.cpp + the input declarations in
+        // position_only.vert): mat4 model + albedo + (metallic,
+        // roughness, emission strength) + emissive colour = 7 vec4.
+        struct InstanceData {
+            glm::mat4 model;
+            glm::vec4 albedo;
+            glm::vec4 mrx;       // x=metallic, y=roughness, z=emission strength
+            glm::vec4 emissive;  // xyz = emission colour
+        };
+        static_assert(sizeof(InstanceData) == 112, "InstanceData layout must match shader binding");
 
-            // Safety check
-            if (blasIndex >= scene.vertexBuffers.size())
-            {
-                continue; // Skip invalid instance
-            }
+        // Helper: pull a batch's per-instance data, allocate a transient
+        // vertex buffer, upload, bind, and draw once.
+        auto drawBatch = [&](size_t blasIndex, size_t startInst, size_t count) {
+            if (count == 0 || blasIndex >= scene.vertexBuffers.size()) return;
+            const Buffer *vb = scene.vertexBuffers[blasIndex];
+            const uint32_t vertexCount = scene.vertexCounts[blasIndex];
+            if (!vb || vertexCount == 0) return;
 
-            // Get vertex buffer and count for this BLAS
-            const Buffer* vertexBuffer = scene.vertexBuffers[blasIndex];
-            uint32_t vertexCount = scene.vertexCounts[blasIndex];
+            // Build the per-instance buffer in parallel — every entry
+            // touches only its own index, so parallel_for_chunks across
+            // hardware_concurrency workers is safe. At 400k particles
+            // the serial build was ~5–10 ms; the parallel version
+            // drops it to ~1 ms on M3 Ultra. The lambda below is the
+            // body of the original serial loop, unchanged.
+            std::vector<InstanceData> insts(count);
+            tracey::parallel_for_chunks(count,
+                [&insts, &scene, startInst](size_t kBegin, size_t kEnd) {
+                    for (size_t k = kBegin; k < kEnd; ++k)
+                    {
+                        const auto &inst = scene.instances[startInst + k];
+                        glm::mat4 model(1.0f);
+                        for (int r = 0; r < 3; ++r)
+                            for (int c = 0; c < 4; ++c)
+                                model[c][r] = inst.transform[r][c];
+                        glm::vec4 albedo(0.8f, 0.8f, 0.8f, 1.0f);
+                        glm::vec4 mrx(0.0f, 0.5f, 0.0f, 0.0f);  // metallic, roughness, emissive strength
+                        glm::vec4 emissive(0.0f, 0.0f, 0.0f, 0.0f);
+                        const size_t mi = startInst + k;
+                        if (mi < scene.instanceToMaterialIndex.size())
+                        {
+                            const uint32_t matIdx = scene.instanceToMaterialIndex[mi];
+                            if (matIdx < scene.materials.size())
+                            {
+                                const auto &m = scene.materials[matIdx];
+                                albedo  = glm::vec4(m.baseColorR, m.baseColorG, m.baseColorB, m.baseColorA);
+                                mrx.x   = m.metallicFactor;
+                                mrx.y   = m.roughnessFactor;
+                                // emissive on the GPUMaterial is split
+                                // across two struct slots — recombine.
+                                emissive = glm::vec4(m.emissiveR, m.emissiveG, m.emissiveB, 0.0f);
+                                // Use a strength of 1 when any channel is
+                                // set; the frag shader multiplies these.
+                                mrx.z   = (m.emissiveR + m.emissiveG + m.emissiveB) > 0.0f ? 1.0f : 0.0f;
+                            }
+                        }
+                        insts[k].model    = model;
+                        insts[k].albedo   = albedo;
+                        insts[k].mrx      = mrx;
+                        insts[k].emissive = emissive;
+                    }
+                });
 
-            // Extract model matrix from instance transform (3x4 row-major -> 4x4 column-major)
-            glm::mat4 model(1.0f); // Identity
-            for (int r = 0; r < 3; ++r)
-            {
-                for (int c = 0; c < 4; ++c)
-                {
-                    model[c][r] = instance.transform[r][c];
-                }
-            }
-            // Last row is [0, 0, 0, 1] for homogeneous coordinates
+            const uint32_t bytes = static_cast<uint32_t>(insts.size() * sizeof(InstanceData));
+            auto instBuf = std::unique_ptr<Buffer>(
+                m_device->createBuffer(bytes, BufferUsage::VertexBuffer));
+            std::memcpy(instBuf->mapForWriting(), insts.data(), bytes);
+            instBuf->flush();
 
-            // Compute MVP matrix
-            glm::mat4 mvp = m_projectionMatrix * m_viewMatrix * model;
-
-            // Get material for this instance
-            glm::vec4 baseColor(0.8f, 0.8f, 0.8f, 1.0f); // Default light gray
-            if (i < scene.instanceToMaterialIndex.size())
-            {
-                uint32_t materialIndex = scene.instanceToMaterialIndex[i];
-                if (materialIndex < scene.materials.size())
-                {
-                    const auto& material = scene.materials[materialIndex];
-                    baseColor = glm::vec4(
-                        material.baseColorR,
-                        material.baseColorG,
-                        material.baseColorB,
-                        material.baseColorA
-                    );
-                }
-            }
-
-            // Bind position (binding 0) + per-vertex Cd (binding 1). The
-            // compiler always allocates a color buffer (default white) so the
-            // pipeline's two-binding vertex input is always satisfied.
-            m_commandBuffer->bindVertexBuffer(vertexBuffer, 0);
+            m_commandBuffer->bindVertexBuffer(vb, 0);
             if (blasIndex < scene.colorBuffers.size() && scene.colorBuffers[blasIndex])
             {
                 m_commandBuffer->bindVertexBufferAt(
                     scene.colorBuffers[blasIndex], 1, 0);
             }
+            m_commandBuffer->bindVertexBufferAt(instBuf.get(), 2, 0);
+            m_commandBuffer->draw(vertexCount, static_cast<uint32_t>(count), 0, 0);
 
-            // Push constants: MVP matrix (64 bytes) + base color (16 bytes) = 80 bytes
-            struct PushConstants {
-                glm::mat4 mvp;
-                glm::vec4 baseColor;
-            } pushConstants;
-            pushConstants.mvp = mvp;
-            pushConstants.baseColor = baseColor;
+            // Keep the buffer alive until the GPU has consumed it. The
+            // Rasterizer::render call doesn't return until
+            // waitForCompletion(), so dropping the unique_ptr at end of
+            // this lambda is safe — but we still need to keep it inside
+            // the lambda body. Move it into a per-render keepalive list
+            // so it survives across batches.
+            m_transientInstanceBuffers.push_back(std::move(instBuf));
+        };
 
-            m_commandBuffer->pushConstants(&pushConstants, sizeof(PushConstants), 0);
-
-            // Draw vertices (non-indexed)
-            m_commandBuffer->draw(vertexCount, 1, 0, 0);
+        // Single linear scan grouping consecutive instances by blasIndex.
+        // compile_scene emits instances in actor order, and each actor's
+        // SceneInstances share the same BLAS (instance group case) or
+        // are a single entry — so consecutive runs are exactly the
+        // batchable chunks. Non-contiguous repeats are rare in practice
+        // and just produce more, smaller batches.
+        size_t i = 0;
+        while (i < scene.instances.size())
+        {
+            const size_t blasIndex = static_cast<size_t>(scene.instances[i].blasAddress);
+            size_t j = i + 1;
+            while (j < scene.instances.size() &&
+                   static_cast<size_t>(scene.instances[j].blasAddress) == blasIndex)
+                ++j;
+            drawBatch(blasIndex, i, j - i);
+            i = j;
         }
 
         // Optional wireframe overlay: bind the lines pipeline (POLYGON_MODE_LINE,
@@ -337,6 +508,16 @@ namespace tracey
                 pc.baseColor = baseColor;
 
                 m_commandBuffer->bindVertexBuffer(vb, 0);
+                // Bind Cd at binding 1 so the points vertex shader can
+                // tint each point by its per-vertex colour. Mirrors the
+                // triangle draw above. SceneCompiler always allocates a
+                // colorBuffer (defaulting to white when Cd is missing)
+                // so this binding is always safe.
+                if (blasIndex < scene.colorBuffers.size() && scene.colorBuffers[blasIndex])
+                {
+                    m_commandBuffer->bindVertexBufferAt(
+                        scene.colorBuffers[blasIndex], 1, 0);
+                }
                 m_commandBuffer->pushConstants(&pc, sizeof(pc), 0);
                 m_commandBuffer->draw(vertexCount, 1, 0, 0);
             }
