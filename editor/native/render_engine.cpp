@@ -1,5 +1,6 @@
 #include "render_engine.hpp"
 
+#include "core/parallel.hpp"
 #include "scene/scene_object.hpp"
 #include "graph/graphs/shader_graph/compiler.hpp"
 #include "graph/graphs/shader_graph/serialization.hpp"
@@ -139,7 +140,7 @@ void RenderEngine::compile_scene() {
     }
     if (!has_geometry) {
         m_compiled_scene =
-            std::make_unique<tracey::SceneCompiler::CompiledScene>();
+            std::make_shared<tracey::SceneCompiler::CompiledScene>();
         return;
     }
 
@@ -154,7 +155,7 @@ void RenderEngine::compile_scene() {
         m_device.get(), *m_scene, tracey::BVHConfig{}, m_blas_cache.get(),
         /*buildAccelerationStructures=*/m_build_acceleration_structures);
     m_compiled_scene =
-        std::make_unique<tracey::SceneCompiler::CompiledScene>(std::move(compiled));
+        std::make_shared<tracey::SceneCompiler::CompiledScene>(std::move(compiled));
     m_blas_cache->evictUntouched();
 
     // Per-actor graphs were aggregated into materialPrograms during compile;
@@ -204,73 +205,159 @@ void RenderEngine::render_rasterizer() {
     m_rasterizer->render(*m_compiled_scene, m_scene->camera());
 }
 
+double RenderEngine::render_rasterizer_with(
+    const tracey::SceneCompiler::CompiledScene &scene,
+    const tracey::Camera &camera)
+{
+    if (!m_rasterizer) return 0.0;
+    return m_rasterizer->render(scene, camera);
+}
+
 bool RenderEngine::refresh_tlas_only() {
-    if (!m_compiled_scene || !m_compiled_scene->tlas) return false;
+    if (!m_compiled_scene) return false;
+    // Note: tlas may legitimately be null when PT preview is off
+    // (compile_scene skips BLAS/TLAS build via buildAccelerationStructures
+    // = false). In that case we still update m_compiled_scene->instances
+    // so the rasterizer picks up the new per-instance transforms — we
+    // just skip the TLAS create at the end. Without this, the fast TRS
+    // path would always bail with PT off and apply_emitted would fall
+    // through to the full compile_scene, doing material-buffer rebuilds
+    // and 40K per-instance walks every cook. That was eating ~9 ms of
+    // rebuild_ms at high particle counts.
 
     // Walk the scene the same way SceneCompiler does (flatten() then per-actor
     // instances in declaration order). The instance index across this walk
     // must match the previous compile_scene's index 1:1 — that's how the
     // per-instance material indices, program ids, and UV offsets stay
     // correct without rebuilding their buffers.
+    //
+    // Two-pass structure so the per-instance Mat4 work parallelises cleanly:
+    //   1. Serially build per-actor descriptors (visibility, world xform,
+    //      blas index — one hash lookup per actor instead of per instance)
+    //      and lay out the output index ranges.
+    //   2. parallel_for_chunks over each actor's SceneInstances, writing
+    //      Tlas::Instance entries by index into newInstances. At 400k
+    //      particles the Mat4 multiplies (~10–15 ms serially) drop to a
+    //      few ms across worker threads.
     auto sceneNodes = m_scene->flatten();
-    std::vector<tracey::Tlas::Instance> newInstances;
-    newInstances.reserve(m_compiled_scene->instances.size());
 
-    size_t instanceIndex = 0;
+    struct ActorChunk {
+        const tracey::Actor *actor;
+        tracey::Mat4 worldTransform;
+        size_t blasIndex;
+        size_t outputStart;
+        size_t instanceCount;
+    };
+    std::vector<ActorChunk> chunks;
+    chunks.reserve(sceneNodes.size());
+
+    size_t total = 0;
     for (const auto &node : sceneNodes) {
         const tracey::Actor *actor = node.actor;
         if (!actor || !actor->visible()) continue;
-        const tracey::Mat4 &worldTransform = node.worldTransform;
-
-        for (const auto &sceneInstance : actor->instances()) {
-            const std::string &objectRef = sceneInstance.objectRef();
-            auto it = m_compiled_scene->objectToBlasIndex.find(objectRef);
-            if (it == m_compiled_scene->objectToBlasIndex.end()) continue;
-
-            tracey::Mat4 finalTransform = worldTransform;
-            if (sceneInstance.hasLocalTransform()) {
-                finalTransform = worldTransform *
-                                 sceneInstance.localTransform()->toMatrix();
-            }
-
-            tracey::Tlas::Instance instance;
-            instance.setTransform(finalTransform);
-            instance.blasAddress = it->second;
-            if (instanceIndex < m_compiled_scene->instances.size()) {
-                // Preserve material/SBT bits from the previous instance —
-                // those bookkeeping fields didn't change with the transform.
-                const auto &prev = m_compiled_scene->instances[instanceIndex];
-                instance.setCustomIndex(prev.instanceCustomIndex());
-                instance.setMask(prev.instanceMask());
-                instance.setSbtRecordOffset(prev.sbtRecordOffset());
-                instance.setInstanceFlags(prev.instanceFlags());
-            } else {
-                instance.setMask(0xFF);
-            }
-            newInstances.push_back(instance);
-            ++instanceIndex;
-        }
+        const auto &slots = actor->instances();
+        if (slots.empty()) continue;
+        // For now assume every SceneInstance under one Actor shares the
+        // same objectRef — true for the instance-group + single-mesh
+        // emit paths, which together cover everything that hits this
+        // function. If a future caller mixes objectRefs per Actor we'd
+        // need to split chunks; that's a one-loop refactor.
+        const std::string &objectRef = slots.front().objectRef();
+        auto it = m_compiled_scene->objectToBlasIndex.find(objectRef);
+        if (it == m_compiled_scene->objectToBlasIndex.end()) continue;
+        chunks.push_back({actor, node.worldTransform, it->second, total, slots.size()});
+        total += slots.size();
     }
 
-    // Topology guard: if instance count drifted (visibility toggled between
-    // compile and this refresh, or actor add/remove slipped past the
-    // caller's precondition), bail and let the caller fall through to a
-    // full compile_scene.
-    if (newInstances.size() != m_compiled_scene->instances.size()) return false;
+    std::vector<tracey::Tlas::Instance> newInstances(total);
+
+    // Cache for "preserve previous bookkeeping bits when the same slot
+    // existed before" — captured by value into worker lambdas. Reading
+    // m_compiled_scene->instances is safe (no concurrent writes); we
+    // only read indices < .size().
+    const auto &prevInstances = m_compiled_scene->instances;
+    const size_t prevN = prevInstances.size();
+
+    for (const auto &chunk : chunks) {
+        const tracey::Mat4 &worldTransform = chunk.worldTransform;
+        const auto &slots = chunk.actor->instances();
+        const size_t outputStart = chunk.outputStart;
+        const uint64_t blasIndex = chunk.blasIndex;
+        tracey::parallel_for_chunks(slots.size(),
+            [&slots, &newInstances, &prevInstances, &worldTransform,
+             outputStart, blasIndex, prevN](size_t begin, size_t end) {
+                for (size_t i = begin; i < end; ++i) {
+                    const auto &sceneInstance = slots[i];
+                    tracey::Mat4 finalTransform = worldTransform;
+                    if (sceneInstance.hasLocalTransform()) {
+                        finalTransform = worldTransform *
+                                         sceneInstance.localTransform()->toMatrix();
+                    }
+                    tracey::Tlas::Instance instance;
+                    instance.setTransform(finalTransform);
+                    instance.blasAddress = blasIndex;
+                    const size_t outIdx = outputStart + i;
+                    if (outIdx < prevN) {
+                        const auto &prev = prevInstances[outIdx];
+                        instance.setCustomIndex(prev.instanceCustomIndex());
+                        instance.setMask(prev.instanceMask());
+                        instance.setSbtRecordOffset(prev.sbtRecordOffset());
+                        instance.setInstanceFlags(prev.instanceFlags());
+                    } else {
+                        instance.setMask(0xFF);
+                    }
+                    newInstances[outIdx] = instance;
+                }
+            });
+    }
 
     // Re-collect BLAS pointers from the (still-owned by BlasCache) entries.
     std::vector<const tracey::BottomLevelAccelerationStructure *> blasPtrs;
     blasPtrs.reserve(m_compiled_scene->blases.size());
     for (const auto *b : m_compiled_scene->blases) blasPtrs.push_back(b);
 
+    // Allow per-cook instance-count drift (instance groups grow/shrink
+    // with particle birth/death). The parallel scene arrays grow or
+    // shrink in lockstep — new entries clone the LAST surviving entry
+    // so they pick up the same material/program/UV setup, which is the
+    // common case for particle systems where every instance under a
+    // group shares the base material. The previous strict equality
+    // check forced apply_emitted to the slow path (full compile_scene)
+    // on every single particle spawn or death.
+    const size_t newN = newInstances.size();
+    auto extend = [newN](auto &v) {
+        if (v.size() < newN) {
+            using V = typename std::decay_t<decltype(v)>::value_type;
+            const V fill = v.empty() ? V{} : v.back();
+            v.resize(newN, fill);
+        } else if (v.size() > newN) {
+            v.resize(newN);
+        }
+    };
+    extend(m_compiled_scene->instanceToMaterialIndex);
+    extend(m_compiled_scene->instanceProgramIndex);
+    extend(m_compiled_scene->instanceUvOffset);
+    extend(m_compiled_scene->materials);
+
     m_compiled_scene->instances = std::move(newInstances);
-    m_compiled_scene->tlas = std::unique_ptr<tracey::TopLevelAccelerationStructure>(
-        m_device->createTopLevelAccelerationStructure(
-            std::span<const tracey::BottomLevelAccelerationStructure *>(
-                blasPtrs.data(), blasPtrs.size()),
-            std::span<const tracey::Tlas::Instance>(
-                m_compiled_scene->instances.data(),
-                m_compiled_scene->instances.size())));
+    // Gate on the live acceleration-structure flag rather than on
+    // whether a TLAS happens to exist. The earlier ON→OFF transition
+    // left a stale TLAS in m_compiled_scene; without this gate every
+    // subsequent refresh would rebuild it for nothing, which is the
+    // exact "PT toggle off doesn't restore FPS" symptom. Now: if PT
+    // is off, we both skip the rebuild AND drop any lingering TLAS
+    // so the rasterizer-only path stays cheap.
+    if (m_build_acceleration_structures) {
+        m_compiled_scene->tlas = std::unique_ptr<tracey::TopLevelAccelerationStructure>(
+            m_device->createTopLevelAccelerationStructure(
+                std::span<const tracey::BottomLevelAccelerationStructure *>(
+                    blasPtrs.data(), blasPtrs.size()),
+                std::span<const tracey::Tlas::Instance>(
+                    m_compiled_scene->instances.data(),
+                    m_compiled_scene->instances.size())));
+    } else if (m_compiled_scene->tlas) {
+        m_compiled_scene->tlas.reset();
+    }
     return true;
 }
 

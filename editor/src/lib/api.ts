@@ -4,6 +4,11 @@
 
 import { WebViewTransport, Transport } from './transport';
 
+export interface Vec2 {
+  x: number;
+  y: number;
+}
+
 export interface Vec3 {
   x: number;
   y: number;
@@ -49,15 +54,28 @@ export interface Actor {
   // skipped by the SceneCompiler, so they appear in neither the path tracer
   // nor the rasterizer overlay. Defaults to true server-side.
   visible?: boolean;
-  // Houdini-style /obj light component. Present when the actor was emitted
-  // by a `light` SOP terminal; the hierarchy panel swaps the actor's icon
-  // and the inspector exposes light params instead of the geometry
-  // transform/material rows.
+  // Scene-level light component. Present either because the actor was
+  // emitted by a `light` SOP terminal OR because the user created it via
+  // the hierarchy's "+ Add Light" menu. The hierarchy panel swaps the
+  // actor's icon for 💡 and the inspector renders the type-conditional
+  // light rows instead of the geometry / material section.
   light?: {
-    // 0 = Point, 1 = Distant. Matches tracey::LightType on the engine side.
+    // Matches tracey::LightType on the engine side.
+    //   0 = Point, 1 = Distant ("Sun"), 2 = Dome, 3 = Area.
     type: number;
     color: Vec3;
     intensity: number;
+    // Dome procedural-sky gradient. Always present in the payload — the
+    // inspector only renders these rows when type === Dome.
+    sky_color: Vec3;
+    horizon_color: Vec3;
+    ground_color: Vec3;
+    // Optional HDRI override for Dome. Empty string = procedural gradient.
+    hdri_path: string;
+    // Area-light rectangle extent (XY in the actor's local plane).
+    size: Vec2;
+    // Point-light soft radius for 1/(d² + r²) attenuation. 0 = hard point.
+    radius: number;
   } | null;
 }
 
@@ -171,6 +189,32 @@ export const getCamera = () => send<Camera>('get_camera');
 // pivot around it. Pass null to clear.
 export const selectActor = (actorId: number | null) =>
   send<null>('select_actor', { actor_id: actorId });
+
+// Scene-level light lifecycle. Lights are first-class entities authored
+// directly in the editor (no SOP node involved) — they live alongside the
+// camera in the scene tree and round-trip through save/load via the
+// existing actor JSON.
+export type LightKind = 'dome' | 'sun' | 'point' | 'area';
+export const createLight = (type: LightKind, name?: string) =>
+  send<number>('create_light', name ? { type, name } : { type });
+
+// Patch handler: send only the fields you changed. The native side reads
+// each key with a default, so missing keys leave their stored value alone.
+// Triggers a re-compile so both rasterizer + path tracer see the new
+// light parameters on the next render.
+export interface LightParamPatch {
+  type?: number;
+  color?: Vec3;
+  intensity?: number;
+  sky_color?: Vec3;
+  horizon_color?: Vec3;
+  ground_color?: Vec3;
+  hdri_path?: string;
+  size?: Vec2;
+  radius?: number;
+}
+export const setLightParams = (actorId: number, patch: LightParamPatch) =>
+  send<boolean>('set_light_params', { actor_id: actorId, ...patch });
 
 // Tell the native side that a JS modal grab (G/R/S) is active. While
 // true the engine suppresses camera orbit/pan/dolly and instead

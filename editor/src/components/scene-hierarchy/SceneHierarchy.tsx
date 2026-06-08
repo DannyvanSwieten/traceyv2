@@ -1,6 +1,6 @@
 import { Component, For, Show, createSignal } from 'solid-js';
 import * as api from '../../lib/api';
-import type { Actor as ApiActor } from '../../lib/api';
+import type { Actor as ApiActor, LightKind } from '../../lib/api';
 import './SceneHierarchy.css';
 
 export type Actor = ApiActor;
@@ -30,8 +30,23 @@ interface SceneHierarchyProps {
   // otherwise accepts children). Used to suppress the "drop INSIDE" zone on
   // rows that can't take a child.
   canDropInside?: (targetId: number) => boolean;
+  // Optional handler for the "+ Add Light" affordance in the panel header.
+  // The parent calls api.createLight(type), refreshes its actors signal,
+  // and (typically) selects the newly created light row. Omit to hide the
+  // button entirely.
+  onLightAdd?: (type: LightKind) => void;
   isLoading: () => boolean;
 }
+
+// Light-type metadata for the "+ Add Light" popover. Order matches the
+// menu reading: Dome first because it's the most common "I want lighting,
+// any lighting" action; Sun next as the second most-reached-for type.
+const LIGHT_MENU: ReadonlyArray<{ kind: LightKind; label: string; icon: string }> = [
+  { kind: 'dome',  label: 'Dome',  icon: '🌐' },
+  { kind: 'sun',   label: 'Sun',   icon: '☀️' },
+  { kind: 'point', label: 'Point', icon: '●' },
+  { kind: 'area',  label: 'Area',  icon: '▭' },
+];
 
 function buildActorTree(actors: Actor[]): TreeNode[] {
   const actorMap = new Map(actors.map((a) => [a.id, a]));
@@ -230,6 +245,7 @@ const TreeItem: Component<TreeItemProps> = (props) => {
 
 export const SceneHierarchy: Component<SceneHierarchyProps> = (props) => {
   const tree = () => buildActorTree(props.actors());
+  const [lightMenuOpen, setLightMenuOpen] = createSignal(false);
 
   // Delete/Backspace on the panel deletes the selected actor — same gesture
   // the SOP canvas uses for the node version.
@@ -249,6 +265,42 @@ export const SceneHierarchy: Component<SceneHierarchyProps> = (props) => {
 
   return (
     <div class="scene-hierarchy" tabIndex={0} onKeyDown={onKeyDown}>
+      <Show when={props.onLightAdd}>
+        <div class="hierarchy-toolbar">
+          <div class="hierarchy-add-light">
+            <button
+              type="button"
+              class="hierarchy-add-light-btn"
+              title="Add a scene-level light (Dome / Sun / Point / Area)"
+              onClick={() => setLightMenuOpen((v) => !v)}
+            >
+              + 💡 Add Light
+            </button>
+            <Show when={lightMenuOpen()}>
+              <div
+                class="hierarchy-add-light-menu"
+                onMouseLeave={() => setLightMenuOpen(false)}
+              >
+                <For each={LIGHT_MENU}>
+                  {(item) => (
+                    <button
+                      type="button"
+                      class="hierarchy-add-light-menu-item"
+                      onClick={() => {
+                        setLightMenuOpen(false);
+                        props.onLightAdd?.(item.kind);
+                      }}
+                    >
+                      <span class="hierarchy-add-light-menu-icon">{item.icon}</span>
+                      <span>{item.label}</span>
+                    </button>
+                  )}
+                </For>
+              </div>
+            </Show>
+          </div>
+        </div>
+      </Show>
       <Show
         when={!props.isLoading() && props.actors().length > 0}
         fallback={

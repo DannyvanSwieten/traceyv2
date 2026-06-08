@@ -16,6 +16,7 @@
 
 #include "render_engine.hpp"
 #include "viewport_renderer.hpp"
+#include "scene/camera.hpp"    // tracey::Camera (held by value in RenderRequest)
 #include "sops/sop_node.hpp"   // tracey::sops::EmittedActor (used in cook-result slot)
 #include "sops/sop_graph.hpp"  // tracey::sops::NodeCookTiming
 #include "sops/cook_cache.hpp"
@@ -185,6 +186,58 @@ private:
     double m_smoothed_present_ms = 0.0;
     std::mutex m_mutex;
     BroadcastCallback m_broadcast;
+
+    // ── Render worker thread ───────────────────────────────────────────
+    // The main thread used to call the rasterizer directly inside
+    // render_tick, blocking on the GPU fence wait for the duration of
+    // the dispatch. That froze the UI under heavy raster loads and
+    // serialised everything Vulkan-shaped (cook, present) behind it.
+    //
+    // Now: render_tick snapshots scene + camera under m_mutex, hands
+    // the snapshot to a worker thread via a latest-wins mailbox, and
+    // immediately moves on to present whatever the worker most-recently
+    // finished. The worker calls Rasterizer::render — which has been
+    // restructured to release the process-wide queue mutex around its
+    // fence wait, so the main thread's present can submit while the
+    // worker is waiting for GPU completion.
+    //
+    // Single-buffered output image race: a present that overlaps an
+    // in-progress raster is still safe because both submissions
+    // serialize through vulkanQueueMutex and Vulkan's per-queue
+    // ordering ensures the present-blit executes AFTER the raster
+    // it's reading from. CPU-side, main and worker hold the queue
+    // mutex only during command-buffer record + submit (microseconds);
+    // both fence waits run lock-free.
+    struct RenderRequest
+    {
+        // Held by shared_ptr so the worker keeps the scene alive even
+        // if apply_emitted swaps in a new CompiledScene on the main
+        // thread mid-render.
+        std::shared_ptr<const tracey::SceneCompiler::CompiledScene> scene;
+        tracey::Camera camera;
+    };
+
+    std::thread             m_render_thread;
+    std::mutex              m_render_mutex;
+    std::condition_variable m_render_cv;
+    // Latest-wins mailbox. The main thread overwrites whenever it
+    // builds a fresher snapshot; the worker drains-and-runs.
+    std::optional<RenderRequest> m_pending_render_request;
+    bool m_render_thread_should_exit = false;
+    // Goes up by one each time the worker finishes a render. The main
+    // thread reads this to decide whether the rasterizer output image
+    // has at least one valid frame to present (the very first ticks
+    // before the worker has produced anything, we skip present).
+    std::atomic<uint64_t> m_render_frames_completed{0};
+    // Last raster wall-clock reported by the worker. Plain atomic so
+    // the profiler broadcast can read it without taking the render
+    // mutex. Stored in milliseconds.
+    std::atomic<double> m_worker_raster_ms{0.0};
+
+    void render_thread_main();
+    // Stop + join the render worker. Safe to call from the destructor
+    // even if the thread was never started (no-op).
+    void stop_render_thread();
 
     // Scene-level SOP graph. The Houdini-style /obj network: cooking it
     // produces the list of actors the path tracer renders. All actor

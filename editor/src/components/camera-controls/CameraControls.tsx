@@ -1,5 +1,6 @@
 import { Component, Accessor, For } from 'solid-js';
 import * as api from '../../lib/api';
+import { NumberInput } from '../number-input/NumberInput';
 import './CameraControls.css';
 
 export interface CameraPosition {
@@ -26,13 +27,10 @@ const VIEW_PRESETS: { label: string; view: api.CameraView; hint: string }[] = [
 ];
 
 export const CameraControls: Component<CameraControlsProps> = (props) => {
-  const handleChange = (axis: 'x' | 'y' | 'z', value: string) => {
-    const numValue = parseFloat(value);
-    if (!isNaN(numValue)) {
-      const newPos = { ...props.position() };
-      newPos[axis] = numValue;
-      props.onPositionChange(newPos);
-    }
+  const setAxis = (axis: 'x' | 'y' | 'z', numValue: number) => {
+    const newPos = { ...props.position() };
+    newPos[axis] = numValue;
+    props.onPositionChange(newPos);
   };
 
   const applyPreset = async (view: api.CameraView) => {
@@ -67,36 +65,19 @@ export const CameraControls: Component<CameraControlsProps> = (props) => {
         </For>
       </div>
       <div class="camera-inputs">
-        <div class="camera-input-row">
-          <label for="cam-x">X</label>
-          <input
-            id="cam-x"
-            type="number"
-            step="0.1"
-            value={props.position().x.toFixed(2)}
-            onChange={(e) => handleChange('x', e.currentTarget.value)}
-          />
-        </div>
-        <div class="camera-input-row">
-          <label for="cam-y">Y</label>
-          <input
-            id="cam-y"
-            type="number"
-            step="0.1"
-            value={props.position().y.toFixed(2)}
-            onChange={(e) => handleChange('y', e.currentTarget.value)}
-          />
-        </div>
-        <div class="camera-input-row">
-          <label for="cam-z">Z</label>
-          <input
-            id="cam-z"
-            type="number"
-            step="0.1"
-            value={props.position().z.toFixed(2)}
-            onChange={(e) => handleChange('z', e.currentTarget.value)}
-          />
-        </div>
+        <For each={['x', 'y', 'z'] as const}>
+          {(axis) => (
+            <div class="camera-input-row">
+              <label>{axis.toUpperCase()}</label>
+              <NumberInput
+                step={0.1}
+                title={`Camera ${axis.toUpperCase()}`}
+                value={() => props.position()[axis]}
+                onCommit={(v) => setAxis(axis, v)}
+              />
+            </div>
+          )}
+        </For>
       </div>
     </div>
   );

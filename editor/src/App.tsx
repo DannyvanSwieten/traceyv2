@@ -686,10 +686,24 @@ const App: Component = () => {
     // server broadcasts `scene_changed`. Without this, adding e.g. an
     // object_output node in the docked SOP graph leaves the hierarchy stale
     // until the dock is closed (which is the only other refresh path).
+    //
+    // Coalesce bursts: a particle sim ticking at ~60Hz fires 60
+    // scene_changed events per second, but the hierarchy only ever
+    // changes when the user adds/removes a SOP node (not when particles
+    // move). rAF-debounce so all events within one animation frame
+    // resolve to a single fetch + setActors. The trailing fetch still
+    // lands within ~16ms of the last event, so the UI stays in sync;
+    // we just stop hammering the IPC bridge 60×/sec with redundant
+    // round-trips that re-fetch the same actor list.
+    let scenePendingRaf: number | null = null;
     unlistenSceneChanged = api.listen('scene_changed', () => {
-      api.getAllActors()
-        .then(setActors)
-        .catch((e) => console.warn('actor refresh after scene_changed failed:', e));
+      if (scenePendingRaf !== null) return;
+      scenePendingRaf = requestAnimationFrame(() => {
+        scenePendingRaf = null;
+        api.getAllActors()
+          .then(setActors)
+          .catch((e) => console.warn('actor refresh after scene_changed failed:', e));
+      });
     });
     // Engine-side cook of the default SOP graph completes during native
     // startup — typically before this JS bundle has had a chance to
@@ -1009,6 +1023,21 @@ const App: Component = () => {
             actors={actors}
             selectedActorId={selectedActorId}
             onActorSelect={setSelectedActorId}
+            onLightAdd={async (type) => {
+              // Create a manual light via the new IPC, then refresh the
+              // actor list and select the new row. The native side has
+              // already queued a recompile + scene_changed broadcast, but
+              // we still need to repopulate the local store because the
+              // broadcast handler isn't always synchronous.
+              try {
+                const newId = await api.createLight(type);
+                setActors(await api.getAllActors());
+                setSelectedActorId(newId);
+                if (viewportRef) viewportRef.render();
+              } catch (e) {
+                console.warn('[add light] failed:', e);
+              }
+            }}
             onActorVisibilityChange={(id, visible) =>
               setActors((prev) =>
                 prev.map((a) => (a.id === id ? { ...a, visible } : a)),

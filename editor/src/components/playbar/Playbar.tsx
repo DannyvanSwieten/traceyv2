@@ -11,6 +11,7 @@ import {
   toggleAutoKey,
   togglePlayPause,
 } from '../../stores/timeline';
+import { NumberInput } from '../number-input/NumberInput';
 import './Playbar.css';
 
 const ICON_SKIP_BACK = '⏮';
@@ -62,30 +63,26 @@ export const Playbar: Component = () => {
     return Math.min(Math.max((f - t.frame_start) / span, 0), 1);
   };
 
-  const onFrameInput = (e: Event) => {
-    const f = parseFloat((e.currentTarget as HTMLInputElement).value);
+  const commitFrame = (f: number) => {
     if (Number.isFinite(f)) seekFrame(Math.round(f));
   };
 
-  const onFpsInput = (e: Event) => {
-    const fps = parseFloat((e.currentTarget as HTMLInputElement).value);
+  const commitFps = (fps: number) => {
     if (!Number.isFinite(fps) || fps <= 0) return;
     const t = timeline();
     setRange(fps, t.frame_start, t.frame_end);
   };
 
-  const onStartInput = (e: Event) => {
-    const v = parseInt((e.currentTarget as HTMLInputElement).value, 10);
+  const commitStart = (v: number) => {
     if (!Number.isFinite(v)) return;
     const t = timeline();
-    setRange(t.fps, v, Math.max(t.frame_end, v));
+    setRange(t.fps, Math.round(v), Math.max(t.frame_end, Math.round(v)));
   };
 
-  const onEndInput = (e: Event) => {
-    const v = parseInt((e.currentTarget as HTMLInputElement).value, 10);
+  const commitEnd = (v: number) => {
     if (!Number.isFinite(v)) return;
     const t = timeline();
-    setRange(t.fps, Math.min(t.frame_start, v), v);
+    setRange(t.fps, Math.min(t.frame_start, Math.round(v)), Math.round(v));
   };
 
   const onLoopChange = (e: Event) => {
@@ -142,13 +139,13 @@ export const Playbar: Component = () => {
       </div>
 
       <div class="playbar-range">
-        <input
+        <NumberInput
           class="playbar-num"
-          type="number"
-          step="1"
+          step={1}
+          decimals={0}
           title="Frame range start"
-          value={timeline().frame_start}
-          onChange={onStartInput}
+          value={() => timeline().frame_start}
+          onCommit={commitStart}
         />
       </div>
 
@@ -168,37 +165,37 @@ export const Playbar: Component = () => {
       </div>
 
       <div class="playbar-range">
-        <input
+        <NumberInput
           class="playbar-num"
-          type="number"
-          step="1"
+          step={1}
+          decimals={0}
           title="Frame range end"
-          value={timeline().frame_end}
-          onChange={onEndInput}
+          value={() => timeline().frame_end}
+          onCommit={commitEnd}
         />
       </div>
 
       <div class="playbar-frame">
-        <input
+        <NumberInput
           class="playbar-num playbar-frame-input"
-          type="number"
-          step="1"
+          step={1}
+          decimals={0}
           title="Current frame"
-          value={Math.round(frameForSeconds(timeline().current_time, timeline().fps))}
-          onChange={onFrameInput}
+          value={() => Math.round(frameForSeconds(timeline().current_time, timeline().fps))}
+          onCommit={commitFrame}
         />
         <span class="playbar-frame-total">/ {timeline().frame_end}</span>
       </div>
 
       <div class="playbar-fps">
-        <input
+        <NumberInput
           class="playbar-num"
-          type="number"
-          step="1"
-          min="1"
+          step={1}
+          decimals={0}
+          min={1}
           title="Frames per second"
-          value={timeline().fps}
-          onChange={onFpsInput}
+          value={() => timeline().fps}
+          onCommit={commitFps}
         />
         <span class="playbar-fps-label">fps</span>
       </div>

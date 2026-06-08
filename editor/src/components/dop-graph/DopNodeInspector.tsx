@@ -18,6 +18,7 @@ import {
 import { dopGraph, selectedNode, setParam } from '../../stores/dops';
 import { openVopEditor } from '../../stores/vops';
 import type { ParamValueVec3 } from '../../lib/sop_graph';
+import { NumberInput } from '../number-input/NumberInput';
 
 export const DopNodeInspector: Component = () => {
   const node = createMemo<DopNode | null>(() => {
@@ -101,14 +102,12 @@ const ParamRow: Component<ParamRowProps> = (props) => {
                   patch({ type: 'float', value: parseFloat(e.currentTarget.value) })
                 }
               />
-              <input
-                type="number"
+              <NumberInput
                 class="sop-param-slider-readout"
-                value={value()}
                 step={step}
-                onInput={(e) =>
-                  patch({ type: 'float', value: parseFloat(e.currentTarget.value) || 0 })
-                }
+                title={`${props.spec.name} (value)`}
+                value={value}
+                onCommit={(v) => patch({ type: 'float', value: v })}
               />
             </div>
           </div>
@@ -117,12 +116,11 @@ const ParamRow: Component<ParamRowProps> = (props) => {
       return (
         <div class="sop-param-row">
           <label>{props.spec.name}</label>
-          <input
-            type="number"
-            value={value()}
-            onInput={(e) =>
-              patch({ type: 'float', value: parseFloat(e.currentTarget.value) || 0 })
-            }
+          <NumberInput
+            step={0.01}
+            title={props.spec.name}
+            value={value}
+            onCommit={(v) => patch({ type: 'float', value: v })}
           />
         </div>
       );
@@ -150,13 +148,12 @@ const ParamRow: Component<ParamRowProps> = (props) => {
       return (
         <div class="sop-param-row">
           <label>{props.spec.name}</label>
-          <input
-            type="number"
+          <NumberInput
             step={1}
-            value={value()}
-            onInput={(e) =>
-              patch({ type: 'int', value: parseInt(e.currentTarget.value, 10) || 0 })
-            }
+            decimals={0}
+            title={props.spec.name}
+            value={value}
+            onCommit={(v) => patch({ type: 'int', value: Math.round(v) })}
           />
         </div>
       );
@@ -189,12 +186,11 @@ const ParamRow: Component<ParamRowProps> = (props) => {
           <div class="sop-param-vec3-group">
             <Index each={[0, 1, 2] as const}>
               {(idx) => (
-                <input
-                  type="number"
-                  value={value()[idx()]}
-                  onInput={(e) =>
-                    patchAxis(idx(), parseFloat(e.currentTarget.value) || 0)
-                  }
+                <NumberInput
+                  step={0.01}
+                  title={`${props.spec.name} ${idx() === 0 ? 'x' : idx() === 1 ? 'y' : 'z'}`}
+                  value={() => value()[idx()]}
+                  onCommit={(v) => patchAxis(idx(), v)}
                 />
               )}
             </Index>

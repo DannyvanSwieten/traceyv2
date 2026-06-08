@@ -1,6 +1,7 @@
 import { Component, Show, createEffect, createSignal, onCleanup } from 'solid-js';
 import * as api from '../../lib/api';
 import { timeline } from '../../stores/timeline';
+import { NumberInput } from '../number-input/NumberInput';
 import './ExportVideoDialog.css';
 
 interface ExportVideoDialogProps {
@@ -235,52 +236,47 @@ export const ExportVideoDialog: Component<ExportVideoDialogProps> = (props) => {
             <div class="export-video-row">
               <label>Frame range</label>
               <div class="export-video-inline">
-                <input
-                  type="number"
+                <NumberInput
+                  decimals={0} step={1}
                   title="First frame"
-                  value={frameStart()}
-                  onInput={(e) => setFrameStart(parseInt(e.currentTarget.value, 10) || 1)}
+                  value={frameStart}
+                  onCommit={(v) => setFrameStart(Math.max(1, Math.round(v)))}
                 />
                 <span class="export-video-sep">to</span>
-                <input
-                  type="number"
+                <NumberInput
+                  decimals={0} step={1}
                   title="Last frame"
-                  value={frameEnd()}
-                  onInput={(e) => setFrameEnd(parseInt(e.currentTarget.value, 10) || 1)}
+                  value={frameEnd}
+                  onCommit={(v) => setFrameEnd(Math.max(1, Math.round(v)))}
                 />
               </div>
             </div>
 
             <div class="export-video-row">
               <label>FPS</label>
-              <input
-                type="number"
+              <NumberInput
+                step={0.1}
                 title="Frames per second"
-                value={fps()}
-                step="0.1"
-                onInput={(e) => setFps(parseFloat(e.currentTarget.value) || 24)}
+                value={fps}
+                onCommit={(v) => setFps(v > 0 ? v : 24)}
               />
             </div>
 
             <div class="export-video-row">
               <label>Resolution</label>
               <div class="export-video-inline">
-                <input
-                  type="number"
+                <NumberInput
+                  decimals={0} step={2} min={2}
                   title="Output width in pixels (must be even)"
-                  value={width()}
-                  min="2"
-                  step="2"
-                  onInput={(e) => setWidth(parseInt(e.currentTarget.value, 10) || 0)}
+                  value={width}
+                  onCommit={(v) => setWidth(Math.max(2, Math.round(v)))}
                 />
                 <span class="export-video-sep">×</span>
-                <input
-                  type="number"
+                <NumberInput
+                  decimals={0} step={2} min={2}
                   title="Output height in pixels (must be even)"
-                  value={height()}
-                  min="2"
-                  step="2"
-                  onInput={(e) => setHeight(parseInt(e.currentTarget.value, 10) || 0)}
+                  value={height}
+                  onCommit={(v) => setHeight(Math.max(2, Math.round(v)))}
                 />
                 <button type="button" title="Match viewport" onClick={matchViewport}>
                   Match viewport
@@ -296,23 +292,21 @@ export const ExportVideoDialog: Component<ExportVideoDialogProps> = (props) => {
 
             <div class="export-video-row">
               <label>Samples / frame</label>
-              <input
-                type="number"
+              <NumberInput
+                decimals={0} step={1} min={1}
                 title="Path-tracer samples accumulated per frame"
-                value={samples()}
-                min="1"
-                onInput={(e) => setSamples(parseInt(e.currentTarget.value, 10) || 1)}
+                value={samples}
+                onCommit={(v) => setSamples(Math.max(1, Math.round(v)))}
               />
             </div>
 
             <div class="export-video-row">
               <label>Max bounces</label>
-              <input
-                type="number"
+              <NumberInput
+                decimals={0} step={1} min={0}
                 title="Maximum ray bounces per sample (0 = camera ray only)"
-                value={maxBounces()}
-                min="0"
-                onInput={(e) => setMaxBounces(parseInt(e.currentTarget.value, 10) || 0)}
+                value={maxBounces}
+                onCommit={(v) => setMaxBounces(Math.max(0, Math.round(v)))}
               />
             </div>
 

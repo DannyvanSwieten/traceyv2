@@ -7,6 +7,7 @@ import {
   setMaterialEditorOpen,
 } from '../../stores/materials';
 import { KeyframeDot } from '../keyframe-dot/KeyframeDot';
+import { NumberInput } from '../number-input/NumberInput';
 import { sopGraph } from '../../stores/sops';
 import { findNodeRecursive } from '../../lib/sop_graph';
 import { autoKey, setKeyAtPlayhead } from '../../stores/timeline';
@@ -57,6 +58,37 @@ export const ActorProperties: Component<ActorPropertiesProps> = (props) => {
     }
   });
 
+  // Light-component editing. The native handler is a patch handler:
+  // missing keys leave their stored value alone, so each control sends
+  // only the field it touched. We always refetch the actor list after
+  // each edit so the UI keeps a single source of truth even when the
+  // server clamps or normalises a value (none of the current fields do,
+  // but the path is the same as setActorMaterial below).
+  const refreshActorsAfterLight = async () => {
+    try {
+      const next = await api.getAllActors();
+      // The parent's actors signal is read-only here, so we mutate the
+      // selected actor in place — Solid will pick up the change because
+      // the selector closes over the same object reference the prop list
+      // holds. Other rows are unchanged. (A future cleanup could pass a
+      // setActors callback down through props for full immutability.)
+      const cur = next.find((a) => a.id === props.selectedActorId());
+      const local = selectedActor();
+      if (cur && local) Object.assign(local, cur);
+    } catch (e) {
+      console.warn('actor refresh after light edit failed:', e);
+    }
+  };
+  const editLight = async (patch: api.LightParamPatch) => {
+    const id = props.selectedActorId();
+    if (id === null) return;
+    try {
+      await api.setLightParams(id, patch);
+      await refreshActorsAfterLight();
+    } catch (e) {
+      console.error('setLightParams failed:', e);
+    }
+  };
   const onMaterialPick = async (actorId: number, libraryName: string) => {
     // Sentinel: "+ New Material…" branch creates a fresh blank graph
     // in the library, assigns it to the actor, and pops the dock open
@@ -129,18 +161,6 @@ export const ActorProperties: Component<ActorPropertiesProps> = (props) => {
     }
   };
 
-  const handleInputChange = (
-    actor: Actor,
-    field: 'position' | 'scale',
-    axis: 'x' | 'y' | 'z',
-    inputValue: string
-  ) => {
-    const value = parseFloat(inputValue);
-    if (!isNaN(value)) {
-      updateTransform(actor, field, axis, value);
-    }
-  };
-
   // Read the actor's `rotate_euler_deg` straight off its source SOP node so
   // the inspector mirrors the storage shape exactly (no quat → euler
   // conversion to gimbal-mangle the user's edits). Returns [0,0,0] when the
@@ -157,10 +177,9 @@ export const ActorProperties: Component<ActorPropertiesProps> = (props) => {
   const handleRotationChange = async (
     actor: Actor,
     axis: 0 | 1 | 2,
-    inputValue: string,
+    value: number,
   ) => {
-    const value = parseFloat(inputValue);
-    if (Number.isNaN(value)) return;
+    if (!Number.isFinite(value)) return;
     const cur = rotationEuler(actor);
     const next: [number, number, number] = [cur[0], cur[1], cur[2]];
     next[axis] = value;
@@ -202,185 +221,209 @@ export const ActorProperties: Component<ActorPropertiesProps> = (props) => {
 
             <div class="property-section">
               <h4>Transform</h4>
-              <div class="transform-group">
-                <span class="transform-label">Position</span>
-                <div class="transform-inputs">
-                  <div class="transform-input-row">
-                    <label for={`pos-x-${actor().id}`}>X</label>
-                    <input
-                      id={`pos-x-${actor().id}`}
-                      type="number"
-                      step="0.1"
-                      value={actor().transform.position.x.toFixed(3)}
-                      onChange={(e) =>
-                        handleInputChange(actor(), 'position', 'x', e.currentTarget.value)
-                      }
-                    />
-                    <KeyframeDot
-                      nodeUid={actor().sop_node_uid}
-                      paramName="translate"
-                      component={0}
-                      value={() => actor().transform.position.x}
-                    />
+              <For each={[
+                { field: 'position' as const, label: 'Position',     step: 0.1, paramName: 'translate' },
+                { field: 'scale'    as const, label: 'Scale',        step: 0.1, paramName: 'scale' },
+              ]}>
+                {(g) => (
+                  <div class="transform-group">
+                    <span class="transform-label">{g.label}</span>
+                    <div class="transform-inputs">
+                      <For each={['x', 'y', 'z'] as const}>
+                        {(axis, idx) => (
+                          <div class="transform-input-row">
+                            <label>{axis.toUpperCase()}</label>
+                            <NumberInput
+                              step={g.step}
+                              title={`${g.label} ${axis.toUpperCase()}`}
+                              value={() => actor().transform[g.field][axis]}
+                              onCommit={(v) => updateTransform(actor(), g.field, axis, v)}
+                            />
+                            <KeyframeDot
+                              nodeUid={actor().sop_node_uid}
+                              paramName={g.paramName}
+                              component={idx()}
+                              value={() => actor().transform[g.field][axis]}
+                            />
+                          </div>
+                        )}
+                      </For>
+                    </div>
                   </div>
-                  <div class="transform-input-row">
-                    <label for={`pos-y-${actor().id}`}>Y</label>
-                    <input
-                      id={`pos-y-${actor().id}`}
-                      type="number"
-                      step="0.1"
-                      value={actor().transform.position.y.toFixed(3)}
-                      onChange={(e) =>
-                        handleInputChange(actor(), 'position', 'y', e.currentTarget.value)
-                      }
-                    />
-                    <KeyframeDot
-                      nodeUid={actor().sop_node_uid}
-                      paramName="translate"
-                      component={1}
-                      value={() => actor().transform.position.y}
-                    />
-                  </div>
-                  <div class="transform-input-row">
-                    <label for={`pos-z-${actor().id}`}>Z</label>
-                    <input
-                      id={`pos-z-${actor().id}`}
-                      type="number"
-                      step="0.1"
-                      value={actor().transform.position.z.toFixed(3)}
-                      onChange={(e) =>
-                        handleInputChange(actor(), 'position', 'z', e.currentTarget.value)
-                      }
-                    />
-                    <KeyframeDot
-                      nodeUid={actor().sop_node_uid}
-                      paramName="translate"
-                      component={2}
-                      value={() => actor().transform.position.z}
-                    />
-                  </div>
-                </div>
-              </div>
+                )}
+              </For>
               <div class="transform-group">
                 <span class="transform-label">Rotation (deg)</span>
                 <div class="transform-inputs">
-                  <div class="transform-input-row">
-                    <label for={`rot-x-${actor().id}`}>X</label>
-                    <input
-                      id={`rot-x-${actor().id}`}
-                      type="number"
-                      step="1"
-                      value={rotationEuler(actor())[0].toFixed(2)}
-                      onChange={(e) =>
-                        handleRotationChange(actor(), 0, e.currentTarget.value)
-                      }
-                    />
-                    <KeyframeDot
-                      nodeUid={actor().sop_node_uid}
-                      paramName="rotate_euler_deg"
-                      component={0}
-                      value={() => rotationEuler(actor())[0]}
-                    />
-                  </div>
-                  <div class="transform-input-row">
-                    <label for={`rot-y-${actor().id}`}>Y</label>
-                    <input
-                      id={`rot-y-${actor().id}`}
-                      type="number"
-                      step="1"
-                      value={rotationEuler(actor())[1].toFixed(2)}
-                      onChange={(e) =>
-                        handleRotationChange(actor(), 1, e.currentTarget.value)
-                      }
-                    />
-                    <KeyframeDot
-                      nodeUid={actor().sop_node_uid}
-                      paramName="rotate_euler_deg"
-                      component={1}
-                      value={() => rotationEuler(actor())[1]}
-                    />
-                  </div>
-                  <div class="transform-input-row">
-                    <label for={`rot-z-${actor().id}`}>Z</label>
-                    <input
-                      id={`rot-z-${actor().id}`}
-                      type="number"
-                      step="1"
-                      value={rotationEuler(actor())[2].toFixed(2)}
-                      onChange={(e) =>
-                        handleRotationChange(actor(), 2, e.currentTarget.value)
-                      }
-                    />
-                    <KeyframeDot
-                      nodeUid={actor().sop_node_uid}
-                      paramName="rotate_euler_deg"
-                      component={2}
-                      value={() => rotationEuler(actor())[2]}
-                    />
-                  </div>
-                </div>
-              </div>
-              <div class="transform-group">
-                <span class="transform-label">Scale</span>
-                <div class="transform-inputs">
-                  <div class="transform-input-row">
-                    <label for={`scale-x-${actor().id}`}>X</label>
-                    <input
-                      id={`scale-x-${actor().id}`}
-                      type="number"
-                      step="0.1"
-                      value={actor().transform.scale.x.toFixed(3)}
-                      onChange={(e) =>
-                        handleInputChange(actor(), 'scale', 'x', e.currentTarget.value)
-                      }
-                    />
-                    <KeyframeDot
-                      nodeUid={actor().sop_node_uid}
-                      paramName="scale"
-                      component={0}
-                      value={() => actor().transform.scale.x}
-                    />
-                  </div>
-                  <div class="transform-input-row">
-                    <label for={`scale-y-${actor().id}`}>Y</label>
-                    <input
-                      id={`scale-y-${actor().id}`}
-                      type="number"
-                      step="0.1"
-                      value={actor().transform.scale.y.toFixed(3)}
-                      onChange={(e) =>
-                        handleInputChange(actor(), 'scale', 'y', e.currentTarget.value)
-                      }
-                    />
-                    <KeyframeDot
-                      nodeUid={actor().sop_node_uid}
-                      paramName="scale"
-                      component={1}
-                      value={() => actor().transform.scale.y}
-                    />
-                  </div>
-                  <div class="transform-input-row">
-                    <label for={`scale-z-${actor().id}`}>Z</label>
-                    <input
-                      id={`scale-z-${actor().id}`}
-                      type="number"
-                      step="0.1"
-                      value={actor().transform.scale.z.toFixed(3)}
-                      onChange={(e) =>
-                        handleInputChange(actor(), 'scale', 'z', e.currentTarget.value)
-                      }
-                    />
-                    <KeyframeDot
-                      nodeUid={actor().sop_node_uid}
-                      paramName="scale"
-                      component={2}
-                      value={() => actor().transform.scale.z}
-                    />
-                  </div>
+                  <For each={[0, 1, 2] as const}>
+                    {(idx) => (
+                      <div class="transform-input-row">
+                        <label>{idx === 0 ? 'X' : idx === 1 ? 'Y' : 'Z'}</label>
+                        <NumberInput
+                          step={1}
+                          title={`Rotation ${idx === 0 ? 'X' : idx === 1 ? 'Y' : 'Z'} (deg)`}
+                          value={() => rotationEuler(actor())[idx]}
+                          onCommit={(v) => {
+                            void handleRotationChange(actor(), idx, v);
+                          }}
+                        />
+                        <KeyframeDot
+                          nodeUid={actor().sop_node_uid}
+                          paramName="rotate_euler_deg"
+                          component={idx}
+                          value={() => rotationEuler(actor())[idx]}
+                        />
+                      </div>
+                    )}
+                  </For>
                 </div>
               </div>
             </div>
 
+            <Show when={actor().light}>
+              {(light) => {
+                const t = () => light().type;  // 0=Point 1=Distant 2=Dome 3=Area
+                return (
+                  <div class="property-section">
+                    <h4>Light</h4>
+                    <div class="property-row">
+                      <span class="property-label">Type</span>
+                      <select
+                        class="material-picker"
+                        title="Light type"
+                        value={String(light().type)}
+                        onChange={(e) =>
+                          editLight({ type: parseInt(e.currentTarget.value, 10) })
+                        }
+                      >
+                        <option value="2">Dome (environment)</option>
+                        <option value="1">Sun (directional)</option>
+                        <option value="0">Point</option>
+                        <option value="3">Area (rectangle)</option>
+                      </select>
+                    </div>
+                    <div class="transform-group">
+                      <span class="transform-label">Color</span>
+                      <div class="transform-inputs">
+                        <For each={['x', 'y', 'z'] as const}>
+                          {(axis) => (
+                            <div class="transform-input-row">
+                              <label>{axis === 'x' ? 'R' : axis === 'y' ? 'G' : 'B'}</label>
+                              <NumberInput
+                                step={0.05}
+                                min={0}
+                                title={`Light color ${axis.toUpperCase()}`}
+                                value={() => light().color[axis]}
+                                onCommit={(v) => {
+                                  const cur = light().color;
+                                  editLight({ color: { ...cur, [axis]: v } });
+                                }}
+                              />
+                            </div>
+                          )}
+                        </For>
+                      </div>
+                    </div>
+                    <div class="property-row">
+                      <span class="property-label">Intensity</span>
+                      <NumberInput
+                        step={0.1}
+                        min={0}
+                        title="Light intensity"
+                        value={() => light().intensity}
+                        onCommit={(v) => editLight({ intensity: v })}
+                      />
+                    </div>
+                    {/* Type-conditional rows */}
+                    <Show when={t() === 2 /* Dome */}>
+                      <For each={[
+                        { field: 'sky_color' as const,     label: 'Sky' },
+                        { field: 'horizon_color' as const, label: 'Horizon' },
+                        { field: 'ground_color' as const,  label: 'Ground' },
+                      ]}>
+                        {(g) => (
+                          <div class="transform-group">
+                            <span class="transform-label">{g.label}</span>
+                            <div class="transform-inputs">
+                              <For each={['x', 'y', 'z'] as const}>
+                                {(axis) => (
+                                  <div class="transform-input-row">
+                                    <label>{axis === 'x' ? 'R' : axis === 'y' ? 'G' : 'B'}</label>
+                                    <NumberInput
+                                      step={0.05}
+                                      min={0}
+                                      title={`${g.label} color ${axis.toUpperCase()}`}
+                                      value={() => light()[g.field][axis]}
+                                      onCommit={(v) => {
+                                        const cur = light()[g.field];
+                                        editLight({ [g.field]: { ...cur, [axis]: v } } as api.LightParamPatch);
+                                      }}
+                                    />
+                                  </div>
+                                )}
+                              </For>
+                            </div>
+                          </div>
+                        )}
+                      </For>
+                      <div class="property-row">
+                        <span class="property-label">HDRI</span>
+                        <input
+                          type="text"
+                          placeholder="(procedural)"
+                          title="HDRI path (empty = procedural sky)"
+                          value={light().hdri_path}
+                          onChange={(e) =>
+                            editLight({ hdri_path: e.currentTarget.value })
+                          }
+                        />
+                      </div>
+                    </Show>
+                    <Show when={t() === 0 /* Point */}>
+                      <div class="property-row">
+                        <span class="property-label">Radius</span>
+                        <NumberInput
+                          step={0.05}
+                          min={0}
+                          title="Point-light soft radius"
+                          value={() => light().radius}
+                          onCommit={(v) => editLight({ radius: v })}
+                        />
+                      </div>
+                    </Show>
+                    <Show when={t() === 3 /* Area */}>
+                      <div class="transform-group">
+                        <span class="transform-label">Size</span>
+                        <div class="transform-inputs">
+                          <div class="transform-input-row">
+                            <label>W</label>
+                            <NumberInput
+                              step={0.1}
+                              min={0}
+                              title="Area light width"
+                              value={() => light().size.x}
+                              onCommit={(v) => editLight({ size: { x: v, y: light().size.y } })}
+                            />
+                          </div>
+                          <div class="transform-input-row">
+                            <label>H</label>
+                            <NumberInput
+                              step={0.1}
+                              min={0}
+                              title="Area light height"
+                              value={() => light().size.y}
+                              onCommit={(v) => editLight({ size: { x: light().size.x, y: v } })}
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    </Show>
+                  </div>
+                );
+              }}
+            </Show>
+
+            <Show when={!actor().light}>
             <div class="property-section">
               <h4>Material</h4>
               <div class="property-row">
@@ -455,6 +498,7 @@ export const ActorProperties: Component<ActorPropertiesProps> = (props) => {
                 </Show>
               </Show>
             </div>
+            </Show>
           </>
         )}
       </Show>

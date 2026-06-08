@@ -4,6 +4,7 @@
 #include "scene_state.hpp"
 #include "video_exporter.hpp"
 
+#include "core/parallel.hpp"
 #include "scene/actor.hpp"
 #include "scene/camera.hpp"
 #include "scene/gltf_loader.hpp"
@@ -41,6 +42,7 @@
 #include "geometry/attribute_allocator.hpp"
 
 #include <glm/gtc/quaternion.hpp>
+#include <glm/gtx/quaternion.hpp>  // glm::rotation for from→to vector quat
 #include <glm/gtc/matrix_transform.hpp>  // glm::lookAt for default camera pose
 
 #include <json.hpp>
@@ -50,6 +52,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <exception>
 #include <filesystem>
 #include <fstream>
@@ -146,10 +149,21 @@ json actor_to_json(const tracey::Actor& a, size_t sourceSopNodeUid) {
     // panel swaps the actor's icon and the inspector exposes light params.
     if (a.hasLight()) {
         const auto* lt = a.light();
+        // Forward every field on Light so the inspector can render the
+        // type-conditional rows without a second IPC. The Dome gradient
+        // fields stay populated even for non-Dome lights — their default
+        // values are harmless, and shipping them now means switching the
+        // light type via the dropdown doesn't lose any prior tweaks.
         out["light"] = {
-            {"type",      static_cast<int>(lt->type)},
-            {"color",     {{"x", lt->color.x}, {"y", lt->color.y}, {"z", lt->color.z}}},
-            {"intensity", lt->intensity},
+            {"type",          static_cast<int>(lt->type)},
+            {"color",         {{"x", lt->color.x},        {"y", lt->color.y},        {"z", lt->color.z}}},
+            {"intensity",     lt->intensity},
+            {"sky_color",     {{"x", lt->skyColor.x},     {"y", lt->skyColor.y},     {"z", lt->skyColor.z}}},
+            {"horizon_color", {{"x", lt->horizonColor.x}, {"y", lt->horizonColor.y}, {"z", lt->horizonColor.z}}},
+            {"ground_color",  {{"x", lt->groundColor.x},  {"y", lt->groundColor.y},  {"z", lt->groundColor.z}}},
+            {"hdri_path",     lt->hdriPath},
+            {"size",          {{"x", lt->size.x},         {"y", lt->size.y}}},
+            {"radius",        lt->radius},
         };
     } else {
         out["light"] = json(nullptr);
@@ -385,6 +399,25 @@ EditorServer::EditorServer(std::unique_ptr<RenderEngine> engine, EditorWindow* w
     }
 
     m_cook_thread = std::thread([this] { cook_worker_loop(); });
+
+    // Render worker. Started AFTER m_engine is fully initialised so the
+    // first dispatch isn't racing the rasterizer/path-tracer ctors.
+    m_render_thread = std::thread([this] { render_thread_main(); });
+
+    // Default-Dome spawn. A fresh editor session opens with no scene
+    // file; without this the viewport stays unlit until the user adds a
+    // light (the shader has an unlit-albedo fallback, but Blender/Unity
+    // convention is to have an env light from the start). Skipped if
+    // the scene already contains any actor — load_scene runs before
+    // this on app-launch-with-project, and a project that intentionally
+    // ships no Dome should stay that way.
+    if (m_engine && m_engine->scene().actors().empty()) {
+        auto* actor = m_engine->scene().createActor();
+        actor->setName("Dome");
+        tracey::Light light;
+        light.type = tracey::LightType::Dome;
+        actor->setLight(light);
+    }
 }
 
 EditorServer::~EditorServer() {
@@ -399,6 +432,10 @@ EditorServer::~EditorServer() {
     }
     m_cook_request_cv.notify_one();
     if (m_cook_thread.joinable()) m_cook_thread.join();
+
+    // Render worker also has to stop BEFORE the engine tears down — it
+    // dereferences m_engine->rasterizer/path_tracer on every iteration.
+    stop_render_thread();
 
     // Clear the global dispatcher BEFORE the engine (and its device)
     // tear down, so any late cook that races shutdown sees nullptr
@@ -591,8 +628,27 @@ inline uint64_t make_actor_key(const tracey::sops::EmittedActor &a) {
     return make_actor_key(a.sourceNodeUid, a.instanceIndex);
 }
 inline void sig_mix(uint64_t &h, const void *p, size_t n) {
+    // 8-byte bulk path for the per-instance hash walks (transform_sig
+    // over 40K particles is a ~1.6 MB sweep — the old per-byte FNV ran
+    // at ~600 MB/s, dominating apply_emitted's rebuild bucket). The
+    // bulk path runs at L1 bandwidth (~10 GB/s) and the per-byte
+    // tail handles non-multiple-of-8 buffers (strings, mat3, etc.)
+    // so existing callers stay correct.
     const auto *b = static_cast<const unsigned char *>(p);
-    for (size_t i = 0; i < n; ++i) { h ^= b[i]; h *= kSigPrime; }
+    while (n >= 8) {
+        uint64_t v;
+        std::memcpy(&v, b, 8);  // memcpy is the canonical unaligned-load idiom
+        h ^= v;
+        h *= kSigPrime;
+        h ^= h >> 31;  // avalanche so byte-shifts within a 64-bit chunk diverge
+        b += 8;
+        n -= 8;
+    }
+    while (n > 0) {
+        h ^= *b++;
+        h *= kSigPrime;
+        --n;
+    }
 }
 inline void sig_mix_str(uint64_t &h, const std::string &s) {
     sig_mix(h, s.data(), s.size());
@@ -607,6 +663,34 @@ inline void sig_mix_str(uint64_t &h, const std::string &s) {
 // apply_emitted can dedupe them onto one shared SceneObject + BLAS.
 //
 // Stable within one process run; not for on-disk comparison.
+uint64_t geometry_dedup_hash(const tracey::Geometry &g);
+
+// Per-pointer hash cache. Cleared at the start of every apply_emitted /
+// emitted_signature pass so two Geometries that happen to reuse the same
+// heap address across cooks can't return stale entries — within a single
+// pass, the emitted vector holds all the shared_ptrs alive, so pointer
+// identity is safe. The whole point of this cache is the instance SOP:
+// 120 actors all referencing the same stamp pay the hashing cost once
+// instead of 120 times.
+std::unordered_map<const tracey::Geometry*, uint64_t> &geometryHashCache() {
+    thread_local std::unordered_map<const tracey::Geometry*, uint64_t> c;
+    return c;
+}
+void resetGeometryHashCache() { geometryHashCache().clear(); }
+
+// shared_ptr overload — EmittedActor::geometry is shared so apply_emitted
+// can run N instance actors through one alloc. Null (lights, subnet
+// markers) → zero, the empty-geometry digest.
+uint64_t geometry_dedup_hash(const std::shared_ptr<const tracey::Geometry> &g) {
+    if (!g) return 0;
+    auto &cache = geometryHashCache();
+    const tracey::Geometry *raw = g.get();
+    if (auto it = cache.find(raw); it != cache.end()) return it->second;
+    const uint64_t h = geometry_dedup_hash(*g);
+    cache[raw] = h;
+    return h;
+}
+
 uint64_t geometry_dedup_hash(const tracey::Geometry &g) {
     uint64_t h = kSigOffset;
 
@@ -663,6 +747,14 @@ uint64_t actor_transform_sig(const tracey::sops::EmittedActor &a) {
     sig_mix(h, &a.translate, sizeof(a.translate));
     sig_mix(h, &a.rotation, sizeof(a.rotation));
     sig_mix(h, &a.scale, sizeof(a.scale));
+    // Instance groups fold every per-instance transform into a single
+    // hash. A particle moving anywhere changes this; structural
+    // count/tint changes go through actor_structural_sig instead.
+    for (const auto &e : a.instances) {
+        sig_mix(h, &e.translate, sizeof(e.translate));
+        sig_mix(h, &e.rotation,  sizeof(e.rotation));
+        sig_mix(h, &e.scale,     sizeof(e.scale));
+    }
     return h;
 }
 
@@ -684,6 +776,15 @@ uint64_t actor_structural_sig(const tracey::sops::EmittedActor &a) {
     // material so the new color reaches the materialBuffer.
     sig_mix(h, &a.hasTint, sizeof(a.hasTint));
     if (a.hasTint) sig_mix(h, &a.tint, sizeof(a.tint));
+    // Instance-group count + per-instance tints are INTENTIONALLY NOT
+    // folded in here. A particle sim spawning/dying entries every cook
+    // would otherwise flip this hash and force the slow path —
+    // compile_scene rebuilding materialBuffer + per-instance UV/program
+    // walks for 40K particles at 60 Hz dominated rebuild_ms. The fast
+    // TRS path resizes Actor.instances in place to absorb count changes;
+    // per-instance tint changes show up as stale color until the next
+    // structural change (stamp / material library / etc.) — a future
+    // dedicated material-refresh path closes that gap.
     // Geometry digest — same shape as the dedup hash so a VOP-driven
     // edit to Cd / N / uv (point or vertex class) shows up as a
     // structural change. Previously this hashed only positions, which
@@ -731,6 +832,20 @@ static uint64_t emitted_signature(const std::vector<tracey::sops::EmittedActor>&
         mix(&a.lightIntensity, sizeof(a.lightIntensity));
         mixStr(a.name);
         mixStr(a.materialLibraryName);
+        // Instance-group payload: count + per-instance TRS + tint. A
+        // particle sim where only positions change has a.translate/.../
+        // .scale all stuck at identity (the group sits at origin) — so
+        // without this the signature would never flip and the
+        // "nothing changed" early-out would freeze the viewport.
+        const uint64_t ni = a.instances.size();
+        mix(&ni, sizeof(ni));
+        for (const auto &e : a.instances) {
+            mix(&e.translate, sizeof(e.translate));
+            mix(&e.rotation,  sizeof(e.rotation));
+            mix(&e.scale,     sizeof(e.scale));
+            mix(&e.hasTint,   sizeof(e.hasTint));
+            if (e.hasTint) mix(&e.tint, sizeof(e.tint));
+        }
         // Geometry digest — defer to geometry_dedup_hash so a VOP that
         // writes Cd / N / uv (point or vertex class) flips this
         // signature and forces apply_emitted to re-run. The earlier
@@ -745,6 +860,13 @@ static uint64_t emitted_signature(const std::vector<tracey::sops::EmittedActor>&
 
 void EditorServer::apply_emitted(std::vector<tracey::sops::EmittedActor>&& emitted) {
     if (!m_engine) return;
+
+    // The geometry-hash cache is keyed by raw Geometry pointer. Within
+    // this call the `emitted` vector holds shared_ptrs alive, so pointer
+    // identity is sound; clearing here prevents a previous cook's freed
+    // pointers (potentially re-used by a fresh allocation this cook)
+    // from returning stale hashes.
+    resetGeometryHashCache();
 
     // Houdini-style "nothing changed" early-out. The signature covers every
     // actor-visible field — if it matches the last applied cook, no actor
@@ -819,12 +941,50 @@ void EditorServer::apply_emitted(std::vector<tracey::sops::EmittedActor>&& emitt
             auto *actor = liveScene.getActor(actorIt->second);
             if (!actor) continue;
             const auto &a = emitted[ei];
-            tracey::Transform xf;
-            xf.setPosition(a.translate);
-            xf.setRotation(tracey::Quaternion(a.rotation.x, a.rotation.y,
-                                               a.rotation.z, a.rotation.w));
-            xf.setScale(a.scale);
-            actor->setTransform(xf);
+            if (!a.instances.empty()) {
+                // Instance group: the Actor sits at identity; per-particle
+                // TRS lives in each SceneInstance's localTransform.
+                // Particle birth/death changes the instance count, so
+                // we resize the SceneInstance vector to match — cloning
+                // the last existing slot's material into new entries (per-
+                // instance tints stay stale until the next structural
+                // refresh, which is the documented tradeoff for keeping
+                // the fast path firing every cook).
+                auto &slots = actor->instances();
+                const size_t newN = a.instances.size();
+                if (slots.size() < newN && !slots.empty()) {
+                    slots.resize(newN, slots.back());
+                } else if (slots.size() > newN) {
+                    slots.resize(newN);
+                }
+                const size_t n = std::min(slots.size(), newN);
+                // Per-slot writes touch only their own index — safe to
+                // chunk across worker threads. At 400k particles this
+                // drops the serial ~5–10 ms write loop to <1 ms on the
+                // M3 Ultra. parallel_for_chunks falls back to a serial
+                // body below ~1k entries so small scenes don't pay
+                // thread-spawn overhead.
+                const auto &entries = a.instances;
+                tracey::parallel_for_chunks(n,
+                    [&entries, &slots](size_t begin, size_t end) {
+                        for (size_t i = begin; i < end; ++i) {
+                            const auto &e = entries[i];
+                            tracey::Transform xf;
+                            xf.setPosition(e.translate);
+                            xf.setRotation(tracey::Quaternion(e.rotation.x, e.rotation.y,
+                                                               e.rotation.z, e.rotation.w));
+                            xf.setScale(e.scale);
+                            slots[i].setLocalTransform(xf);
+                        }
+                    });
+            } else {
+                tracey::Transform xf;
+                xf.setPosition(a.translate);
+                xf.setRotation(tracey::Quaternion(a.rotation.x, a.rotation.y,
+                                                   a.rotation.z, a.rotation.w));
+                xf.setScale(a.scale);
+                actor->setTransform(xf);
+            }
         }
         if (m_engine->refresh_tlas_only()) {
             m_actor_signatures = std::move(newSigs);
@@ -1027,12 +1187,39 @@ void EditorServer::apply_emitted(std::vector<tracey::sops::EmittedActor>&& emitt
                 if (actorIt != m_emitted_actor_to_actor.end()) {
                     auto *actor = scene.getActor(actorIt->second);
                     if (actor) {
-                        tracey::Transform xf;
-                        xf.setPosition(ea.translate);
-                        xf.setRotation(tracey::Quaternion(ea.rotation.x, ea.rotation.y,
-                                                           ea.rotation.z, ea.rotation.w));
-                        xf.setScale(ea.scale);
-                        actor->setTransform(xf);
+                        if (!ea.instances.empty()) {
+                            // Instance group — resize + update per-particle
+                            // local transforms in place. Mirror of the
+                            // global fast path branch.
+                            auto &slots = actor->instances();
+                            const size_t newN = ea.instances.size();
+                            if (slots.size() < newN && !slots.empty()) {
+                                slots.resize(newN, slots.back());
+                            } else if (slots.size() > newN) {
+                                slots.resize(newN);
+                            }
+                            const size_t n = std::min(slots.size(), newN);
+                            const auto &entries = ea.instances;
+                            tracey::parallel_for_chunks(n,
+                                [&entries, &slots](size_t begin, size_t end) {
+                                    for (size_t i = begin; i < end; ++i) {
+                                        const auto &e = entries[i];
+                                        tracey::Transform xf;
+                                        xf.setPosition(e.translate);
+                                        xf.setRotation(tracey::Quaternion(e.rotation.x, e.rotation.y,
+                                                                           e.rotation.z, e.rotation.w));
+                                        xf.setScale(e.scale);
+                                        slots[i].setLocalTransform(xf);
+                                    }
+                                });
+                        } else {
+                            tracey::Transform xf;
+                            xf.setPosition(ea.translate);
+                            xf.setRotation(tracey::Quaternion(ea.rotation.x, ea.rotation.y,
+                                                               ea.rotation.z, ea.rotation.w));
+                            xf.setScale(ea.scale);
+                            actor->setTransform(xf);
+                        }
                     }
                 }
             }
@@ -1107,6 +1294,9 @@ void EditorServer::apply_emitted(std::vector<tracey::sops::EmittedActor>&& emitt
         // SceneObject (and therefore one vertex buffer, color buffer, and
         // BLAS), bumping the refcount so the SceneObject only goes away
         // when the last referencing actor does.
+        if (!ea.geometry) continue;  // defensive: real-geo branch guards above
+                                     // should have already skipped lights /
+                                     // subnet markers.
         const uint64_t geomHash = geometry_dedup_hash(ea.geometry);
         std::string objectName;
         auto dedupIt = m_geometry_hash_to_object_name.find(geomHash);
@@ -1127,7 +1317,7 @@ void EditorServer::apply_emitted(std::vector<tracey::sops::EmittedActor>&& emitt
             // scene.m_objects.
             objectName = (ea.name.empty() ? std::string{"actor"} : ea.name) +
                          "_" + std::to_string(ea.sourceNodeUid);
-            scene.addObject(objectName, tracey::GeometryConverter::toSceneObject(ea.geometry, objectName));
+            scene.addObject(objectName, tracey::GeometryConverter::toSceneObject(*ea.geometry, objectName));
             m_geometry_hash_to_object_name[geomHash] = objectName;
         }
         m_sop_node_object_names[actorKey] = objectName;
@@ -1186,7 +1376,7 @@ void EditorServer::apply_emitted(std::vector<tracey::sops::EmittedActor>&& emitt
         if (ea.materialLibraryName.empty() ||
             !is_safe_library_name(ea.materialLibraryName)) {
             tracey::MaterialInstance fromGltf("pbr");
-            if (pullGltfMaterial(ea.geometry, &fromGltf)) {
+            if (pullGltfMaterial(*ea.geometry, &fromGltf)) {
                 mat = fromGltf;
             }
         }
@@ -1197,14 +1387,44 @@ void EditorServer::apply_emitted(std::vector<tracey::sops::EmittedActor>&& emitt
         // entry, so 1000 instances sharing one BLAS still get 1000
         // distinct colors. Skip when a material library is in play — the
         // material graph already controls albedo through its own knobs.
-        if (ea.hasTint && (ea.materialLibraryName.empty() ||
-                           !is_safe_library_name(ea.materialLibraryName))) {
+        const bool tintAllowed = ea.materialLibraryName.empty() ||
+                                  !is_safe_library_name(ea.materialLibraryName);
+        if (ea.hasTint && tintAllowed) {
             const tracey::Vec3 base = mat.albedo().value_or(tracey::Vec3(1.0f));
             mat.setAlbedo(tracey::Vec3(base.x * ea.tint.x,
                                         base.y * ea.tint.y,
                                         base.z * ea.tint.z));
         }
-        actor->addInstance(tracey::SceneInstance(objectName, mat));
+
+        if (!ea.instances.empty()) {
+            // Instance-group emit: one Actor sitting at identity, N
+            // SceneInstances each carrying its own local transform and
+            // per-particle tinted material. compile_scene's per-instance
+            // loop walks these to build N TLAS entries pointing at the
+            // shared BLAS, exactly the GPU-instancing topology we want.
+            // The Actor's own transform stays identity (set above to
+            // ea.translate/.../scale, which are also identity for an
+            // instance emit — the cook side leaves them at defaults).
+            for (const auto &e : ea.instances) {
+                tracey::MaterialInstance imat = mat;
+                if (e.hasTint && tintAllowed) {
+                    const tracey::Vec3 base = imat.albedo().value_or(tracey::Vec3(1.0f));
+                    imat.setAlbedo(tracey::Vec3(base.x * e.tint.x,
+                                                base.y * e.tint.y,
+                                                base.z * e.tint.z));
+                }
+                tracey::SceneInstance si(objectName, imat);
+                tracey::Transform xf;
+                xf.setPosition(e.translate);
+                xf.setRotation(tracey::Quaternion(e.rotation.x, e.rotation.y,
+                                                   e.rotation.z, e.rotation.w));
+                xf.setScale(e.scale);
+                si.setLocalTransform(xf);
+                actor->addInstance(std::move(si));
+            }
+        } else {
+            actor->addInstance(tracey::SceneInstance(objectName, mat));
+        }
 
         // Stable actor↔SOP mapping via the composite key threaded through
         // EmittedActor. The actor we just appended is at the back of
@@ -1652,6 +1872,56 @@ void EditorServer::cook_worker_loop() {
             };
         }
     }
+}
+
+// ── Render worker thread ──────────────────────────────────────────────
+// Runs the rasterizer off the main thread so the UI never blocks on a
+// GPU fence wait. render_tick on the main thread posts a snapshot (camera +
+// shared_ptr to compiled scene) here; this loop drains the latest and
+// dispatches. The output image is single-buffered; correctness across the
+// "worker writing while main thread presents" boundary relies on:
+//   • Both threads serializing their command-buffer submissions through
+//     vulkanQueueMutex (Rasterizer::render now releases that mutex around
+//     its fence wait, so contention is microseconds).
+//   • Vulkan's per-queue execution ordering — a present-blit submitted
+//     after a raster on the same queue can't start before the raster
+//     finishes, even if both submissions sit briefly on the CPU side.
+void EditorServer::render_thread_main() {
+    for (;;) {
+        RenderRequest request;
+        {
+            std::unique_lock<std::mutex> lk(m_render_mutex);
+            m_render_cv.wait(lk, [this] {
+                return m_render_thread_should_exit ||
+                       m_pending_render_request.has_value();
+            });
+            if (m_render_thread_should_exit) return;
+            request = std::move(*m_pending_render_request);
+            m_pending_render_request.reset();
+        }
+
+        if (!request.scene || !m_engine) continue;
+
+        try {
+            const double ms = m_engine->render_rasterizer_with(
+                *request.scene, request.camera);
+            m_worker_raster_ms.store(ms, std::memory_order_relaxed);
+            m_render_frames_completed.fetch_add(1, std::memory_order_release);
+        } catch (const std::exception& e) {
+            std::fprintf(stderr, "[render worker] dispatch failed: %s\n", e.what());
+            // Don't bump the completion counter — main thread will keep
+            // showing the previously-presented frame until we recover.
+        }
+    }
+}
+
+void EditorServer::stop_render_thread() {
+    {
+        std::lock_guard<std::mutex> lk(m_render_mutex);
+        m_render_thread_should_exit = true;
+    }
+    m_render_cv.notify_one();
+    if (m_render_thread.joinable()) m_render_thread.join();
 }
 
 // Called from the message thread under m_mutex. Hands a serialized graph
@@ -2241,14 +2511,30 @@ void EditorServer::render_tick() {
         // after enabling always starts a fresh accumulation.
         const bool clear = m_pt_preview_enabled && m_clear_next_frame;
         if (m_pt_preview_enabled) m_clear_next_frame = false;
-        // Cheap rasterizer pass: drives the full-viewport main view. Runs
-        // unconditionally so the reference ground grid is visible even on
-        // an empty scene (no SOPs cooked yet).
+        // Rasterizer is offloaded to a worker thread. Snapshot the scene
+        // + camera under m_mutex (we already hold it via the tick's
+        // try_lock above), then hand off to the worker. The worker writes
+        // into the rasterizer's single output image; we present that image
+        // below once it has produced at least one completed frame.
+        //
+        // Latest-wins: if the worker hasn't drained the previous request,
+        // we overwrite it. That matches the live-viewport expectation —
+        // we always want the freshest snapshot, not a backlog of stale
+        // ones.
+        if (m_engine->compiled_scene_ready() && m_engine->scene().hasCamera())
         {
-            const auto t0 = clock::now();
-            m_engine->render_rasterizer();
-            raster_ms = elapsedMs(t0);
+            RenderRequest req;
+            req.scene = m_engine->compiled_scene_snapshot();
+            req.camera = m_engine->scene().camera();
+            {
+                std::lock_guard<std::mutex> rlk(m_render_mutex);
+                m_pending_render_request = std::move(req);
+            }
+            m_render_cv.notify_one();
         }
+        // The worker reports its measured ms back; we just read the
+        // most recent value for the profiler bucket.
+        raster_ms = m_worker_raster_ms.load(std::memory_order_relaxed);
         // Expensive path tracer pass: needs a BVH, so it only runs once the
         // scene has at least one instance. Accumulates into the inset rect,
         // one sample per tick, until max_samples is reached.
@@ -2279,40 +2565,49 @@ void EditorServer::render_tick() {
     auto* raster = m_engine->rasterizer();
     if (tracer && raster) {
         auto* raster_output = raster->outputImage();
-        if (raster_output) {
-            const auto t0 = clock::now();
-            // Raster-only present when there's no geometry yet (PT
-            // output isn't meaningful before the first render_frame),
-            // or when the user has turned off the path-traced inset
-            // preview. Skipping the composite path also dodges the
-            // second sampler bind and inset blit in ViewportRenderer.
+        // Worker may not have produced its first raster frame yet (first
+        // tick after launch, before the worker has drained any request).
+        // Blitting the rasterizer's output image without a completed
+        // dispatch would show uninitialised content; gate everything that
+        // reads `raster_output` on this counter. The PT-fullscreen branch
+        // doesn't need raster at all, so it stays reachable.
+        const bool raster_ready =
+            m_render_frames_completed.load(std::memory_order_acquire) > 0;
+        const auto t0 = clock::now();
+        bool presented = false;
+        if (m_pt_preview_enabled && has_geometry && m_pt_fullscreen) {
+            // Render workspace: PT replaces the rasterizer entirely.
+            // No raster output needed.
+            if (auto* pt_output = tracer->outputImage()) {
+                if (!m_viewport->present(pt_output)) {
+                    m_viewport_pixel_w = 0;
+                    m_viewport_pixel_h = 0;
+                }
+                presented = true;
+            }
+        } else if (raster_output && raster_ready) {
             if (!has_geometry || !m_pt_preview_enabled) {
+                // Raster-only present. Most common path during scene
+                // editing; the rasterizer-only branch skips the composite
+                // sampler bind + inset blit in ViewportRenderer.
                 if (!m_viewport->present(raster_output)) {
                     m_viewport_pixel_w = 0;
                     m_viewport_pixel_h = 0;
                 }
+                presented = true;
             } else if (auto* pt_output = tracer->outputImage()) {
-                if (m_pt_fullscreen) {
-                    // Render workspace: PT replaces the rasterizer entirely.
-                    // Resolution was bumped to viewport-size when the
-                    // workspace was activated, so no upscaling shows up.
-                    if (!m_viewport->present(pt_output)) {
-                        m_viewport_pixel_w = 0;
-                        m_viewport_pixel_h = 0;
-                    }
-                } else {
-                    // PiP composite: rasterizer fills the full viewport,
-                    // path-tracer accumulator goes in the top-right inset.
-                    const InsetRect r = compute_inset_rect(m_viewport_pixel_w, m_viewport_pixel_h);
-                    if (!m_viewport->present_composite(raster_output, pt_output,
-                                                       r.x, r.y, r.w, r.h)) {
-                        m_viewport_pixel_w = 0;
-                        m_viewport_pixel_h = 0;
-                    }
+                // PiP composite: rasterizer fills the viewport, PT
+                // accumulator overlays in the top-right inset.
+                const InsetRect r = compute_inset_rect(m_viewport_pixel_w, m_viewport_pixel_h);
+                if (!m_viewport->present_composite(raster_output, pt_output,
+                                                   r.x, r.y, r.w, r.h)) {
+                    m_viewport_pixel_w = 0;
+                    m_viewport_pixel_h = 0;
                 }
+                presented = true;
             }
-            present_ms = elapsedMs(t0);
         }
+        if (presented) present_ms = elapsedMs(t0);
     }
 
     const double tick_ms = elapsedMs(tickStart);
@@ -2416,6 +2711,95 @@ std::string EditorServer::handle_command(const std::string& json_request) {
             if (!name.empty()) actor->setName(name);
             return ok_response(actor->getUid());
         }
+        if (cmd == "create_light") {
+            // Manual / editor-authored light. Distinct from SOP-emitted
+            // lights (which travel via EmittedActor with isLight=true) in
+            // that we never associate this actor with a source SOP node,
+            // so a cook can't reset its parameters. The actor still
+            // round-trips through save/load via actor_to_json above.
+            const std::string typeStr = req.value("type", std::string("dome"));
+            tracey::Light light;
+            tracey::Transform xform;
+            std::string defaultName;
+            if (typeStr == "dome") {
+                light.type = tracey::LightType::Dome;
+                defaultName = "Dome";
+                // Dome is transform-independent — leaving the actor at
+                // origin keeps the hierarchy tidy.
+            } else if (typeStr == "sun" || typeStr == "distant") {
+                light.type = tracey::LightType::Distant;
+                defaultName = "Sun";
+                // Default sun rotation matches the constants the pre-light
+                // shader used (normalize(0.4, 0.8, 0.3)). We pre-rotate
+                // the actor so the local -Z direction lands on that vector.
+                const tracey::Vec3 fwd = glm::normalize(tracey::Vec3(-0.4f, -0.8f, -0.3f));
+                const tracey::Quaternion q = glm::rotation(tracey::Vec3(0.0f, 0.0f, -1.0f), fwd);
+                xform.setRotation(q);
+            } else if (typeStr == "area") {
+                light.type = tracey::LightType::Area;
+                defaultName = "Area";
+                xform.setPosition(tracey::Vec3(0.0f, 3.0f, 0.0f));
+            } else {
+                light.type = tracey::LightType::Point;
+                defaultName = "Point";
+                xform.setPosition(tracey::Vec3(0.0f, 2.0f, 0.0f));
+            }
+            const std::string name = req.value("name", defaultName);
+
+            auto* actor = m_engine->scene().createActor();
+            actor->setName(name);
+            actor->setTransform(xform);
+            actor->setLight(light);
+
+            // Re-compile so the renderer's lightBuffer picks up the new
+            // entry on the next frame. Cheap relative to a SOP cook —
+            // light gather is the last pass and walks a tiny list.
+            if (m_engine->path_tracer_ready()) m_engine->compile_scene();
+            m_clear_next_frame = true;
+            if (m_broadcast) m_broadcast(R"({"event":"scene_changed"})");
+            return ok_response(actor->getUid());
+        }
+        if (cmd == "set_light_params") {
+            // Patch handler: the frontend sends only the keys it changed,
+            // so each field is `value(key, current)` so missing keys
+            // pass through unchanged. Triggers a recompile because both
+            // the rasterizer's SSBO bind AND the PT's NEE buffer need
+            // the updated bytes.
+            const uint64_t id = req.at("actor_id").get<uint64_t>();
+            auto* a = m_engine->scene().getActor(id);
+            if (!a || !a->hasLight()) return ok_response(false);
+            tracey::Light light = *a->light();
+
+            if (req.contains("type")) {
+                light.type = static_cast<tracey::LightType>(
+                    req.at("type").get<int>());
+            }
+            auto readVec3 = [&](const char* key, tracey::Vec3& v) {
+                if (!req.contains(key)) return;
+                const auto& j = req.at(key);
+                v.x = j.at("x").get<float>();
+                v.y = j.at("y").get<float>();
+                v.z = j.at("z").get<float>();
+            };
+            readVec3("color",         light.color);
+            readVec3("sky_color",     light.skyColor);
+            readVec3("horizon_color", light.horizonColor);
+            readVec3("ground_color",  light.groundColor);
+            if (req.contains("intensity")) light.intensity = req.at("intensity").get<float>();
+            if (req.contains("radius"))    light.radius    = req.at("radius").get<float>();
+            if (req.contains("size")) {
+                const auto& j = req.at("size");
+                light.size.x = j.at("x").get<float>();
+                light.size.y = j.at("y").get<float>();
+            }
+            if (req.contains("hdri_path")) light.hdriPath = req.at("hdri_path").get<std::string>();
+            a->setLight(light);
+
+            if (m_engine->path_tracer_ready()) m_engine->compile_scene();
+            m_clear_next_frame = true;
+            if (m_broadcast) m_broadcast(R"({"event":"scene_changed"})");
+            return ok_response(true);
+        }
         if (cmd == "get_all_actors") {
             // Invert the SOP-uid → actor-uid map once, so each actor can be
             // tagged with its source object_output node (used by the frontend
@@ -2425,8 +2809,26 @@ std::string EditorServer::handle_command(const std::string& json_request) {
             for (const auto& [outputUid, actorUid] : m_sop_node_to_actor) {
                 actor_to_sop[actorUid] = outputUid;
             }
+            // Hierarchy roll-up: an `instance` SOP emits N renderer-side
+            // Actors (one per template point) but the user only wants to
+            // see ONE row in the hierarchy per instance SOP. Drop the
+            // instanceIndex > 0 actors; their primary (instanceIndex == 0)
+            // is enough to represent the whole group, and the renderer
+            // TLAS is unaffected by what we choose to expose to JS.
+            // Without this, a 120-particle sim ships 120 actor JSON rows
+            // per cook to the frontend at ~60 cooks/sec, which Solid's
+            // tree-diff + the IPC round-trip can't keep up with.
+            // make_actor_key layout: low 24 bits = instanceIndex, high
+            // 40 bits = sourceNodeUid (matches make_actor_key in this file).
+            std::unordered_set<uint64_t> secondary_instances;
+            for (const auto& [compositeKey, actorUid] : m_emitted_actor_to_actor) {
+                const uint32_t instanceIndex =
+                    static_cast<uint32_t>(compositeKey & 0xFFFFFFu);
+                if (instanceIndex > 0) secondary_instances.insert(actorUid);
+            }
             json arr = json::array();
             for (const auto* a : m_engine->scene().actors()) {
+                if (secondary_instances.contains(a->getUid())) continue;
                 const auto it = actor_to_sop.find(a->getUid());
                 arr.push_back(actor_to_json(*a, it != actor_to_sop.end() ? it->second : 0));
             }

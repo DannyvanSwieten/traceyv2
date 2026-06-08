@@ -169,3 +169,65 @@
 .tree-children {
   /* Children are indented via padding-left on tree-item-row */
 }
+
+.hierarchy-toolbar {
+  padding: 6px 8px;
+  border-bottom: 1px solid #2d2d2d;
+}
+
+.hierarchy-add-light {
+  position: relative;
+  display: inline-block;
+}
+
+.hierarchy-add-light-btn {
+  background: #2a2d2e;
+  color: #cccccc;
+  border: 1px solid #3a3d3e;
+  padding: 4px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.hierarchy-add-light-btn:hover {
+  background: #383b3c;
+  color: #ffffff;
+}
+
+.hierarchy-add-light-menu {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  margin-top: 4px;
+  background: #252526;
+  border: 1px solid #3a3d3e;
+  border-radius: 4px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  z-index: 20;
+  min-width: 140px;
+  padding: 4px 0;
+}
+
+.hierarchy-add-light-menu-item {
+  width: 100%;
+  background: transparent;
+  border: none;
+  color: #cccccc;
+  text-align: left;
+  padding: 6px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.hierarchy-add-light-menu-item:hover {
+  background: #094771;
+  color: #ffffff;
+}
+
+.hierarchy-add-light-menu-icon {
+  width: 16px;
+  display: inline-block;
+  text-align: center;
+}

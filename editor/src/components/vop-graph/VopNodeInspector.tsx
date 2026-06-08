@@ -18,6 +18,7 @@ import {
 } from '../../stores/vops';
 import type { ParamSpec, PortSpec } from '../../lib/vop_graph';
 import type { ParamValueVec3 } from '../../lib/sop_graph';
+import { NumberInput } from '../number-input/NumberInput';
 
 export const VopNodeInspector: Component = () => {
   const node = createMemo<VopNode | null>(() => {
@@ -124,15 +125,12 @@ const ParamRow: Component<ParamRowProps> = (props) => {
                   patch({ type: 'float', value: parseFloat(e.currentTarget.value) || 0 })
                 }
               />
-              <input
-                type="number"
+              <NumberInput
                 class="sop-param-slider-readout"
                 step={step}
                 title={`${props.spec.name} (value)`}
-                value={value()}
-                onChange={(e) =>
-                  patch({ type: 'float', value: parseFloat(e.currentTarget.value) || 0 })
-                }
+                value={value}
+                onCommit={(v) => patch({ type: 'float', value: v })}
               />
             </div>
             <PromoteBtn />
@@ -142,14 +140,11 @@ const ParamRow: Component<ParamRowProps> = (props) => {
       return (
         <div class="sop-param-row">
           <label>{props.spec.name}</label>
-          <input
-            type="number"
-            step="0.01"
+          <NumberInput
+            step={0.01}
             title={props.spec.name}
-            value={value()}
-            onChange={(e) =>
-              patch({ type: 'float', value: parseFloat(e.currentTarget.value) || 0 })
-            }
+            value={value}
+            onCommit={(v) => patch({ type: 'float', value: v })}
           />
           <PromoteBtn />
         </div>
@@ -196,15 +191,13 @@ const ParamRow: Component<ParamRowProps> = (props) => {
                   patch({ type: 'int', value: parseInt(e.currentTarget.value, 10) || 0 })
                 }
               />
-              <input
-                type="number"
+              <NumberInput
                 class="sop-param-slider-readout"
                 step={step}
+                decimals={0}
                 title={`${props.spec.name} (value)`}
-                value={value()}
-                onChange={(e) =>
-                  patch({ type: 'int', value: parseInt(e.currentTarget.value, 10) || 0 })
-                }
+                value={value}
+                onCommit={(v) => patch({ type: 'int', value: Math.round(v) })}
               />
             </div>
             <PromoteBtn />
@@ -214,14 +207,12 @@ const ParamRow: Component<ParamRowProps> = (props) => {
       return (
         <div class="sop-param-row">
           <label>{props.spec.name}</label>
-          <input
-            type="number"
-            step="1"
+          <NumberInput
+            step={1}
+            decimals={0}
             title={props.spec.name}
-            value={value()}
-            onChange={(e) =>
-              patch({ type: 'int', value: parseInt(e.currentTarget.value, 10) || 0 })
-            }
+            value={value}
+            onCommit={(v) => patch({ type: 'int', value: Math.round(v) })}
           />
           <PromoteBtn />
         </div>
@@ -254,12 +245,15 @@ const ParamRow: Component<ParamRowProps> = (props) => {
         <div class="sop-param-row sop-param-vec3">
           <label>{props.spec.name}</label>
           <div class="sop-param-vec3-fields">
-            <input type="number" step="0.01" title={`${props.spec.name} x`} value={v()[0]}
-                   onChange={(e) => setComp(0, parseFloat(e.currentTarget.value) || 0)} />
-            <input type="number" step="0.01" title={`${props.spec.name} y`} value={v()[1]}
-                   onChange={(e) => setComp(1, parseFloat(e.currentTarget.value) || 0)} />
-            <input type="number" step="0.01" title={`${props.spec.name} z`} value={v()[2]}
-                   onChange={(e) => setComp(2, parseFloat(e.currentTarget.value) || 0)} />
+            <NumberInput step={0.01} title={`${props.spec.name} x`}
+                         value={() => v()[0]}
+                         onCommit={(n) => setComp(0, n)} />
+            <NumberInput step={0.01} title={`${props.spec.name} y`}
+                         value={() => v()[1]}
+                         onCommit={(n) => setComp(1, n)} />
+            <NumberInput step={0.01} title={`${props.spec.name} z`}
+                         value={() => v()[2]}
+                         onCommit={(n) => setComp(2, n)} />
           </div>
           <PromoteBtn />
         </div>
@@ -356,17 +350,14 @@ const InputDefaultRow: Component<InputDefaultRowProps> = (props) => {
     return (
       <div class="sop-param-row">
         <label>{props.port.name}</label>
-        <input
-          type="number"
-          step={isInt ? '1' : '0.01'}
+        <NumberInput
+          step={isInt ? 1 : 0.01}
+          decimals={isInt ? 0 : 2}
           title={`${props.port.name} (unwired constant)`}
-          value={value()}
-          onChange={(e) => {
-            const raw = e.currentTarget.value;
-            const n = isInt ? parseInt(raw, 10) : parseFloat(raw);
-            if (Number.isNaN(n)) { set(undefined); return; }
-            set({ type: isInt ? 'int' : 'float', value: n });
-          }}
+          value={value}
+          onCommit={(n) =>
+            set({ type: isInt ? 'int' : 'float', value: isInt ? Math.round(n) : n })
+          }
         />
       </div>
     );
@@ -386,15 +377,15 @@ const InputDefaultRow: Component<InputDefaultRowProps> = (props) => {
       <div class="sop-param-row sop-param-vec3">
         <label>{props.port.name}</label>
         <div class="sop-param-vec3-fields">
-          <input type="number" step="0.01" value={v()[0]}
-                 title={`${props.port.name}.x`}
-                 onChange={(e) => setComp(0, parseFloat(e.currentTarget.value) || 0)} />
-          <input type="number" step="0.01" value={v()[1]}
-                 title={`${props.port.name}.y`}
-                 onChange={(e) => setComp(1, parseFloat(e.currentTarget.value) || 0)} />
-          <input type="number" step="0.01" value={v()[2]}
-                 title={`${props.port.name}.z`}
-                 onChange={(e) => setComp(2, parseFloat(e.currentTarget.value) || 0)} />
+          <NumberInput step={0.01} title={`${props.port.name}.x`}
+                       value={() => v()[0]}
+                       onCommit={(n) => setComp(0, n)} />
+          <NumberInput step={0.01} title={`${props.port.name}.y`}
+                       value={() => v()[1]}
+                       onCommit={(n) => setComp(1, n)} />
+          <NumberInput step={0.01} title={`${props.port.name}.z`}
+                       value={() => v()[2]}
+                       onCommit={(n) => setComp(2, n)} />
         </div>
       </div>
     );

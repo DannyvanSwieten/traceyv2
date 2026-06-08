@@ -12,6 +12,7 @@ import {
   inputPortName,
 } from '../../lib/material_graph';
 import { materialGraph, selectedNode, setInputDefault, updateNode } from '../../stores/materials';
+import { NumberInput } from '../number-input/NumberInput';
 import './NodeInspector.css';
 
 const BINARY_OPS = ['Add', 'Sub', 'Mul', 'Div', 'Dot3', 'Cross'];
@@ -51,22 +52,16 @@ interface ScalarEditorProps {
   onChange: (next: Vec4Tuple) => void;
 }
 const FloatEditor: Component<ScalarEditorProps> = (props) => {
-  const setValue = (raw: string) => {
-    const v = parseFloat(raw);
-    if (Number.isNaN(v)) return;
-    props.onChange([v, v, v, v] as Vec4Tuple);
-  };
   return (
     <div class="inspector-vec4">
       <div class="inspector-row-label">{props.label}</div>
       <div class="inspector-vec4-row">
         <label class="inspector-vec4-cell">
-          <input
-            type="number"
-            step="0.01"
-            aria-label={props.label}
-            value={props.value()[0]}
-            onInput={(e) => setValue(e.currentTarget.value)}
+          <NumberInput
+            step={0.01}
+            title={props.label}
+            value={() => props.value()[0]}
+            onCommit={(v) => props.onChange([v, v, v, v] as Vec4Tuple)}
           />
         </label>
       </div>
@@ -119,9 +114,7 @@ interface Vec4EditorProps {
 }
 
 const Vec4Editor: Component<Vec4EditorProps> = (props) => {
-  const setComponent = (idx: 0 | 1 | 2 | 3, raw: string) => {
-    const parsed = parseFloat(raw);
-    if (Number.isNaN(parsed)) return;
+  const setComponent = (idx: 0 | 1 | 2 | 3, parsed: number) => {
     const cur = props.value();
     const next: Vec4Tuple = [cur[0], cur[1], cur[2], cur[3]] as Vec4Tuple;
     next[idx] = parsed;
@@ -134,11 +127,11 @@ const Vec4Editor: Component<Vec4EditorProps> = (props) => {
         {(['x', 'y', 'z', 'w'] as const).map((axis, idx) => (
           <label class="inspector-vec4-cell">
             <span>{axis}</span>
-            <input
-              type="number"
-              step="0.01"
-              value={props.value()[idx as 0 | 1 | 2 | 3]}
-              onInput={(e) => setComponent(idx as 0 | 1 | 2 | 3, e.currentTarget.value)}
+            <NumberInput
+              step={0.01}
+              title={`${props.label} ${axis}`}
+              value={() => props.value()[idx as 0 | 1 | 2 | 3]}
+              onCommit={(v) => setComponent(idx as 0 | 1 | 2 | 3, v)}
             />
           </label>
         ))}

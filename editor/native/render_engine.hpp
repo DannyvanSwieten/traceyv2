@@ -98,6 +98,22 @@ public:
     bool rasterizer_ready() const { return m_rasterizer != nullptr; }
     bool compiled_scene_ready() const { return m_compiled_scene != nullptr; }
 
+    // Render-thread handoff: snapshot the current compiled scene as a
+    // shared_ptr so the worker can keep rendering after the main thread
+    // swaps in a freshly compiled scene from apply_emitted. The
+    // returned pointer is safe to dereference for the lifetime of the
+    // shared_ptr (no external lock needed once held).
+    std::shared_ptr<const tracey::SceneCompiler::CompiledScene>
+        compiled_scene_snapshot() const { return m_compiled_scene; }
+
+    // Run the rasterizer against an explicit scene snapshot + camera.
+    // Used by the render worker thread so the live scene swap doesn't
+    // race the in-flight render. Returns the wall-clock render time in
+    // milliseconds, or 0 if there's nothing to render.
+    double render_rasterizer_with(
+        const tracey::SceneCompiler::CompiledScene &scene,
+        const tracey::Camera &camera);
+
     // Rebuild ONLY the TLAS from the current scene's actor transforms.
     // Keeps the BLAS cache, material buffer, UV buffer, and per-instance
     // material/program-id bookkeeping untouched. Caller must guarantee:
@@ -179,7 +195,11 @@ private:
     std::unique_ptr<tracey::Scene> m_scene;
     std::unique_ptr<tracey::PathTracer> m_path_tracer;
     std::unique_ptr<tracey::Rasterizer> m_rasterizer;
-    std::unique_ptr<tracey::SceneCompiler::CompiledScene> m_compiled_scene;
+    // shared_ptr so the render worker thread can hold a snapshot of the
+    // current scene (via shared_ptr copy) while the main thread swaps in
+    // a freshly compiled scene from apply_emitted. Once all snapshots
+    // drop, the old CompiledScene destructs on the last holder's thread.
+    std::shared_ptr<tracey::SceneCompiler::CompiledScene> m_compiled_scene;
     // Per-object BLAS + vertex/color buffer cache that survives between
     // compile_scene() calls. SceneCompiler queries it on each compile so a
     // recook with unchanged geometry doesn't rebuild BVHs or re-upload

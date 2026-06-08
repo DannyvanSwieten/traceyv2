@@ -4,6 +4,7 @@
 #include "scene/actor.hpp"
 #include "scene/transform.hpp"
 #include "scene/camera.hpp"
+#include "scene/light.hpp"
 
 #include <json.hpp>
 
@@ -66,6 +67,45 @@ tracey::Camera camera_from_json(const json& j) {
     return c;
 }
 
+json light_to_json(const tracey::Light& l) {
+    return {
+        {"type",          static_cast<int>(l.type)},
+        {"color",         {{"x", l.color.x},        {"y", l.color.y},        {"z", l.color.z}}},
+        {"intensity",     l.intensity},
+        {"sky_color",     {{"x", l.skyColor.x},     {"y", l.skyColor.y},     {"z", l.skyColor.z}}},
+        {"horizon_color", {{"x", l.horizonColor.x}, {"y", l.horizonColor.y}, {"z", l.horizonColor.z}}},
+        {"ground_color",  {{"x", l.groundColor.x},  {"y", l.groundColor.y},  {"z", l.groundColor.z}}},
+        {"hdri_path",     l.hdriPath},
+        {"size",          {{"x", l.size.x}, {"y", l.size.y}}},
+        {"radius",        l.radius},
+    };
+}
+
+tracey::Light light_from_json(const json& j) {
+    tracey::Light l;
+    l.type      = static_cast<tracey::LightType>(j.value("type", 0));
+    auto readV3 = [&](const char* key, tracey::Vec3& out) {
+        if (!j.contains(key)) return;
+        const auto& v = j.at(key);
+        out.x = v.at("x").get<float>();
+        out.y = v.at("y").get<float>();
+        out.z = v.at("z").get<float>();
+    };
+    readV3("color",         l.color);
+    readV3("sky_color",     l.skyColor);
+    readV3("horizon_color", l.horizonColor);
+    readV3("ground_color",  l.groundColor);
+    l.intensity = j.value("intensity", 1.0f);
+    l.radius    = j.value("radius",    0.0f);
+    l.hdriPath  = j.value("hdri_path", std::string{});
+    if (j.contains("size")) {
+        const auto& s = j.at("size");
+        l.size.x = s.at("x").get<float>();
+        l.size.y = s.at("y").get<float>();
+    }
+    return l;
+}
+
 }  // namespace
 
 void save_scene_to_file(const tracey::Scene& scene, const std::string& path) {
@@ -80,6 +120,13 @@ void save_scene_to_file(const tracey::Scene& scene, const std::string& path) {
         };
         for (size_t child_uid : actor->children()) {
             a["children"].push_back(child_uid);
+        }
+        // Persist the light component so manually-authored lights survive
+        // save/load. SOP-emitted actors with lights will also serialize,
+        // but a subsequent cook overwrites them — only matters for actors
+        // created via the create_light IPC.
+        if (actor->hasLight()) {
+            a["light"] = light_to_json(*actor->light());
         }
         actors_arr.push_back(std::move(a));
     }
@@ -113,6 +160,8 @@ void load_scene_from_file(tracey::Scene& scene, const std::string& path) {
             actor->setName(a.value("name", std::string{}));
             if (a.contains("transform"))
                 actor->setTransform(transform_from_json(a["transform"]));
+            if (a.contains("light") && !a["light"].is_null())
+                actor->setLight(light_from_json(a["light"]));
         }
     }
 }
