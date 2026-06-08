@@ -2,7 +2,7 @@
 // SopNodeInspector — the param-row UI is identical because both stores ship
 // the same ParamValue shape.
 
-import { Component, For, Index, Show, createMemo } from 'solid-js';
+import { Component, For, Index, Match, Show, Switch, createMemo } from 'solid-js';
 import {
   ParamValue,
   VopNode,
@@ -103,194 +103,211 @@ const ParamRow: Component<ParamRowProps> = (props) => {
   const range = () => props.spec.range;
   const options = () => props.spec.options;
 
-  switch (props.spec.type) {
-    case 'float': {
-      const value = () => (cur() as { value: number } | undefined)?.value ?? 0;
-      const r = range();
-      if (r && r.min !== r.max) {
-        const step = r.step > 0 ? r.step : (r.max - r.min) / 200;
-        return (
-          <div class="sop-param-row sop-param-slider-row">
-            <label>{props.spec.name}</label>
-            <div class="sop-param-slider-group">
-              <input
-                type="range"
-                class="sop-param-slider"
-                title={props.spec.name}
-                min={r.min}
-                max={r.max}
-                step={step}
-                value={value()}
-                onInput={(e) =>
-                  patch({ type: 'float', value: parseFloat(e.currentTarget.value) || 0 })
-                }
-              />
+  // Reactive type dispatch — see SopNodeInspector's matching block for
+  // the full rationale. tl;dr: <Switch>/<Match> re-evaluates when
+  // spec.type flips, so the row swaps to the right layout without
+  // forcing a remount of the parent Index loop.
+  const floatValue  = () => (cur() as { value: number } | undefined)?.value ?? 0;
+  const intValue    = () => (cur() as { value: number } | undefined)?.value ?? 0;
+  const boolValue   = () => (cur() as { value: boolean } | undefined)?.value ?? false;
+  const stringValue = () => (cur() as { value: string } | undefined)?.value ?? '';
+  const vec3Value   = () =>
+    (cur() as ParamValueVec3 | undefined)?.value ?? ([0, 0, 0] as [number, number, number]);
+  const setVec3Comp = (i: 0 | 1 | 2, val: number) => {
+    const cv = vec3Value().slice() as [number, number, number];
+    cv[i] = val;
+    patch({ type: 'vec3', value: cv });
+  };
+
+  return (
+    <Switch>
+      <Match when={props.spec.type === 'float'}>
+        <Show
+          when={(() => { const r = range(); return r && r.min !== r.max ? r : null; })()}
+          fallback={
+            <div class="sop-param-row">
+              <label>{props.spec.name}</label>
               <NumberInput
-                class="sop-param-slider-readout"
-                step={step}
-                title={`${props.spec.name} (value)`}
-                value={value}
+                step={0.01}
+                title={props.spec.name}
+                value={floatValue}
                 onCommit={(v) => patch({ type: 'float', value: v })}
               />
+              <PromoteBtn />
             </div>
-            <PromoteBtn />
-          </div>
-        );
-      }
-      return (
-        <div class="sop-param-row">
-          <label>{props.spec.name}</label>
-          <NumberInput
-            step={0.01}
-            title={props.spec.name}
-            value={value}
-            onCommit={(v) => patch({ type: 'float', value: v })}
-          />
-          <PromoteBtn />
-        </div>
-      );
-    }
-    case 'int': {
-      const value = () => (cur() as { value: number } | undefined)?.value ?? 0;
-      const opts = options();
-      if (opts && opts.length > 0) {
-        return (
-          <div class="sop-param-row">
-            <label>{props.spec.name}</label>
-            <select
-              title={props.spec.name}
-              value={String(value())}
-              onChange={(e) =>
-                patch({ type: 'int', value: parseInt(e.currentTarget.value, 10) || 0 })
+          }
+        >
+          {(r) => {
+            const step = r().step > 0 ? r().step : (r().max - r().min) / 200;
+            return (
+              <div class="sop-param-row sop-param-slider-row">
+                <label>{props.spec.name}</label>
+                <div class="sop-param-slider-group">
+                  <input
+                    type="range"
+                    class="sop-param-slider"
+                    title={props.spec.name}
+                    min={r().min}
+                    max={r().max}
+                    step={step}
+                    value={floatValue()}
+                    onInput={(e) =>
+                      patch({ type: 'float', value: parseFloat(e.currentTarget.value) || 0 })
+                    }
+                  />
+                  <NumberInput
+                    class="sop-param-slider-readout"
+                    step={step}
+                    title={`${props.spec.name} (value)`}
+                    value={floatValue}
+                    onCommit={(v) => patch({ type: 'float', value: v })}
+                  />
+                </div>
+                <PromoteBtn />
+              </div>
+            );
+          }}
+        </Show>
+      </Match>
+
+      <Match when={props.spec.type === 'int'}>
+        <Show
+          when={(() => { const o = options(); return o && o.length > 0 ? o : null; })()}
+          fallback={
+            <Show
+              when={(() => { const r = range(); return r && r.min !== r.max ? r : null; })()}
+              fallback={
+                <div class="sop-param-row">
+                  <label>{props.spec.name}</label>
+                  <NumberInput
+                    step={1}
+                    decimals={0}
+                    title={props.spec.name}
+                    value={intValue}
+                    onCommit={(v) => patch({ type: 'int', value: Math.round(v) })}
+                  />
+                  <PromoteBtn />
+                </div>
               }
             >
-              <For each={opts}>
-                {(label, i) => <option value={String(i())}>{label}</option>}
-              </For>
-            </select>
-            <PromoteBtn />
-          </div>
-        );
-      }
-      const r = range();
-      if (r && r.min !== r.max) {
-        const step = r.step > 0 ? r.step : 1;
-        return (
-          <div class="sop-param-row sop-param-slider-row">
-            <label>{props.spec.name}</label>
-            <div class="sop-param-slider-group">
-              <input
-                type="range"
-                class="sop-param-slider"
+              {(r) => {
+                const step = r().step > 0 ? r().step : 1;
+                return (
+                  <div class="sop-param-row sop-param-slider-row">
+                    <label>{props.spec.name}</label>
+                    <div class="sop-param-slider-group">
+                      <input
+                        type="range"
+                        class="sop-param-slider"
+                        title={props.spec.name}
+                        min={r().min}
+                        max={r().max}
+                        step={step}
+                        value={intValue()}
+                        onInput={(e) =>
+                          patch({ type: 'int', value: parseInt(e.currentTarget.value, 10) || 0 })
+                        }
+                      />
+                      <NumberInput
+                        class="sop-param-slider-readout"
+                        step={step}
+                        decimals={0}
+                        title={`${props.spec.name} (value)`}
+                        value={intValue}
+                        onCommit={(v) => patch({ type: 'int', value: Math.round(v) })}
+                      />
+                    </div>
+                    <PromoteBtn />
+                  </div>
+                );
+              }}
+            </Show>
+          }
+        >
+          {(opts) => (
+            <div class="sop-param-row">
+              <label>{props.spec.name}</label>
+              <select
                 title={props.spec.name}
-                min={r.min}
-                max={r.max}
-                step={step}
-                value={value()}
-                onInput={(e) =>
+                value={String(intValue())}
+                onChange={(e) =>
                   patch({ type: 'int', value: parseInt(e.currentTarget.value, 10) || 0 })
                 }
-              />
-              <NumberInput
-                class="sop-param-slider-readout"
-                step={step}
-                decimals={0}
-                title={`${props.spec.name} (value)`}
-                value={value}
-                onCommit={(v) => patch({ type: 'int', value: Math.round(v) })}
-              />
+              >
+                <For each={opts()}>
+                  {(label, i) => <option value={String(i())}>{label}</option>}
+                </For>
+              </select>
+              <PromoteBtn />
             </div>
-            <PromoteBtn />
-          </div>
-        );
-      }
-      return (
-        <div class="sop-param-row">
-          <label>{props.spec.name}</label>
-          <NumberInput
-            step={1}
-            decimals={0}
-            title={props.spec.name}
-            value={value}
-            onCommit={(v) => patch({ type: 'int', value: Math.round(v) })}
-          />
-          <PromoteBtn />
-        </div>
-      );
-    }
-    case 'bool':
-      return (
+          )}
+        </Show>
+      </Match>
+
+      <Match when={props.spec.type === 'bool'}>
         <div class="sop-param-row">
           <label>{props.spec.name}</label>
           <input
             type="checkbox"
             title={props.spec.name}
-            checked={(cur() as { value: boolean } | undefined)?.value ?? false}
-            onChange={(e) =>
-              patch({ type: 'bool', value: e.currentTarget.checked })
-            }
+            checked={boolValue()}
+            onChange={(e) => patch({ type: 'bool', value: e.currentTarget.checked })}
           />
           <PromoteBtn />
         </div>
-      );
-    case 'vec3': {
-      const v = () =>
-        (cur() as ParamValueVec3 | undefined)?.value ?? ([0, 0, 0] as [number, number, number]);
-      const setComp = (i: 0 | 1 | 2, val: number) => {
-        const cv = v().slice() as [number, number, number];
-        cv[i] = val;
-        patch({ type: 'vec3', value: cv });
-      };
-      return (
+      </Match>
+
+      <Match when={props.spec.type === 'vec3'}>
         <div class="sop-param-row sop-param-vec3">
           <label>{props.spec.name}</label>
           <div class="sop-param-vec3-fields">
             <NumberInput step={0.01} title={`${props.spec.name} x`}
-                         value={() => v()[0]}
-                         onCommit={(n) => setComp(0, n)} />
+                         value={() => vec3Value()[0]}
+                         onCommit={(n) => setVec3Comp(0, n)} />
             <NumberInput step={0.01} title={`${props.spec.name} y`}
-                         value={() => v()[1]}
-                         onCommit={(n) => setComp(1, n)} />
+                         value={() => vec3Value()[1]}
+                         onCommit={(n) => setVec3Comp(1, n)} />
             <NumberInput step={0.01} title={`${props.spec.name} z`}
-                         value={() => v()[2]}
-                         onCommit={(n) => setComp(2, n)} />
+                         value={() => vec3Value()[2]}
+                         onCommit={(n) => setVec3Comp(2, n)} />
           </div>
           <PromoteBtn />
         </div>
-      );
-    }
-    case 'string': {
-      const value = () => (cur() as { value: string } | undefined)?.value ?? '';
-      const opts = options();
-      if (opts && opts.length > 0) {
-        return (
-          <div class="sop-param-row">
-            <label>{props.spec.name}</label>
-            <select
-              title={props.spec.name}
-              value={value()}
-              onChange={(e) => patch({ type: 'string', value: e.currentTarget.value })}
-            >
-              <For each={opts}>
-                {(label) => <option value={label}>{label}</option>}
-              </For>
-            </select>
-          </div>
-        );
-      }
-      return (
-        <div class="sop-param-row">
-          <label>{props.spec.name}</label>
-          <input
-            type="text"
-            title={props.spec.name}
-            value={value()}
-            onChange={(e) => patch({ type: 'string', value: e.currentTarget.value })}
-          />
-        </div>
-      );
-    }
-  }
+      </Match>
+
+      <Match when={props.spec.type === 'string'}>
+        <Show
+          when={(() => { const o = options(); return o && o.length > 0 ? o : null; })()}
+          fallback={
+            <div class="sop-param-row">
+              <label>{props.spec.name}</label>
+              <input
+                type="text"
+                title={props.spec.name}
+                value={stringValue()}
+                onChange={(e) => patch({ type: 'string', value: e.currentTarget.value })}
+              />
+            </div>
+          }
+        >
+          {(opts) => (
+            <div class="sop-param-row">
+              <label>{props.spec.name}</label>
+              <select
+                title={props.spec.name}
+                value={stringValue()}
+                onChange={(e) => patch({ type: 'string', value: e.currentTarget.value })}
+              >
+                <For each={opts()}>
+                  {(label) => <option value={label}>{label}</option>}
+                </For>
+              </select>
+            </div>
+          )}
+        </Show>
+      </Match>
+    </Switch>
+  );
 };
 
 // ── Input-constant editors ────────────────────────────────────────────────
