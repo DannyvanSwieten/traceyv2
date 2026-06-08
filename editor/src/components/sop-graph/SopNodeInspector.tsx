@@ -82,7 +82,7 @@ export const SopNodeInspector: Component = () => {
   // are not in this set.
   const promotedHostParamNames = createMemo<Set<string>>(() => {
     const n = node();
-    if (!n || n.kind !== 'attribute_vop') return new Set();
+    if (!n || (n.kind !== 'attribute_vop' && n.kind !== 'instance_vop')) return new Set();
     const set = new Set<string>();
     const extra = (n as { extra?: { promotions?: { host_param_name?: string }[] } }).extra;
     if (extra?.promotions) {
@@ -134,13 +134,13 @@ export const SopNodeInspector: Component = () => {
                 )}
               </Index>
             </div>
-            <Show when={n().kind === 'attribute_vop'}>
+            <Show when={n().kind === 'attribute_vop' || n().kind === 'instance_vop'}>
               <button
                 class="sop-inspector-action"
                 type="button"
                 onClick={() => openVopEditor(n().uid)}
               >
-                Edit VOP Graph
+                {n().kind === 'instance_vop' ? 'Edit Instance VOP…' : 'Edit VOP Graph'}
               </button>
             </Show>
           </>

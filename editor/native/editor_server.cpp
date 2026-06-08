@@ -23,6 +23,7 @@
 #include "sops/sop_node.hpp"
 #include "sops/sop_registry.hpp"
 #include "sops/nodes/attribute_vop_sop.hpp"
+#include "sops/nodes/instance_vop_sop.hpp"
 #include "sops/nodes/dop_import_sop.hpp"
 #include "vops/vop_graph.hpp"
 #include "vops/vop_registry.hpp"
@@ -3671,6 +3672,8 @@ std::string EditorServer::handle_command(const std::string& json_request) {
                 if (auto* sn = findNodeRecursive(m_sop_graph.get(), host_uid)) {
                     if (const auto* vop = tracey::sops::attributeVopGraph(sn))
                         return ok_response(tracey::vops::serializeVopGraph(*vop));
+                    if (const auto* vop = tracey::sops::instanceVopGraph(sn))
+                        return ok_response(tracey::vops::serializeVopGraph(*vop));
                 }
             }
             if (m_dop_graph) {
@@ -3705,6 +3708,29 @@ std::string EditorServer::handle_command(const std::string& json_request) {
                     return err_response(std::string("vop graph parse error: ") + e.what());
                 }
                 tracey::sops::syncPromotedHostValuesFromVop(sop_host);
+                if (m_sop_graph) {
+                    std::string json = tracey::sops::serializeSopGraph(*m_sop_graph);
+                    m_last_pushed_graph_json = json;
+                    if (cook) {
+                        post_cook_request(std::move(json), m_timeline.current_time);
+                    }
+                }
+                if (cook && m_broadcast) m_broadcast(R"({"event":"sop_graph_changed"})");
+                return ok_response_null();
+            }
+            // SOP host: instance_vop (sibling of attribute_vop — same
+            // VopGraph storage, different cook path). Same recompile +
+            // re-cook contract because the instance buffer the rasterizer
+            // and TLAS consume changes whenever the graph changes.
+            if (sop_host && tracey::sops::instanceVopGraph(sop_host)) {
+                try {
+                    auto parsed = tracey::vops::deserializeVopGraph(graph_json);
+                    if (!parsed) return err_response("vop graph parse returned null");
+                    tracey::sops::setInstanceVopGraph(sop_host, std::move(parsed));
+                } catch (const std::exception& e) {
+                    return err_response(std::string("vop graph parse error: ") + e.what());
+                }
+                tracey::sops::syncPromotedInstanceVopValues(sop_host);
                 if (m_sop_graph) {
                     std::string json = tracey::sops::serializeSopGraph(*m_sop_graph);
                     m_last_pushed_graph_json = json;
@@ -3763,11 +3789,18 @@ std::string EditorServer::handle_command(const std::string& json_request) {
 
             auto* node = findNodeRecursive(m_sop_graph.get(), host_uid);
             if (!node) return err_response("host node not found");
-            if (node->kind() != "attribute_vop")
-                return err_response("host is not an attribute_vop");
 
-            const std::string hostName = tracey::sops::promoteAttributeVopParam(
-                node, vop_node_uid, param_name);
+            // Both attribute_vop and instance_vop hosts can promote VOP-side
+            // params (same UI, same animation contract). Pick the matching
+            // helper by kind; the helpers return an empty string when the
+            // VOP node / param doesn't exist on this host.
+            std::string hostName;
+            if (node->kind() == "attribute_vop")
+                hostName = tracey::sops::promoteAttributeVopParam(node, vop_node_uid, param_name);
+            else if (node->kind() == "instance_vop")
+                hostName = tracey::sops::promoteInstanceVopParam(node, vop_node_uid, param_name);
+            else
+                return err_response("host is not an attribute_vop or instance_vop");
             if (hostName.empty()) {
                 return err_response("could not promote — VOP node or param not found");
             }
@@ -3792,7 +3825,8 @@ std::string EditorServer::handle_command(const std::string& json_request) {
             auto* node = findNodeRecursive(m_sop_graph.get(), host_uid);
             if (!node) return err_response("host node not found");
             auto* vop = tracey::sops::attributeVopGraph(node);
-            if (!vop) return err_response("host is not an attribute_vop");
+            if (!vop) vop = tracey::sops::instanceVopGraph(node);
+            if (!vop) return err_response("host is not an attribute_vop or instance_vop");
             auto* vopNode = vop->findNode(vop_node_uid);
             if (!vopNode) return err_response("vop node not found");
 
@@ -3828,10 +3862,13 @@ std::string EditorServer::handle_command(const std::string& json_request) {
 
             auto* node = findNodeRecursive(m_sop_graph.get(), host_uid);
             if (!node) return err_response("host node not found");
-            if (node->kind() != "attribute_vop")
-                return err_response("host is not an attribute_vop");
-
-            const bool removed = tracey::sops::demoteAttributeVopParam(node, host_param_name);
+            bool removed = false;
+            if (node->kind() == "attribute_vop")
+                removed = tracey::sops::demoteAttributeVopParam(node, host_param_name);
+            else if (node->kind() == "instance_vop")
+                removed = tracey::sops::demoteInstanceVopParam(node, host_param_name);
+            else
+                return err_response("host is not an attribute_vop or instance_vop");
             if (!removed) return ok_response(false);
             m_timeline_dirty = true;
             if (m_broadcast) m_broadcast(R"({"event":"sop_graph_changed"})");

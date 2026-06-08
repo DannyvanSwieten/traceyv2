@@ -2,7 +2,10 @@
 
 #include "cook_cache.hpp"
 #include "parameter.hpp"
+#include "nodes/instance_vop_sop.hpp"          // instanceVopGraph()
 #include "../graph/connection.hpp"
+#include "../vops/vop_graph.hpp"
+#include "../vops/codegen/compute_dispatch.hpp"
 
 #include <glm/gtc/quaternion.hpp>
 
@@ -437,6 +440,169 @@ namespace tracey
                                 // with +Y as the up reference. Mirrors the
                                 // copy_to_points helper.
                                 const Vec3 &n = tplN->data()[i];
+                                glm::vec3 forward(n.x, n.y, n.z);
+                                const float fl2 = glm::dot(forward, forward);
+                                if (fl2 >= 1e-12f)
+                                {
+                                    forward = forward * (1.0f / std::sqrt(fl2));
+                                    glm::vec3 right = glm::cross(glm::vec3(0, 1, 0), forward);
+                                    const float rl2 = glm::dot(right, right);
+                                    if (rl2 >= 1e-12f)
+                                    {
+                                        right = right * (1.0f / std::sqrt(rl2));
+                                        glm::vec3 up = glm::cross(forward, right);
+                                        glm::mat3 R(right, up, forward);
+                                        glm::quat q = glm::quat_cast(R);
+                                        e.rotation = Vec4(q.w, q.x, q.y, q.z);
+                                    }
+                                }
+                            }
+                            a.instances.push_back(e);
+                        }
+                        emitted.push_back(std::move(a));
+                    }
+                }
+                else if (node->kind() == "instance_vop")
+                {
+                    // VOP-driven instance terminal. Same shape as `instance`
+                    // above but with a per-instance compute pass folded in
+                    // between "read template" and "build InstanceEntries":
+                    //
+                    //   1. Build a synthetic Geometry whose point table has
+                    //      one point per template entry, pre-populated with
+                    //      P / N / Cd / pscale (the user's per-instance
+                    //      knobs) plus age / life / ptnum read off the
+                    //      template if present.
+                    //   2. Dispatch the inner VopGraph against that Geometry
+                    //      via the existing VopComputeDispatcher — same
+                    //      compute kernel that drives attribute_vop, just
+                    //      pointed at the synthetic per-instance buffer.
+                    //   3. Read the (possibly mutated) attrs back and pack
+                    //      them into per-instance entries:
+                    //         translate = P[i]
+                    //         rotation  = orientFromNormal(N[i])
+                    //         scale     = Vec3(pscale[i])
+                    //         tint      = Cd[i]
+                    //
+                    // GPU-first, no CPU fallback. The dispatcher must be
+                    // registered (the editor always wires it up at boot);
+                    // headless contexts without a GPU just emit the
+                    // identity instance set (translate=P, scale=pscale,
+                    // tint=Cd) so smoke tests still run.
+                    const Geometry *stamp = inputs.size() > 0 ? inputs[0] : nullptr;
+                    const Geometry *tmpl  = inputs.size() > 1 ? inputs[1] : nullptr;
+                    if (!stamp || !tmpl) { /* nothing to emit */ }
+                    else
+                    {
+                        const auto &tplP  = tmpl->positions();
+                        const size_t N    = tplP.size();
+                        const auto *tplPs = tmpl->points().get<float>("pscale");
+                        const auto *tplN  = tmpl->points().get<Vec3>("N");
+                        const auto *tplCd = tmpl->points().get<Vec3>("Cd");
+                        const auto *tplAge = tmpl->points().get<float>("age");
+                        const auto *tplLife = tmpl->points().get<float>("life");
+                        const bool useN   = node->paramBool("orient_to_normal", true);
+                        const std::string baseName =
+                            node->paramString("name", "instance_vop_" + std::to_string(uid));
+
+                        // ── Synthetic per-instance Geometry ──
+                        // The VOP graph evaluates this as if each "point"
+                        // were an instance. We pre-declare every attr the
+                        // graph might read OR write so geo_input has data
+                        // and geo_output's prepare() finds them in place.
+                        Geometry instGeo;
+                        {
+                            auto &P    = *instGeo.points().add<Vec3>("P",      Vec3(0.0f));
+                            auto &Nat  = *instGeo.points().add<Vec3>("N",      Vec3(0.0f, 1.0f, 0.0f));
+                            auto &Cd   = *instGeo.points().add<Vec3>("Cd",     Vec3(1.0f));
+                            auto &Ps   = *instGeo.points().add<float>("pscale", 1.0f);
+                            auto &age  = *instGeo.points().add<float>("age",   0.0f);
+                            auto &life = *instGeo.points().add<float>("life",  1.0f);
+
+                            P.data().resize(N);
+                            Nat.data().resize(N, Vec3(0.0f, 1.0f, 0.0f));
+                            Cd.data().resize(N, Vec3(1.0f));
+                            Ps.data().resize(N, 1.0f);
+                            age.data().resize(N, 0.0f);
+                            life.data().resize(N, 1.0f);
+
+                            for (size_t i = 0; i < N; ++i)
+                            {
+                                P.data()[i] = tplP[i];
+                                if (tplN  && i < tplN->data().size())  Nat.data()[i]  = tplN->data()[i];
+                                if (tplCd && i < tplCd->data().size()) Cd.data()[i]   = tplCd->data()[i];
+                                if (tplPs && i < tplPs->data().size()) Ps.data()[i]   = tplPs->data()[i];
+                                if (tplAge && i < tplAge->data().size())  age.data()[i]  = tplAge->data()[i];
+                                if (tplLife && i < tplLife->data().size()) life.data()[i] = tplLife->data()[i];
+                            }
+                        }
+
+                        // ── Dispatch the inner VopGraph ──
+                        // const_cast is OK: we cooked the const sop_graph
+                        // already; the InstanceVopSop instance is owned by
+                        // this graph and its inner VopGraph is mutable
+                        // through the helper. The dispatcher mutates only
+                        // the synthetic Geometry, not the host SOP.
+                        if (auto *graph = instanceVopGraph(const_cast<SopNode *>(node)))
+                        {
+                            // Pre-pass: call prepare() on each node so
+                            // geo_output materialises any to-be-written
+                            // attr that wasn't created above.
+                            for (const auto &n : graph->nodes())
+                            {
+                                if (auto *vn = dynamic_cast<vops::VopNode *>(n.get()))
+                                    vn->prepare(instGeo);
+                            }
+                            graph->compile();
+                            if (auto *disp = vops::codegen::VopComputeDispatcher::getGlobal())
+                            {
+                                try { disp->dispatch(*graph, instGeo); }
+                                catch (const std::exception &e)
+                                {
+                                    std::fprintf(stderr,
+                                        "[instance_vop] GPU dispatch failed: %s\n", e.what());
+                                }
+                            }
+                            // Headless: no dispatcher — instGeo stays with
+                            // its identity-passthrough values, so emit
+                            // matches the plain `instance` SOP.
+                        }
+
+                        // ── Read back + emit ──
+                        EmittedActor a;
+                        a.sourceNodeUid = uid;
+                        a.instanceIndex = 0;
+                        a.name          = baseName;
+                        a.geometry      = std::make_shared<const Geometry>(*stamp);
+                        a.materialLibraryName =
+                            node->paramString("material_library_name", "");
+                        a.instances.reserve(N);
+
+                        const auto *outP   = instGeo.points().get<Vec3>("P");
+                        const auto *outN   = instGeo.points().get<Vec3>("N");
+                        const auto *outCd  = instGeo.points().get<Vec3>("Cd");
+                        const auto *outPs  = instGeo.points().get<float>("pscale");
+
+                        for (size_t i = 0; i < N; ++i)
+                        {
+                            EmittedActor::InstanceEntry e;
+                            e.translate = outP ? outP->data()[i] : tplP[i];
+                            const float s = (outPs && i < outPs->data().size())
+                                              ? outPs->data()[i] : 1.0f;
+                            e.scale = Vec3(s, s, s);
+                            if (outCd && i < outCd->data().size())
+                            {
+                                e.tint = outCd->data()[i];
+                                // Honour hasTint = true any time the graph
+                                // produced a non-white Cd, so the renderer
+                                // picks up the per-instance tint.
+                                const Vec3 &c = e.tint;
+                                e.hasTint = !(c.x == 1.0f && c.y == 1.0f && c.z == 1.0f);
+                            }
+                            if (useN && outN && i < outN->data().size())
+                            {
+                                // Same orient-to-normal as `instance` SOP.
+                                const Vec3 &n = outN->data()[i];
                                 glm::vec3 forward(n.x, n.y, n.z);
                                 const float fl2 = glm::dot(forward, forward);
                                 if (fl2 >= 1e-12f)

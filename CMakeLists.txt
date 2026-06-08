@@ -125,6 +125,8 @@ add_library(tracey
     src/sops/nodes/points_grid_sop.cpp
     src/sops/nodes/copy_to_points_sop.cpp
     src/sops/nodes/instance_sop.cpp
+    src/sops/nodes/instance_vop_sop.cpp
+    src/sops/nodes/instance_vop_sop.hpp
     src/sops/nodes/scatter_sop.cpp
     src/sops/nodes/light_sop.cpp
     src/sops/nodes/normal_sop.cpp

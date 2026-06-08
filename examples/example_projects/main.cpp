@@ -38,6 +38,7 @@
 #include "vops/vop_registry.hpp"
 
 #include "sops/nodes/attribute_vop_sop.hpp"
+#include "sops/nodes/instance_vop_sop.hpp"
 
 #include "scene/camera.hpp"
 
@@ -625,6 +626,80 @@ namespace
                                /*fps=*/24.0, /*showPoints=*/false);
     }
 
+    // 09 — Instance VOP swarm: a scatter on a plane drives an instance_vop
+    // whose inner graph perturbs P (translate) by 3D noise and modulates
+    // Cd (tint) by the same noise. Showcases the per-instance graph
+    // pipeline end-to-end: same `instance` stamping cost, but each clone
+    // now has a graph-driven offset + colour.
+    std::string buildInstanceVopSwarm()
+    {
+        SopGraph sop(0);
+        const size_t cube = addSop(sop, "primitive_cube", 100, 100,
+            [](SopNode &n){ n.setParamFloat("size", 0.18f); });
+        const size_t plane = addSop(sop, "primitive_plane", 300, 100,
+            [](SopNode &n){
+                n.setParamFloat("width", 6.0f);
+                n.setParamFloat("depth", 6.0f);
+                n.setParamInt("cols", 12);
+                n.setParamInt("rows", 12);
+            });
+        const size_t scat = addSop(sop, "scatter", 300, 220,
+            [](SopNode &n){
+                n.setParamInt("count", 400);
+                n.setParamInt("seed", 19);
+            });
+        const size_t inst = addSop(sop, "instance_vop", 200, 380,
+            [](SopNode &n){
+                n.setParamString("name", "instance_vop_swarm");
+                n.setParamBool("orient_to_normal", true);
+            });
+
+        // copy_to_points / instance / instance_vop port convention:
+        //   port 0 = stamp (geometry to clone)
+        //   port 1 = template (point cloud)
+        wire(sop, plane, 0, scat, 0);
+        wire(sop, cube,  0, inst, 0);
+        wire(sop, scat,  0, inst, 1);
+
+        // Inner VOP graph:
+        //   geo_input.P  ─┬─→ noise_vec3  →  add ←─  (also feeds geo_output via passthrough)
+        //                 │                  │
+        //                 └──────────────────┘
+        //   add.out  →  geo_output.P                  (per-instance translate)
+        //   noise.out → multiply ← constant_vec3 →  geo_output.Cd  (tint variation)
+        //   geo_input.N  →  geo_output.N              (orient passthrough)
+        auto vopOwned = std::make_unique<vops::VopGraph>(0);
+        auto &vop = *vopOwned;
+        const size_t gin    = addVop(vop, "geo_input",      60,  120);
+        const size_t noise  = addVop(vop, "noise_vec3",     260, 60,
+            [](vops::VopNode &n){
+                n.setParamFloat("frequency", 0.7f);
+                n.setParamFloat("amplitude", 0.6f);
+                n.setParamInt("seed", 11);
+            });
+        const size_t addP   = addVop(vop, "add",            460, 100);
+        const size_t mulCd  = addVop(vop, "multiply",       460, 220);
+        const size_t kTint  = addVop(vop, "constant_vec3",  260, 260,
+            [](vops::VopNode &n){
+                n.setParamVec3("value", Vec3(0.6f, 0.8f, 1.0f));
+            });
+        const size_t gout   = addVop(vop, "geo_output",     680, 140);
+
+        // geo_input port indices: 0=P, 1=N, 2=Cd, 7=pscale (see geo_io_vops.cpp).
+        wireVop(vop, gin,   0, noise, 0);     // P → noise.input
+        wireVop(vop, gin,   0, addP,  0);     // P → add.a
+        wireVop(vop, noise, 0, addP,  1);     // noise → add.b
+        wireVop(vop, addP,  0, gout,  0);     // add.out → geo_output.P
+        wireVop(vop, gin,   1, gout,  1);     // N → geo_output.N (orient passthrough)
+        wireVop(vop, noise, 0, mulCd, 0);     // noise → mul.a
+        wireVop(vop, kTint, 0, mulCd, 1);     // tint  → mul.b
+        wireVop(vop, mulCd, 0, gout,  2);     // mul.out → geo_output.Cd
+
+        setInstanceVopGraph(sop.findNode(inst), std::move(vopOwned));
+
+        return makeProjectJson(sop, dops::DopGraph{0}, defaultCamera());
+    }
+
     // ── Driver ─────────────────────────────────────────────────────────────
 
     struct Example
@@ -724,7 +799,7 @@ int main(int argc, char **argv)
                                   : fs::path("examples/projects");
     fs::create_directories(outDir);
 
-    const std::array<Example, 8> examples = {{
+    const std::array<Example, 9> examples = {{
         {"01_geometry_basics",
          "cube + sphere + plane, transformed and merged",
          buildGeometryBasics},
@@ -749,6 +824,9 @@ int main(int argc, char **argv)
         {"08_particles_pathtraced",
          "particles instanced as small spheres so the PT can render them",
          buildParticlesPathtraced},
+        {"09_instance_vop_swarm",
+         "scattered cubes with per-instance graph-driven offset + tint",
+         buildInstanceVopSwarm},
     }};
 
     std::cout << "Writing example projects to " << outDir.string() << ":\n";

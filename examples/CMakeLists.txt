@@ -42,6 +42,10 @@ add_executable(cloners_smoke
     cloners_smoke/main.cpp
 )
 
+add_executable(instance_vop_smoke
+    instance_vop_smoke/main.cpp
+)
+
 add_executable(dop_smoke
     dop_smoke/main.cpp
 )
@@ -134,6 +138,12 @@ target_link_libraries(cloners_smoke
     glm
 )
 
+target_link_libraries(instance_vop_smoke
+    PRIVATE
+    tracey
+    glm
+)
+
 target_link_libraries(dop_smoke
     PRIVATE
     tracey
@@ -167,7 +177,7 @@ target_link_libraries(example_projects
 # layer, so even the headless smoke tests need the rpath at runtime.
 set_target_properties(
     device_api wavefront scene_renderer
-    sop_eval_test attribute_vop_smoke cloners_smoke dop_smoke vop_codegen_smoke attribute_gpu_smoke
+    sop_eval_test attribute_vop_smoke cloners_smoke instance_vop_smoke dop_smoke vop_codegen_smoke attribute_gpu_smoke
     example_projects
     PROPERTIES
     MACOSX_RPATH ON
