@@ -55,6 +55,31 @@
   margin-bottom: 4px;
 }
 
+/* Light Color / Sky / Horizon / Ground header row. The label sits on
+ * the left like other transform groups; the colour swatch hugs the
+ * right so the user can click to open the native picker without losing
+ * the per-channel numeric inputs underneath. */
+.light-color-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+.light-color-header .transform-label {
+  margin-bottom: 0;
+}
+.light-color-swatch {
+  width: 28px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid #3a3a3a;
+  border-radius: 3px;
+  background: transparent;
+  cursor: pointer;
+}
+.light-color-swatch::-webkit-color-swatch-wrapper { padding: 0; }
+.light-color-swatch::-webkit-color-swatch        { border: none; border-radius: 2px; }
+
 .transform-values {
   display: flex;
   gap: 8px;

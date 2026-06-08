@@ -8,6 +8,7 @@ import {
 } from '../../stores/materials';
 import { KeyframeDot } from '../keyframe-dot/KeyframeDot';
 import { NumberInput } from '../number-input/NumberInput';
+import { ColorSwatch } from '../color-swatch/ColorSwatch';
 import { sopGraph } from '../../stores/sops';
 import { findNodeRecursive } from '../../lib/sop_graph';
 import { autoKey, setKeyAtPlayhead } from '../../stores/timeline';
@@ -303,7 +304,15 @@ export const ActorProperties: Component<ActorPropertiesProps> = (props) => {
                       </select>
                     </div>
                     <div class="transform-group">
-                      <span class="transform-label">Color</span>
+                      <div class="light-color-header">
+                        <span class="transform-label">Color</span>
+                        <ColorSwatch
+                          class="light-color-swatch"
+                          title="Light colour (linear RGB, clamped to LDR in the picker)"
+                          value={() => light().color}
+                          onCommit={(rgb) => editLight({ color: rgb })}
+                        />
+                      </div>
                       <div class="transform-inputs">
                         <For each={['x', 'y', 'z'] as const}>
                           {(axis) => (
@@ -343,7 +352,17 @@ export const ActorProperties: Component<ActorPropertiesProps> = (props) => {
                       ]}>
                         {(g) => (
                           <div class="transform-group">
-                            <span class="transform-label">{g.label}</span>
+                            <div class="light-color-header">
+                              <span class="transform-label">{g.label}</span>
+                              <ColorSwatch
+                                class="light-color-swatch"
+                                title={`${g.label} colour`}
+                                value={() => light()[g.field]}
+                                onCommit={(rgb) =>
+                                  editLight({ [g.field]: rgb } as api.LightParamPatch)
+                                }
+                              />
+                            </div>
                             <div class="transform-inputs">
                               <For each={['x', 'y', 'z'] as const}>
                                 {(axis) => (
