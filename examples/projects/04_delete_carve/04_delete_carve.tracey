@@ -1,0 +1,187 @@
+{
+  "version": 3,
+  "scene": {
+    "camera": {
+      "position": {"x": 4, "y": 3, "z": 6},
+      "rotation": {"w": 1, "x": 0, "y": 0, "z": 0},
+      "fov": 45,
+      "near_plane": 0.100000001,
+      "far_plane": 1000,
+      "aspect_ratio": 1.77777779
+    },
+    "actors": []
+  },
+  "sop_graph": {
+  "connections": [
+    {
+      "from_node": 1,
+      "from_port": 0,
+      "to_node": 2,
+      "to_port": 0
+    },
+    {
+      "from_node": 2,
+      "from_port": 0,
+      "to_node": 3,
+      "to_port": 0
+    }
+  ],
+  "graph_kind": "sop",
+  "next_uid": 4,
+  "nodes": [
+    {
+      "kind": "points_grid",
+      "params": {
+        "count_x": {
+          "type": "int",
+          "value": 40
+        },
+        "count_y": {
+          "type": "int",
+          "value": 1
+        },
+        "count_z": {
+          "type": "int",
+          "value": 40
+        },
+        "spacing_x": {
+          "type": "float",
+          "value": 0.10000000149011612
+        },
+        "spacing_y": {
+          "type": "float",
+          "value": 0.10000000149011612
+        },
+        "spacing_z": {
+          "type": "float",
+          "value": 0.10000000149011612
+        }
+      },
+      "pos": [
+        100.0,
+        100.0
+      ],
+      "uid": 1
+    },
+    {
+      "kind": "delete",
+      "params": {
+        "attr_name": {
+          "type": "string",
+          "value": "Cd"
+        },
+        "bbox_max": {
+          "type": "vec3",
+          "value": [
+            0.800000011920929,
+            0.800000011920929,
+            0.800000011920929
+          ]
+        },
+        "bbox_min": {
+          "type": "vec3",
+          "value": [
+            -0.800000011920929,
+            -0.800000011920929,
+            -0.800000011920929
+          ]
+        },
+        "invert": {
+          "type": "bool",
+          "value": true
+        },
+        "keep_fraction": {
+          "type": "float",
+          "value": 0.5
+        },
+        "mode": {
+          "type": "string",
+          "value": "bbox"
+        },
+        "op": {
+          "type": "string",
+          "value": ">"
+        },
+        "seed": {
+          "type": "int",
+          "value": 0
+        },
+        "threshold": {
+          "type": "float",
+          "value": 0.5
+        }
+      },
+      "pos": [
+        100.0,
+        220.0
+      ],
+      "uid": 2
+    },
+    {
+      "kind": "object_output",
+      "params": {
+        "material_library_name": {
+          "type": "string",
+          "value": ""
+        },
+        "name": {
+          "type": "string",
+          "value": "delete_carve"
+        },
+        "rotate_euler_deg": {
+          "type": "vec3",
+          "value": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "scale": {
+          "type": "vec3",
+          "value": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "translate": {
+          "type": "vec3",
+          "value": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      },
+      "pos": [
+        100.0,
+        340.0
+      ],
+      "uid": 3
+    }
+  ],
+  "uid": 0,
+  "version": 1
+},
+  "dop_graph": {
+  "connections": [],
+  "graph_kind": "dop",
+  "next_uid": 1,
+  "nodes": [],
+  "uid": 0,
+  "version": 1
+},
+  "render_settings": {
+    "max_samples": 64,
+    "max_bounces": 4,
+    "show_points": true,
+    "show_edges": false
+  },
+  "timeline": {
+    "fps": 24,
+    "frame_start": 1,
+    "frame_end": 240,
+    "current_time": 0.0,
+    "loop": 1
+  }
+}

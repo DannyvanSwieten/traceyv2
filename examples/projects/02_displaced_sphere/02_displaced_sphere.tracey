@@ -1,0 +1,322 @@
+{
+  "version": 3,
+  "scene": {
+    "camera": {
+      "position": {"x": 4, "y": 3, "z": 6},
+      "rotation": {"w": 1, "x": 0, "y": 0, "z": 0},
+      "fov": 45,
+      "near_plane": 0.100000001,
+      "far_plane": 1000,
+      "aspect_ratio": 1.77777779
+    },
+    "actors": []
+  },
+  "sop_graph": {
+  "connections": [
+    {
+      "from_node": 1,
+      "from_port": 0,
+      "to_node": 2,
+      "to_port": 0
+    },
+    {
+      "from_node": 2,
+      "from_port": 0,
+      "to_node": 3,
+      "to_port": 0
+    },
+    {
+      "from_node": 3,
+      "from_port": 0,
+      "to_node": 4,
+      "to_port": 0
+    },
+    {
+      "from_node": 4,
+      "from_port": 0,
+      "to_node": 5,
+      "to_port": 0
+    }
+  ],
+  "graph_kind": "sop",
+  "next_uid": 6,
+  "nodes": [
+    {
+      "kind": "primitive_sphere",
+      "params": {
+        "radius": {
+          "type": "float",
+          "value": 1.0
+        },
+        "rings": {
+          "type": "int",
+          "value": 32
+        },
+        "segments": {
+          "type": "int",
+          "value": 64
+        }
+      },
+      "pos": [
+        200.0,
+        100.0
+      ],
+      "uid": 1
+    },
+    {
+      "kind": "normal",
+      "params": {
+        "mode": {
+          "type": "string",
+          "value": "smooth"
+        },
+        "reverse": {
+          "type": "bool",
+          "value": false
+        },
+        "weighting": {
+          "type": "string",
+          "value": "area"
+        }
+      },
+      "pos": [
+        200.0,
+        220.0
+      ],
+      "uid": 2
+    },
+    {
+      "extra": {
+        "vop_graph": {
+          "connections": [
+            {
+              "from_node": 1,
+              "from_port": 0,
+              "to_node": 2,
+              "to_port": 0
+            },
+            {
+              "from_node": 1,
+              "from_port": 0,
+              "to_node": 3,
+              "to_port": 0
+            },
+            {
+              "from_node": 1,
+              "from_port": 1,
+              "to_node": 3,
+              "to_port": 1
+            },
+            {
+              "from_node": 2,
+              "from_port": 0,
+              "to_node": 3,
+              "to_port": 2
+            },
+            {
+              "from_node": 3,
+              "from_port": 0,
+              "to_node": 4,
+              "to_port": 0
+            }
+          ],
+          "graph_kind": "vop",
+          "next_uid": 5,
+          "nodes": [
+            {
+              "kind": "geo_input",
+              "params": {},
+              "pos": [
+                80.0,
+                120.0
+              ],
+              "uid": 1
+            },
+            {
+              "kind": "noise_fbm",
+              "params": {
+                "amplitude": {
+                  "type": "float",
+                  "value": 0.15000000596046448
+                },
+                "frequency": {
+                  "type": "float",
+                  "value": 1.5
+                },
+                "gain": {
+                  "type": "float",
+                  "value": 0.5
+                },
+                "lacunarity": {
+                  "type": "float",
+                  "value": 2.0
+                },
+                "octaves": {
+                  "type": "int",
+                  "value": 4
+                },
+                "seed": {
+                  "type": "int",
+                  "value": 7
+                }
+              },
+              "pos": [
+                280.0,
+                120.0
+              ],
+              "uid": 2
+            },
+            {
+              "kind": "displace_along_normal",
+              "params": {},
+              "pos": [
+                500.0,
+                120.0
+              ],
+              "uid": 3
+            },
+            {
+              "kind": "geo_output",
+              "params": {
+                "passthrough_Alpha": {
+                  "type": "bool",
+                  "value": true
+                },
+                "passthrough_Cd": {
+                  "type": "bool",
+                  "value": true
+                },
+                "passthrough_N": {
+                  "type": "bool",
+                  "value": true
+                },
+                "passthrough_P": {
+                  "type": "bool",
+                  "value": true
+                },
+                "passthrough_force": {
+                  "type": "bool",
+                  "value": true
+                },
+                "passthrough_pscale": {
+                  "type": "bool",
+                  "value": true
+                },
+                "passthrough_uv": {
+                  "type": "bool",
+                  "value": true
+                },
+                "passthrough_v": {
+                  "type": "bool",
+                  "value": true
+                }
+              },
+              "pos": [
+                720.0,
+                120.0
+              ],
+              "uid": 4
+            }
+          ],
+          "uid": 0,
+          "version": 1
+        }
+      },
+      "kind": "attribute_vop",
+      "params": {},
+      "pos": [
+        200.0,
+        340.0
+      ],
+      "uid": 3
+    },
+    {
+      "kind": "normal",
+      "params": {
+        "mode": {
+          "type": "string",
+          "value": "smooth"
+        },
+        "reverse": {
+          "type": "bool",
+          "value": false
+        },
+        "weighting": {
+          "type": "string",
+          "value": "area"
+        }
+      },
+      "pos": [
+        200.0,
+        460.0
+      ],
+      "uid": 4
+    },
+    {
+      "kind": "object_output",
+      "params": {
+        "material_library_name": {
+          "type": "string",
+          "value": ""
+        },
+        "name": {
+          "type": "string",
+          "value": "displaced_sphere"
+        },
+        "rotate_euler_deg": {
+          "type": "vec3",
+          "value": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "scale": {
+          "type": "vec3",
+          "value": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "translate": {
+          "type": "vec3",
+          "value": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      },
+      "pos": [
+        200.0,
+        580.0
+      ],
+      "uid": 5
+    }
+  ],
+  "uid": 0,
+  "version": 1
+},
+  "dop_graph": {
+  "connections": [],
+  "graph_kind": "dop",
+  "next_uid": 1,
+  "nodes": [],
+  "uid": 0,
+  "version": 1
+},
+  "render_settings": {
+    "max_samples": 64,
+    "max_bounces": 4,
+    "show_points": false,
+    "show_edges": false
+  },
+  "timeline": {
+    "fps": 24,
+    "frame_start": 1,
+    "frame_end": 240,
+    "current_time": 0.0,
+    "loop": 1
+  }
+}

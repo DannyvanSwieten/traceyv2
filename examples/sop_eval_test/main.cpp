@@ -116,13 +116,15 @@ int main()
     if (!emitted.empty())
     {
         const auto &ea = emitted[0];
+        check(ea.geometry != nullptr, "cube: geometry shared_ptr populated");
+        const auto &geo = *ea.geometry;
         // 36 corners (6 faces * 2 tris * 3 verts) — matches SceneObject::createCube.
-        check_eq<size_t>(ea.geometry.pointCount(),    36, "cube: pointCount");
-        check_eq<size_t>(ea.geometry.vertexCount(),   36, "cube: vertexCount");
-        check_eq<size_t>(ea.geometry.primitiveCount(), 12, "cube: primitiveCount (12 tris)");
+        check_eq<size_t>(geo.pointCount(),    36, "cube: pointCount");
+        check_eq<size_t>(geo.vertexCount(),   36, "cube: vertexCount");
+        check_eq<size_t>(geo.primitiveCount(), 12, "cube: primitiveCount (12 tris)");
 
         // Translate of +5 X should shift every position.
-        const auto &positions = ea.geometry.positions();
+        const auto &positions = geo.positions();
         bool shifted = !positions.empty();
         for (const auto &p : positions)
         {
@@ -133,7 +135,7 @@ int main()
         check(shifted, "transform: positions shifted by translate(+5,0,0)");
 
         // ── SceneObject conversion ────────────────────────────────────────
-        SceneObject so = GeometryConverter::toSceneObject(ea.geometry, "cube_test");
+        SceneObject so = GeometryConverter::toSceneObject(geo, "cube_test");
         check_eq<size_t>(so.positions().size(), 36, "toSceneObject: vertex count");
         check_eq<size_t>(so.triangleCount(), 12,    "toSceneObject: triangle count");
     }
@@ -154,7 +156,9 @@ int main()
         check_eq<size_t>(reloadEmit.size(), 1, "round-trip: cook still emits one actor");
         if (!reloadEmit.empty())
         {
-            check_eq<size_t>(reloadEmit[0].geometry.pointCount(), 36,
+            check(reloadEmit[0].geometry != nullptr,
+                  "round-trip: cube geometry shared_ptr populated");
+            check_eq<size_t>(reloadEmit[0].geometry->pointCount(), 36,
                              "round-trip: cube geometry intact");
         }
     }

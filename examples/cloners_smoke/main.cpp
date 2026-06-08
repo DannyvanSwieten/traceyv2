@@ -85,7 +85,8 @@ int main()
         check(diag.ok, "points_grid cook ok");
         check(emitted.size() == 1, "one EmittedActor from grid");
         if (emitted.empty()) return 1;
-        const auto &geo = emitted.front().geometry;
+        if (!emitted.front().geometry) { std::printf("FAIL: emitted.geometry null\n"); return 1; }
+        const auto &geo = *emitted.front().geometry;
         check(geo.pointCount() == 8, "8 points emitted (2*2*2)");
         const auto *N  = geo.points().get<Vec3>("N");
         const auto *ps = geo.points().get<float>("pscale");
@@ -154,7 +155,8 @@ int main()
         check(diag.ok, "cube+grid copy cook ok");
         check(emitted.size() == 1, "one EmittedActor from copy_to_points");
         if (emitted.empty()) return 1;
-        const auto &geo = emitted.front().geometry;
+        if (!emitted.front().geometry) { std::printf("FAIL: emitted.geometry null\n"); return 1; }
+        const auto &geo = *emitted.front().geometry;
         // Cube has 36 verts (non-indexed: 12 tris × 3). 8 clones → 288.
         check(geo.vertexCount() == 8 * 36, "288 vertices (8 cubes × 36)");
         check(geo.primitiveCount() == 8 * 12, "96 triangles (8 cubes × 12)");

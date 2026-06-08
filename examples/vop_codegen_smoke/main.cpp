@@ -414,6 +414,25 @@ int main()
                 addWired(g, "geo_output", {{kGioP, d, 0}});
             });
 
+        // 4) Worley displace — bit-exact equivalence on this one because
+        //    both sides use the same integer hash + floor-grid scan
+        //    (unlike perlin/simplex which have different reference
+        //    implementations CPU vs GPU). Drift here means the hash
+        //    constants or feature-point distribution diverged.
+        compareCpuGpu(device.get(), "worley displace_along_normal", 1e-4f,
+            [](VopGraph &g) {
+                const size_t io = addWired(g, "geo_input");
+                const size_t n  = addWired(g, "noise_worley", {{0, io, kGioP}});
+                if (auto *np = g.findNode(n)) {
+                    np->setParamFloat("frequency", 3.0f);
+                    np->setParamFloat("amplitude", 0.1f);
+                    np->setParamInt  ("seed", 13);
+                }
+                const size_t d = addWired(g, "displace_along_normal",
+                    {{0, io, kGioP}, {1, io, kGioN}, {2, n, 0}});
+                addWired(g, "geo_output", {{kGioP, d, 0}});
+            });
+
         // Clear the device pointer so Geometry teardown (when the
         // smoke test exits) doesn't try to free GPU buffers against
         // an already-destroyed device. EditorServer does the same in

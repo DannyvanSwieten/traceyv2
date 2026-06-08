@@ -138,7 +138,8 @@ int main()
     }
 
     // The cube has 36 vertices / 12 triangles.
-    const auto &geo = emitted.front().geometry;
+    check(emitted.front().geometry != nullptr, "emitted geometry shared_ptr populated");
+    const auto &geo = *emitted.front().geometry;
     const auto &positions = geo.positions();
     check(positions.size() == 36, "emitted geometry has 36 positions");
 

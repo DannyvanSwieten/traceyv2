@@ -1,0 +1,249 @@
+{
+  "version": 3,
+  "scene": {
+    "camera": {
+      "position": {"x": 4, "y": 3, "z": 6},
+      "rotation": {"w": 1, "x": 0, "y": 0, "z": 0},
+      "fov": 45,
+      "near_plane": 0.100000001,
+      "far_plane": 1000,
+      "aspect_ratio": 1.77777779
+    },
+    "actors": []
+  },
+  "sop_graph": {
+  "connections": [
+    {
+      "from_node": 1,
+      "from_port": 0,
+      "to_node": 2,
+      "to_port": 0
+    }
+  ],
+  "graph_kind": "sop",
+  "next_uid": 3,
+  "nodes": [
+    {
+      "extra": {
+        "n": "0",
+        "stamp_gen": "0"
+      },
+      "kind": "dop_import",
+      "params": {},
+      "pos": [
+        100.0,
+        100.0
+      ],
+      "uid": 1
+    },
+    {
+      "kind": "object_output",
+      "params": {
+        "material_library_name": {
+          "type": "string",
+          "value": ""
+        },
+        "name": {
+          "type": "string",
+          "value": "particles_wind"
+        },
+        "rotate_euler_deg": {
+          "type": "vec3",
+          "value": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "scale": {
+          "type": "vec3",
+          "value": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "translate": {
+          "type": "vec3",
+          "value": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      },
+      "pos": [
+        100.0,
+        220.0
+      ],
+      "uid": 2
+    }
+  ],
+  "uid": 0,
+  "version": 1
+},
+  "dop_graph": {
+  "connections": [
+    {
+      "from_node": 1,
+      "from_port": 0,
+      "to_node": 2,
+      "to_port": 0
+    },
+    {
+      "from_node": 2,
+      "from_port": 0,
+      "to_node": 3,
+      "to_port": 0
+    },
+    {
+      "from_node": 3,
+      "from_port": 0,
+      "to_node": 4,
+      "to_port": 0
+    },
+    {
+      "from_node": 4,
+      "from_port": 0,
+      "to_node": 5,
+      "to_port": 0
+    }
+  ],
+  "graph_kind": "dop",
+  "next_uid": 6,
+  "nodes": [
+    {
+      "kind": "pop_source",
+      "params": {
+        "initial_v": {
+          "type": "vec3",
+          "value": [
+            0.0,
+            1.0,
+            0.0
+          ]
+        },
+        "lifetime": {
+          "type": "float",
+          "value": 6.0
+        },
+        "origin": {
+          "type": "vec3",
+          "value": [
+            0.0,
+            2.0,
+            0.0
+          ]
+        },
+        "pos_jitter": {
+          "type": "float",
+          "value": 0.0
+        },
+        "rate": {
+          "type": "float",
+          "value": 60.0
+        },
+        "seed": {
+          "type": "int",
+          "value": 0
+        }
+      },
+      "pos": [
+        100.0,
+        100.0
+      ],
+      "uid": 1
+    },
+    {
+      "kind": "pop_gravity",
+      "params": {
+        "gravity": {
+          "type": "vec3",
+          "value": [
+            0.0,
+            -3.0,
+            0.0
+          ]
+        }
+      },
+      "pos": [
+        280.0,
+        100.0
+      ],
+      "uid": 2
+    },
+    {
+      "kind": "pop_drag",
+      "params": {
+        "drag": {
+          "type": "float",
+          "value": 0.5
+        }
+      },
+      "pos": [
+        460.0,
+        100.0
+      ],
+      "uid": 3
+    },
+    {
+      "kind": "pop_wind",
+      "params": {
+        "direction": {
+          "type": "vec3",
+          "value": [
+            1.0,
+            0.0,
+            0.30000001192092896
+          ]
+        },
+        "seed": {
+          "type": "int",
+          "value": 23
+        },
+        "speed": {
+          "type": "float",
+          "value": 2.0
+        },
+        "turbulence": {
+          "type": "float",
+          "value": 1.5
+        },
+        "turbulence_freq": {
+          "type": "float",
+          "value": 0.800000011920929
+        }
+      },
+      "pos": [
+        640.0,
+        100.0
+      ],
+      "uid": 4
+    },
+    {
+      "kind": "pop_solver",
+      "params": {},
+      "pos": [
+        820.0,
+        100.0
+      ],
+      "uid": 5
+    }
+  ],
+  "uid": 0,
+  "version": 1
+},
+  "render_settings": {
+    "max_samples": 64,
+    "max_bounces": 4,
+    "show_points": true,
+    "show_edges": false
+  },
+  "timeline": {
+    "fps": 24,
+    "frame_start": 1,
+    "frame_end": 360,
+    "current_time": 0.0,
+    "loop": 1
+  }
+}

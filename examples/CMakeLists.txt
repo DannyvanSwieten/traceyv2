@@ -54,6 +54,14 @@ add_executable(attribute_gpu_smoke
     attribute_gpu_smoke/main.cpp
 )
 
+# Generator for shipped example .tracey project folders. The output lives
+# under examples/projects/ and is checked into the repo; this target
+# rebuilds those files from C++ when the schema (or the showcased graph)
+# changes, so we never edit hand-authored JSON.
+add_executable(example_projects
+    example_projects/main.cpp
+)
+
 target_link_libraries(blas
     PRIVATE
     tracey
@@ -148,12 +156,19 @@ target_link_libraries(attribute_gpu_smoke
     shaderc
 )
 
+target_link_libraries(example_projects
+    PRIVATE
+    tracey
+    glm
+)
+
 # Set rpath for all executables that link against Vulkan and shaderc.
 # tracey itself transitively depends on libvulkan.1.dylib via the GPU device
 # layer, so even the headless smoke tests need the rpath at runtime.
 set_target_properties(
     device_api wavefront scene_renderer
     sop_eval_test attribute_vop_smoke cloners_smoke dop_smoke vop_codegen_smoke attribute_gpu_smoke
+    example_projects
     PROPERTIES
     MACOSX_RPATH ON
     BUILD_RPATH "/usr/local/lib"
