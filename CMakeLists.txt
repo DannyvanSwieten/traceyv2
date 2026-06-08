@@ -130,6 +130,10 @@ add_library(tracey
     src/sops/nodes/normal_sop.cpp
     src/sops/nodes/dop_import_sop.cpp
     src/sops/nodes/dop_import_sop.hpp
+    src/sops/nodes/delete_sop.cpp
+    src/sops/nodes/switch_sop.cpp
+    src/sops/nodes/bound_sop.cpp
+    src/sops/nodes/sort_sop.cpp
     src/sops/codegen/copy_to_points_compute.hpp
     src/sops/codegen/copy_to_points_compute.cpp
     src/sops/codegen/transform_compute.hpp
@@ -179,6 +183,11 @@ add_library(tracey
     src/dops/nodes/pop_solver.cpp
     src/dops/nodes/pop_force.cpp
     src/dops/nodes/pop_force.hpp
+    src/dops/nodes/pop_drag.cpp
+    src/dops/nodes/pop_wind.cpp
+    src/dops/nodes/pop_attract.cpp
+    src/dops/nodes/pop_speed_limit.cpp
+    src/dops/nodes/pop_kill.cpp
 
     src/graph/graphs/shader_graph/shader_graph.hpp
     src/graph/graphs/shader_graph/shader_graph.cpp

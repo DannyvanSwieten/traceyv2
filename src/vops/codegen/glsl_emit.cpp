@@ -519,6 +519,26 @@ namespace tracey
                     return true;
                 }
 
+                // noise_worley: 3 params (freq, amp, seed). Same shape as
+                // perlin/simplex on the call site so the user can swap
+                // between them. Output is non-negative (distance to
+                // nearest jittered feature point).
+                bool emitNoiseWorley(EmitState &state, const VopGraph &graph, const VopNode &node)
+                {
+                    auto p = readInput(graph, state, node.uid(), 0, GpuType::Vec3);
+                    const uint32_t freqSlot = addParam(state, node.uid(), "frequency", GpuType::Float);
+                    const uint32_t ampSlot  = addParam(state, node.uid(), "amplitude", GpuType::Float);
+                    const uint32_t seedSlot = addParam(state, node.uid(), "seed",      GpuType::Int);
+                    const std::string pE = castExpr(p.expr, p.type, GpuType::Vec3);
+                    std::ostringstream e;
+                    e << "vop_worley_f1("
+                      << pE << " * params.data[" << freqSlot << "].x, "
+                      << "int(params.data[" << seedSlot << "].x)) "
+                      << "* params.data[" << ampSlot << "].x";
+                    emitDecl(state, node.uid(), 0, GpuType::Float, e.str());
+                    return true;
+                }
+
                 // noise_vec3: three decorrelated Perlin samples.
                 bool emitNoiseVec3(EmitState &state, const VopGraph &graph, const VopNode &node)
                 {
@@ -759,6 +779,7 @@ namespace tracey
                     // ── Noise ────────────────────────────────────────────
                     if (k == "noise_perlin")     return emitNoisePerlin(state, graph, node, false);
                     if (k == "noise_simplex")    return emitNoisePerlin(state, graph, node, true);
+                    if (k == "noise_worley")     return emitNoiseWorley(state, graph, node);
                     if (k == "noise_vec3")       return emitNoiseVec3(state, graph, node);
                     if (k == "noise_curl")       return emitNoiseCurl(state, graph, node);
                     if (k == "noise_fbm")        return emitOctavedNoise(state, graph, node, "vop_noise_fbm");
@@ -932,6 +953,46 @@ vec3 vop_noise_curl(vec3 base, int seed, float eps) {
     float dPxdy = (vop_perlin(vop_seed_shift(base + dy, seed))
                  - vop_perlin(vop_seed_shift(base - dy, seed))) / two_eps;
     return vec3(dPzdy - dPydz, dPxdz - dPzdx, dPydx - dPxdy);
+}
+
+// Worley (cellular) F1 noise. Returns the distance to the nearest
+// jittered feature point in the 3-cell neighbourhood. CPU mirror lives
+// in src/vops/nodes/noise_vops.cpp::worleyF1; the hash constants here
+// match hash3i so the same (P, seed) produces the same value on either
+// path.
+uint vop_hash3i(ivec3 c, int seed) {
+    uint x = uint(c.x) * 2654435761u
+           ^ uint(c.y) * 2246822519u
+           ^ uint(c.z) *  374761393u
+           ^ uint(seed) * 3266489917u;
+    x ^= x >> 13; x *= 0x85ebca6bu;
+    x ^= x >> 16; x *= 0xc2b2ae35u;
+    x ^= x >> 13;
+    return x;
+}
+vec3 vop_worley_feature(ivec3 c, int seed) {
+    // Three independent [0,1) floats out of three hashes — must match
+    // hashedFeaturePoint on the CPU (seed+0, seed+1013, seed+1031).
+    uint hx = vop_hash3i(c, seed);
+    uint hy = vop_hash3i(c, seed + 1013);
+    uint hz = vop_hash3i(c, seed + 1031);
+    return vec3(float(hx & 0x00ffffffu) / float(0x01000000u),
+                float(hy & 0x00ffffffu) / float(0x01000000u),
+                float(hz & 0x00ffffffu) / float(0x01000000u));
+}
+float vop_worley_f1(vec3 p, int seed) {
+    ivec3 ip = ivec3(floor(p));
+    float bestSq = 1e30;
+    for (int dz = -1; dz <= 1; ++dz)
+    for (int dy = -1; dy <= 1; ++dy)
+    for (int dx = -1; dx <= 1; ++dx) {
+        ivec3 c = ip + ivec3(dx, dy, dz);
+        vec3 jitter = vop_worley_feature(c, seed);
+        vec3 fp = vec3(c) + jitter;
+        vec3 d  = fp - p;
+        bestSq  = min(bestSq, dot(d, d));
+    }
+    return sqrt(bestSq);
 }
 
 // Simplex noise (3D). Same source — public-domain reference. Faster than

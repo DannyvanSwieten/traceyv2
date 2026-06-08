@@ -22,6 +22,10 @@ namespace tracey
         void registerLightSop();
         void registerNormalSop();
         void registerDopImportSop();
+        void registerDeleteSop();
+        void registerSwitchSop();
+        void registerBoundSop();
+        void registerSortSop();
 
         void registerBuiltinSops()
         {
@@ -36,6 +40,10 @@ namespace tracey
             registerTransformSop();
             registerNormalSop();
             registerAttributeVopSop();
+            registerDeleteSop();
+            registerSwitchSop();
+            registerSortSop();
+            registerBoundSop();
             registerMergeSop();
             registerObjectOutputSop();
             registerLightSop();
