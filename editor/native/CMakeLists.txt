@@ -17,6 +17,12 @@ target_include_directories(tracey_editor_json INTERFACE
 set(TRACEY_EDITOR_SRCS
     main.cpp
     editor_server.cpp
+    editor_server_cmds_scene.cpp
+    editor_server_cmds_render.cpp
+    editor_server_cmds_material.cpp
+    editor_server_cmds_graph.cpp
+    editor_server_cmds_timeline.cpp
+    editor_server_cmds_io.cpp
     render_engine.cpp
     scene_state.cpp
     viewport_renderer.cpp)

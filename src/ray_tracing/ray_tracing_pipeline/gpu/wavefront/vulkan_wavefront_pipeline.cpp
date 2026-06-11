@@ -479,59 +479,7 @@ namespace tracey
     {
         auto device = m_device.vkDevice();
 
-        // Destroy internal buffers
-        if (m_payloadBuffer != VK_NULL_HANDLE)
-            vkDestroyBuffer(device, m_payloadBuffer, nullptr);
-        if (m_payloadMemory != VK_NULL_HANDLE)
-            vkFreeMemory(device, m_payloadMemory, nullptr);
-        if (m_pathHeaderBuffer != VK_NULL_HANDLE)
-            vkDestroyBuffer(device, m_pathHeaderBuffer, nullptr);
-        if (m_pathHeaderMemory != VK_NULL_HANDLE)
-            vkFreeMemory(device, m_pathHeaderMemory, nullptr);
-        if (m_rayQueueBuffer != VK_NULL_HANDLE)
-            vkDestroyBuffer(device, m_rayQueueBuffer, nullptr);
-        if (m_rayQueueMemory != VK_NULL_HANDLE)
-            vkFreeMemory(device, m_rayQueueMemory, nullptr);
-        if (m_rayQueueBuffer2 != VK_NULL_HANDLE)
-            vkDestroyBuffer(device, m_rayQueueBuffer2, nullptr);
-        if (m_rayQueueMemory2 != VK_NULL_HANDLE)
-            vkFreeMemory(device, m_rayQueueMemory2, nullptr);
-        if (m_hitInfoBuffer != VK_NULL_HANDLE)
-            vkDestroyBuffer(device, m_hitInfoBuffer, nullptr);
-        if (m_hitInfoMemory != VK_NULL_HANDLE)
-            vkFreeMemory(device, m_hitInfoMemory, nullptr);
-        if (m_hitQueueBuffer != VK_NULL_HANDLE)
-            vkDestroyBuffer(device, m_hitQueueBuffer, nullptr);
-        if (m_hitQueueMemory != VK_NULL_HANDLE)
-            vkFreeMemory(device, m_hitQueueMemory, nullptr);
-        if (m_missQueueBuffer != VK_NULL_HANDLE)
-            vkDestroyBuffer(device, m_missQueueBuffer, nullptr);
-        if (m_missQueueMemory != VK_NULL_HANDLE)
-            vkFreeMemory(device, m_missQueueMemory, nullptr);
-        if (m_indirectDispatchBuffer != VK_NULL_HANDLE)
-            vkDestroyBuffer(device, m_indirectDispatchBuffer, nullptr);
-        if (m_indirectDispatchMemory != VK_NULL_HANDLE)
-            vkFreeMemory(device, m_indirectDispatchMemory, nullptr);
-        if (m_hitIndirectBuffer != VK_NULL_HANDLE)
-            vkDestroyBuffer(device, m_hitIndirectBuffer, nullptr);
-        if (m_hitIndirectMemory != VK_NULL_HANDLE)
-            vkFreeMemory(device, m_hitIndirectMemory, nullptr);
-        if (m_missIndirectBuffer != VK_NULL_HANDLE)
-            vkDestroyBuffer(device, m_missIndirectBuffer, nullptr);
-        if (m_missIndirectMemory != VK_NULL_HANDLE)
-            vkFreeMemory(device, m_missIndirectMemory, nullptr);
-        if (m_sortedHitQueueBuffer != VK_NULL_HANDLE)
-            vkDestroyBuffer(device, m_sortedHitQueueBuffer, nullptr);
-        if (m_sortedHitQueueMemory != VK_NULL_HANDLE)
-            vkFreeMemory(device, m_sortedHitQueueMemory, nullptr);
-        if (m_materialBinOffsetsBuffer != VK_NULL_HANDLE)
-            vkDestroyBuffer(device, m_materialBinOffsetsBuffer, nullptr);
-        if (m_materialBinOffsetsMemory != VK_NULL_HANDLE)
-            vkFreeMemory(device, m_materialBinOffsetsMemory, nullptr);
-        if (m_materialBinCursorsBuffer != VK_NULL_HANDLE)
-            vkDestroyBuffer(device, m_materialBinCursorsBuffer, nullptr);
-        if (m_materialBinCursorsMemory != VK_NULL_HANDLE)
-            vkFreeMemory(device, m_materialBinCursorsMemory, nullptr);
+        destroyInternalBuffers();
 
         // Destroy pipelines
         if (m_rayGenPipelineInfo.pipeline)
@@ -639,6 +587,64 @@ namespace tracey
         }
     }
 
+    void VulkanWaveFrontPipeline::destroyInternalBuffers()
+    {
+        auto device = m_device.vkDevice();
+
+        VkBuffer *buffers[] = {
+            &m_payloadBuffer, &m_pathHeaderBuffer, &m_rayQueueBuffer, &m_rayQueueBuffer2,
+            &m_hitInfoBuffer, &m_hitQueueBuffer, &m_missQueueBuffer, &m_indirectDispatchBuffer,
+            &m_hitIndirectBuffer, &m_missIndirectBuffer, &m_sortedHitQueueBuffer,
+            &m_materialBinOffsetsBuffer, &m_materialBinCursorsBuffer};
+        VkDeviceMemory *memories[] = {
+            &m_payloadMemory, &m_pathHeaderMemory, &m_rayQueueMemory, &m_rayQueueMemory2,
+            &m_hitInfoMemory, &m_hitQueueMemory, &m_missQueueMemory, &m_indirectDispatchMemory,
+            &m_hitIndirectMemory, &m_missIndirectMemory, &m_sortedHitQueueMemory,
+            &m_materialBinOffsetsMemory, &m_materialBinCursorsMemory};
+
+        for (size_t i = 0; i < std::size(buffers); ++i)
+        {
+            if (*buffers[i] != VK_NULL_HANDLE)
+                vkDestroyBuffer(device, *buffers[i], nullptr);
+            if (*memories[i] != VK_NULL_HANDLE)
+                vkFreeMemory(device, *memories[i], nullptr);
+            *buffers[i] = VK_NULL_HANDLE;
+            *memories[i] = VK_NULL_HANDLE;
+        }
+    }
+
+    void VulkanWaveFrontPipeline::createDeviceLocalBuffer(VkBuffer &buffer, VkDeviceMemory &memory,
+                                                          VkDeviceSize size, VkBufferUsageFlags usage,
+                                                          const char *what)
+    {
+        auto device = m_device.vkDevice();
+
+        VkBufferCreateInfo info{};
+        info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        info.size = size;
+        info.usage = usage;
+        info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        if (VkResult res = vkCreateBuffer(device, &info, nullptr, &buffer); res != VK_SUCCESS)
+            throw std::runtime_error(std::string("Failed to create buffer ") + what +
+                                     " (VkResult " + std::to_string(res) + ")");
+
+        VkMemoryRequirements reqs;
+        vkGetBufferMemoryRequirements(device, buffer, &reqs);
+
+        VkMemoryAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        allocInfo.allocationSize = reqs.size;
+        allocInfo.memoryTypeIndex = m_device.findMemoryType(reqs.memoryTypeBits,
+                                                            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        if (VkResult res = vkAllocateMemory(device, &allocInfo, nullptr, &memory); res != VK_SUCCESS)
+            throw std::runtime_error(std::string("Failed to allocate memory for ") + what +
+                                     " (VkResult " + std::to_string(res) + ")");
+
+        if (VkResult res = vkBindBufferMemory(device, buffer, memory, 0); res != VK_SUCCESS)
+            throw std::runtime_error(std::string("Failed to bind memory for ") + what +
+                                     " (VkResult " + std::to_string(res) + ")");
+    }
+
     void VulkanWaveFrontPipeline::allocateInternalBuffers(uint32_t maxRayCount)
     {
         if (m_maxRayCount >= maxRayCount && m_pathHeaderBuffer != VK_NULL_HANDLE)
@@ -646,368 +652,57 @@ namespace tracey
             return; // Buffers already allocated with sufficient size
         }
 
-        // Free existing buffers if reallocating
-        auto device = m_device.vkDevice();
-        if (m_pathHeaderBuffer != VK_NULL_HANDLE)
-        {
-            vkDestroyBuffer(device, m_payloadBuffer, nullptr);
-            vkFreeMemory(device, m_payloadMemory, nullptr);
-            vkDestroyBuffer(device, m_pathHeaderBuffer, nullptr);
-            vkFreeMemory(device, m_pathHeaderMemory, nullptr);
-            vkDestroyBuffer(device, m_rayQueueBuffer, nullptr);
-            vkFreeMemory(device, m_rayQueueMemory, nullptr);
-            vkDestroyBuffer(device, m_rayQueueBuffer2, nullptr);
-            vkFreeMemory(device, m_rayQueueMemory2, nullptr);
-            vkDestroyBuffer(device, m_hitInfoBuffer, nullptr);
-            vkFreeMemory(device, m_hitInfoMemory, nullptr);
-            vkDestroyBuffer(device, m_hitQueueBuffer, nullptr);
-            vkFreeMemory(device, m_hitQueueMemory, nullptr);
-            vkDestroyBuffer(device, m_missQueueBuffer, nullptr);
-            vkFreeMemory(device, m_missQueueMemory, nullptr);
-            vkDestroyBuffer(device, m_indirectDispatchBuffer, nullptr);
-            vkFreeMemory(device, m_indirectDispatchMemory, nullptr);
-            vkDestroyBuffer(device, m_hitIndirectBuffer, nullptr);
-            vkFreeMemory(device, m_hitIndirectMemory, nullptr);
-            vkDestroyBuffer(device, m_missIndirectBuffer, nullptr);
-            vkFreeMemory(device, m_missIndirectMemory, nullptr);
-        }
-
+        destroyInternalBuffers();
         m_maxRayCount = maxRayCount;
 
-        // Payload buffer: RayPayloads struct per ray
-        VkDeviceSize payloadBufferSize = maxRayCount * m_payloadSize;
+        constexpr VkBufferUsageFlags kStorage =
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        constexpr VkBufferUsageFlags kIndirect =
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
 
-        VkBufferCreateInfo payloadBufferInfo{};
-        payloadBufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-        payloadBufferInfo.size = payloadBufferSize;
-        payloadBufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-        payloadBufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-
-        if (vkCreateBuffer(device, &payloadBufferInfo, nullptr, &m_payloadBuffer) != VK_SUCCESS)
-        {
-            throw std::runtime_error("Failed to create Payload buffer");
-        }
-
-        VkMemoryRequirements payloadMemReqs;
-        vkGetBufferMemoryRequirements(device, m_payloadBuffer, &payloadMemReqs);
-
-        VkMemoryAllocateInfo payloadAllocInfo{};
-        payloadAllocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        payloadAllocInfo.allocationSize = payloadMemReqs.size;
-        payloadAllocInfo.memoryTypeIndex = m_device.findMemoryType(payloadMemReqs.memoryTypeBits,
-                                                                   VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-
-        if (vkAllocateMemory(device, &payloadAllocInfo, nullptr, &m_payloadMemory) != VK_SUCCESS)
-        {
-            throw std::runtime_error("Failed to allocate Payload memory");
-        }
-        vkBindBufferMemory(device, m_payloadBuffer, m_payloadMemory, 0);
-
-        // PathHeader buffer: 2 vec4s per ray (origin + direction with tMin/tMax)
-        VkDeviceSize pathHeaderSize = maxRayCount * sizeof(float) * 8;
-
-        VkBufferCreateInfo pathHeaderBufferInfo{};
-        pathHeaderBufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-        pathHeaderBufferInfo.size = pathHeaderSize;
-        pathHeaderBufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-        pathHeaderBufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-
-        if (vkCreateBuffer(device, &pathHeaderBufferInfo, nullptr, &m_pathHeaderBuffer) != VK_SUCCESS)
-        {
-            throw std::runtime_error("Failed to create PathHeader buffer");
-        }
-
-        VkMemoryRequirements pathHeaderMemReqs;
-        vkGetBufferMemoryRequirements(device, m_pathHeaderBuffer, &pathHeaderMemReqs);
-
-        VkMemoryAllocateInfo pathHeaderAllocInfo{};
-        pathHeaderAllocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        pathHeaderAllocInfo.allocationSize = pathHeaderMemReqs.size;
-        pathHeaderAllocInfo.memoryTypeIndex = m_device.findMemoryType(pathHeaderMemReqs.memoryTypeBits,
-                                                                      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-
-        if (vkAllocateMemory(device, &pathHeaderAllocInfo, nullptr, &m_pathHeaderMemory) != VK_SUCCESS)
-        {
-            throw std::runtime_error("Failed to allocate PathHeader memory");
-        }
-        vkBindBufferMemory(device, m_pathHeaderBuffer, m_pathHeaderMemory, 0);
-
-        // RayQueue buffer: count (uint32) + indices (uint32 per ray)
-        VkDeviceSize rayQueueSize = (sizeof(uint32_t) * 4) + maxRayCount * sizeof(uint32_t);
-
-        VkBufferCreateInfo rayQueueBufferInfo{};
-        rayQueueBufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-        rayQueueBufferInfo.size = rayQueueSize;
-        rayQueueBufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-        rayQueueBufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-
-        if (vkCreateBuffer(device, &rayQueueBufferInfo, nullptr, &m_rayQueueBuffer) != VK_SUCCESS)
-        {
-            throw std::runtime_error("Failed to create RayQueue buffer");
-        }
-
-        VkMemoryRequirements rayQueueMemReqs;
-        vkGetBufferMemoryRequirements(device, m_rayQueueBuffer, &rayQueueMemReqs);
-
-        VkMemoryAllocateInfo rayQueueAllocInfo{};
-        rayQueueAllocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        rayQueueAllocInfo.allocationSize = rayQueueMemReqs.size;
-        rayQueueAllocInfo.memoryTypeIndex = m_device.findMemoryType(rayQueueMemReqs.memoryTypeBits,
-                                                                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-
-        if (vkAllocateMemory(device, &rayQueueAllocInfo, nullptr, &m_rayQueueMemory) != VK_SUCCESS)
-        {
-            throw std::runtime_error("Failed to allocate RayQueue memory");
-        }
-        vkBindBufferMemory(device, m_rayQueueBuffer, m_rayQueueMemory, 0);
-
-        // RayQueue2 buffer (for ping-pong): count (uint32) + indices (uint32 per ray)
-        VkBufferCreateInfo rayQueue2BufferInfo{};
-        rayQueue2BufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-        rayQueue2BufferInfo.size = rayQueueSize;
-        rayQueue2BufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-        rayQueue2BufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-
-        if (vkCreateBuffer(device, &rayQueue2BufferInfo, nullptr, &m_rayQueueBuffer2) != VK_SUCCESS)
-        {
-            throw std::runtime_error("Failed to create RayQueue2 buffer");
-        }
-
-        VkMemoryRequirements rayQueue2MemReqs;
-        vkGetBufferMemoryRequirements(device, m_rayQueueBuffer2, &rayQueue2MemReqs);
-
-        VkMemoryAllocateInfo rayQueue2AllocInfo{};
-        rayQueue2AllocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        rayQueue2AllocInfo.allocationSize = rayQueue2MemReqs.size;
-        rayQueue2AllocInfo.memoryTypeIndex = m_device.findMemoryType(rayQueue2MemReqs.memoryTypeBits,
-                                                                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-
-        if (vkAllocateMemory(device, &rayQueue2AllocInfo, nullptr, &m_rayQueueMemory2) != VK_SUCCESS)
-        {
-            throw std::runtime_error("Failed to allocate RayQueue2 memory");
-        }
-        vkBindBufferMemory(device, m_rayQueueBuffer2, m_rayQueueMemory2, 0);
-
-        // HitInfo buffer: t + triangleIndex + instanceIndex + barycentrics (3 floats + 2 uints per ray + padding)
-        VkDeviceSize hitInfoSize = maxRayCount * (sizeof(float) * 8);
-
-        VkBufferCreateInfo hitInfoBufferInfo{};
-        hitInfoBufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-        hitInfoBufferInfo.size = hitInfoSize;
-        hitInfoBufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-        hitInfoBufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-
-        if (vkCreateBuffer(device, &hitInfoBufferInfo, nullptr, &m_hitInfoBuffer) != VK_SUCCESS)
-        {
-            throw std::runtime_error("Failed to create HitInfo buffer");
-        }
-
-        VkMemoryRequirements hitInfoMemReqs;
-        vkGetBufferMemoryRequirements(device, m_hitInfoBuffer, &hitInfoMemReqs);
-
-        VkMemoryAllocateInfo hitInfoAllocInfo{};
-        hitInfoAllocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        hitInfoAllocInfo.allocationSize = hitInfoMemReqs.size;
-        hitInfoAllocInfo.memoryTypeIndex = m_device.findMemoryType(hitInfoMemReqs.memoryTypeBits,
-                                                                   VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-
-        if (vkAllocateMemory(device, &hitInfoAllocInfo, nullptr, &m_hitInfoMemory) != VK_SUCCESS)
-        {
-            throw std::runtime_error("Failed to allocate HitInfo memory");
-        }
-        vkBindBufferMemory(device, m_hitInfoBuffer, m_hitInfoMemory, 0);
-
-        // Indirect dispatch buffer: VkDispatchIndirectCommand (3 uint32s)
-        VkDeviceSize indirectDispatchSize = sizeof(uint32_t) * 3;
-
-        VkBufferCreateInfo indirectDispatchBufferInfo{};
-        indirectDispatchBufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-        indirectDispatchBufferInfo.size = indirectDispatchSize;
-        indirectDispatchBufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
-        indirectDispatchBufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-
-        if (vkCreateBuffer(device, &indirectDispatchBufferInfo, nullptr, &m_indirectDispatchBuffer) != VK_SUCCESS)
-        {
-            throw std::runtime_error("Failed to create IndirectDispatch buffer");
-        }
-
-        VkMemoryRequirements indirectDispatchMemReqs;
-        vkGetBufferMemoryRequirements(device, m_indirectDispatchBuffer, &indirectDispatchMemReqs);
-
-        VkMemoryAllocateInfo indirectDispatchAllocInfo{};
-        indirectDispatchAllocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        indirectDispatchAllocInfo.allocationSize = indirectDispatchMemReqs.size;
-        indirectDispatchAllocInfo.memoryTypeIndex = m_device.findMemoryType(indirectDispatchMemReqs.memoryTypeBits,
-                                                                            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-
-        if (vkAllocateMemory(device, &indirectDispatchAllocInfo, nullptr, &m_indirectDispatchMemory) != VK_SUCCESS)
-        {
-            throw std::runtime_error("Failed to allocate IndirectDispatch memory");
-        }
-        vkBindBufferMemory(device, m_indirectDispatchBuffer, m_indirectDispatchMemory, 0);
-
-        // Hit queue buffer: count (uint32) + indices (uint32 per ray)
-        VkBufferCreateInfo hitQueueBufferInfo{};
-        hitQueueBufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-        hitQueueBufferInfo.size = rayQueueSize;
-        hitQueueBufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-        hitQueueBufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-
-        if (vkCreateBuffer(device, &hitQueueBufferInfo, nullptr, &m_hitQueueBuffer) != VK_SUCCESS)
-        {
-            throw std::runtime_error("Failed to create HitQueue buffer");
-        }
-
-        VkMemoryRequirements hitQueueMemReqs;
-        vkGetBufferMemoryRequirements(device, m_hitQueueBuffer, &hitQueueMemReqs);
-
-        VkMemoryAllocateInfo hitQueueAllocInfo{};
-        hitQueueAllocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        hitQueueAllocInfo.allocationSize = hitQueueMemReqs.size;
-        hitQueueAllocInfo.memoryTypeIndex = m_device.findMemoryType(hitQueueMemReqs.memoryTypeBits,
-                                                                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-
-        if (vkAllocateMemory(device, &hitQueueAllocInfo, nullptr, &m_hitQueueMemory) != VK_SUCCESS)
-        {
-            throw std::runtime_error("Failed to allocate HitQueue memory");
-        }
-        vkBindBufferMemory(device, m_hitQueueBuffer, m_hitQueueMemory, 0);
-
-        // Miss queue buffer: count (uint32) + indices (uint32 per ray)
-        VkBufferCreateInfo missQueueBufferInfo{};
-        missQueueBufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-        missQueueBufferInfo.size = rayQueueSize;
-        missQueueBufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-        missQueueBufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-
-        if (vkCreateBuffer(device, &missQueueBufferInfo, nullptr, &m_missQueueBuffer) != VK_SUCCESS)
-        {
-            throw std::runtime_error("Failed to create MissQueue buffer");
-        }
-
-        VkMemoryRequirements missQueueMemReqs;
-        vkGetBufferMemoryRequirements(device, m_missQueueBuffer, &missQueueMemReqs);
-
-        VkMemoryAllocateInfo missQueueAllocInfo{};
-        missQueueAllocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        missQueueAllocInfo.allocationSize = missQueueMemReqs.size;
-        missQueueAllocInfo.memoryTypeIndex = m_device.findMemoryType(missQueueMemReqs.memoryTypeBits,
-                                                                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-
-        if (vkAllocateMemory(device, &missQueueAllocInfo, nullptr, &m_missQueueMemory) != VK_SUCCESS)
-        {
-            throw std::runtime_error("Failed to allocate MissQueue memory");
-        }
-        vkBindBufferMemory(device, m_missQueueBuffer, m_missQueueMemory, 0);
-
-        // Hit indirect dispatch buffer
-        VkBufferCreateInfo hitIndirectBufferInfo{};
-        hitIndirectBufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-        hitIndirectBufferInfo.size = indirectDispatchSize;
-        hitIndirectBufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
-        hitIndirectBufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-
-        if (vkCreateBuffer(device, &hitIndirectBufferInfo, nullptr, &m_hitIndirectBuffer) != VK_SUCCESS)
-        {
-            throw std::runtime_error("Failed to create HitIndirect buffer");
-        }
-
-        VkMemoryRequirements hitIndirectMemReqs;
-        vkGetBufferMemoryRequirements(device, m_hitIndirectBuffer, &hitIndirectMemReqs);
-
-        VkMemoryAllocateInfo hitIndirectAllocInfo{};
-        hitIndirectAllocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        hitIndirectAllocInfo.allocationSize = hitIndirectMemReqs.size;
-        hitIndirectAllocInfo.memoryTypeIndex = m_device.findMemoryType(hitIndirectMemReqs.memoryTypeBits,
-                                                                       VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-
-        if (vkAllocateMemory(device, &hitIndirectAllocInfo, nullptr, &m_hitIndirectMemory) != VK_SUCCESS)
-        {
-            throw std::runtime_error("Failed to allocate HitIndirect memory");
-        }
-        vkBindBufferMemory(device, m_hitIndirectBuffer, m_hitIndirectMemory, 0);
-
-        // Miss indirect dispatch buffer
-        VkBufferCreateInfo missIndirectBufferInfo{};
-        missIndirectBufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-        missIndirectBufferInfo.size = indirectDispatchSize;
-        missIndirectBufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
-        missIndirectBufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-
-        if (vkCreateBuffer(device, &missIndirectBufferInfo, nullptr, &m_missIndirectBuffer) != VK_SUCCESS)
-        {
-            throw std::runtime_error("Failed to create MissIndirect buffer");
-        }
-
-        VkMemoryRequirements missIndirectMemReqs;
-        vkGetBufferMemoryRequirements(device, m_missIndirectBuffer, &missIndirectMemReqs);
-
-        VkMemoryAllocateInfo missIndirectAllocInfo{};
-        missIndirectAllocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        missIndirectAllocInfo.allocationSize = missIndirectMemReqs.size;
-        missIndirectAllocInfo.memoryTypeIndex = m_device.findMemoryType(missIndirectMemReqs.memoryTypeBits,
-                                                                        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-
-        if (vkAllocateMemory(device, &missIndirectAllocInfo, nullptr, &m_missIndirectMemory) != VK_SUCCESS)
-        {
-            throw std::runtime_error("Failed to allocate MissIndirect memory");
-        }
-        vkBindBufferMemory(device, m_missIndirectBuffer, m_missIndirectMemory, 0);
-
-        // Sorted hit queue: same layout as hitQueue (count + indices). Output of
-        // the material-ID sort, consumed by the hit shader.
-        VkBufferCreateInfo sortedHitQueueBufferInfo{};
-        sortedHitQueueBufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-        sortedHitQueueBufferInfo.size = rayQueueSize;
-        sortedHitQueueBufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-        sortedHitQueueBufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-
-        if (vkCreateBuffer(device, &sortedHitQueueBufferInfo, nullptr, &m_sortedHitQueueBuffer) != VK_SUCCESS)
-            throw std::runtime_error("Failed to create SortedHitQueue buffer");
-
-        VkMemoryRequirements sortedHitQueueMemReqs;
-        vkGetBufferMemoryRequirements(device, m_sortedHitQueueBuffer, &sortedHitQueueMemReqs);
-
-        VkMemoryAllocateInfo sortedHitQueueAllocInfo{};
-        sortedHitQueueAllocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        sortedHitQueueAllocInfo.allocationSize = sortedHitQueueMemReqs.size;
-        sortedHitQueueAllocInfo.memoryTypeIndex = m_device.findMemoryType(sortedHitQueueMemReqs.memoryTypeBits,
-                                                                          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-
-        if (vkAllocateMemory(device, &sortedHitQueueAllocInfo, nullptr, &m_sortedHitQueueMemory) != VK_SUCCESS)
-            throw std::runtime_error("Failed to allocate SortedHitQueue memory");
-        vkBindBufferMemory(device, m_sortedHitQueueBuffer, m_sortedHitQueueMemory, 0);
-
-        // Material bin offsets and cursors: NUM_BINS uints each. NUM_BINS is
-        // 64 in the kernels; size both arrays accordingly. The buffers are
-        // tiny (256 bytes each) so allocate a small fixed size regardless of
-        // ray count -- they don't scale with the framebuffer.
+        // Queue buffers: count header (4 uint32s) + one index per ray.
+        const VkDeviceSize rayQueueSize = (sizeof(uint32_t) * 4) + maxRayCount * sizeof(uint32_t);
+        const VkDeviceSize indirectSize = sizeof(uint32_t) * 3; // VkDispatchIndirectCommand
+        // Material bin offsets/cursors: NUM_BINS uints each, matching NUM_BINS in the
+        // sort kernels. Tiny fixed size -- they don't scale with the framebuffer.
         constexpr uint32_t kNumBins = 64;
-        VkDeviceSize binBufferSize = sizeof(uint32_t) * kNumBins;
+        const VkDeviceSize binSize = sizeof(uint32_t) * kNumBins;
 
-        auto allocateBinBuffer = [&](VkBuffer &buf, VkDeviceMemory &mem, const char *what) {
-            VkBufferCreateInfo info{};
-            info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-            info.size = binBufferSize;
-            info.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-            info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-            if (vkCreateBuffer(device, &info, nullptr, &buf) != VK_SUCCESS)
-                throw std::runtime_error(std::string("Failed to create buffer: ") + what);
-
-            VkMemoryRequirements reqs;
-            vkGetBufferMemoryRequirements(device, buf, &reqs);
-
-            VkMemoryAllocateInfo allocInfo{};
-            allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-            allocInfo.allocationSize = reqs.size;
-            allocInfo.memoryTypeIndex = m_device.findMemoryType(reqs.memoryTypeBits,
-                                                                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-            if (vkAllocateMemory(device, &allocInfo, nullptr, &mem) != VK_SUCCESS)
-                throw std::runtime_error(std::string("Failed to allocate memory: ") + what);
-            vkBindBufferMemory(device, buf, mem, 0);
-        };
-        allocateBinBuffer(m_materialBinOffsetsBuffer, m_materialBinOffsetsMemory, "MaterialBinOffsets");
-        allocateBinBuffer(m_materialBinCursorsBuffer, m_materialBinCursorsMemory, "MaterialBinCursors");
+        try
+        {
+            createDeviceLocalBuffer(m_payloadBuffer, m_payloadMemory,
+                                    VkDeviceSize(maxRayCount) * m_payloadSize, kStorage, "Payload");
+            // PathHeader: 2 vec4s per ray (origin + direction with tMin/tMax)
+            createDeviceLocalBuffer(m_pathHeaderBuffer, m_pathHeaderMemory,
+                                    VkDeviceSize(maxRayCount) * sizeof(float) * 8, kStorage, "PathHeader");
+            createDeviceLocalBuffer(m_rayQueueBuffer, m_rayQueueMemory, rayQueueSize, kStorage, "RayQueue");
+            // Ping-pong partner of RayQueue
+            createDeviceLocalBuffer(m_rayQueueBuffer2, m_rayQueueMemory2, rayQueueSize, kStorage, "RayQueue2");
+            // HitInfo: t + triangleIndex + instanceIndex + barycentrics (3 floats + 2 uints per ray + padding)
+            createDeviceLocalBuffer(m_hitInfoBuffer, m_hitInfoMemory,
+                                    VkDeviceSize(maxRayCount) * sizeof(float) * 8, kStorage, "HitInfo");
+            createDeviceLocalBuffer(m_indirectDispatchBuffer, m_indirectDispatchMemory,
+                                    indirectSize, kIndirect, "IndirectDispatch");
+            createDeviceLocalBuffer(m_hitQueueBuffer, m_hitQueueMemory, rayQueueSize, kStorage, "HitQueue");
+            createDeviceLocalBuffer(m_missQueueBuffer, m_missQueueMemory, rayQueueSize, kStorage, "MissQueue");
+            createDeviceLocalBuffer(m_hitIndirectBuffer, m_hitIndirectMemory,
+                                    indirectSize, kIndirect, "HitIndirect");
+            createDeviceLocalBuffer(m_missIndirectBuffer, m_missIndirectMemory,
+                                    indirectSize, kIndirect, "MissIndirect");
+            // Output of the material-ID sort, consumed by the hit shader.
+            createDeviceLocalBuffer(m_sortedHitQueueBuffer, m_sortedHitQueueMemory,
+                                    rayQueueSize, kStorage, "SortedHitQueue");
+            createDeviceLocalBuffer(m_materialBinOffsetsBuffer, m_materialBinOffsetsMemory,
+                                    binSize, kStorage, "MaterialBinOffsets");
+            createDeviceLocalBuffer(m_materialBinCursorsBuffer, m_materialBinCursorsMemory,
+                                    binSize, kStorage, "MaterialBinCursors");
+        }
+        catch (...)
+        {
+            destroyInternalBuffers();
+            m_maxRayCount = 0;
+            throw;
+        }
     }
 
     void VulkanWaveFrontPipeline::bindInternalBuffers(VkDescriptorSet descriptorSet, bool swapQueues)

@@ -221,12 +221,12 @@ namespace tracey
                     }
                 }
 
-                // Time-dependence: v1 conservative rule — `attribute_vop`
-                // potentially reads @Time (VOPs can sample time inside their
-                // generated kernel), and time-dependence propagates strictly
+                // Time-dependence: nodes declare it via isTimeDependent()
+                // (attribute_vop overrides it — VOPs can sample time inside
+                // their generated kernel), and it propagates strictly
                 // downstream. Other SOP cooks are pure functions of params +
                 // inputs.
-                const bool ownTimeDep = (node->kind() == "attribute_vop");
+                const bool ownTimeDep = node->isTimeDependent();
                 const bool timeDep    = ownTimeDep || anyUpstreamTimeDep;
 
                 // Compute this node's input key. Mixed with FNV-1a so the

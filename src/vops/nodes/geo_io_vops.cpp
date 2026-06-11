@@ -27,6 +27,7 @@
 #include "../vop_node.hpp"
 #include "../vop_graph.hpp"
 #include "../vop_registry.hpp"
+#include "../geo_io_ports.hpp"
 
 #include "../../core/types.hpp"
 #include "../../geometry/attribute.hpp"
@@ -42,46 +43,12 @@ namespace tracey
     {
         namespace
         {
-            // Per-port spec. The order MUST match the actual port order
-            // in ports() so the GPU emitter / CPU evaluator can use the
-            // port index as a key into this array.
-            struct VecPortSpec
-            {
-                const char *name;     // attribute name on the geometry
-                Vec3 defaultValue;    // used when materialising / "default" output mode
-            };
-            struct FloatPortSpec
-            {
-                const char *name;
-                float defaultValue;
-            };
-
-            // Canonical defaults match defaultVec3For / defaultFloatFor in
-            // compute_dispatch.cpp — keeping them in sync means both code
-            // paths (manual stamp via geo_output's `default` mode and
-            // implicit materialise via the dispatcher) produce the same
-            // value for a missing attribute.
-            constexpr std::array<VecPortSpec, 6> kVecPorts = {{
-                {"P",     Vec3(0.0f, 0.0f, 0.0f)},
-                {"N",     Vec3(0.0f, 1.0f, 0.0f)},
-                {"Cd",    Vec3(1.0f, 1.0f, 1.0f)},
-                {"uv",    Vec3(0.0f, 0.0f, 0.0f)},
-                {"v",     Vec3(0.0f, 0.0f, 0.0f)},
-                {"force", Vec3(0.0f, 0.0f, 0.0f)},
-            }};
-            constexpr std::array<FloatPortSpec, 2> kFloatPorts = {{
-                {"Alpha",  1.0f},
-                {"pscale", 1.0f},
-            }};
-
-            // GeoInputVop also exposes age / life / ptnum (read-only) but
-            // those don't make sense as writable outputs so we keep them
-            // out of GeoOutputVop's port list.
-            constexpr std::array<FloatPortSpec, 3> kInputOnlyFloatPorts = {{
-                {"age",   0.0f},
-                {"life",  1.0f},
-                {"ptnum", 0.0f},  // populated specially in evaluate from pointIndex
-            }};
+            // Port specs live in geo_io_ports.hpp — shared with the GPU
+            // emitter and the dispatcher so the port-index contract and
+            // the canonical defaults can't drift between the three.
+            constexpr const auto &kVecPorts           = kGeoVecPorts;
+            constexpr const auto &kFloatPorts         = kGeoFloatPorts;
+            constexpr const auto &kInputOnlyFloatPorts = kGeoReadOnlyFloatPorts;
         }
 
         // ── geo_input ────────────────────────────────────────────────────────

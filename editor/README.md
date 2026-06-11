@@ -41,9 +41,6 @@ JSON IPC call (`set_sop_graph`, `set_actor_transform`, `param_set_keyframe`,
 `sop_graph_changed`, `timeline_tick`, …). The seam is documented in
 [editor/src/lib/api.ts](src/lib/api.ts).
 
-The Tauri/Rust scaffolding under [`src-tauri/`](src-tauri/) is legacy —
-predates the native host. Kept in tree as a reference; not built.
-
 ## Layout
 
 ```
@@ -79,7 +76,6 @@ editor/
       viewport/          Native viewport overlay
       camera-controls/, render-settings/, export-video/, scene-menu/
 
-  src-tauri/             Legacy Tauri scaffolding (not built)
   package.json, vite.config.ts, tsconfig.json
                          Vite + TS config — driven by editor/native/CMakeLists.txt
 ```

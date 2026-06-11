@@ -1,40 +1,9 @@
 #include "shader_inputs_buffer.hpp"
+#include "ray_tracing_pipeline/glsl_layout.hpp"
 
 #include <stdexcept>
 
 namespace tracey {
-
-size_t ShaderInputsBuffer::getStd140Alignment(const std::string &type) {
-    if (type == "float" || type == "int" || type == "uint" || type == "bool")
-        return 4;
-    if (type == "vec2" || type == "ivec2" || type == "uvec2")
-        return 8;
-    if (type == "vec3" || type == "ivec3" || type == "uvec3")
-        return 16; // std140: vec3 is 16-byte aligned
-    if (type == "vec4" || type == "ivec4" || type == "uvec4")
-        return 16;
-    if (type == "mat3")
-        return 16;
-    if (type == "mat4")
-        return 16;
-    return 16; // Default for unknown types
-}
-
-size_t ShaderInputsBuffer::getStd140Size(const std::string &type) {
-    if (type == "float" || type == "int" || type == "uint" || type == "bool")
-        return 4;
-    if (type == "vec2" || type == "ivec2" || type == "uvec2")
-        return 8;
-    if (type == "vec3" || type == "ivec3" || type == "uvec3")
-        return 16; // std140: vec3 takes 16 bytes (with padding)
-    if (type == "vec4" || type == "ivec4" || type == "uvec4")
-        return 16;
-    if (type == "mat3")
-        return 48; // 3 columns * 16 bytes each
-    if (type == "mat4")
-        return 64; // 4 columns * 16 bytes each
-    return 16;
-}
 
 void ShaderInputsBuffer::buildMemberMap(const StructureLayout &layout) {
     size_t currentOffset = 0;

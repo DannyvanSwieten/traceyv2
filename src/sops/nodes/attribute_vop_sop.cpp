@@ -58,6 +58,12 @@ namespace tracey
 
                 std::string kind() const override { return "attribute_vop"; }
 
+                // The hosted VOP kernel can sample time (promoted host params
+                // are evaluated per-cook via paramXxxAt), so the same params +
+                // inputs can still produce different geometry at different
+                // playhead positions.
+                bool isTimeDependent() const override { return true; }
+
                 InputsAndOutputs ports() const override
                 {
                     InputsAndOutputs io;

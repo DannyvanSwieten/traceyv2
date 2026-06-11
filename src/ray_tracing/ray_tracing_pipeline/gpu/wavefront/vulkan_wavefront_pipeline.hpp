@@ -59,6 +59,9 @@ namespace tracey
     private:
         size_t bindingStartOffset(ShaderStage stage) const;
         void allocateInternalBuffers(uint32_t maxRayCount);
+        void destroyInternalBuffers();
+        void createDeviceLocalBuffer(VkBuffer &buffer, VkDeviceMemory &memory, VkDeviceSize size,
+                                     VkBufferUsageFlags usage, const char *what);
         void bindInternalBuffers(VkDescriptorSet descriptorSet, bool swapQueues = false);
 
     private:

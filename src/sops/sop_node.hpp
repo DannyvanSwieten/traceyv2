@@ -167,6 +167,14 @@ namespace tracey
                 return cook(inputs);
             }
 
+            // True when this node's cook can vary with time even if its
+            // params and inputs are byte-identical (e.g. a hosted VOP kernel
+            // reading @Time). SopGraph::cook mixes the cook time into such a
+            // node's cache key and propagates the flag downstream — a node
+            // that returns true here but false from this method poisons the
+            // cook cache across frames.
+            virtual bool isTimeDependent() const { return false; }
+
             // ── Nested sub-graphs ──
             // A SOP node that wraps a sub-graph (subnet) returns a non-null
             // pointer to the inner graph here. The default returns nullptr —

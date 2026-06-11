@@ -1,5 +1,7 @@
 #pragma once
 
+#include <json.hpp>
+
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
@@ -69,6 +71,17 @@ public:
     void render_tick();
 
 private:
+    // Per-domain IPC command modules (editor_server_cmds_*.cpp). Each
+    // returns the response string when it handled `cmd`, std::nullopt
+    // otherwise. Called by handle_command with m_mutex held, inside its
+    // try block.
+    std::optional<std::string> handle_scene_commands(const std::string& cmd, const nlohmann::json& req);
+    std::optional<std::string> handle_render_commands(const std::string& cmd, const nlohmann::json& req);
+    std::optional<std::string> handle_material_commands(const std::string& cmd, const nlohmann::json& req);
+    std::optional<std::string> handle_graph_commands(const std::string& cmd, const nlohmann::json& req);
+    std::optional<std::string> handle_timeline_commands(const std::string& cmd, const nlohmann::json& req);
+    std::optional<std::string> handle_io_commands(const std::string& cmd, const nlohmann::json& req);
+
     // Re-wire DopGraph's SopGeometryProvider after every m_dop_graph
     // reset (constructor + load_scene). The provider itself is owned by
     // the EditorServer and points at m_main_cook_cache; only the raw

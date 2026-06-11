@@ -7,7 +7,7 @@
 // immediately on the path-traced view.
 
 import { Component, createEffect, onMount, createSignal, Show } from 'solid-js';
-import { GraphCanvas } from './GraphCanvas';
+import { MaterialGraphCanvas } from './MaterialGraphCanvas';
 import { MaterialNodePalette } from './MaterialNodePalette';
 import { NodeInspector } from './NodeInspector';
 import { MaterialLibrary } from './MaterialLibrary';
@@ -77,7 +77,7 @@ export const MaterialGraphEditor: Component<MaterialGraphEditorProps> = (props) 
               <MaterialNodePalette />
               <MaterialLibrary />
             </div>
-            <GraphCanvas />
+            <MaterialGraphCanvas />
           </div>
         </div>
       </div>

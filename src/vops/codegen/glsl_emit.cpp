@@ -23,6 +23,7 @@
 
 #include "../vop_node.hpp"
 #include "../vop_graph.hpp"
+#include "../geo_io_ports.hpp"
 
 #include <cstdio>
 #include <optional>
@@ -589,33 +590,10 @@ namespace tracey
 
                 // ── Unified Geometry I/O ─────────────────────────────────
                 //
-                // The port arrays mirror the ones in
-                // src/vops/nodes/geo_io_vops.cpp. Keep them in lockstep —
-                // the port index is the contract between the node and the
-                // emitter. Splitting per-port specs out into a header
-                // would be cleaner, but for now the duplicated knowledge
-                // is small enough (and load-bearing on the CPU side via
-                // the same canonical-defaults table in compute_dispatch.cpp).
-                struct GeoVecPort { const char *name; const char *defaultLit; };
-                struct GeoFloatPort { const char *name; const char *defaultLit; };
-                static const GeoVecPort kGeoVecPorts[] = {
-                    {"P",     "vec3(0.0)"},
-                    {"N",     "vec3(0.0, 1.0, 0.0)"},
-                    {"Cd",    "vec3(1.0)"},
-                    {"uv",    "vec3(0.0)"},
-                    {"v",     "vec3(0.0)"},
-                    {"force", "vec3(0.0)"},
-                };
-                static const GeoFloatPort kGeoFloatPorts[] = {
-                    {"Alpha",  "1.0"},
-                    {"pscale", "1.0"},
-                };
-                // Read-only float ports — input-side only.
-                static const GeoFloatPort kGeoReadOnlyFloatPorts[] = {
-                    {"age",   "0.0"},
-                    {"life",  "1.0"},
-                    {"ptnum", "0.0"},  // emitted as int(pi), not an SSBO
-                };
+                // The port arrays (kGeoVecPorts / kGeoFloatPorts /
+                // kGeoReadOnlyFloatPorts) come from ../geo_io_ports.hpp —
+                // shared with the CPU nodes in geo_io_vops.cpp and the
+                // dispatcher, so the port-index contract can't drift.
 
                 // Which (uid, outputPort) pairs feed at least one
                 // downstream input? Used by emitGeoInput to dead-strip
@@ -634,9 +612,9 @@ namespace tracey
 
                 bool emitGeoInput(EmitState &state, const VopGraph &graph, const VopNode &node)
                 {
-                    const size_t numVec = sizeof(kGeoVecPorts) / sizeof(kGeoVecPorts[0]);
-                    const size_t numF   = sizeof(kGeoFloatPorts) / sizeof(kGeoFloatPorts[0]);
-                    const size_t numRO  = sizeof(kGeoReadOnlyFloatPorts) / sizeof(kGeoReadOnlyFloatPorts[0]);
+                    const size_t numVec = kGeoVecPorts.size();
+                    const size_t numF   = kGeoFloatPorts.size();
+                    const size_t numRO  = kGeoReadOnlyFloatPorts.size();
 
                     size_t portIdx = 0;
                     for (size_t i = 0; i < numVec; ++i, ++portIdx)
@@ -677,8 +655,8 @@ namespace tracey
 
                 bool emitGeoOutput(EmitState &state, const VopGraph &graph, const VopNode &node)
                 {
-                    const size_t numVec = sizeof(kGeoVecPorts) / sizeof(kGeoVecPorts[0]);
-                    const size_t numF   = sizeof(kGeoFloatPorts) / sizeof(kGeoFloatPorts[0]);
+                    const size_t numVec = kGeoVecPorts.size();
+                    const size_t numF   = kGeoFloatPorts.size();
 
                     size_t portIdx = 0;
                     // Vec3 ports.
@@ -701,7 +679,7 @@ namespace tracey
                         }
                         else
                         {
-                            valueExpr = p.defaultLit;
+                            valueExpr = p.defaultGlsl;
                         }
                         state.body << "    attr_" << p.name << ".data[pi] = vec4("
                                    << valueExpr << ", 0.0);\n";
@@ -723,7 +701,7 @@ namespace tracey
                         }
                         else
                         {
-                            valueExpr = p.defaultLit;
+                            valueExpr = p.defaultGlsl;
                         }
                         state.body << "    attr_" << p.name << ".data[pi] = "
                                    << valueExpr << ";\n";

@@ -37,6 +37,7 @@
 #include "../../geometry/geometry.hpp"
 #include "../../gpu/shader_compiler.hpp"
 #include "../../gpu/vulkan_queue_sync.hpp"
+#include "../geo_io_ports.hpp"
 #include "glsl_emit.hpp"
 
 #include <volk.h>
@@ -103,19 +104,16 @@ namespace tracey
                 //         world-up when missing.
                 //   pscale → 1.0 — instance scale identity.
                 //   Alpha  → 1.0 — fully opaque.
-                // Everything else falls through to zero, which matches
-                // the previous one-size-fits-all behaviour.
+                // Everything else falls through to zero. The actual table
+                // lives in geo_io_ports.hpp, shared with the CPU nodes
+                // and the GLSL emitter.
                 Vec3 defaultVec3For(const std::string &name)
                 {
-                    if (name == "Cd") return Vec3(1.0f, 1.0f, 1.0f);
-                    if (name == "N")  return Vec3(0.0f, 1.0f, 0.0f);
-                    return Vec3(0.0f);
+                    return geoDefaultVec3For(name);
                 }
                 float defaultFloatFor(const std::string &name)
                 {
-                    if (name == "pscale") return 1.0f;
-                    if (name == "Alpha")  return 1.0f;
-                    return 0.0f;
+                    return geoDefaultFloatFor(name);
                 }
 
                 // Live-param read for one ParamSlot. The emitter assigned

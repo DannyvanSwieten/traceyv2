@@ -246,6 +246,8 @@ add_library(tracey
     src/ray_tracing/ray_tracing_pipeline/shader_binding_table.hpp
     src/ray_tracing/ray_tracing_pipeline/data_structure.hpp
     src/ray_tracing/ray_tracing_pipeline/data_structure.cpp
+    src/ray_tracing/ray_tracing_pipeline/glsl_layout.hpp
+    src/ray_tracing/ray_tracing_pipeline/glsl_layout.cpp
 
     src/ray_tracing/ray_tracing_pipeline/cpu/cpu_shader_binding_table.hpp
     src/ray_tracing/ray_tracing_pipeline/cpu/cpu_shader_binding_table.cpp
@@ -379,13 +381,7 @@ if(PKG_CONFIG_FOUND)
     )
 endif()
 
-# Optional: Build C API for FFI (still available for external consumers)
-option(BUILD_C_API "Build C API shared library for FFI" ON)
-if(BUILD_C_API)
-    add_subdirectory(src/c_api)
-endif()
-
-# Native C++ editor (replaces Rust+Tauri editor)
+# Native C++ editor
 option(BUILD_EDITOR "Build the native C++ editor" ON)
 if(BUILD_EDITOR)
     add_subdirectory(editor/native)

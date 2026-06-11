@@ -61,7 +61,6 @@ src/                   Engine library (renderer, scene, SOP/VOP framework)
 editor/
   native/              C++ desktop host (window, Metal/Vulkan viewport, IPC)
   src/                 Solid.js frontend (canvas editors, inspector, timeline)
-  src-tauri/           Legacy — predates the native host, kept for history
 
 examples/              CLI binaries that exercise the engine standalone
 deps/                  Vendored / submodule third-party (glm, volk, tinygltf)

@@ -90,13 +90,13 @@
 .graph-node-header {
   fill: #383838;
 }
-.graph-node-Constant .graph-node-header,
-.graph-node-Parameter .graph-node-header { fill: #4a3a2a; }
-.graph-node-MaterialInput .graph-node-header { fill: #2a4a3a; }
-.graph-node-BinaryOp .graph-node-header,
-.graph-node-UnaryOp .graph-node-header,
-.graph-node-TernaryOp .graph-node-header { fill: #2a3a4a; }
-.graph-node-MaterialOutput .graph-node-header { fill: #4a2a3a; }
+.graph-node-cat-Constant .graph-node-header,
+.graph-node-cat-Parameter .graph-node-header { fill: #4a3a2a; }
+.graph-node-cat-MaterialInput .graph-node-header { fill: #2a4a3a; }
+.graph-node-cat-BinaryOp .graph-node-header,
+.graph-node-cat-UnaryOp .graph-node-header,
+.graph-node-cat-TernaryOp .graph-node-header { fill: #2a3a4a; }
+.graph-node-cat-MaterialOutput .graph-node-header { fill: #4a2a3a; }
 
 .graph-node-title {
   fill: #eee;

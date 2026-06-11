@@ -72,11 +72,6 @@ class ShaderInputsBuffer {
         std::string type;
     };
 
-    // Calculate std140 alignment for a GLSL type
-    static size_t getStd140Alignment(const std::string &type);
-    // Calculate std140 size for a GLSL type
-    static size_t getStd140Size(const std::string &type);
-
     // Build the member offset map from the layout
     void buildMemberMap(const StructureLayout &layout);
 
