@@ -1,10 +1,7 @@
 import { Component, Show, createEffect, createSignal, onMount, onCleanup } from 'solid-js';
 import * as api from './lib/api';
 import { Viewport, ViewportHandle, CameraPosition } from './components/viewport/Viewport';
-import {
-  SceneHierarchy,
-  Actor,
-} from './components/scene-hierarchy/SceneHierarchy';
+import { SceneHierarchy } from './components/scene-hierarchy/SceneHierarchy';
 import { ResourcesBrowser } from './components/resources-browser/ResourcesBrowser';
 import { RasterizerToolbar } from './components/rasterizer-toolbar/RasterizerToolbar';
 import { RenderPanel } from './components/render-panel/RenderPanel';
@@ -32,36 +29,39 @@ import {
   nodeIsSubnet,
   redo,
   removeNodeAnywhere,
-  sopGraph,
   undo,
 } from './stores/sops';
+import {
+  actors,
+  setActors,
+  selectedActorId,
+  setSelectedActorId,
+  refreshActors,
+  attachSceneChangedListener,
+  keySelectedActorPose,
+} from './stores/actors';
+import {
+  ptPreviewEnabled,
+  frameLocked,
+  maxSamples,
+  maxBounces,
+  renderResolution,
+  initRenderSettings,
+  setPtPreview,
+  setFrameLocked,
+  setMaxSamples,
+  setMaxBounces,
+  setRenderResolution,
+} from './stores/render_settings';
 import { buildSubnetsFromGltf } from './lib/gltf_import';
-import { fetchCatalog as fetchSopCatalog, findNodeRecursive } from './lib/sop_graph';
+import { fetchCatalog as fetchSopCatalog } from './lib/sop_graph';
 import { isVopEditorOpen } from './stores/vops';
 import { isMaterialEditorOpen, setMaterialEditorOpen } from './stores/materials';
 import { CommandPalette } from './components/command-palette/CommandPalette';
 import { toggleCommandPalette, registerCommands } from './lib/command_palette';
 import { GrabOverlay } from './components/viewport-grab/GrabOverlay';
-import {
-  startGrab,
-  updateGrab,
-  setAxis,
-  setOrigin as setGrabOrigin,
-  commitGrab,
-  cancelGrab,
-  grabState,
-  isGrabActive,
-  type Axis,
-} from './lib/viewport_grab';
+import { installAppInput } from './lib/app_input';
 import { PieMenu } from './components/pie-menu/PieMenu';
-import {
-  openPieMenu,
-  commitPieMenu,
-  dismissPieMenu,
-  updatePieMenuCursor,
-  setPieMenuWedges,
-  isPieMenuOpen,
-} from './lib/pie_menu';
 import { WorkspaceTabs } from './components/workspaces/WorkspaceTabs';
 import { WorkspaceBar } from './components/workspaces/WorkspaceBar';
 import {
@@ -71,14 +71,7 @@ import {
   setActiveWorkspaceInternal,
   type WorkspaceName,
 } from './lib/workspaces';
-import { autoKeyEnabled } from './lib/auto_key';
-import {
-  currentFrame,
-  seekFrame,
-  setKeyAtPlayhead,
-  timeline,
-  togglePlayPause,
-} from './stores/timeline';
+import { togglePlayPause } from './stores/timeline';
 import './App.css';
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(Math.max(v, lo), hi);
@@ -105,10 +98,6 @@ function loadPersistedLayout(): PersistedLayout {
 
 const App: Component = () => {
   const [currentScene, setCurrentScene] = createSignal<string | null>(null);
-  const [actors, setActors] = createSignal<Actor[]>([]);
-  const [selectedActorId, setSelectedActorId] = createSignal<number | null>(
-    null
-  );
   // Mirror the active selection to the native server so the orbital camera
   // pivots around the selected actor. Fire-and-forget; selection state lives
   // on the frontend.
@@ -151,16 +140,6 @@ const App: Component = () => {
   // DOP graph editor shares the same dock slot as SOP / Material.
   const [dopEditorOpen, setDopEditorOpen] = createSignal(false);
   const [exportVideoOpen, setExportVideoOpen] = createSignal(false);
-  // Mirrors the native EditorServer::m_pt_preview_enabled. Seeded from
-  // the native side on mount so a future-default change (or a project
-  // file storing the preference) flows through; the toolbar button is
-  // the only writer beyond that.
-  const [ptPreviewEnabled, setPtPreviewEnabled] = createSignal(false);
-  // Frame-lock toggle. Mirrors TimelineState::frame_locked on the native
-  // side: off = async / wall-clock playback (default), on = advance one
-  // frame per cook completion. Seeded on mount so the toolbar matches
-  // engine state.
-  const [frameLocked, setFrameLocked] = createSignal(false);
   // Resizable panel sizes — seeded from localStorage so the layout survives
   // across sessions. Min/max stay loose enough for laptop displays.
   const persisted = loadPersistedLayout();
@@ -194,26 +173,6 @@ const App: Component = () => {
   });
   let viewportRef: ViewportHandle | undefined;
 
-  // Latest pointer position in client coords, updated globally on
-  // pointermove. The Blender-modal grab uses this both as the grab origin
-  // (so it doesn't snap to wherever the cursor was at app start) and as
-  // the per-frame delta source.
-  const lastViewportPointer = { x: 0, y: 0 };
-  // Whether the next broadcast after grab-activation should be treated as
-  // the origin. The Metal-view pointer coords don't agree with browser
-  // clientX/Y so we re-seed the grab's startX/Y from the first sample.
-  let needGrabOrigin = false;
-
-  // Render-workspace bar signals. Mirrors the engine's max-samples /
-  // max-bounces values so the sliders show the right starting value
-  // when the user enters Render mode; setters round-trip through the
-  // IPC so the engine adopts the change immediately.
-  const [maxSamples, setMaxSamplesSignal] = createSignal(1024);
-  const [maxBounces, setMaxBouncesSignal] = createSignal(8);
-  // [w, h]. [0, 0] = match viewport pixel size; otherwise the PT renders
-  // at this fixed resolution and the viewport blit scales to fit.
-  const [renderResolution, setRenderResolutionSignal] =
-    createSignal<[number, number]>([0, 0]);
   let unlistenImport: (() => void) | undefined;
   let unlistenExport: (() => void) | undefined;
 
@@ -287,17 +246,12 @@ const App: Component = () => {
         return;
       }
       // Refresh actor list now that the cook is applied.
-      try {
-        const fresh = await api.getAllActors();
-        setActors(fresh);
-        if (fresh.length <= beforeCount) {
-          console.warn('Load completed but actor count did not grow:', asset.path);
-          window.alert(
-            `Loaded ${asset.path} but no geometry actors appeared.\n\nLikely causes: file is corrupt, mesh name mismatch, or the engine couldn't open the file. Check the editor console.`,
-          );
-        }
-      } catch (e) {
-        console.warn('actor refresh after load failed:', e);
+      await refreshActors('refresh after load');
+      if (actors().length <= beforeCount) {
+        console.warn('Load completed but actor count did not grow:', asset.path);
+        window.alert(
+          `Loaded ${asset.path} but no geometry actors appeared.\n\nLikely causes: file is corrupt, mesh name mismatch, or the engine couldn't open the file. Check the editor console.`,
+        );
       }
     } catch (e) {
       // The asset list survives across sessions (localStorage), so common
@@ -314,14 +268,16 @@ const App: Component = () => {
   };
 
   const handleTransformChange = async (actorId: number, transform: Transform) => {
-    // Update local actors state
+    // Optimistic local update so the inspector doesn't lag the edit.
     setActors((prev) =>
       prev.map((actor) =>
         actor.id === actorId ? { ...actor, transform } : actor
       )
     );
 
-    // Recompile scene and re-render
+    // Recompile scene and re-render. On failure, re-pull the actor list so
+    // the UI snaps back to the engine's truth instead of showing a
+    // transform the engine never applied.
     try {
       await api.compileScene();
       if (viewportRef) {
@@ -329,6 +285,7 @@ const App: Component = () => {
       }
     } catch (error) {
       console.error('Failed to recompile scene after transform change:', error);
+      await refreshActors('rollback after failed transform change');
     }
   };
 
@@ -336,6 +293,7 @@ const App: Component = () => {
   let unlistenSaveScene: (() => void) | undefined;
   let unlistenSaveSceneAs: (() => void) | undefined;
   let unlistenSceneChanged: (() => void) | undefined;
+  let uninstallAppInput: (() => void) | undefined;
 
   // Last path the user opened from or saved to. Cmd+S writes to this
   // directly when set; Cmd+Shift+S (or first save) always prompts and
@@ -350,14 +308,7 @@ const App: Component = () => {
       if (!selected) return;
       await api.loadScene(selected);
       setCurrentScenePath(selected);
-      // Refresh the actor list — the backend broadcasts scene_changed but
-      // the actors signal is owned in App.tsx and has no listener.
-      try {
-        const fresh = await api.getAllActors();
-        setActors(fresh);
-      } catch (e) {
-        console.warn('actor refresh after load failed:', e);
-      }
+      await refreshActors('refresh after open scene');
       if (viewportRef) viewportRef.render();
     } catch (e) {
       console.error('Open Scene failed:', e);
@@ -397,73 +348,6 @@ const App: Component = () => {
     }
   };
 
-  // Key the selected actor's translate/scale/rotate at the playhead. Used
-  // both by the K hotkey and the WorkspaceBar's "Set Key" button — and by
-  // the Auto-Key toggle which calls this after every transform commit.
-  const keySelectedActorPose = () => {
-    const id = selectedActorId();
-    if (id === null) return;
-    const actor = actors().find((a) => a.id === id);
-    if (!actor || actor.sop_node_uid == null) return;
-    const uid = actor.sop_node_uid;
-    const tx = actor.transform.position;
-    const sc = actor.transform.scale;
-    const writes: Promise<void>[] = [
-      setKeyAtPlayhead({ nodeUid: uid, paramName: 'translate', component: 0, value: tx.x }),
-      setKeyAtPlayhead({ nodeUid: uid, paramName: 'translate', component: 1, value: tx.y }),
-      setKeyAtPlayhead({ nodeUid: uid, paramName: 'translate', component: 2, value: tx.z }),
-      setKeyAtPlayhead({ nodeUid: uid, paramName: 'scale',     component: 0, value: sc.x }),
-      setKeyAtPlayhead({ nodeUid: uid, paramName: 'scale',     component: 1, value: sc.y }),
-      setKeyAtPlayhead({ nodeUid: uid, paramName: 'scale',     component: 2, value: sc.z }),
-    ];
-    const node = findNodeRecursive(sopGraph(), uid);
-    const rot = node?.params['rotate_euler_deg'];
-    if (rot && rot.type === 'vec3') {
-      writes.push(setKeyAtPlayhead({ nodeUid: uid, paramName: 'rotate_euler_deg', component: 0, value: rot.value[0] }));
-      writes.push(setKeyAtPlayhead({ nodeUid: uid, paramName: 'rotate_euler_deg', component: 1, value: rot.value[1] }));
-      writes.push(setKeyAtPlayhead({ nodeUid: uid, paramName: 'rotate_euler_deg', component: 2, value: rot.value[2] }));
-    }
-    Promise.allSettled(writes).catch(() => {});
-  };
-
-  // Wrappers that flip the native grab-active flag alongside the JS state.
-  // Mandatory because pointer events over the Metal viewport never reach
-  // the WebView — the engine has to broadcast pointer state back to us.
-  const startGrabSession = async (
-    kind: 'translate' | 'rotate' | 'scale',
-    actorId: number,
-    transform: api.Transform,
-    pointerX: number,
-    pointerY: number,
-  ) => {
-    // Flip the native gate FIRST so the engine stops orbiting the camera
-    // even if startGrab (which awaits a getCamera roundtrip) takes a few
-    // frames. Without this leading call, dragging during the window
-    // between "G pressed" and "grab fully armed" still pans / orbits.
-    try {
-      await api.setViewportGrabActive(true);
-    } catch (e) {
-      console.error('setViewportGrabActive(true) failed:', e);
-      return;
-    }
-    try {
-      await startGrab(kind, actorId, transform, pointerX, pointerY);
-    } catch (e) {
-      console.error('startGrab failed:', e);
-      api.setViewportGrabActive(false).catch(() => {});
-      return;
-    }
-  };
-  const endGrabSession = (mode: 'commit' | 'cancel') => {
-    if (mode === 'commit') {
-      commitGrab();
-      if (autoKeyEnabled()) keySelectedActorPose();
-    } else {
-      cancelGrab().catch((err) => console.error('cancelGrab failed:', err));
-    }
-    api.setViewportGrabActive(false).catch(() => {});
-  };
-
   const applyWorkspace = (name: WorkspaceName) => {
     const w = WORKSPACES[name];
     setSopEditorOpen(w.sopOpen);
@@ -486,63 +370,10 @@ const App: Component = () => {
   };
 
   onMount(() => {
-    // Global pointermove tracker drives the modal grab. We listen at the
-    // window level (not just the viewport) because Blender-style modal
-    // transforms continue even when the cursor leaves the placeholder
-    // div — until commit or cancel.
-    const onPointerMove = (e: PointerEvent) => {
-      lastViewportPointer.x = e.clientX;
-      lastViewportPointer.y = e.clientY;
-      if (isGrabActive()) {
-        const next = updateGrab(e.clientX, e.clientY);
-        const g = grabState();
-        if (next && g) {
-          api.setActorTransform(g.actorId, next).catch(() => {});
-        }
-      }
-      if (isPieMenuOpen()) {
-        updatePieMenuCursor(e.clientX, e.clientY);
-      }
-    };
-    const onPointerDown = (e: PointerEvent) => {
-      if (!isGrabActive()) return;
-      // Left-click commits, right-click cancels — matches Blender. Only
-      // covers events that DO reach the WebView (i.e. on dock/panel area);
-      // events over the Metal viewport are handled by the native pointer
-      // broadcast below.
-      if (e.button === 0) {
-        e.preventDefault();
-        endGrabSession('commit');
-      } else if (e.button === 2) {
-        e.preventDefault();
-        endGrabSession('cancel');
-      }
-    };
-    // Native pointer-state broadcast: fires per render_tick while the
-    // grab is active. Drives updateGrab so the actor follows the cursor.
-    // Click-to-commit is intentionally NOT wired here — too easy to
-    // misfire when the user click-drags (their camera-orbit instinct):
-    // the first button-down would close the grab before they ever see
-    // the actor move. Use Enter to commit, Esc to cancel.
-    const unlistenViewportPointer = api.listen('viewport_pointer', (msg) => {
-      if (!isGrabActive()) return;
-      const x = msg.x as number;
-      const y = msg.y as number;
-      if (needGrabOrigin) {
-        setGrabOrigin(x, y);
-        needGrabOrigin = false;
-        return;
-      }
-      const next = updateGrab(x, y);
-      const g = grabState();
-      if (next && g) api.setActorTransform(g.actorId, next).catch(() => {});
-    });
-    onCleanup(unlistenViewportPointer);
-    window.addEventListener('pointermove', onPointerMove);
-    window.addEventListener('pointerdown', onPointerDown, { capture: true });
-    onCleanup(() => {
-      window.removeEventListener('pointermove', onPointerMove);
-      window.removeEventListener('pointerdown', onPointerDown, { capture: true } as EventListenerOptions);
+    // Global input (pointer tracking, modal grab, pie menu, keyboard
+    // shortcuts) lives in lib/app_input.ts.
+    uninstallAppInput = installAppInput({
+      renderViewport: () => viewportRef?.render(),
     });
 
     // Global command-palette registrations. Each canvas adds its own
@@ -573,12 +404,12 @@ const App: Component = () => {
       { id: 'edit.undo', label: 'Undo',
         group: 'Edit', hint: '⌘Z',
         run: () => undo().then((ok) => {
-          if (ok) api.getAllActors().then(setActors).catch(() => {});
+          if (ok) void refreshActors('refresh after undo');
         }) },
       { id: 'edit.redo', label: 'Redo',
         group: 'Edit', hint: '⇧⌘Z',
         run: () => redo().then((ok) => {
-          if (ok) api.getAllActors().then(setActors).catch(() => {});
+          if (ok) void refreshActors('refresh after redo');
         }) },
       { id: 'view.toggleMaterialEditor', label: 'Toggle Material Graph',
         group: 'View',
@@ -625,53 +456,9 @@ const App: Component = () => {
     ]);
     onCleanup(unregisterCommands);
 
-    // Pie-menu wedge set. Eight wedges arranged radially — chosen to cover
-    // the operations users reach for most often while their eyes are on
-    // the viewport. Q opens the menu at the cursor; releasing Q over a
-    // wedge commits it.
-    const grabActiveActor = (kind: 'translate' | 'rotate' | 'scale') => {
-      const sel = selectedActorId();
-      const a = sel === null ? null : actors().find((x) => x.id === sel);
-      if (!a) return;
-      startGrab(kind, a.id, a.transform,
-                lastViewportPointer.x, lastViewportPointer.y).catch(() => {});
-    };
-    setPieMenuWedges([
-      { label: 'Translate', run: () => grabActiveActor('translate') },
-      { label: 'Rotate',    run: () => grabActiveActor('rotate') },
-      { label: 'Scale',     run: () => grabActiveActor('scale') },
-      { label: 'Toggle Points', run: async () => {
-        try {
-          const cur = await api.getShowPoints();
-          await api.setShowPoints(!cur);
-          viewportRef?.render();
-        } catch (e) { console.error('toggle points:', e); }
-      } },
-      { label: 'Toggle Edges', run: async () => {
-        try {
-          const cur = await api.getShowEdges();
-          await api.setShowEdges(!cur);
-          viewportRef?.render();
-        } catch (e) { console.error('toggle edges:', e); }
-      } },
-      { label: 'Toggle Ground', run: async () => {
-        try {
-          const cur = await api.getShowGround();
-          await api.setShowGround(!cur);
-          viewportRef?.render();
-        } catch (e) { console.error('toggle ground:', e); }
-      } },
-      { label: 'Persp View', run: () => { api.setCameraView('persp').catch(() => {}); } },
-      { label: 'Commands…', run: toggleCommandPalette },
-    ]);
-    onCleanup(() => dismissPieMenu());
-
-    // Seed the render-workspace sliders with what the engine actually has.
-    api.getMaxSamples().then(setMaxSamplesSignal).catch(() => {});
-    api.getMaxBounces().then(setMaxBouncesSignal).catch(() => {});
-    api.getPtRenderResolution()
-       .then((r) => setRenderResolutionSignal([r.width, r.height]))
-       .catch(() => {});
+    // Seed the render-workspace mirrors (PT preview, frame lock, samples,
+    // bounces, resolution) with what the engine actually has.
+    initRenderSettings();
 
     unlistenImport = api.listen('menu-import', () => handleImport());
     unlistenExport = api.listen('menu-export', () => {
@@ -682,49 +469,16 @@ const App: Component = () => {
     unlistenSaveScene = api.listen('menu-save-scene', () => handleSaveScene());
     unlistenSaveSceneAs = api.listen('menu-save-scene-as', () => handleSaveSceneAs());
 
-    // Keep the scene hierarchy live: every SOP cook re-emits actors and the
-    // server broadcasts `scene_changed`. Without this, adding e.g. an
-    // object_output node in the docked SOP graph leaves the hierarchy stale
-    // until the dock is closed (which is the only other refresh path).
-    //
-    // Coalesce bursts: a particle sim ticking at ~60Hz fires 60
-    // scene_changed events per second, but the hierarchy only ever
-    // changes when the user adds/removes a SOP node (not when particles
-    // move). rAF-debounce so all events within one animation frame
-    // resolve to a single fetch + setActors. The trailing fetch still
-    // lands within ~16ms of the last event, so the UI stays in sync;
-    // we just stop hammering the IPC bridge 60×/sec with redundant
-    // round-trips that re-fetch the same actor list.
-    let scenePendingRaf: number | null = null;
-    unlistenSceneChanged = api.listen('scene_changed', () => {
-      if (scenePendingRaf !== null) return;
-      scenePendingRaf = requestAnimationFrame(() => {
-        scenePendingRaf = null;
-        api.getAllActors()
-          .then(setActors)
-          .catch((e) => console.warn('actor refresh after scene_changed failed:', e));
-      });
-    });
+    // Keep the scene hierarchy live across cooks (rAF-coalesced
+    // scene_changed → refreshActors, see stores/actors.ts).
+    unlistenSceneChanged = attachSceneChangedListener();
     // Engine-side cook of the default SOP graph completes during native
     // startup — typically before this JS bundle has had a chance to
     // attach the `scene_changed` listener above, so the initial actor
     // emission is missed. Pull the current list once at mount so the
-    // hierarchy panel (which now opens by default along with the SOP
-    // dock) renders the seeded actors instead of staying empty until the
-    // user pokes the graph.
-    api.getAllActors()
-      .then(setActors)
-      .catch((e) => console.warn('initial actor fetch failed:', e));
-
-    // Seed the PT-preview toggle from the native default so the toolbar
-    // button reflects engine state even before the user touches it.
-    api.getPtPreview()
-      .then(setPtPreviewEnabled)
-      .catch((e) => console.warn('initial pt_preview fetch failed:', e));
-
-    api.timelineGetFrameLocked()
-      .then(setFrameLocked)
-      .catch((e) => console.warn('initial frame_locked fetch failed:', e));
+    // hierarchy panel renders the seeded actors instead of staying empty
+    // until the user pokes the graph.
+    void refreshActors('initial fetch');
 
     // Hydrate the SOP node catalog eagerly. The catalog is what `makeNode`
     // resolves kinds against; any code path that constructs SOP nodes
@@ -741,171 +495,7 @@ const App: Component = () => {
     loadSopGraphFromEngine().catch((e) =>
       console.warn('initial SOP graph load failed:', e),
     );
-
-    // App-level Cmd+Z / Cmd+Shift+Z + timeline transport shortcuts. We don't
-    // put these in the native menu because that would unconditionally
-    // swallow them and break native text-input editing inside the inspector.
-    // Here we only intercept when focus is NOT on an editable element — text
-    // fields keep their browser shortcuts, everything else (canvas,
-    // hierarchy, toolbar) gets the app behaviour.
-    //
-    // Transport shortcuts:
-    //   Space          → play / pause
-    //   ←  / →         → step one frame
-    //   Home / End     → jump to range start / end
-    //   K              → key the selected actor's pose (translate / rotate /
-    //                    scale, all 3 axes each) at the current playhead
-    const onAppKeyDown = (e: KeyboardEvent) => {
-      const target = e.target as HTMLElement | null;
-      const tag = target?.tagName;
-      const editable =
-        tag === 'INPUT' ||
-        tag === 'TEXTAREA' ||
-        target?.isContentEditable === true;
-      if (editable) return;
-
-      // Command palette: Cmd+K / Ctrl+K, also Cmd+P / Ctrl+P (VS Code
-      // convention). Toggle so a second press dismisses it without the
-      // user reaching for Escape. Wins over text-edit blocks because we
-      // already returned early above for editable focus targets.
-      if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey) {
-        const k = e.key.toLowerCase();
-        if (k === 'k' || k === 'p') {
-          e.preventDefault();
-          toggleCommandPalette();
-          return;
-        }
-      }
-
-      // Hold-Q pie menu: open on keydown at the current cursor, commit
-      // wedge on keyup. e.repeat gate prevents auto-repeat from spamming
-      // openPieMenu() while the key is held down.
-      if (!e.metaKey && !e.ctrlKey && !e.altKey) {
-        const k = e.key.toLowerCase();
-        if (k === 'q' && !e.repeat) {
-          if (!isPieMenuOpen()) {
-            e.preventDefault();
-            openPieMenu(lastViewportPointer.x, lastViewportPointer.y);
-            return;
-          }
-        }
-      }
-
-      // Blender-style modal transform (G/R/S + X/Y/Z + Enter/Esc). Only
-      // fires when an actor is selected and no modifiers are held.
-      if (!e.metaKey && !e.ctrlKey && !e.altKey) {
-        const k = e.key.toLowerCase();
-        if (isGrabActive()) {
-          if (k === 'x' || k === 'y' || k === 'z') {
-            e.preventDefault();
-            setAxis(k as Axis);
-            return;
-          }
-          if (e.key === 'Escape') {
-            e.preventDefault();
-            endGrabSession('cancel');
-            return;
-          }
-          if (e.key === 'Enter') {
-            e.preventDefault();
-            endGrabSession('commit');
-            return;
-          }
-        } else if (k === 'g' || k === 'r' || k === 's') {
-          const sel = selectedActorId();
-          if (sel !== null) {
-            const actor = actors().find((a) => a.id === sel);
-            if (actor) {
-              e.preventDefault();
-              const kind = k === 'g' ? 'translate' : k === 'r' ? 'rotate' : 'scale';
-              const px = lastViewportPointer.x;
-              const py = lastViewportPointer.y;
-              // The first native pointer broadcast becomes the origin —
-              // see needGrabOrigin in the viewport_pointer listener.
-              needGrabOrigin = true;
-              startGrabSession(kind, actor.id, actor.transform, px, py)
-                .catch((err) => console.error('startGrabSession failed:', err));
-              return;
-            }
-          }
-        }
-      }
-
-      // Undo / redo first — these have a modifier and shouldn't conflict with
-      // anything else.
-      const isUndoCombo =
-        (e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === 'z';
-      if (isUndoCombo) {
-        e.preventDefault();
-        const op = e.shiftKey ? redo : undo;
-        op()
-          .then((applied) => {
-            if (!applied) return;
-            api.getAllActors()
-              .then(setActors)
-              .catch((err) =>
-                console.warn('actor refresh after undo/redo failed:', err),
-              );
-          })
-          .catch((err) => console.warn('undo/redo failed:', err));
-        return;
-      }
-
-      // The SOP graph canvas owns its own Space-to-pan + Delete shortcuts.
-      // When the canvas has focus, defer to it so we don't double-handle.
-      const insideSopDock = target?.closest?.('.sop-graph-dock');
-      if (insideSopDock) return;
-
-      // Transport — no modifiers (so Cmd+Arrow etc. fall through to OS).
-      if (e.metaKey || e.ctrlKey || e.altKey) return;
-
-      const t = timeline();
-      switch (e.key) {
-        case ' ':
-          e.preventDefault();
-          togglePlayPause();
-          break;
-        case 'ArrowLeft':
-          e.preventDefault();
-          seekFrame(Math.round(currentFrame()) - 1);
-          break;
-        case 'ArrowRight':
-          e.preventDefault();
-          seekFrame(Math.round(currentFrame()) + 1);
-          break;
-        case 'Home':
-          e.preventDefault();
-          seekFrame(t.frame_start);
-          break;
-        case 'End':
-          e.preventDefault();
-          seekFrame(t.frame_end);
-          break;
-        case 'k':
-        case 'K':
-          e.preventDefault();
-          keySelectedActorPose();
-          break;
-      }
-    };
-    window.addEventListener('keydown', onAppKeyDown);
-    // Q keyup commits the pie menu's currently-hovered wedge. Listening
-    // on window (not on the keydown handler's scope) so a press-and-flick
-    // that ends with focus elsewhere still fires the action.
-    const onAppKeyUp = (e: KeyboardEvent) => {
-      if (e.key.toLowerCase() === 'q' && isPieMenuOpen()) {
-        e.preventDefault();
-        commitPieMenu();
-      }
-    };
-    window.addEventListener('keyup', onAppKeyUp);
-    unlistenKeydown = () => {
-      window.removeEventListener('keydown', onAppKeyDown);
-      window.removeEventListener('keyup', onAppKeyUp);
-    };
   });
-
-  let unlistenKeydown: (() => void) | undefined;
 
   onCleanup(() => {
     unlistenImport?.();
@@ -914,7 +504,7 @@ const App: Component = () => {
     unlistenSaveScene?.();
     unlistenSaveSceneAs?.();
     unlistenSceneChanged?.();
-    unlistenKeydown?.();
+    uninstallAppInput?.();
   });
 
   return (
@@ -935,16 +525,7 @@ const App: Component = () => {
               ? 'Every frame mode: playback waits for each cook to finish and advances by 1/fps. Slower than realtime on heavy scenes but no frame is skipped.'
               : 'Async mode: playhead advances by wall-clock, slow cooks drop frames. UI never blocks.'
           }
-          onClick={async () => {
-            const next = !frameLocked();
-            setFrameLocked(next);
-            try {
-              await api.timelineSetFrameLocked(next);
-            } catch (e) {
-              console.warn('set_frame_locked failed:', e);
-              setFrameLocked(!next);
-            }
-          }}
+          onClick={() => void setFrameLocked(!frameLocked())}
         >
           Every Frame
         </button>
@@ -954,19 +535,8 @@ const App: Component = () => {
           type="button"
           title="Toggle the path-traced inset preview. Off → live viewport runs raster-only and skips BVH builds."
           onClick={async () => {
-            const next = !ptPreviewEnabled();
-            // Optimistic flip + native push. The native handler does a
-            // synchronous compile_scene on OFF→ON, which can be a
-            // visible pause on heavy scenes — the user already
-            // clicked, so the wait is implicit consent.
-            setPtPreviewEnabled(next);
-            try {
-              await api.setPtPreview(next);
-              if (viewportRef) viewportRef.render();
-            } catch (e) {
-              console.warn('set_pt_preview failed:', e);
-              setPtPreviewEnabled(!next);
-            }
+            const ok = await setPtPreview(!ptPreviewEnabled());
+            if (ok && viewportRef) viewportRef.render();
           }}
         >
           PT Preview
@@ -1031,7 +601,7 @@ const App: Component = () => {
               // broadcast handler isn't always synchronous.
               try {
                 const newId = await api.createLight(type);
-                setActors(await api.getAllActors());
+                await refreshActors('refresh after add light');
                 setSelectedActorId(newId);
                 if (viewportRef) viewportRef.render();
               } catch (e) {
@@ -1069,11 +639,7 @@ const App: Component = () => {
               }
               if (selectedActorId() === id) setSelectedActorId(null);
               await flushSopGraph();
-              try {
-                setActors(await api.getAllActors());
-              } catch (e) {
-                console.warn('actor refresh after delete failed:', e);
-              }
+              await refreshActors('refresh after delete');
               if (viewportRef) viewportRef.render();
             }}
             onActorReorder={async (sourceId, targetId, mode) => {
@@ -1082,11 +648,7 @@ const App: Component = () => {
               if (!src || !tgt || src.sop_node_uid == null || tgt.sop_node_uid == null) return;
               if (!moveNodeAnywhere(src.sop_node_uid, tgt.sop_node_uid, mode)) return;
               await flushSopGraph();
-              try {
-                setActors(await api.getAllActors());
-              } catch (e) {
-                console.warn('actor refresh after reorder failed:', e);
-              }
+              await refreshActors('refresh after reorder');
               if (viewportRef) viewportRef.render();
             }}
             canDropInside={(targetId) => {
@@ -1175,12 +737,7 @@ const App: Component = () => {
                       <SopGraphEditor
                         onClose={async () => {
                           setSopEditorOpen(false);
-                          try {
-                            const fresh = await api.getAllActors();
-                            setActors(fresh);
-                          } catch (e) {
-                            console.warn('actor refresh after SOP edit failed:', e);
-                          }
+                          await refreshActors('refresh after SOP edit');
                           if (viewportRef) viewportRef.render();
                         }}
                       />
@@ -1204,20 +761,11 @@ const App: Component = () => {
           >
             <RenderPanel
               maxSamples={maxSamples}
-              setMaxSamples={(n) => {
-                setMaxSamplesSignal(n);
-                api.setMaxSamples(n).catch(() => {});
-              }}
+              setMaxSamples={setMaxSamples}
               maxBounces={maxBounces}
-              setMaxBounces={(n) => {
-                setMaxBouncesSignal(n);
-                api.setMaxBounces(n).catch(() => {});
-              }}
+              setMaxBounces={setMaxBounces}
               resolution={renderResolution}
-              setResolution={(w, h) => {
-                setRenderResolutionSignal([w, h]);
-                api.setPtRenderResolution(w, h).catch(() => {});
-              }}
+              setResolution={setRenderResolution}
               onResetRender={() => {
                 api.resetPtAccumulator().catch(() => {});
               }}
