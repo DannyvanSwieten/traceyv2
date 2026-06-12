@@ -85,6 +85,23 @@ export const Playbar: Component = () => {
     setRange(t.fps, Math.min(t.frame_start, Math.round(v)), Math.round(v));
   };
 
+  // SMPTE-style timecode readout (HH:MM:SS:FF) for the current playhead.
+  // Frame-count derived (not wall-clock) so it matches the frame field
+  // exactly, including while scrubbing.
+  const timecode = (): string => {
+    const t = timeline();
+    const fps = Math.max(1, Math.round(t.fps));
+    let frames = Math.max(0, Math.round(frameForSeconds(t.current_time, t.fps)));
+    const ff = frames % fps;
+    frames = (frames - ff) / fps; // total whole seconds
+    const ss = frames % 60;
+    frames = (frames - ss) / 60;
+    const mm = frames % 60;
+    const hh = (frames - mm) / 60;
+    const p2 = (n: number) => String(n).padStart(2, '0');
+    return `${p2(hh)}:${p2(mm)}:${p2(ss)}:${p2(ff)}`;
+  };
+
   const onLoopChange = (e: Event) => {
     const mode = (e.currentTarget as HTMLSelectElement).value as
       | 'once'
@@ -185,6 +202,9 @@ export const Playbar: Component = () => {
           onCommit={commitFrame}
         />
         <span class="playbar-frame-total">/ {timeline().frame_end}</span>
+        <span class="playbar-timecode" title="Timecode (HH:MM:SS:FF) at the current fps">
+          {timecode()}
+        </span>
       </div>
 
       <div class="playbar-fps">
@@ -213,16 +233,22 @@ export const Playbar: Component = () => {
         AK
       </button>
 
-      <select
-        class="playbar-loop"
-        title="Loop mode"
-        value={timeline().loop}
-        onChange={onLoopChange}
-      >
-        <option value="once">Once</option>
-        <option value="loop">Loop</option>
-        <option value="pingpong">Ping-pong</option>
-      </select>
+      <div class="playbar-loop-group">
+        <span class="playbar-loop-label" id="playbar-loop-label">
+          loop
+        </span>
+        <select
+          class="playbar-loop"
+          title="Playback loop mode: stop at the end, loop back to start, or ping-pong"
+          aria-labelledby="playbar-loop-label"
+          value={timeline().loop}
+          onChange={onLoopChange}
+        >
+          <option value="once">Once</option>
+          <option value="loop">Loop</option>
+          <option value="pingpong">Ping-pong</option>
+        </select>
+      </div>
     </div>
   );
 };

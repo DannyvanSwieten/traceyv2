@@ -26,6 +26,9 @@ interface SceneHierarchyProps {
   // sibling-order moves and 'inside' for reparent. Parent commits to the
   // SOP graph and re-cooks.
   onActorReorder?: (sourceId: number, targetId: number, mode: DropMode) => void;
+  // Double-click rename. The parent writes the new name to the emit SOP
+  // node's `name` param and re-cooks. Omit to disable inline renaming.
+  onActorRename?: (actorId: number, name: string) => void;
   // Returns true if the target actor's source SOP node is a subnet (or
   // otherwise accepts children). Used to suppress the "drop INSIDE" zone on
   // rows that can't take a child.
@@ -80,11 +83,13 @@ interface TreeItemProps {
   onDelete?: (actorId: number) => void;
   onReorder?: (sourceId: number, targetId: number, mode: DropMode) => void;
   canDropInside?: (targetId: number) => boolean;
+  onRename?: (actorId: number, name: string) => void;
 }
 
 const TreeItem: Component<TreeItemProps> = (props) => {
   const [expanded, setExpanded] = createSignal(true);
   const [dropZone, setDropZone] = createSignal<DropMode | null>(null);
+  const [renaming, setRenaming] = createSignal(false);
   const hasChildren = () => props.node.children.length > 0;
   // Default to visible when the server omits the field (older serialisations).
   const isVisible = () => props.node.actor.visible !== false;
@@ -106,6 +111,13 @@ const TreeItem: Component<TreeItemProps> = (props) => {
   const handleDelete = (e: MouseEvent) => {
     e.stopPropagation();
     props.onDelete?.(props.node.actor.id);
+  };
+
+  const commitRename = (raw: string) => {
+    setRenaming(false);
+    const next = raw.trim();
+    if (!next || next === props.node.actor.name) return;
+    props.onRename?.(props.node.actor.id, next);
   };
 
   // ── Drag-and-drop wiring ──────────────────────────────────────────────
@@ -209,7 +221,48 @@ const TreeItem: Component<TreeItemProps> = (props) => {
         <span class="tree-icon">
           {props.node.actor.light ? '💡' : '🎯'}
         </span>
-        <span class="tree-name">{props.node.actor.name}</span>
+        <Show
+          when={renaming()}
+          fallback={
+            <span
+              class="tree-name"
+              title={props.onRename ? 'Double-click to rename' : undefined}
+              onDblClick={(e) => {
+                if (!props.onRename) return;
+                e.stopPropagation();
+                setRenaming(true);
+              }}
+            >
+              {props.node.actor.name}
+            </span>
+          }
+        >
+          <input
+            class="tree-rename-input"
+            type="text"
+            title="Rename actor"
+            aria-label="Rename actor"
+            value={props.node.actor.name}
+            ref={(el) => {
+              // Focus after mount; requestAnimationFrame because the input
+              // is inside a freshly-created Show branch.
+              requestAnimationFrame(() => {
+                el.focus();
+                el.select();
+              });
+            }}
+            onClick={(e) => e.stopPropagation()}
+            onBlur={(e) => commitRename(e.currentTarget.value)}
+            onKeyDown={(e) => {
+              e.stopPropagation();
+              if (e.key === 'Enter') {
+                commitRename(e.currentTarget.value);
+              } else if (e.key === 'Escape') {
+                setRenaming(false);
+              }
+            }}
+          />
+        </Show>
         <Show when={props.onDelete}>
           <button
             type="button"
@@ -234,6 +287,7 @@ const TreeItem: Component<TreeItemProps> = (props) => {
                 onDelete={props.onDelete}
                 onReorder={props.onReorder}
                 canDropInside={props.canDropInside}
+                onRename={props.onRename}
               />
             )}
           </For>
@@ -243,8 +297,28 @@ const TreeItem: Component<TreeItemProps> = (props) => {
   );
 };
 
+// Filter the tree to nodes whose name matches `query` (case-insensitive
+// substring) — keeping ancestors of matches so the hierarchy context stays
+// visible while filtering.
+function filterTree(nodes: TreeNode[], query: string): TreeNode[] {
+  const q = query.toLowerCase();
+  const out: TreeNode[] = [];
+  for (const n of nodes) {
+    const kids = filterTree(n.children, query);
+    if (n.actor.name.toLowerCase().includes(q) || kids.length > 0) {
+      out.push({ actor: n.actor, children: kids });
+    }
+  }
+  return out;
+}
+
 export const SceneHierarchy: Component<SceneHierarchyProps> = (props) => {
-  const tree = () => buildActorTree(props.actors());
+  const [search, setSearch] = createSignal('');
+  const tree = () => {
+    const full = buildActorTree(props.actors());
+    const q = search().trim();
+    return q ? filterTree(full, q) : full;
+  };
   const [lightMenuOpen, setLightMenuOpen] = createSignal(false);
 
   // Delete/Backspace on the panel deletes the selected actor — same gesture
@@ -265,8 +339,25 @@ export const SceneHierarchy: Component<SceneHierarchyProps> = (props) => {
 
   return (
     <div class="scene-hierarchy" tabIndex={0} onKeyDown={onKeyDown}>
-      <Show when={props.onLightAdd}>
-        <div class="hierarchy-toolbar">
+      <div class="hierarchy-toolbar">
+        <input
+          class="hierarchy-search"
+          type="search"
+          placeholder="Filter…"
+          title="Filter actors by name"
+          value={search()}
+          onInput={(e) => setSearch(e.currentTarget.value)}
+          onKeyDown={(e) => {
+            // Keep Backspace/Delete from bubbling to the panel's
+            // delete-selected-actor handler while typing a query.
+            e.stopPropagation();
+            if (e.key === 'Escape') {
+              setSearch('');
+              e.currentTarget.blur();
+            }
+          }}
+        />
+        <Show when={props.onLightAdd}>
           <div class="hierarchy-add-light">
             <button
               type="button"
@@ -299,8 +390,8 @@ export const SceneHierarchy: Component<SceneHierarchyProps> = (props) => {
               </div>
             </Show>
           </div>
-        </div>
-      </Show>
+        </Show>
+      </div>
       <Show
         when={!props.isLoading() && props.actors().length > 0}
         fallback={
@@ -310,20 +401,26 @@ export const SceneHierarchy: Component<SceneHierarchyProps> = (props) => {
         }
       >
         <div class="hierarchy-tree">
-          <For each={tree()}>
-            {(node) => (
-              <TreeItem
-                node={node}
-                depth={0}
-                selectedId={props.selectedActorId}
-                onSelect={props.onActorSelect}
-                onVisibilityChange={props.onActorVisibilityChange}
-                onDelete={props.onActorDelete}
-                onReorder={props.onActorReorder}
-                canDropInside={props.canDropInside}
-              />
-            )}
-          </For>
+          <Show
+            when={tree().length > 0}
+            fallback={<div class="hierarchy-empty">No actors match “{search()}”</div>}
+          >
+            <For each={tree()}>
+              {(node) => (
+                <TreeItem
+                  node={node}
+                  depth={0}
+                  selectedId={props.selectedActorId}
+                  onSelect={props.onActorSelect}
+                  onVisibilityChange={props.onActorVisibilityChange}
+                  onDelete={props.onActorDelete}
+                  onReorder={props.onActorReorder}
+                  canDropInside={props.canDropInside}
+                  onRename={props.onActorRename}
+                />
+              )}
+            </For>
+          </Show>
         </div>
       </Show>
     </div>

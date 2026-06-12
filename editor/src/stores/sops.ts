@@ -599,6 +599,44 @@ function pasteSibling(
   };
 }
 
+// Tree-wide param set: like setParam but finds the node regardless of which
+// sub-graph it lives in. The scene hierarchy uses this to rename actors —
+// the emit node owning the `name` param is often nested inside an imported
+// subnet, not the graph level the SOP editor currently shows.
+export function setParamAnywhere(
+  uid: number,
+  paramName: string,
+  value: ParamValue,
+): boolean {
+  let found = false;
+  function mapGraph(sg: SopGraph): SopGraph {
+    return {
+      ...sg,
+      nodes: sg.nodes.map((n) => {
+        if (n.uid === uid) {
+          found = true;
+          // Same channel-preservation rule as setParam: editing the constant
+          // baseline must not wipe keyframes attached by the timeline IPC.
+          const prev = n.params[paramName];
+          const channels =
+            prev && prev.type !== 'string' && prev.channels !== undefined
+              ? prev.channels
+              : undefined;
+          const next: ParamValue =
+            channels !== undefined && value.type !== 'string'
+              ? { ...value, channels }
+              : value;
+          return { ...n, params: { ...n.params, [paramName]: next } };
+        }
+        return n.subgraph ? { ...n, subgraph: mapGraph(n.subgraph) } : n;
+      }),
+    };
+  }
+  setGraphInternal(mapGraph);
+  if (found) schedulePush();
+  return found;
+}
+
 // Tree-wide delete: remove the node identified by `uid` regardless of which
 // sub-graph it lives in. The scene hierarchy uses this to delete the SOP
 // node that emits a given actor.

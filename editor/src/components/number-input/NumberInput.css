@@ -1,0 +1,24 @@
+/* Drag-to-scrub affordances for NumberInput.
+ *
+ * While the field is unfocused it behaves like a value ladder: the
+ * ew-resize cursor advertises "drag me", and during an active scrub we
+ * keep that cursor on the whole document (the pointer usually leaves the
+ * tiny input within a few pixels of dragging). */
+
+.number-input.number-input--idle {
+  cursor: ew-resize;
+}
+
+.number-input.number-input--scrubbing {
+  border-color: #5a8 !important;
+  user-select: none;
+}
+
+/* The native webkit spin buttons fight with the scrub gesture for the
+ * same few pixels and none of the 3D packages show them — hide them.
+ * Arrow keys / drag cover stepping. */
+.number-input::-webkit-outer-spin-button,
+.number-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}

@@ -173,6 +173,45 @@
 .hierarchy-toolbar {
   padding: 6px 8px;
   border-bottom: 1px solid #2d2d2d;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.hierarchy-search {
+  flex: 1;
+  min-width: 0;
+  background: #1a1a1a;
+  border: 1px solid #3a3a3a;
+  color: #ccc;
+  padding: 4px 8px;
+  font-size: 12px;
+  border-radius: 4px;
+  font-family: inherit;
+}
+.hierarchy-search:focus {
+  outline: 1px solid #5a8;
+  border-color: #5a8;
+}
+.hierarchy-search::placeholder {
+  color: #666;
+}
+
+/* Inline rename editor — sized to the row, styled like the name label so
+ * the double-click → edit transition doesn't jump. */
+.tree-rename-input {
+  flex: 1;
+  min-width: 0;
+  background: #1a1a1a;
+  border: 1px solid #5a8;
+  color: #fff;
+  font-size: 13px;
+  padding: 1px 4px;
+  border-radius: 2px;
+  font-family: inherit;
+}
+.tree-rename-input:focus {
+  outline: none;
 }
 
 .hierarchy-add-light {

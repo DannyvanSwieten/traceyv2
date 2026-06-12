@@ -1,0 +1,96 @@
+.toast-host {
+  position: fixed;
+  right: 16px;
+  bottom: 56px; /* clear the playbar */
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 2000;
+  pointer-events: none; /* the stack itself never blocks the viewport */
+  max-width: 380px;
+}
+
+.toast {
+  pointer-events: auto;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  background: #262626;
+  border: 1px solid #3a3a3a;
+  border-left: 3px solid #5a8;
+  border-radius: 4px;
+  padding: 10px 12px;
+  color: #ddd;
+  font: 12px -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+  animation: toast-in 0.15s ease-out;
+}
+
+.toast--error {
+  border-left-color: #c55;
+}
+.toast--success {
+  border-left-color: #5a8;
+}
+.toast--info {
+  border-left-color: #58a;
+}
+
+.toast-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.toast-message {
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+.toast-detail {
+  margin-top: 4px;
+  color: #999;
+  font-size: 11px;
+  line-height: 1.4;
+  word-break: break-all;
+}
+
+.toast-action {
+  margin-top: 8px;
+  background: #333;
+  border: 1px solid #4a4a4a;
+  color: #eee;
+  padding: 3px 10px;
+  border-radius: 3px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.toast-action:hover {
+  background: #c55;
+  border-color: #d66;
+  color: #fff;
+}
+
+.toast-close {
+  background: none;
+  border: none;
+  color: #888;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+  flex-shrink: 0;
+}
+.toast-close:hover {
+  color: #fff;
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}

@@ -29,6 +29,7 @@ import {
   nodeIsSubnet,
   redo,
   removeNodeAnywhere,
+  setParamAnywhere,
   undo,
 } from './stores/sops';
 import {
@@ -58,6 +59,8 @@ import { fetchCatalog as fetchSopCatalog } from './lib/sop_graph';
 import { isVopEditorOpen } from './stores/vops';
 import { isMaterialEditorOpen, setMaterialEditorOpen } from './stores/materials';
 import { CommandPalette } from './components/command-palette/CommandPalette';
+import { ToastHost } from './components/toast/ToastHost';
+import { showToast } from './lib/toasts';
 import { toggleCommandPalette, registerCommands } from './lib/command_palette';
 import { GrabOverlay } from './components/viewport-grab/GrabOverlay';
 import { installAppInput } from './lib/app_input';
@@ -240,18 +243,20 @@ const App: Component = () => {
 
       if (!sawSceneChanged) {
         console.error('Load timed out — no scene_changed within 3s for', asset.path);
-        window.alert(
-          `Load timed out:\n${asset.path}\n\nThe engine did not finish cooking within 3 seconds. Check the editor console for backend errors.`,
-        );
+        showToast('Load timed out — the engine did not finish cooking within 3 seconds.', {
+          kind: 'error',
+          detail: asset.path,
+        });
         return;
       }
       // Refresh actor list now that the cook is applied.
       await refreshActors('refresh after load');
       if (actors().length <= beforeCount) {
         console.warn('Load completed but actor count did not grow:', asset.path);
-        window.alert(
-          `Loaded ${asset.path} but no geometry actors appeared.\n\nLikely causes: file is corrupt, mesh name mismatch, or the engine couldn't open the file. Check the editor console.`,
-        );
+        showToast('Loaded the file but no geometry actors appeared — check the editor console.', {
+          kind: 'error',
+          detail: asset.path,
+        });
       }
     } catch (e) {
       // The asset list survives across sessions (localStorage), so common
@@ -260,10 +265,14 @@ const App: Component = () => {
       // of console.warn'ing into the void, and offer to drop the entry.
       const msg = e instanceof Error ? e.message : String(e);
       console.error('glTF subnet import failed for', asset.path, ':', msg);
-      const drop = window.confirm(
-        `Failed to load asset:\n${asset.path}\n\n${msg}\n\nRemove this asset from the browser?`,
-      );
-      if (drop && asset.id) removeAsset(asset.id);
+      const assetId = asset.id;
+      showToast(`Failed to load asset: ${msg}`, {
+        kind: 'error',
+        detail: asset.path,
+        action: assetId
+          ? { label: 'Remove from browser', run: () => removeAsset(assetId) }
+          : undefined,
+      });
     }
   };
 
@@ -608,6 +617,36 @@ const App: Component = () => {
                 console.warn('[add light] failed:', e);
               }
             }}
+            onActorRename={async (id, name) => {
+              const a = actors().find((x) => x.id === id);
+              if (!a) return;
+              if (a.sop_node_uid == null) {
+                // Manually-created actors (lights via create_light) aren't
+                // backed by a SOP node; there's no rename IPC for them yet.
+                showToast('This actor has no SOP node — renaming is not supported for it yet.', {
+                  kind: 'info',
+                });
+                return;
+              }
+              // The emit node's `name` string param is the actor name. Like
+              // delete, the local SOP store can drift from the backend, so
+              // refresh-and-retry when the uid isn't found.
+              let ok = setParamAnywhere(a.sop_node_uid, 'name', { type: 'string', value: name });
+              if (!ok) {
+                await loadSopGraphFromEngine();
+                ok = setParamAnywhere(a.sop_node_uid, 'name', { type: 'string', value: name });
+              }
+              if (!ok) {
+                console.warn('[rename] SOP node not found for actor', a);
+                return;
+              }
+              // Optimistic local rename so the row updates before the cook.
+              setActors((prev) =>
+                prev.map((x) => (x.id === id ? { ...x, name } : x)),
+              );
+              await flushSopGraph();
+              await refreshActors('refresh after rename');
+            }}
             onActorVisibilityChange={(id, visible) =>
               setActors((prev) =>
                 prev.map((a) => (a.id === id ? { ...a, visible } : a)),
@@ -827,6 +866,7 @@ const App: Component = () => {
       <CommandPalette />
       <GrabOverlay />
       <PieMenu />
+      <ToastHost />
     </div>
   );
 };

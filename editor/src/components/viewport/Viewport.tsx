@@ -1,6 +1,15 @@
-import { Component, createSignal, onMount, onCleanup, Accessor } from 'solid-js';
+import { Component, Show, createSignal, onMount, onCleanup, Accessor } from 'solid-js';
 import * as api from '../../lib/api';
+import { renderStats } from '../../stores/render_stats';
 import './Viewport.css';
+
+// Compact count formatting for the header stats readout: 1234 → "1.2k",
+// 3500000 → "3.5M". Keeps the strip width stable as scenes grow.
+function fmtCount(n: number): string {
+  if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
+  if (n >= 1e3) return `${(n / 1e3).toFixed(1)}k`;
+  return String(n);
+}
 
 // Re-exported for compatibility with App.tsx until camera control fully moves
 // to native. The native side currently owns camera state; this stays as a
@@ -103,6 +112,20 @@ export const Viewport: Component<ViewportProps> = (props) => {
     <div class="viewport-wrapper">
       <div class="viewport-header">
         <span class="viewport-status">{status()}</span>
+        {/* Live render stats from the native render_stats broadcast (~4 Hz).
+            The DOM can't overlay the canvas itself — the native Metal layer
+            sits above the WebView — so the header strip is the HUD. */}
+        <Show when={renderStats()}>
+          {(s) => (
+            <span class="viewport-stats" title="FPS · triangles · instances · path-tracer samples">
+              {s().fps.toFixed(0)} fps · {fmtCount(s().triangles)} tris ·{' '}
+              {fmtCount(s().instances)} inst
+              <Show when={s().max_samples > 0}>
+                {' '}· {s().samples}/{s().max_samples} spp
+              </Show>
+            </span>
+          )}
+        </Show>
         <span class="viewport-camera">
           pos: ({props.cameraPosition().x.toFixed(2)},{' '}
           {props.cameraPosition().y.toFixed(2)}, {props.cameraPosition().z.toFixed(2)})

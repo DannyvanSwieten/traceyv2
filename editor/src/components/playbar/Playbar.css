@@ -120,6 +120,25 @@
   color: #888;
 }
 
+.playbar-timecode {
+  font: 11px ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: #888;
+  /* 11 monospace chars — fixed width so the playbar doesn't jitter as
+   * digits tick over during playback. */
+  min-width: 78px;
+  text-align: right;
+}
+
+.playbar-loop-group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.playbar-loop-label {
+  font: 11px system-ui, -apple-system, sans-serif;
+  color: #888;
+}
+
 .playbar-loop {
   height: 24px;
   background: #2a2a2a;

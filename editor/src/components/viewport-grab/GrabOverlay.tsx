@@ -26,7 +26,9 @@ export const GrabOverlay: Component = () => {
       <div class="grab-overlay">
         <span class="grab-overlay-verb">{verb()}</span>
         <span class="grab-overlay-axis">{axisLabel()}</span>
-        <span class="grab-overlay-hint">drag · X/Y/Z · ⏎ commit · esc cancel</span>
+        <span class="grab-overlay-hint">
+          drag to transform · press X/Y/Z to constrain axis · ⏎ confirm · esc cancel
+        </span>
       </div>
     </Show>
   );
