@@ -1,5 +1,6 @@
 #include "backend_registry.hpp"
 
+#include "../backends/cpu/cpu_path_tracer_backend.hpp"
 #include "../backends/wavefront/wavefront_compute_backend.hpp"
 #ifdef TRACEY_PT_HAS_METAL
 #include "../backends/metal/metal_pathtracer_backend.hpp"
@@ -64,8 +65,10 @@ namespace tracey
             // Registered for the future Windows/Linux hardware-RT backend.
             return false;
         case PathTracerBackendKind::Cpu:
-            // Lands with the native CPU backend (M5 of the module plan).
-            return false;
+            // Pure host-side renderer; the façade uploads its pixels into a
+            // Vulkan image when a GPU device is present (viewport), and
+            // readback() works regardless.
+            return true;
         }
         return false;
     }
@@ -115,8 +118,9 @@ namespace tracey
 #else
             break;
 #endif
-        case PathTracerBackendKind::VulkanRT:
         case PathTracerBackendKind::Cpu:
+            return std::make_unique<CpuPathTracerBackend>();
+        case PathTracerBackendKind::VulkanRT:
         case PathTracerBackendKind::Auto:
             break;
         }

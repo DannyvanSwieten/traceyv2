@@ -386,8 +386,13 @@ add_library(tracey_pathtracer
     src/path_tracer/api/backend_registry.cpp
     src/path_tracer/api/shader_inputs_buffer.hpp
     src/path_tracer/api/shader_inputs_buffer.cpp
+    src/path_tracer/api/shader_inputs_view.hpp
     src/path_tracer/backends/wavefront/wavefront_compute_backend.hpp
     src/path_tracer/backends/wavefront/wavefront_compute_backend.cpp
+    src/path_tracer/backends/cpu/cpu_path_tracer_backend.hpp
+    src/path_tracer/backends/cpu/cpu_path_tracer_backend.cpp
+    src/path_tracer/backends/cpu/cpu_texture.hpp
+    src/path_tracer/backends/cpu/cpu_texture.cpp
 )
 target_link_libraries(tracey_pathtracer PUBLIC tracey)
 target_link_libraries(tracey_pathtracer PRIVATE glm::glm Vulkan::Vulkan volk::volk)

@@ -108,6 +108,7 @@ int main(int argc, char *argv[])
     std::string backendB = "metal";
     uint32_t spp = 64;
     uint32_t size = 512;
+    uint32_t bounces = 8;
     double minPsnr = 30.0;
     std::string outPrefix = "pt_compare";
 
@@ -118,6 +119,7 @@ int main(int argc, char *argv[])
         if (arg == "--a") backendA = next();
         else if (arg == "--b") backendB = next();
         else if (arg == "--spp") spp = static_cast<uint32_t>(std::stoul(next()));
+        else if (arg == "--bounces") bounces = static_cast<uint32_t>(std::stoul(next()));
         else if (arg == "--size") size = static_cast<uint32_t>(std::stoul(next()));
         else if (arg == "--min-psnr") minPsnr = std::stod(next());
         else if (arg == "--out") outPrefix = next();
@@ -170,7 +172,7 @@ int main(int argc, char *argv[])
         config.hdrOutput = true;
         config.useMaterialPrograms = true;
         config.samplesPerFrame = 1;
-        config.maxBounces = 8;
+        config.maxBounces = bounces;
         config.rayGenShader = shaderDir / "ray_gen.glsl";
         config.hitShader = shaderDir / "uber_hit.glsl";
         config.missShader = shaderDir / "sky_miss.glsl";
