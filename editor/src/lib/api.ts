@@ -636,6 +636,25 @@ export const paramDeleteKeyframe = (args: {
     time: args.time,
   });
 
+// Set a channel's pre/post extrapolation (what the curve does outside the
+// keyed range). Either side may be omitted to leave it unchanged. Returns
+// false when the channel doesn't exist (no keys on that component).
+export type Extrap = 'hold' | 'cycle' | 'linear';
+export const paramSetChannelExtrap = (args: {
+  nodeUid: number;
+  paramName: string;
+  component?: number;
+  pre?: Extrap;
+  post?: Extrap;
+}) =>
+  send<boolean>('param_set_channel_extrap', {
+    node_uid: args.nodeUid,
+    param_name: args.paramName,
+    component: args.component ?? 0,
+    ...(args.pre ? { pre: args.pre } : {}),
+    ...(args.post ? { post: args.post } : {}),
+  });
+
 // component < 0 (default) clears all components.
 export const paramClearChannel = (args: {
   nodeUid: number;

@@ -1,0 +1,307 @@
+.curve-editor {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: #1c1c1c;
+  color: #ccc;
+  font: 12px -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  outline: none;
+  user-select: none;
+}
+
+.curve-editor-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 26px;
+  padding: 0 8px;
+  background: #232323;
+  border-bottom: 1px solid #303030;
+  flex-shrink: 0;
+}
+
+.curve-editor-header-left {
+  width: 172px; /* CHANNEL_LIST_WIDTH minus padding, keeps the ruler aligned */
+  flex-shrink: 0;
+  font-weight: 600;
+  font-size: 11px;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.curve-editor-header-count {
+  font-weight: 400;
+  color: #777;
+  font-size: 10px;
+}
+
+/* Dopesheet ⇄ Curves segmented toggle — shared look across both panels. */
+.anim-mode-toggle {
+  display: flex;
+  border: 1px solid #3a3a3a;
+  border-radius: 3px;
+  overflow: hidden;
+}
+.anim-mode-toggle button {
+  background: #262626;
+  color: #999;
+  border: none;
+  padding: 2px 10px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.anim-mode-toggle button + button {
+  border-left: 1px solid #3a3a3a;
+}
+.anim-mode-toggle button:hover {
+  color: #ddd;
+}
+.anim-mode-toggle button.is-active {
+  background: #2c5d8c;
+  color: #fff;
+}
+
+.curve-editor-fit-btn {
+  background: #2a2a2a;
+  color: #ccc;
+  border: 1px solid #3a3a3a;
+  border-radius: 3px;
+  padding: 2px 10px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.curve-editor-fit-btn:hover {
+  background: #353535;
+}
+
+.curve-editor-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+/* ── channel list ── */
+.curve-channel-list {
+  width: 180px;
+  flex-shrink: 0;
+  overflow-y: auto;
+  border-right: 1px solid #2d2d2d;
+  background: #202020;
+  padding: 2px 0;
+}
+
+.curve-channel-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  padding: 0 6px;
+  cursor: default;
+}
+.curve-channel-row:hover {
+  background: #2a2d2e;
+}
+.curve-channel-row.is-hidden .curve-channel-label {
+  color: #5a5a5a;
+  font-style: italic;
+}
+.curve-channel-row.is-hidden .curve-channel-swatch {
+  opacity: 0.3;
+}
+
+.curve-channel-eye {
+  background: none;
+  border: none;
+  color: #999;
+  font-size: 10px;
+  width: 16px;
+  padding: 0;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.curve-channel-eye:hover {
+  color: #fff;
+}
+
+.curve-channel-swatch {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  background: var(--ch-color, #888);
+  flex-shrink: 0;
+}
+
+.curve-channel-label {
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.curve-editor-empty {
+  padding: 16px;
+  color: #777;
+  font-size: 11px;
+  text-align: center;
+  line-height: 1.5;
+}
+
+/* ── canvas ── */
+.curve-canvas-wrap {
+  flex: 1;
+  min-width: 0;
+  position: relative;
+  overflow: hidden;
+  background: #181818;
+}
+
+.curve-canvas {
+  display: block;
+  touch-action: none; /* we own all pointer gestures */
+}
+
+.curve-gridline {
+  stroke: #262626;
+  stroke-width: 1;
+}
+.curve-gridline-zero {
+  stroke: #3c3c3c;
+}
+.curve-gridline-v {
+  stroke: #222;
+}
+
+.curve-grid-label {
+  fill: #666;
+  font-size: 9px;
+  text-anchor: end;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.curve-ruler-bg {
+  fill: #232323;
+}
+.curve-ruler-label {
+  fill: #888;
+  font-size: 9px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.curve-ruler {
+  cursor: pointer;
+}
+
+.curve-path {
+  fill: none;
+  stroke-width: 1.5;
+}
+.curve-path-extrap {
+  stroke-dasharray: 4 3;
+  opacity: 0.55;
+}
+/* Invisible fat twin so right-clicking the 1.5px curve isn't pixel hunting. */
+.curve-path-hit {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 8;
+  pointer-events: stroke;
+}
+
+.curve-key {
+  stroke: #181818;
+  stroke-width: 1;
+  cursor: pointer;
+}
+.curve-key.is-selected {
+  stroke: #fff;
+  stroke-width: 1.5;
+}
+
+.curve-handle-line {
+  stroke: #9a9a9a;
+  stroke-width: 1;
+}
+.curve-handle-dot {
+  fill: #cfcfcf;
+  stroke: #181818;
+  stroke-width: 1;
+  cursor: pointer;
+}
+.curve-handle-dot:hover {
+  fill: #fff;
+}
+
+.curve-playhead {
+  stroke: #ff9c33;
+  stroke-width: 1.5;
+  pointer-events: none;
+}
+
+.curve-box-select {
+  fill: rgba(85, 136, 170, 0.15);
+  stroke: #58a;
+  stroke-width: 1;
+  pointer-events: none;
+}
+
+/* ── context menu (mirrors dopesheet menu styling) ── */
+.curve-ctx-menu {
+  position: fixed;
+  left: var(--menu-x, 0);
+  top: var(--menu-y, 0);
+  z-index: 1000;
+  min-width: 180px;
+  background: #252526;
+  border: 1px solid #3a3d3e;
+  border-radius: 4px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  padding: 4px 0;
+  font: 12px -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+
+.curve-ctx-section-label {
+  padding: 4px 10px 2px;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #777;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 240px;
+}
+
+.curve-ctx-item {
+  width: 100%;
+  background: transparent;
+  border: none;
+  color: #ccc;
+  text-align: left;
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.curve-ctx-item:hover {
+  background: #094771;
+  color: #fff;
+}
+.curve-ctx-item.is-current {
+  color: #fff;
+}
+.curve-ctx-mark {
+  width: 12px;
+  display: inline-block;
+  flex-shrink: 0;
+  color: #5a8;
+}
+.curve-ctx-danger:hover {
+  background: #842029;
+}
+.curve-ctx-separator {
+  height: 1px;
+  background: #3a3d3e;
+  margin: 4px 0;
+}

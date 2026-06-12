@@ -1,6 +1,7 @@
 import { Component, For, Index, Show, createEffect, createMemo, createSignal, onCleanup } from 'solid-js';
 import * as api from '../../lib/api';
 import { AnimatedChannel, listAnimatedChannels } from '../../lib/animated_channels';
+import { animPanelMode, setAnimPanelMode } from '../../lib/anim_panel_mode';
 import { sopGraph } from '../../stores/sops';
 import {
   currentFrame,
@@ -313,10 +314,26 @@ export const Dopesheet: Component = () => {
     <div class="dopesheet">
       <div class="dopesheet-header">
         <div class="dopesheet-header-channels">
-          Animation Editor
-          <span class="dopesheet-header-count">
-            {channels().length} channel{channels().length === 1 ? '' : 's'}
-          </span>
+          {/* Dopesheet ⇄ Curves toggle replaces the static panel title — it
+              names the panel AND switches it. Shares anim_panel_mode with
+              the curve editor's header; styling comes from CurveEditor.css
+              (.anim-mode-toggle), bundled regardless of mount order. */}
+          <div class="anim-mode-toggle">
+            <button
+              type="button"
+              classList={{ 'is-active': animPanelMode() === 'dopesheet' }}
+              onClick={() => setAnimPanelMode('dopesheet')}
+            >
+              Dopesheet
+            </button>
+            <button
+              type="button"
+              classList={{ 'is-active': animPanelMode() === 'curves' }}
+              onClick={() => setAnimPanelMode('curves')}
+            >
+              Curves
+            </button>
+          </div>
         </div>
         <div
           class="dopesheet-ruler"

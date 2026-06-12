@@ -19,6 +19,8 @@ import {
   DOPESHEET_MAX_HEIGHT,
   DOPESHEET_MIN_HEIGHT,
 } from './components/dopesheet/Dopesheet';
+import { CurveEditor } from './components/curve-editor/CurveEditor';
+import { animPanelMode } from './lib/anim_panel_mode';
 import { getAssets, addAsset, removeAsset } from './stores/assets';
 import {
   addNode,
@@ -856,7 +858,9 @@ const App: Component = () => {
           createEffect(() => el.style.setProperty('--dopesheet-h', `${dopesheetH()}px`));
         }}
       >
-        <Dopesheet />
+        <Show when={animPanelMode() === 'curves'} fallback={<Dopesheet />}>
+          <CurveEditor />
+        </Show>
       </div>
 
       <Playbar />

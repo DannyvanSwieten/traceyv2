@@ -8,7 +8,7 @@
 //
 // This module is a derived view over stores/sops; nothing here mutates state.
 
-import { Channels, ParamValue, SopGraph, SopNode } from './sop_graph';
+import { Channels, Extrap, Keyframe, ParamValue, SopGraph, SopNode } from './sop_graph';
 
 const AXIS = ['x', 'y', 'z'];
 
@@ -19,7 +19,15 @@ export interface AnimatedChannel {
   label: string;
   // The current key list, sorted by time. Same shape as the wire data so
   // components can render markers without a second indirection.
-  keys: { t: number; v: number; in: number; out: number; i: string }[];
+  keys: Keyframe[];
+  // Component count of the owning param (3 for vec3, else 1) — the curve
+  // editor uses it for the X/Y/Z colour convention.
+  slots: number;
+  paramType: 'float' | 'int' | 'bool' | 'vec3';
+  // Extrapolation modes, surfaced so the curve editor can render the
+  // out-of-range curve and show the current mode in its menus.
+  pre: Extrap;
+  post: Extrap;
 }
 
 // Pull the user-facing actor label off an object_output or subnet node by
@@ -70,6 +78,10 @@ function collectChannels(g: SopGraph, prefix: string[], out: AnimatedChannel[]):
           component: c,
           label: `${label}.${channelComponentLabel(paramName, c, slots)}`,
           keys: ch.keys.slice().sort((a, b) => a.t - b.t),
+          slots,
+          paramType: p.type as 'float' | 'int' | 'bool' | 'vec3',
+          pre: ch.pre,
+          post: ch.post,
         });
       }
     }

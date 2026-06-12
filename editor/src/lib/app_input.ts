@@ -258,7 +258,12 @@ export function installAppInput(opts: AppInputOptions): () => void {
           endGrabSession('commit');
           return;
         }
-      } else if (k === 'g' || k === 'r' || k === 's') {
+      } else if (
+        (k === 'g' || k === 'r' || k === 's') &&
+        // The curve editor owns plain-key shortcuts (F = fit, etc.) while
+        // focused — starting a viewport grab from there is never intended.
+        !target?.closest?.('.curve-editor')
+      ) {
         const actor = selectedActor();
         if (actor) {
           e.preventDefault();

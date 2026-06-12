@@ -202,6 +202,36 @@ std::optional<std::string> EditorServer::handle_timeline_commands(
             if (m_broadcast) m_broadcast(R"({"event":"sop_graph_changed"})");
             return ok_response(removed);
         }
+        if (cmd == "param_set_channel_extrap") {
+            // Set a channel's pre/post extrapolation mode (hold|linear|cycle).
+            // Both fields are optional so the curve editor's menu can change
+            // one side without touching the other. Extrap on a channel that
+            // has no keys is meaningless, so an out-of-range component is a
+            // soft failure (false) rather than an error.
+            const size_t node_uid   = req.at("node_uid").get<size_t>();
+            const auto   param_name = req.at("param_name").get<std::string>();
+            const int    component  = req.value("component", 0);
+
+            if (!m_sop_graph) return err_response("no sop graph");
+            auto* node = findNodeRecursive(m_sop_graph.get(),node_uid);
+            if (!node) return err_response("node not found");
+            tracey::sops::Parameter* p = nullptr;
+            for (auto& q : node->parameters())
+                if (q.name == param_name) { p = &q; break; }
+            if (!p) return err_response("parameter not found");
+            if (component < 0 || component >= int(p->channels.size()))
+                return ok_response(false);
+
+            auto& ch = p->channels[component];
+            if (req.contains("pre"))
+                ch.pre = tracey::sops::extrapFromName(req.at("pre").get<std::string>());
+            if (req.contains("post"))
+                ch.post = tracey::sops::extrapFromName(req.at("post").get<std::string>());
+
+            m_timeline_dirty = true;
+            if (m_broadcast) m_broadcast(R"({"event":"sop_graph_changed"})");
+            return ok_response(true);
+        }
         if (cmd == "param_clear_channel") {
             const size_t node_uid   = req.at("node_uid").get<size_t>();
             const auto   param_name = req.at("param_name").get<std::string>();
