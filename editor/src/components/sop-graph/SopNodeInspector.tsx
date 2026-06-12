@@ -16,6 +16,7 @@ import { openVopEditor } from '../../stores/vops';
 import { autoKey, setKeyAtPlayhead } from '../../stores/timeline';
 import * as api from '../../lib/api';
 import { NumberInput } from '../number-input/NumberInput';
+import { KeyframeDot } from '../keyframe-dot/KeyframeDot';
 
 export const SopNodeInspector: Component = () => {
   const node = createMemo<SopNode | null>(() => {
@@ -200,6 +201,19 @@ const ParamRow: Component<ParamRowProps> = (props) => {
     </Show>
   );
 
+  // Houdini-style keyframe diamond for one channel of this parameter.
+  // Same component the actor-transform rows use: dim = no animation,
+  // outlined = animated but no key at the playhead, filled = key here;
+  // click toggles a key at the playhead with the field's current value.
+  const Dot = (p: { component?: number; value: () => number }) => (
+    <KeyframeDot
+      nodeUid={props.node.uid}
+      paramName={props.spec.name}
+      component={p.component ?? 0}
+      value={p.value}
+    />
+  );
+
   // Number/text inputs use `onChange` (fires on blur / Enter / spinner) not
   // `onInput` (fires per keystroke). Two reasons:
   //   1. parseFloat("0.") === 0, so patching every keystroke would reset the
@@ -253,6 +267,7 @@ const ParamRow: Component<ParamRowProps> = (props) => {
                 value={floatValue}
                 onCommit={(v) => patch({ type: 'float', value: v })}
               />
+              <Dot value={floatValue} />
               <DemoteBtn />
             </div>
           }
@@ -283,6 +298,7 @@ const ParamRow: Component<ParamRowProps> = (props) => {
                     onCommit={(v) => patch({ type: 'float', value: v })}
                   />
                 </div>
+                <Dot value={floatValue} />
                 <DemoteBtn />
               </div>
             );
@@ -306,6 +322,7 @@ const ParamRow: Component<ParamRowProps> = (props) => {
                     value={intValue}
                     onCommit={(v) => patch({ type: 'int', value: Math.round(v) })}
                   />
+                  <Dot value={intValue} />
                   <DemoteBtn />
                 </div>
               }
@@ -337,6 +354,7 @@ const ParamRow: Component<ParamRowProps> = (props) => {
                         onCommit={(v) => patch({ type: 'int', value: Math.round(v) })}
                       />
                     </div>
+                    <Dot value={intValue} />
                     <DemoteBtn />
                   </div>
                 );
@@ -373,6 +391,7 @@ const ParamRow: Component<ParamRowProps> = (props) => {
             checked={boolValue()}
             onChange={(e) => patch({ type: 'bool', value: e.currentTarget.checked })}
           />
+          <Dot value={() => (boolValue() ? 1 : 0)} />
           <DemoteBtn />
         </div>
       </Match>
@@ -381,15 +400,24 @@ const ParamRow: Component<ParamRowProps> = (props) => {
         <div class="sop-param-row sop-param-vec3">
           <label>{props.spec.name}</label>
           <div class="sop-param-vec3-fields">
-            <NumberInput step={0.01} title={`${props.spec.name}.x`}
-                         value={() => vec3Value()[0]}
-                         onCommit={(n) => setVec3Comp(0, n)} />
-            <NumberInput step={0.01} title={`${props.spec.name}.y`}
-                         value={() => vec3Value()[1]}
-                         onCommit={(n) => setVec3Comp(1, n)} />
-            <NumberInput step={0.01} title={`${props.spec.name}.z`}
-                         value={() => vec3Value()[2]}
-                         onCommit={(n) => setVec3Comp(2, n)} />
+            <div class="sop-param-vec3-cell">
+              <NumberInput step={0.01} title={`${props.spec.name}.x`}
+                           value={() => vec3Value()[0]}
+                           onCommit={(n) => setVec3Comp(0, n)} />
+              <Dot component={0} value={() => vec3Value()[0]} />
+            </div>
+            <div class="sop-param-vec3-cell">
+              <NumberInput step={0.01} title={`${props.spec.name}.y`}
+                           value={() => vec3Value()[1]}
+                           onCommit={(n) => setVec3Comp(1, n)} />
+              <Dot component={1} value={() => vec3Value()[1]} />
+            </div>
+            <div class="sop-param-vec3-cell">
+              <NumberInput step={0.01} title={`${props.spec.name}.z`}
+                           value={() => vec3Value()[2]}
+                           onCommit={(n) => setVec3Comp(2, n)} />
+              <Dot component={2} value={() => vec3Value()[2]} />
+            </div>
           </div>
           <DemoteBtn />
         </div>

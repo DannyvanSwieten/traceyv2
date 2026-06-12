@@ -175,6 +175,19 @@
   gap: 4px;
 }
 
+/* One vec3 component: number input + its keyframe diamond side by side.
+ * The input flexes; the diamond keeps its intrinsic size. */
+.sop-param-vec3-cell {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
+.sop-param-vec3-cell input {
+  min-width: 0;
+  flex: 1;
+}
+
 /* Slider + numeric readout row — used when the catalog declares a
  * `range` hint for a float / int param. The slider takes most of the
  * row width; the readout is a compact spinner so the user can keyboard
