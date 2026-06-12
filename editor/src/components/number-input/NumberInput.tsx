@@ -181,6 +181,14 @@ export const NumberInput: Component<NumberInputProps> = (props) => {
       value={text()}
       onInput={(e) => setText(e.currentTarget.value)}
       onPointerDown={onPointerDown}
+      // WebKit does NOT cancel the compatibility mousedown when the
+      // pointerdown above is preventDefault'ed (unlike Blink/Gecko), so
+      // without this the input still focuses and starts a text-selection
+      // drag, swallowing the scrub gesture. Suppress it while unfocused —
+      // click-to-edit is handled manually in onPointerDown's pointerup.
+      onMouseDown={(e) => {
+        if (!focused() && e.button === 0) e.preventDefault();
+      }}
       onFocus={() => {
         setFocused(true);
         props.onFocusChange?.(true);
