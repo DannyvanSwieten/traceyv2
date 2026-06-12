@@ -16,8 +16,12 @@
 // not yet rendered. A future pass will extend the conversion path + shaders
 // to consume per-vertex Cd.
 //
+// Per-clone rotation: a template-point `orient` Vec4 (wxyz quaternion —
+// written by the MoGraph effectors) takes precedence over the N-derived
+// frame; `orient_to_normal` only governs the N fallback.
+//
 // Deferred (matches plan):
-//   • `up` per-point + `orient` quat per-point.
+//   • `up` per-point.
 //   • Multi-instancing (1 BLAS + N TLAS instances) — current implementation
 //     bakes one fat output Geometry, which the existing actor pipeline ships
 //     as a single BLAS.
@@ -25,6 +29,7 @@
 #include "../sop_node.hpp"
 #include "../sop_registry.hpp"
 #include "../codegen/copy_to_points_compute.hpp"
+#include "../mograph/orient_util.hpp"
 
 #include "../../geometry/geometry.hpp"
 #include "../../geometry/attribute.hpp"
@@ -42,30 +47,7 @@ namespace tracey
     {
         namespace
         {
-            // Build the rotation matrix that maps the stamp's local +Z to the
-            // direction `n`, using `up` as the up reference. Returns identity
-            // when `n` is near-zero or parallel to `up` (no well-defined
-            // frame; fall back to no rotation so flat ground points "just
-            // work" with up=+Y, N=+Y).
-            glm::mat3 orientFromNormal(const Vec3 &n,
-                                       const Vec3 &up = Vec3(0.0f, 1.0f, 0.0f))
-            {
-                const float len2 = n.x * n.x + n.y * n.y + n.z * n.z;
-                if (len2 < 1e-12f) return glm::mat3(1.0f);
-                const float invLen = 1.0f / std::sqrt(len2);
-                glm::vec3 forward(n.x * invLen, n.y * invLen, n.z * invLen);
-
-                glm::vec3 upRef(up.x, up.y, up.z);
-                glm::vec3 right = glm::cross(upRef, forward);
-                const float r2 = glm::dot(right, right);
-                if (r2 < 1e-12f) return glm::mat3(1.0f);  // forward parallel to up
-                right = right * (1.0f / std::sqrt(r2));
-                glm::vec3 newUp = glm::cross(forward, right);
-
-                // Columns are the basis vectors of the rotated frame:
-                // X' = right, Y' = newUp, Z' = forward.
-                return glm::mat3(right, newUp, forward);
-            }
+            using mograph::orientFromNormal;
 
             class CopyToPointsSop : public SopNode
             {
@@ -102,6 +84,7 @@ namespace tracey
                     if (tplP.empty()) return {};
 
                     const bool useNormal = paramBool("orient_to_normal", true);
+                    const auto *tplOrient = tmpl.points().get<Vec4>("orient");
 
                     // GPU fast path. Handles the common particle-instance
                     // case (stamp = primitive_cube / glTF mesh, template =
@@ -112,8 +95,12 @@ namespace tracey
                     // see copy_to_points_compute.hpp for the scope — and
                     // we fall through to the CPU evaluator below. Skipped
                     // when no dispatcher is registered (headless smoke
-                    // tests, no GPU available).
-                    if (auto *gpu = codegen::CopyToPointsCompute::getGlobal())
+                    // tests, no GPU available) and when the template
+                    // carries per-point `orient` (the kernel has no quat
+                    // path yet; the dispatcher would silently IGNORE the
+                    // attribute and produce unrotated clones).
+                    if (auto *gpu = codegen::CopyToPointsCompute::getGlobal();
+                        gpu && !tplOrient)
                     {
                         Geometry out;
                         if (gpu->dispatch(stamp, tmpl, useNormal, out))
@@ -156,7 +143,13 @@ namespace tracey
                                             ? tplPs->data()[i]
                                             : 1.0f;
                         glm::mat3 R(1.0f);
-                        if (useNormal && tplN && i < tplN->data().size())
+                        if (tplOrient && i < tplOrient->data().size())
+                        {
+                            // Effector-authored per-clone rotation wins over
+                            // the N-derived frame.
+                            R = mograph::mat3FromWxyz(tplOrient->data()[i]);
+                        }
+                        else if (useNormal && tplN && i < tplN->data().size())
                         {
                             R = orientFromNormal(tplN->data()[i]);
                         }

@@ -2,6 +2,7 @@
 
 #include "cook_cache.hpp"
 #include "parameter.hpp"
+#include "mograph/orient_util.hpp"
 #include "nodes/instance_vop_sop.hpp"          // instanceVopGraph()
 #include "../graph/connection.hpp"
 #include "../vops/vop_graph.hpp"
@@ -73,21 +74,8 @@ namespace tracey
 
         namespace
         {
-            // Compose an euler-deg vec3 (Houdini convention: ZYX intrinsic
-            // applied in the order Rx then Ry then Rz, which translates to
-            // q = qz * qy * qx in glm). Stored on the EmittedActor as a
-            // wxyz Vec4 so the cook output stays POD-friendly. Mirrors the
-            // identical conversion in nodes/transform_sop.cpp.
-            inline Vec4 eulerDegToQuatWxyz(const Vec3 &deg)
-            {
-                constexpr float kDeg2Rad = 3.1415926535f / 180.0f;
-                const Vec3 rad = deg * kDeg2Rad;
-                glm::quat qx = glm::angleAxis(rad.x, glm::vec3(1, 0, 0));
-                glm::quat qy = glm::angleAxis(rad.y, glm::vec3(0, 1, 0));
-                glm::quat qz = glm::angleAxis(rad.z, glm::vec3(0, 0, 1));
-                glm::quat q  = qz * qy * qx;
-                return Vec4(q.w, q.x, q.y, q.z);
-            }
+            // Shared with the cloners + effectors — see mograph/orient_util.hpp.
+            using mograph::eulerDegToQuatWxyz;
         } // anon
 
         // ── Topological sort ───────────────────────────────────────────────
@@ -400,6 +388,7 @@ namespace tracey
                         const auto *tplPs = tmpl->points().get<float>("pscale");
                         const auto *tplN  = tmpl->points().get<Vec3>("N");
                         const auto *tplCd = tmpl->points().get<Vec3>("Cd");
+                        const auto *tplOrient = tmpl->points().get<Vec4>("orient");
                         const bool useN   = node->paramBool("orient_to_normal", true);
                         const std::string baseName =
                             node->paramString("name", "instance_" + std::to_string(uid));
@@ -434,28 +423,21 @@ namespace tracey
                                 e.tint = tplCd->data()[i];
                                 e.hasTint = true;
                             }
-                            if (useN && tplN && i < tplN->data().size())
+                            if (tplOrient && i < tplOrient->data().size())
                             {
-                                // Build a rotation that maps stamp's +Z to N,
-                                // with +Y as the up reference. Mirrors the
-                                // copy_to_points helper.
-                                const Vec3 &n = tplN->data()[i];
-                                glm::vec3 forward(n.x, n.y, n.z);
-                                const float fl2 = glm::dot(forward, forward);
-                                if (fl2 >= 1e-12f)
-                                {
-                                    forward = forward * (1.0f / std::sqrt(fl2));
-                                    glm::vec3 right = glm::cross(glm::vec3(0, 1, 0), forward);
-                                    const float rl2 = glm::dot(right, right);
-                                    if (rl2 >= 1e-12f)
-                                    {
-                                        right = right * (1.0f / std::sqrt(rl2));
-                                        glm::vec3 up = glm::cross(forward, right);
-                                        glm::mat3 R(right, up, forward);
-                                        glm::quat q = glm::quat_cast(R);
-                                        e.rotation = Vec4(q.w, q.x, q.y, q.z);
-                                    }
-                                }
+                                // Effector-authored per-clone rotation wins
+                                // over the N-derived frame.
+                                e.rotation = mograph::wxyzFromQuat(
+                                    mograph::quatFromWxyz(tplOrient->data()[i]));
+                            }
+                            else if (useN && tplN && i < tplN->data().size())
+                            {
+                                // Rotation that maps stamp's +Z to N, with
+                                // +Y as the up reference.
+                                const glm::mat3 R =
+                                    mograph::orientFromNormal(tplN->data()[i]);
+                                const glm::quat q = glm::quat_cast(R);
+                                e.rotation = Vec4(q.w, q.x, q.y, q.z);
                             }
                             a.instances.push_back(e);
                         }
@@ -499,6 +481,7 @@ namespace tracey
                         const auto *tplPs = tmpl->points().get<float>("pscale");
                         const auto *tplN  = tmpl->points().get<Vec3>("N");
                         const auto *tplCd = tmpl->points().get<Vec3>("Cd");
+                        const auto *tplOrient = tmpl->points().get<Vec4>("orient");
                         const auto *tplAge = tmpl->points().get<float>("age");
                         const auto *tplLife = tmpl->points().get<float>("life");
                         const bool useN   = node->paramBool("orient_to_normal", true);
@@ -599,26 +582,21 @@ namespace tracey
                                 const Vec3 &c = e.tint;
                                 e.hasTint = !(c.x == 1.0f && c.y == 1.0f && c.z == 1.0f);
                             }
-                            if (useN && outN && i < outN->data().size())
+                            if (tplOrient && i < tplOrient->data().size())
+                            {
+                                // Effector-authored per-clone rotation from
+                                // the template wins (the VOP kernel doesn't
+                                // see orient in v1).
+                                e.rotation = mograph::wxyzFromQuat(
+                                    mograph::quatFromWxyz(tplOrient->data()[i]));
+                            }
+                            else if (useN && outN && i < outN->data().size())
                             {
                                 // Same orient-to-normal as `instance` SOP.
-                                const Vec3 &n = outN->data()[i];
-                                glm::vec3 forward(n.x, n.y, n.z);
-                                const float fl2 = glm::dot(forward, forward);
-                                if (fl2 >= 1e-12f)
-                                {
-                                    forward = forward * (1.0f / std::sqrt(fl2));
-                                    glm::vec3 right = glm::cross(glm::vec3(0, 1, 0), forward);
-                                    const float rl2 = glm::dot(right, right);
-                                    if (rl2 >= 1e-12f)
-                                    {
-                                        right = right * (1.0f / std::sqrt(rl2));
-                                        glm::vec3 up = glm::cross(forward, right);
-                                        glm::mat3 R(right, up, forward);
-                                        glm::quat q = glm::quat_cast(R);
-                                        e.rotation = Vec4(q.w, q.x, q.y, q.z);
-                                    }
-                                }
+                                const glm::mat3 R =
+                                    mograph::orientFromNormal(outN->data()[i]);
+                                const glm::quat q = glm::quat_cast(R);
+                                e.rotation = Vec4(q.w, q.x, q.y, q.z);
                             }
                             a.instances.push_back(e);
                         }

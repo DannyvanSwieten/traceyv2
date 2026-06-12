@@ -70,7 +70,7 @@ std::optional<std::string> EditorServer::handle_timeline_commands(
             // drain → advance → post chain has somewhere to start.
             if (m_timeline.frame_locked &&
                 !m_last_pushed_graph_json.empty() &&
-                (m_has_animated_vop_promotions || m_has_dop_imports))
+                (m_has_animated_sop_params || m_has_dop_imports))
             {
                 post_cook_request(m_last_pushed_graph_json, m_timeline.current_time);
             }
@@ -92,7 +92,7 @@ std::optional<std::string> EditorServer::handle_timeline_commands(
             // idle until the user pauses + replays.
             if (!prev && m_timeline.frame_locked && m_timeline.playing &&
                 !m_last_pushed_graph_json.empty() &&
-                (m_has_animated_vop_promotions || m_has_dop_imports))
+                (m_has_animated_sop_params || m_has_dop_imports))
             {
                 post_cook_request(m_last_pushed_graph_json, m_timeline.current_time);
             }

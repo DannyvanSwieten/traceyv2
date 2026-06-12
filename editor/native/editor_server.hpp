@@ -387,7 +387,7 @@ private:
     // return true iff any attribute_vop's promoted host param is animated.
     // Recomputed after every cook so the auto re-cook in render_tick stays
     // accurate as the user promotes / demotes / keys params.
-    bool detect_animated_vop_promotions() const;
+    bool detect_animated_sop_params() const;
 
     // True iff the canonical SOP graph contains at least one dop_import
     // node (recursing into subnets). Refreshed after every cook + on every
@@ -405,7 +405,7 @@ private:
         collect_dop_stamps(double time);
 
     // True if any SOP node carries an animated parameter (channel keys
-    // anywhere in the tree). Superset of detect_animated_vop_promotions;
+    // anywhere in the tree). Superset of detect_animated_sop_params;
     // also includes keyed translate/rotate/scale on subnets and transform
     // SOPs that apply_animation_at processes.
     bool detect_any_animation() const;
@@ -434,7 +434,7 @@ private:
     // Set true after every cook completion if the resulting graph contains
     // at least one attribute_vop with at least one animated promoted host
     // param. Gates the auto re-cook on time change.
-    bool m_has_animated_vop_promotions = false;
+    bool m_has_animated_sop_params = false;
     bool m_cook_shutdown = false;
 
     // Persistent per-node geometry caches. Separate instances so the worker

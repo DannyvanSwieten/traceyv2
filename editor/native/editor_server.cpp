@@ -1241,7 +1241,7 @@ void EditorServer::apply_emitted(std::vector<tracey::sops::EmittedActor>&& emitt
     // Recompute whether the graph has any attribute_vop with animated
     // promoted host params. Drives the auto re-cook on time change in
     // render_tick.
-    m_has_animated_vop_promotions = detect_animated_vop_promotions();
+    m_has_animated_sop_params = detect_animated_sop_params();
 
     // Same idea for dop_import — when present, every playhead move needs
     // to cook the DOP forward and re-stamp + re-cook the SOP graph.
@@ -1388,27 +1388,31 @@ void EditorServer::apply_animation_at(double time) {
 }
 
 // Walks the canonical SOP graph (recursing into subnet inner graphs) and
-// returns true if any attribute_vop's promoted host param is animated. The
-// auto re-cook in render_tick uses this to decide whether to re-cook on
-// playhead change. Called from apply_emitted after every cook completion.
-bool EditorServer::detect_animated_vop_promotions() const {
+// returns true if any node carries an animated parameter that needs a real
+// per-playhead re-cook. The exception set: translate/rotate/scale on the
+// emit-side nodes (object_output, subnet, light) — those are applied to the
+// live Actors by apply_animation_at without re-cooking, so a graph whose
+// ONLY animation is output-node TRS stays on that fast path. Everything
+// else (effector strength, scatter count, attribute_vop promotions, …)
+// flips the auto re-cook on. Called from apply_emitted after every cook.
+bool EditorServer::detect_animated_sop_params() const {
     if (!m_sop_graph) return false;
+    auto isEmitTrsFastPath = [](const tracey::sops::SopNode& n,
+                                const tracey::sops::Parameter& p) {
+        const std::string k = n.kind();
+        const bool emitNode = (k == "object_output" || k == "subnet" || k == "light");
+        if (!emitNode) return false;
+        return p.name == "translate" || p.name == "rotate_euler_deg" ||
+               p.name == "scale";
+    };
     std::function<bool(const tracey::sops::SopGraph*)> walk;
     walk = [&](const tracey::sops::SopGraph* g) -> bool {
         if (!g) return false;
         for (const auto& n : g->nodes()) {
             auto* sn = dynamic_cast<const tracey::sops::SopNode*>(n.get());
             if (!sn) continue;
-            if (sn->kind() == "attribute_vop") {
-                if (const auto* proms = tracey::sops::attributeVopPromotions(sn)) {
-                    for (const auto& p : *proms) {
-                        for (const auto& q : sn->parameters()) {
-                            if (q.name == p.hostParamName && q.isAnimated()) {
-                                return true;
-                            }
-                        }
-                    }
-                }
+            for (const auto& p : sn->parameters()) {
+                if (p.isAnimated() && !isEmitTrsFastPath(*sn, p)) return true;
             }
             if (sn->innerGraph() && walk(sn->innerGraph())) return true;
         }
@@ -1746,7 +1750,7 @@ void EditorServer::drain_cook_result() {
     // static) so static scenes don't busy-loop the cook worker.
     if (m_timeline.frame_locked && m_timeline.playing &&
         !m_last_pushed_graph_json.empty() &&
-        (m_has_animated_vop_promotions || m_has_dop_imports))
+        (m_has_animated_sop_params || m_has_dop_imports))
     {
         const double stride = 1.0 / std::max(m_timeline.fps, 1e-6);
         if (advance_playhead_by(stride)) {
@@ -2181,7 +2185,7 @@ void EditorServer::render_tick() {
         // fresh sim-state stamp every frame (post_cook_request collects
         // the stamps automatically via collect_dop_stamps). The two
         // branches share the post; combine into one condition.
-        const bool need_recook = (m_has_animated_vop_promotions || m_has_dop_imports)
+        const bool need_recook = (m_has_animated_sop_params || m_has_dop_imports)
                                  && !m_last_pushed_graph_json.empty();
         if (need_recook) {
             post_cook_request(m_last_pushed_graph_json, m_timeline.current_time);

@@ -156,24 +156,32 @@ namespace tracey
             // producing an empty/default Geometry.
             virtual Geometry cook(std::span<const Geometry *const> inputs) const = 0;
 
-            // Time-aware variant. Default delegates to time-independent cook;
-            // only nodes that animate something internally (attribute_vop with
-            // promoted host params, for example) override this. SopGraph::cook
-            // always calls cookAt so the time threads through the topo walk
-            // and into recursive subnet sub-graphs uniformly.
+            // Time-aware variant. SopGraph::cook always calls cookAt so the
+            // time threads through the topo walk and into recursive subnet
+            // sub-graphs uniformly. The default records the time and
+            // delegates to the timeless cook() — combined with the
+            // animated-param routing in paramFloat/Int/Bool/Vec3 (see
+            // sop_node.cpp), every node's keyed parameters animate without
+            // a per-node override. Nodes that need explicit control over
+            // time-sampling (effectors, transform) override this instead.
             virtual Geometry cookAt(std::span<const Geometry *const> inputs,
-                                    double /*time*/) const
+                                    double time) const
             {
+                m_evalTime = time;
                 return cook(inputs);
             }
 
             // True when this node's cook can vary with time even if its
-            // params and inputs are byte-identical (e.g. a hosted VOP kernel
-            // reading @Time). SopGraph::cook mixes the cook time into such a
-            // node's cache key and propagates the flag downstream — a node
-            // that returns true here but false from this method poisons the
-            // cook cache across frames.
-            virtual bool isTimeDependent() const { return false; }
+            // params and inputs are byte-identical. Default: any keyed
+            // parameter makes the node time-dependent (its evaluated values
+            // change with the playhead even though the channel data — and
+            // therefore the parameter hash — does not). attribute_vop
+            // overrides to an unconditional true (its hosted VOP kernel can
+            // read @Time without any keyed host param). SopGraph::cook mixes
+            // the cook time into a time-dependent node's cache key and
+            // propagates the flag downstream — returning false while the
+            // cook varies with time poisons the cook cache across frames.
+            virtual bool isTimeDependent() const;
 
             // ── Nested sub-graphs ──
             // A SOP node that wraps a sub-graph (subnet) returns a non-null
@@ -208,7 +216,10 @@ namespace tracey
 
             // Lookup helpers — return defaults if the param is missing or has
             // the wrong type. cook() implementations should use these instead
-            // of hand-walking m_params.
+            // of hand-walking m_params. When a parameter carries keyframe
+            // channels these sample it at the cook's evaluation time (set by
+            // the base cookAt), so plain cook() implementations animate
+            // without explicit time plumbing.
             float       paramFloat(std::string_view name, float def = 0.0f) const;
             int         paramInt(std::string_view name, int def = 0) const;
             bool        paramBool(std::string_view name, bool def = false) const;
@@ -239,8 +250,20 @@ namespace tracey
             float posY() const { return m_posY; }
             void setPos(float x, float y) { m_posX = x; m_posY = y; }
 
+        protected:
+            // Nodes that override cookAt (and therefore skip the base's
+            // time capture) call this first so the constant param getters
+            // keep sampling keyed channels at the right playhead.
+            void setEvalTime(double t) const { m_evalTime = t; }
+
         private:
             std::vector<Parameter> m_params;
+            // Evaluation time recorded by the base cookAt so the constant
+            // param getters can sample keyed channels at the playhead.
+            // mutable: cook() is const but the time is per-invocation state.
+            // Safe — SopGraph's node walk is single-threaded (parallelism
+            // lives inside individual cooks, which only read this).
+            mutable double m_evalTime = 0.0;
             float m_posX = 0.0f;
             float m_posY = 0.0f;
         };

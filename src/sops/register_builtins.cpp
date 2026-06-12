@@ -27,11 +27,15 @@ namespace tracey
         void registerSwitchSop();
         void registerBoundSop();
         void registerSortSop();
+        void registerPlainEffectorSop();
+        void registerRandomEffectorSop();
+        void registerNoiseEffectorSop();
+        void registerStepEffectorSop();
 
         void registerBuiltinSops()
         {
             // Palette category order: Generators → Cloners → Modifiers →
-            // Combiners → Output → Lights → Subnet.
+            // Effectors → Combiners → Output → Lights → Subnet.
             registerPrimitiveSops();
             registerGltfImportSop();
             registerPointsGridSop();
@@ -46,6 +50,10 @@ namespace tracey
             registerSwitchSop();
             registerSortSop();
             registerBoundSop();
+            registerPlainEffectorSop();
+            registerRandomEffectorSop();
+            registerNoiseEffectorSop();
+            registerStepEffectorSop();
             registerMergeSop();
             registerObjectOutputSop();
             registerLightSop();

@@ -375,6 +375,13 @@ void main() {
                     if (!attrsAreSubsetOf(stampVrts, {"uv"}))         return false;
                     if (stampPrms.names().size() != 0)                return false;
 
+                    // Per-clone `orient` quaternions (effector output) have
+                    // no kernel path yet. The template-attr fetches below are
+                    // ad-hoc (unknown attrs are otherwise silently ignored),
+                    // so without this guard orient-carrying templates would
+                    // dispatch fine and produce UNROTATED clones.
+                    if (tplPts.get<Vec4>("orient"))                   return false;
+
                     // The kernel writes outP[i*M + j] = transform(stamp[j]).
                     // That implicitly assumes vertexToPoint is identity — i.e.
                     // each vertex c references point c. The fromSceneObject

@@ -28,10 +28,25 @@ namespace tracey
             m_params.push_back(std::move(p));
         }
 
+        bool SopNode::isTimeDependent() const
+        {
+            // Keyed parameters make a node's cook vary with time even though
+            // the parameter HASH (which covers the channel data, not the
+            // playhead) stays constant — so the cook cache must mix the time
+            // into this node's key. Subclasses with intrinsic time reads
+            // (attribute_vop's @Time) override unconditionally.
+            for (const auto &p : m_params)
+            {
+                if (p.isAnimated()) return true;
+            }
+            return false;
+        }
+
         float SopNode::paramFloat(std::string_view name, float def) const
         {
             const auto *p = findParam(m_params, name);
             if (!p || p->type != ParamType::Float) return def;
+            if (p->isAnimated()) return paramFloatAt(name, m_evalTime, def);
             if (auto *v = std::get_if<float>(&p->value)) return *v;
             return def;
         }
@@ -39,6 +54,7 @@ namespace tracey
         {
             const auto *p = findParam(m_params, name);
             if (!p || p->type != ParamType::Int) return def;
+            if (p->isAnimated()) return paramIntAt(name, m_evalTime, def);
             if (auto *v = std::get_if<int>(&p->value)) return *v;
             return def;
         }
@@ -46,6 +62,7 @@ namespace tracey
         {
             const auto *p = findParam(m_params, name);
             if (!p || p->type != ParamType::Bool) return def;
+            if (p->isAnimated()) return paramBoolAt(name, m_evalTime, def);
             if (auto *v = std::get_if<bool>(&p->value)) return *v;
             return def;
         }
@@ -53,6 +70,7 @@ namespace tracey
         {
             const auto *p = findParam(m_params, name);
             if (!p || p->type != ParamType::Vec3) return def;
+            if (p->isAnimated()) return paramVec3At(name, m_evalTime, def);
             if (auto *v = std::get_if<Vec3>(&p->value)) return *v;
             return def;
         }
