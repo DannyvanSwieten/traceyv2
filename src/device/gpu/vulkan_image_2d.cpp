@@ -1,8 +1,16 @@
 #include "vulkan_image_2d.hpp"
 #include "vulkan_compute_device.hpp"
+#include "../../gpu/vulkan_context.hpp"
 #include "../../gpu/vulkan_queue_sync.hpp"
 #include <stdexcept>
 #include <cstring>
+
+#ifdef __APPLE__
+// VK_EXT_metal_objects structs (export of the backing MTLTexture). Included
+// after volk so VK_NO_PROTOTYPES is in effect — we load
+// vkExportMetalObjectsEXT through vkGetDeviceProcAddr below.
+#include <vulkan/vulkan_metal.h>
+#endif
 
 namespace tracey
 {
@@ -58,6 +66,13 @@ namespace tracey
     }
 
     VulkanImage2D::VulkanImage2D(VulkanComputeDevice &device, uint32_t width, uint32_t height, ImageFormat format,
+                                 bool exportMetalTexture)
+        : m_device(device.vkDevice()), m_width(width), m_height(height)
+    {
+        createImage(device, format, false, exportMetalTexture);
+    }
+
+    VulkanImage2D::VulkanImage2D(VulkanComputeDevice &device, uint32_t width, uint32_t height, ImageFormat format,
                                  const void *data, size_t dataSize,
                                  SamplerFilter filter, SamplerAddressMode addressMode)
         : m_device(device.vkDevice()), m_width(width), m_height(height)
@@ -67,7 +82,8 @@ namespace tracey
         uploadData(device, data, dataSize);
     }
 
-    void VulkanImage2D::createImage(VulkanComputeDevice &device, ImageFormat format, bool forTexture)
+    void VulkanImage2D::createImage(VulkanComputeDevice &device, ImageFormat format, bool forTexture,
+                                    bool exportMetalTexture)
     {
         m_vkFormat = toVkFormat(format);
 
@@ -104,6 +120,28 @@ namespace tracey
         imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
         imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
+#ifdef __APPLE__
+        // Mark the image's backing MTLTexture as exportable so the Metal
+        // path tracer backend can render into the same storage the Vulkan
+        // compositor blits from. Must be requested at create time.
+        VkExportMetalObjectCreateInfoEXT exportInfo{};
+        if (exportMetalTexture)
+        {
+            if (!device.context().hasMetalObjectsExtension())
+            {
+                throw std::runtime_error(
+                    "VulkanImage2D: exportMetalTexture requested but the device "
+                    "lacks VK_EXT_metal_objects");
+            }
+            exportInfo.sType = VK_STRUCTURE_TYPE_EXPORT_METAL_OBJECT_CREATE_INFO_EXT;
+            exportInfo.exportObjectType = VK_EXPORT_METAL_OBJECT_TYPE_METAL_TEXTURE_BIT_EXT;
+            exportInfo.pNext = imageInfo.pNext;
+            imageInfo.pNext = &exportInfo;
+        }
+#else
+        (void)exportMetalTexture;
+#endif
+
         if (vkCreateImage(m_device, &imageInfo, nullptr, &m_image) != VK_SUCCESS)
         {
             throw std::runtime_error("Failed to create Vulkan image");
@@ -126,6 +164,38 @@ namespace tracey
         {
             throw std::runtime_error("Failed to bind Vulkan image memory");
         }
+
+#ifdef __APPLE__
+        // Fetch the backing MTLTexture now that memory is bound. Loaded via
+        // vkGetDeviceProcAddr because volk's static table wasn't built with
+        // the Metal platform define.
+        if (exportMetalTexture)
+        {
+            auto exportFn = reinterpret_cast<PFN_vkExportMetalObjectsEXT>(
+                vkGetDeviceProcAddr(m_device, "vkExportMetalObjectsEXT"));
+            if (!exportFn)
+            {
+                throw std::runtime_error(
+                    "VulkanImage2D: vkExportMetalObjectsEXT not resolvable");
+            }
+            VkExportMetalTextureInfoEXT texInfo{};
+            texInfo.sType = VK_STRUCTURE_TYPE_EXPORT_METAL_TEXTURE_INFO_EXT;
+            texInfo.image = m_image;
+            texInfo.imageView = VK_NULL_HANDLE;
+            texInfo.bufferView = VK_NULL_HANDLE;
+            texInfo.plane = VK_IMAGE_ASPECT_PLANE_0_BIT;
+            VkExportMetalObjectsInfoEXT objectsInfo{};
+            objectsInfo.sType = VK_STRUCTURE_TYPE_EXPORT_METAL_OBJECTS_INFO_EXT;
+            objectsInfo.pNext = &texInfo;
+            exportFn(m_device, &objectsInfo);
+            m_exportedMetalTexture = texInfo.mtlTexture;
+            if (!m_exportedMetalTexture)
+            {
+                throw std::runtime_error(
+                    "VulkanImage2D: MoltenVK returned no MTLTexture for the image");
+            }
+        }
+#endif
 
         VkImageViewCreateInfo viewInfo{};
         viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;

@@ -149,7 +149,10 @@ namespace tracey
                                                           m_device(other.m_device),
                                                           m_computeQueueFamilyIndex(other.m_computeQueueFamilyIndex),
                                                           m_computeQueue(other.m_computeQueue),
-                                                          m_commandPool(other.m_commandPool)
+                                                          m_commandPool(other.m_commandPool),
+                                                          m_enableValidation(other.m_enableValidation),
+                                                          m_hasMetalObjects(other.m_hasMetalObjects),
+                                                          m_debugMessenger(other.m_debugMessenger)
     {
         other.m_instance = VK_NULL_HANDLE;
         other.m_physicalDevice = VK_NULL_HANDLE;
@@ -346,6 +349,26 @@ namespace tracey
 #ifdef __APPLE__
         // MoltenVK exposes VK_KHR_portability_subset; some apps need to enable it explicitly.
         devExts.push_back("VK_KHR_portability_subset");
+
+        // VK_EXT_metal_objects (probed — older MoltenVK builds lack it):
+        // lets us export a VkImage's backing MTLTexture so the Metal path
+        // tracer backend can render straight into the image the viewport
+        // compositor blits. Zero-copy Metal↔Vulkan output sharing.
+        {
+            uint32_t extCount = 0;
+            vkEnumerateDeviceExtensionProperties(m_physicalDevice, nullptr, &extCount, nullptr);
+            std::vector<VkExtensionProperties> available(extCount);
+            vkEnumerateDeviceExtensionProperties(m_physicalDevice, nullptr, &extCount, available.data());
+            for (const auto &ext : available)
+            {
+                if (std::strcmp(ext.extensionName, "VK_EXT_metal_objects") == 0)
+                {
+                    devExts.push_back("VK_EXT_metal_objects");
+                    m_hasMetalObjects = true;
+                    break;
+                }
+            }
+        }
 #endif
 
         if (m_config.enablePresentation)

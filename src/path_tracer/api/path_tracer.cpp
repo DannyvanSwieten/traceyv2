@@ -1,4 +1,8 @@
 #include "path_tracer.hpp"
+#include "backend_registry.hpp"
+
+#include "device/gpu/vulkan_compute_device.hpp"
+#include "device/gpu/vulkan_image_2d.hpp"
 
 #include <stdexcept>
 
@@ -12,10 +16,19 @@ namespace tracey
             throw std::runtime_error("PathTracer: device cannot be null");
         }
 
-        createOutputImage();
-        createShaderInputs();
+        // Backend first: its outputKind() decides which façade resources to
+        // create. FacadeImage backends render into façade-owned images;
+        // BackendImage backends own their output (e.g. an IOSurface-shared
+        // texture); CpuPixels backends only need an upload target for the
+        // viewport compositor.
+        m_backend = createPathTracerBackend(m_config.backend, m_device);
 
-        m_backend = selectPathTracerBackend(m_device);
+        const PathTracerOutputKind kind = m_backend->outputKind();
+        if (kind != PathTracerOutputKind::BackendImage)
+        {
+            createOutputImage();
+        }
+        createShaderInputs();
 
         PathTracerBackend::InitParams params;
         params.device = m_device;
@@ -37,6 +50,11 @@ namespace tracey
                                  : ImageFormat::R8G8B8A8Unorm;
 
         m_outputImage.reset(m_device->createImage2D(m_config.width, m_config.height, format));
+
+        // CpuPixels backends only need the upload target above — the
+        // accumulator lives inside the backend and readback comes straight
+        // from its CPU pixel buffer.
+        if (m_backend->outputKind() == PathTracerOutputKind::CpuPixels) return;
 
         // Linear HDR accumulator: lives across frames so the running mean is
         // numerically stable (resolve reads/writes this, only tonemaps into
@@ -96,20 +114,43 @@ namespace tracey
 
         const double t = m_backend->dispatch(scene, m_sampleCount, clearAccumulation, wantReadback);
 
+        // CpuPixels backends deliver the frame as host memory; push it into
+        // the façade-owned Vulkan image so the viewport compositor can blit
+        // it like any other backend's output.
+        if (m_backend->outputKind() == PathTracerOutputKind::CpuPixels)
+        {
+            uploadCpuOutput();
+        }
+
         m_sampleCount++;
         return t;
     }
 
+    void PathTracer::uploadCpuOutput()
+    {
+        const void *pixels = m_backend->cpuOutputPixels();
+        if (!pixels || !m_outputImage) return;
+        auto *vkImage = dynamic_cast<VulkanImage2D *>(m_outputImage.get());
+        auto *vkDevice = dynamic_cast<VulkanComputeDevice *>(m_device);
+        // Headless / non-Vulkan use: consumers read via readback() instead.
+        if (!vkImage || !vkDevice) return;
+        const size_t pixelSize = m_config.hdrOutput ? 16 : 4;
+        vkImage->uploadPixels(*vkDevice, pixels,
+                              static_cast<size_t>(m_config.width) * m_config.height * pixelSize);
+    }
+
+    Image2D *PathTracer::outputImage() const
+    {
+        if (m_backend->outputKind() == PathTracerOutputKind::BackendImage)
+        {
+            return m_backend->backendOutputImage();
+        }
+        return m_outputImage.get();
+    }
+
     size_t PathTracer::readback(void *outData)
     {
-        size_t pixelSize = m_config.hdrOutput ? 16 : 4;
-        size_t bufferSize = m_config.width * m_config.height * pixelSize;
-
-        const void *gpuData = m_readbackBuffer->mapForReading();
-        std::memcpy(outData, gpuData, bufferSize);
-        m_readbackBuffer->unmap();
-
-        return bufferSize;
+        return m_backend->readback(outData);
     }
 
     void PathTracer::setMaterialPrograms(const MaterialProgramBuffer &programs)

@@ -3,7 +3,7 @@
 #include "scene/scene.hpp"
 #include "scene/scene_compiler.hpp"
 #include "scene/blas_cache.hpp"
-#include "rendering/path_tracer.hpp"
+#include "path_tracer/api/path_tracer.hpp"
 #include "rendering/rasterizer.hpp"
 #include "device/device.hpp"
 
@@ -27,6 +27,9 @@ struct RenderConfig {
     // / scene / settings changes via m_clear_next_frame.
     uint32_t max_samples = 1024;
     uint32_t max_bounces = 8;
+    // Path tracer backend: "auto" | "wavefront" | "metal" | "vulkan_rt" |
+    // "cpu". Overridable at launch via the TRACEY_PT_BACKEND env var.
+    std::string pt_backend = "auto";
 };
 
 struct RenderResult {

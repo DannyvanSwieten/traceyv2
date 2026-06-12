@@ -45,6 +45,7 @@ if(APPLE)
 
     target_link_libraries(tracey_editor PRIVATE
         tracey
+        tracey_pathtracer
         tracey_editor_json
         glm::glm
         volk::volk

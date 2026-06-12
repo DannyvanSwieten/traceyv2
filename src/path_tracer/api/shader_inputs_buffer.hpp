@@ -1,8 +1,8 @@
 #pragma once
 
-#include "ray_tracing_pipeline/data_structure.hpp"
-#include "../device/buffer.hpp"
-#include "../device/device.hpp"
+#include "ray_tracing/ray_tracing_pipeline/data_structure.hpp"
+#include "device/buffer.hpp"
+#include "device/device.hpp"
 
 #include <memory>
 #include <string>

@@ -6,6 +6,7 @@
 #include "../graph/graphs/shader_graph/serialization.hpp"
 #include "../graph/graphs/shader_graph/shader_graph.hpp"
 #include "../shading/material_program/opcodes.hpp"
+#include <atomic>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
@@ -196,6 +197,15 @@ namespace tracey
             SamplerFilter::Linear,
             SamplerAddressMode::Repeat);
 
+        // Retain the decoded pixels for path tracer backends that own their
+        // textures (Metal / CPU) — see CompiledScene::textureSources. Copied
+        // before the frees below; index-parallel with result.textures.
+        CompiledScene::TextureSource source;
+        source.width = static_cast<uint32_t>(width);
+        source.height = static_cast<uint32_t>(height);
+        source.srgb = isColorData;
+        source.rgba8.assign(data, data + dataSize);
+
         if (needsStbiFree)
         {
             stbi_image_free(const_cast<unsigned char *>(data));
@@ -214,6 +224,7 @@ namespace tracey
         // Store texture and return index
         int32_t index = static_cast<int32_t>(result.textures.size());
         result.textures.push_back(std::unique_ptr<Image2D>(texture));
+        result.textureSources.push_back(std::move(source));
         result.texturePathToIndex[cacheKey] = static_cast<size_t>(index);
 
         return index;
@@ -428,11 +439,18 @@ namespace tracey
         return compile(device, scene, bvhConfig, cache, /*buildAccelerationStructures=*/true);
     }
 
+    uint64_t SceneCompiler::nextSceneRevision()
+    {
+        static std::atomic<uint64_t> counter{0};
+        return ++counter;
+    }
+
     SceneCompiler::CompiledScene SceneCompiler::compile(Device *device, const Scene &scene,
                                                         const BVHConfig &bvhConfig, BlasCache *cache,
                                                         bool buildAccelerationStructures)
     {
         CompiledScene result;
+        result.revision = nextSceneRevision();
 
         // Per-compile config + stats logs fired once per compile_scene()
         // call; with particle sims cooking 60×/sec the stderr flood

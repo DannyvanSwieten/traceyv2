@@ -22,6 +22,7 @@ namespace tracey
         const std::span<const Blas::TriangleData> triangleData() const { return std::span<const Blas::TriangleData>(m_blas->triangleData().data(), m_blas->triangleData().size()); }
         const std::span<const uint32_t> primIndices() const { return std::span<const uint32_t>(m_blas->primIndices().data(), m_blas->primIndices().size()); }
         const Blas &blas() const { return *m_blas; }
+        const Blas *cpuBlas() const override { return m_blas ? &*m_blas : nullptr; }
 
     private:
         VulkanComputeDevice &m_device;

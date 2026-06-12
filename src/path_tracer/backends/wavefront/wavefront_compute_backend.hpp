@@ -1,12 +1,12 @@
 #pragma once
 
-#include "path_tracer_backend.hpp"
+#include "path_tracer/api/path_tracer_backend.hpp"
 
-#include "../ray_tracing/ray_tracing_pipeline/ray_tracing_pipeline.hpp"
-#include "../ray_tracing/ray_tracing_pipeline/ray_tracing_pipeline_layout.hpp"
-#include "../ray_tracing/ray_tracing_pipeline/descriptor_set.hpp"
-#include "../ray_tracing/ray_tracing_command_buffer/ray_tracing_command_buffer.hpp"
-#include "../ray_tracing/shader_builder/ray_tracing_shader_builder.hpp"
+#include "ray_tracing/ray_tracing_pipeline/ray_tracing_pipeline.hpp"
+#include "ray_tracing/ray_tracing_pipeline/ray_tracing_pipeline_layout.hpp"
+#include "ray_tracing/ray_tracing_pipeline/descriptor_set.hpp"
+#include "ray_tracing/ray_tracing_command_buffer/ray_tracing_command_buffer.hpp"
+#include "ray_tracing/shader_builder/ray_tracing_shader_builder.hpp"
 
 #include <array>
 #include <memory>
@@ -24,12 +24,17 @@ namespace tracey
         ~WavefrontComputeBackend() override;
 
         void initialize(const InitParams &params) override;
+        PathTracerOutputKind outputKind() const override
+        {
+            return PathTracerOutputKind::FacadeImage;
+        }
         void uploadMaterialPrograms(const MaterialProgramBuffer &programs) override;
         void uploadMaterialParameters(const MaterialProgramBuffer &programs) override;
         double dispatch(const SceneCompiler::CompiledScene &scene,
                         uint32_t accumulatedSampleCount,
                         bool clearAccumulation,
                         bool wantReadback) override;
+        size_t readback(void *dst) override;
 
     private:
         void buildPipeline();

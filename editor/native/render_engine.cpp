@@ -1,5 +1,7 @@
 #include "render_engine.hpp"
 
+#include "path_tracer/api/backend_registry.hpp"
+
 #include "core/parallel.hpp"
 #include "scene/scene_object.hpp"
 #include "graph/graphs/shader_graph/compiler.hpp"
@@ -43,6 +45,9 @@ void RenderEngine::initialize_path_tracer() {
     pt_config.samplesPerFrame = 1;
     pt_config.maxBounces = m_config.max_bounces;
     pt_config.useMaterialPrograms = true;
+    // Backend choice from config; the TRACEY_PT_BACKEND env var override
+    // is applied inside createPathTracerBackend so it covers examples too.
+    pt_config.backend = tracey::pathTracerBackendKindFromString(m_config.pt_backend);
 
     m_path_tracer = std::make_unique<tracey::PathTracer>(m_device.get(), pt_config);
 
@@ -358,6 +363,11 @@ bool RenderEngine::refresh_tlas_only() {
     } else if (m_compiled_scene->tlas) {
         m_compiled_scene->tlas.reset();
     }
+    // In-place mutation: stamp a fresh revision so path tracer backends
+    // that cache per-scene resources (acceleration structures, buffer
+    // copies) see the change. Skipping this renders stale transforms on
+    // any backend that trusts the revision.
+    m_compiled_scene->revision = tracey::SceneCompiler::nextSceneRevision();
     return true;
 }
 

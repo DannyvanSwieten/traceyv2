@@ -1,8 +1,8 @@
 #include "wavefront_compute_backend.hpp"
 
-#include "path_tracer.hpp"
-#include "../ray_tracing/ray_tracing_pipeline/ray_tracing_pipeline_layout.hpp"
-#include "../gpu/vulkan_queue_sync.hpp"
+#include "path_tracer/api/path_tracer.hpp"
+#include "ray_tracing/ray_tracing_pipeline/ray_tracing_pipeline_layout.hpp"
+#include "gpu/vulkan_queue_sync.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -377,10 +377,20 @@ namespace tracey
         m_programParametersBuffer->flush();
     }
 
-    std::unique_ptr<PathTracerBackend> selectPathTracerBackend(Device * /*device*/)
+    size_t WavefrontComputeBackend::readback(void *dst)
     {
-        // Only one backend exists today. RTX would branch here based on the
-        // device's backend enum once VK_KHR_ray_tracing support lands.
-        return std::make_unique<WavefrontComputeBackend>();
+        // Copy out of the façade-owned readback buffer the dispatch filled
+        // (wantReadback=true enqueued the image→buffer copy; dispatch waits
+        // for GPU completion before returning, and the buffer is
+        // HOST_COHERENT, so mapForReading observes the finished frame).
+        const size_t pixelSize = m_config->hdrOutput ? 16 : 4;
+        const size_t bufferSize =
+            static_cast<size_t>(m_config->width) * m_config->height * pixelSize;
+
+        const void *gpuData = m_readbackBuffer->mapForReading();
+        std::memcpy(dst, gpuData, bufferSize);
+        m_readbackBuffer->unmap();
+
+        return bufferSize;
     }
 } // namespace tracey

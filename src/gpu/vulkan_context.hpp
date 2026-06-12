@@ -42,6 +42,11 @@ namespace tracey
         VkQueue graphicsQueue() const { return m_computeQueue; }
         const VulkanContextConfig &config() const { return m_config; }
 
+        // True when the device was created with VK_EXT_metal_objects
+        // (MoltenVK only). Gate for exporting a VkImage's backing MTLTexture
+        // to the Metal path tracer backend.
+        bool hasMetalObjectsExtension() const { return m_hasMetalObjects; }
+
     private:
         void createInstance();
         void pickPhysicalDevice();
@@ -62,6 +67,7 @@ namespace tracey
         VkCommandPool m_commandPool = VK_NULL_HANDLE;
 
         bool m_enableValidation = false;
+        bool m_hasMetalObjects = false;
         VkDebugUtilsMessengerEXT m_debugMessenger = VK_NULL_HANDLE;
     };
 } // namespace tracey

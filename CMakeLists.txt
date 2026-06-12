@@ -72,11 +72,6 @@ add_library(tracey
     src/scene/camera.hpp
     src/scene/camera.cpp
 
-    src/rendering/path_tracer.hpp
-    src/rendering/path_tracer.cpp
-    src/rendering/path_tracer_backend.hpp
-    src/rendering/wavefront_compute_backend.hpp
-    src/rendering/wavefront_compute_backend.cpp
     src/rendering/post_processing.hpp
     src/rendering/post_processing.cpp
     src/rendering/rasterizer.hpp
@@ -284,8 +279,6 @@ add_library(tracey
     src/ray_tracing/shader_builder/glsl_preprocessor.cpp
     src/ray_tracing/shader_builder/ray_tracing_shader_builder.hpp
     src/ray_tracing/shader_builder/ray_tracing_shader_builder.cpp
-    src/ray_tracing/shader_inputs_buffer.hpp
-    src/ray_tracing/shader_inputs_buffer.cpp
 )
 
 # Define DEBUG for Debug builds, NDEBUG for non-Debug
@@ -379,6 +372,41 @@ if(PKG_CONFIG_FOUND)
         SPIRV-Tools
         SPIRV-Tools-opt
     )
+endif()
+
+# ─── Path tracer module ──────────────────────────────────────────────────────
+# Separate library with pluggable backends (wavefront compute today; Metal RT
+# on macOS, Vulkan KHR RT and a native CPU fallback to come). The rasterizer
+# and viewport compositor stay in the core `tracey` library.
+add_library(tracey_pathtracer
+    src/path_tracer/api/path_tracer.hpp
+    src/path_tracer/api/path_tracer.cpp
+    src/path_tracer/api/path_tracer_backend.hpp
+    src/path_tracer/api/backend_registry.hpp
+    src/path_tracer/api/backend_registry.cpp
+    src/path_tracer/api/shader_inputs_buffer.hpp
+    src/path_tracer/api/shader_inputs_buffer.cpp
+    src/path_tracer/backends/wavefront/wavefront_compute_backend.hpp
+    src/path_tracer/backends/wavefront/wavefront_compute_backend.cpp
+)
+target_link_libraries(tracey_pathtracer PUBLIC tracey)
+target_link_libraries(tracey_pathtracer PRIVATE glm::glm Vulkan::Vulkan volk::volk)
+target_include_directories(tracey_pathtracer
+    PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+if(APPLE)
+    target_sources(tracey_pathtracer PRIVATE
+        src/path_tracer/backends/metal/metal_pathtracer_backend.hpp
+        src/path_tracer/backends/metal/metal_pathtracer_backend.mm)
+    set_source_files_properties(src/path_tracer/backends/metal/metal_pathtracer_backend.mm
+        PROPERTIES COMPILE_FLAGS "-x objective-c++ -fobjc-arc")
+    target_link_libraries(tracey_pathtracer PRIVATE
+        "-framework Metal"
+        "-framework Foundation"
+        "-framework QuartzCore")
+    target_compile_definitions(tracey_pathtracer PRIVATE TRACEY_PT_HAS_METAL=1)
 endif()
 
 # Native C++ editor

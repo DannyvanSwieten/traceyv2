@@ -16,7 +16,7 @@
 #include "scene/scene_object.hpp"
 #include "scene/transform.hpp"
 
-#include "rendering/path_tracer.hpp"
+#include "path_tracer/api/path_tracer.hpp"
 #include "graph/graphs/shader_graph/serialization.hpp"
 
 #include "geometry/geometry_converter.hpp"

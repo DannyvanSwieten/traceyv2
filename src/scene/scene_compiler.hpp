@@ -126,6 +126,20 @@ namespace tracey
             std::vector<std::unique_ptr<Image2D>> textures;
             std::unordered_map<std::string, size_t> texturePathToIndex;
 
+            // CPU copy of every sampled texture, index-parallel to `textures`.
+            // The decoded pixels would otherwise be freed right after the
+            // Vulkan upload; path tracer backends that own their textures
+            // (Metal builds MTLTextures, the CPU backend samples directly)
+            // read from here instead of the device images.
+            struct TextureSource
+            {
+                uint32_t width = 0;
+                uint32_t height = 0;
+                bool srgb = false;            // colour data (albedo/emissive)
+                std::vector<uint8_t> rgba8;   // tightly packed RGBA8
+            };
+            std::vector<TextureSource> textureSources;
+
             // UV buffer (vec2 per vertex, parallel to triangle data)
             std::unique_ptr<Buffer> uvBuffer;
             bool hasUVs = false;
@@ -174,7 +188,17 @@ namespace tracey
             // BVH statistics
             size_t totalNodes = 0;
             size_t totalTriangles = 0;
+
+            // Monotonic change stamp. Bumped on every compile() and by every
+            // in-place mutation (RenderEngine::refresh_tlas_only). Backends
+            // that cache per-scene resources (acceleration structures, scene
+            // buffer copies) compare this instead of re-uploading per frame.
+            uint64_t revision = 0;
         };
+
+        // Allocate the next scene revision stamp. Used by compile() and by
+        // callers that mutate a CompiledScene in place.
+        static uint64_t nextSceneRevision();
 
         /// Compile scene with default BVH configuration
         static CompiledScene compile(Device *device, const Scene &scene);

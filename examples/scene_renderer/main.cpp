@@ -3,7 +3,7 @@
 #include "../../src/scene/scene_compiler.hpp"
 #include "../../src/scene/gltf_loader.hpp"
 #include "../../src/scene/camera.hpp"
-#include "../../src/rendering/path_tracer.hpp"
+#include "path_tracer/api/path_tracer.hpp"
 #include "../../src/rendering/post_processing.hpp"
 #include "../../src/graph/graphs/shader_graph/shader_graph.hpp"
 #include "../../src/graph/graphs/shader_graph/nodes.hpp"

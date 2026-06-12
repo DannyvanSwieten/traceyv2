@@ -1,13 +1,13 @@
 #pragma once
 
-#include "../scene/scene_compiler.hpp"
-#include "../scene/camera.hpp"
-#include "../device/device.hpp"
-#include "../device/image_2d.hpp"
-#include "../device/buffer.hpp"
-#include "../ray_tracing/ray_tracing_pipeline/data_structure.hpp"
-#include "../ray_tracing/shader_inputs_buffer.hpp"
-#include "../shading/material_program/material_program.hpp"
+#include "scene/scene_compiler.hpp"
+#include "scene/camera.hpp"
+#include "device/device.hpp"
+#include "device/image_2d.hpp"
+#include "device/buffer.hpp"
+#include "ray_tracing/ray_tracing_pipeline/data_structure.hpp"
+#include "shader_inputs_buffer.hpp"
+#include "shading/material_program/material_program.hpp"
 #include "path_tracer_backend.hpp"
 
 #include <memory>
@@ -39,6 +39,10 @@ namespace tracey
         // hit shader is expected to be the uber-VM hit. Defaults to false so
         // legacy hit shaders keep working unchanged.
         bool useMaterialPrograms = false;
+
+        // Which renderer implementation to use. Auto picks the best backend
+        // available on this machine (see backend_registry.hpp).
+        PathTracerBackendKind backend = PathTracerBackendKind::Auto;
     };
 
     /// High-level path tracing renderer. Owns format-agnostic state (output
@@ -76,9 +80,11 @@ namespace tracey
                       bool clearAccumulation = true,
                       bool wantReadback = true);
 
-        /// Get the output image (HDR or LDR depending on config)
-        /// Valid after calling render()
-        Image2D *outputImage() const { return m_outputImage.get(); }
+        /// Get the presentable output image (HDR or LDR depending on config).
+        /// Valid after calling render(). Depending on the backend's output
+        /// kind this is either the façade-owned image or one the backend
+        /// provides (e.g. an IOSurface-shared texture).
+        Image2D *outputImage() const;
 
         /// Read back the output image to CPU memory
         /// @param outData Pointer to receive the image data (caller must allocate width*height*4*sizeof(float or uint8_t))
@@ -118,6 +124,9 @@ namespace tracey
         void createOutputImage();
         void createShaderInputs();
         void updateCameraUniforms(const Camera &camera, uint32_t lightCount);
+        // CpuPixels backends: push the backend's host-memory frame into the
+        // façade-owned Vulkan image for the viewport compositor.
+        void uploadCpuOutput();
 
         // Not owned
         Device *m_device;
