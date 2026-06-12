@@ -183,6 +183,19 @@ target_link_libraries(example_projects
     glm
 )
 
+# Backend parity harness: renders one scene with two PathTracer backends
+# and gates on PSNR. The acceptance test for new backends (Metal RT, CPU)
+# against the wavefront reference.
+add_executable(pt_backend_compare pt_backend_compare/main.cpp)
+target_link_libraries(pt_backend_compare
+    PRIVATE
+    tracey
+    tracey_pathtracer
+    glm
+    Vulkan::Vulkan
+    shaderc
+)
+
 # Metal ↔ Vulkan interop spike for the Metal RT path tracer backend
 # (VK_EXT_metal_objects MTLTexture export). macOS only.
 if(APPLE)
@@ -204,7 +217,7 @@ endif()
 # tracey itself transitively depends on libvulkan.1.dylib via the GPU device
 # layer, so even the headless smoke tests need the rpath at runtime.
 set(TRACEY_EXAMPLE_RPATH_TARGETS
-    device_api wavefront scene_renderer
+    device_api wavefront scene_renderer pt_backend_compare
     sop_eval_test attribute_vop_smoke cloners_smoke instance_vop_smoke dop_smoke dop_geometry_source_smoke vop_codegen_smoke attribute_gpu_smoke
     example_projects)
 if(APPLE)
