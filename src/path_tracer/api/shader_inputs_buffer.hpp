@@ -1,6 +1,6 @@
 #pragma once
 
-#include "ray_tracing/ray_tracing_pipeline/data_structure.hpp"
+#include "rendering/data_structure.hpp"
 #include "device/buffer.hpp"
 #include "device/device.hpp"
 

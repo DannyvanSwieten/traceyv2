@@ -5,13 +5,12 @@
 #include "device/device.hpp"
 #include "device/image_2d.hpp"
 #include "device/buffer.hpp"
-#include "ray_tracing/ray_tracing_pipeline/data_structure.hpp"
+#include "rendering/data_structure.hpp"
 #include "shader_inputs_buffer.hpp"
 #include "shading/material_program/material_program.hpp"
 #include "path_tracer_backend.hpp"
 
 #include <memory>
-#include <filesystem>
 
 namespace tracey
 {
@@ -21,12 +20,6 @@ namespace tracey
         // Output resolution
         uint32_t width = 512;
         uint32_t height = 512;
-
-        // Shader file paths
-        std::filesystem::path rayGenShader;
-        std::filesystem::path hitShader;
-        std::filesystem::path missShader;
-        std::filesystem::path resolveShader;
 
         // HDR output (R32G32B32A32Sfloat vs R8G8B8A8Unorm)
         bool hdrOutput = true;
@@ -45,9 +38,10 @@ namespace tracey
         PathTracerBackendKind backend = PathTracerBackendKind::Auto;
     };
 
-    /// High-level path tracing renderer. Owns format-agnostic state (output
-    /// image, accumulator, sample counter, ShaderInputs uniform) and delegates
-    /// per-frame dispatch to a PathTracerBackend (today: wavefront compute).
+    /// High-level path tracing renderer. Owns format-agnostic state (sample
+    /// counter, ShaderInputs uniform, output resources per the backend's
+    /// output kind) and delegates per-frame dispatch to a PathTracerBackend
+    /// (Metal RT on macOS, native CPU fallback, Vulkan RT to come).
     class PathTracer
     {
     public:

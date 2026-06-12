@@ -14,14 +14,6 @@ add_executable(path_tracer
     ray_tracing/path_tracer.cpp
 )
 
-add_executable(device_api
-    device_api/device_setup.cpp
-)
-
-add_executable(wavefront
-    wavefront/wavefront.cpp
-)
-
 add_executable(scene_renderer
     scene_renderer/main.cpp
 )
@@ -92,22 +84,6 @@ target_link_libraries(path_tracer
     PRIVATE
     tracey
     glm
-)
-
-target_link_libraries(device_api
-    PRIVATE
-    tracey
-    glm
-    Vulkan::Vulkan
-    shaderc
-)
-
-target_link_libraries(wavefront
-    PRIVATE
-    tracey
-    glm
-    Vulkan::Vulkan
-    shaderc
 )
 
 target_link_libraries(scene_renderer
@@ -217,7 +193,7 @@ endif()
 # tracey itself transitively depends on libvulkan.1.dylib via the GPU device
 # layer, so even the headless smoke tests need the rpath at runtime.
 set(TRACEY_EXAMPLE_RPATH_TARGETS
-    device_api wavefront scene_renderer pt_backend_compare
+    scene_renderer pt_backend_compare
     sop_eval_test attribute_vop_smoke cloners_smoke instance_vop_smoke dop_smoke dop_geometry_source_smoke vop_codegen_smoke attribute_gpu_smoke
     example_projects)
 if(APPLE)

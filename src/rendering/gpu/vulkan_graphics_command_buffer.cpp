@@ -4,8 +4,6 @@
 #include "../../device/gpu/vulkan_buffer.hpp"
 #include "../../device/gpu/vulkan_image_2d.hpp"
 #include "../../gpu/vulkan_queue_sync.hpp"
-#include "../../ray_tracing/ray_tracing_pipeline/descriptor_set.hpp"
-#include "../../ray_tracing/ray_tracing_pipeline/gpu/vulkan_compute_raytracing_descriptor_set.hpp"
 #include <stdexcept>
 
 namespace tracey
@@ -248,21 +246,6 @@ namespace tracey
                             0, 0, nullptr, 0, nullptr, 1, &barrier);
     }
 
-    void VulkanGraphicsCommandBuffer::bindDescriptorSet(DescriptorSet* set, uint32_t setIndex)
-    {
-        if (!m_currentPipeline)
-        {
-            throw std::runtime_error("Cannot bind descriptor set without a bound pipeline");
-        }
-
-        auto* vkPipeline = static_cast<VulkanGraphicsPipeline*>(m_currentPipeline);
-        auto* vkSet = static_cast<VulkanComputeRayTracingDescriptorSet*>(set);
-
-        VkDescriptorSet vkDescriptorSet = vkSet->vkDescriptorSet();
-        vkCmdBindDescriptorSets(m_commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                               vkPipeline->vkPipelineLayout(), setIndex, 1,
-                               &vkDescriptorSet, 0, nullptr);
-    }
 
     void VulkanGraphicsCommandBuffer::submit()
     {

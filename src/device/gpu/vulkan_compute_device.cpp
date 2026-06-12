@@ -1,15 +1,8 @@
 #include "vulkan_compute_device.hpp"
-#include "../../ray_tracing/ray_tracing_pipeline/ray_tracing_pipeline_layout.hpp"
-#include "../../ray_tracing/ray_tracing_pipeline/gpu/vulkan_compute_raytracing_descriptor_set.hpp"
 #include "vulkan_buffer.hpp"
 #include "vulkan_image_2d.hpp"
 #include "vulkan_compute_bottom_level_accelerations_structure.hpp"
 #include "vulkan_compute_top_level_acceleration_structure.hpp"
-#include "../../ray_tracing/shader_module/cpu/cpu_shader_module.hpp"
-#include "../../ray_tracing/ray_tracing_pipeline/cpu/cpu_shader_binding_table.hpp"
-#include "../../ray_tracing/ray_tracing_pipeline/gpu/vulkan_compute_raytracing_pipeline.hpp"
-#include "../../ray_tracing/ray_tracing_pipeline/gpu/wavefront/vulkan_wavefront_pipeline.hpp"
-#include "../../ray_tracing/ray_tracing_command_buffer/gpu/vulkan_compute_ray_tracing_command_buffer.hpp"
 #include <algorithm>
 #include <sstream>
 #include <array>
@@ -142,28 +135,6 @@ namespace tracey
         return m_vulkanContext.device();
     }
 
-    RayTracingPipeline *VulkanComputeDevice::createRayTracingPipeline(const RayTracingPipelineLayoutDescriptor &layout, const ShaderBindingTable *sbt)
-    {
-        return new VulkanComputeRaytracingPipeline(*this, layout, *dynamic_cast<const CpuShaderBindingTable *>(sbt));
-    }
-
-    RayTracingPipeline *VulkanComputeDevice::createWaveFrontRayTracingPipeline(const RayTracingPipelineLayoutDescriptor &layout, const ShaderBindingTable *sbt)
-    {
-        return new VulkanWaveFrontPipeline(*this, layout, *dynamic_cast<const CpuShaderBindingTable *>(sbt));
-    }
-
-    ShaderModule *VulkanComputeDevice::createShaderModule(ShaderStage stage, const std::string_view source, const std::string_view entryPoint)
-    {
-        return new CpuShaderModule(stage, source, entryPoint);
-    }
-    ShaderBindingTable *VulkanComputeDevice::createShaderBindingTable(const ShaderModule *rayGen, const std::span<const ShaderModule *> hitShaders, const std::span<const ShaderModule *> missShaders, const ShaderModule *resolveShader)
-    {
-        return new CpuShaderBindingTable(rayGen, hitShaders, missShaders, resolveShader);
-    }
-    RayTracingCommandBuffer *VulkanComputeDevice::createRayTracingCommandBuffer()
-    {
-        return new VulkanComputeRayTracingCommandBuffer(*this);
-    }
     Buffer *VulkanComputeDevice::createBuffer(uint32_t size, BufferUsage usageFlags)
     {
         return new VulkanBuffer(*this, size, usageFlags);

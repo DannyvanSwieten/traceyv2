@@ -6,7 +6,6 @@ namespace tracey
     class GraphicsPipeline;
     class Buffer;
     class Image2D;
-    class DescriptorSet;
 
     /// Abstract interface for graphics command buffer
     /// Records rendering commands (draw calls, state changes, etc.)
@@ -95,7 +94,6 @@ namespace tracey
         /// Bind descriptor set
         /// @param set Descriptor set to bind
         /// @param setIndex Descriptor set index (0, 1, 2, ...)
-        virtual void bindDescriptorSet(DescriptorSet* set, uint32_t setIndex = 0) = 0;
 
         /// Copy rendered image to buffer (for readback to CPU)
         virtual void copyImageToBuffer(const Image2D* image, Buffer* buffer) = 0;

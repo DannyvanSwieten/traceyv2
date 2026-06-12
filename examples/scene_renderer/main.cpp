@@ -78,15 +78,7 @@ int main(int argc, char *argv[])
     config.hdrOutput = true;
     config.useMaterialPrograms = true;
 
-    // Get shader paths
-    std::filesystem::path shaderDir = std::filesystem::path(__FILE__).parent_path() / "shaders";
-    config.rayGenShader = shaderDir / "ray_gen.glsl";
-    config.hitShader = shaderDir / "uber_hit.glsl";
-    config.missShader = shaderDir / "sky_miss.glsl";
-    config.resolveShader = shaderDir / "resolve.glsl";
-
-    // Create path tracer
-    std::cout << "Building pipeline from GLSL shader files..." << std::endl;
+    // Create path tracer (backend per config / TRACEY_PT_BACKEND).
     tracey::PathTracer pathTracer(computeDevice.get(), config);
     std::cout << "Pipeline built successfully!" << std::endl;
 

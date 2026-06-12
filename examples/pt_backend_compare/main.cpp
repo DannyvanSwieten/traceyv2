@@ -8,7 +8,7 @@
 // converged images must agree to a tight PSNR.
 //
 // Usage:
-//   pt_backend_compare [scene.glb] [--a wavefront] [--b metal]
+//   pt_backend_compare [scene.glb] [--a metal] [--b cpu]
 //                      [--spp 64] [--size 512] [--min-psnr 30]
 //                      [--out prefix]
 // Exit code 0 when PSNR >= threshold, 1 otherwise.
@@ -104,8 +104,8 @@ int main(int argc, char *argv[])
 {
     std::filesystem::path scenePath =
         std::filesystem::path(__FILE__).parent_path().parent_path() / "scenes" / "DamagedHelmet.glb";
-    std::string backendA = "wavefront";
-    std::string backendB = "metal";
+    std::string backendA = "metal";
+    std::string backendB = "cpu";
     uint32_t spp = 64;
     uint32_t size = 512;
     uint32_t bounces = 8;
@@ -162,9 +162,6 @@ int main(int argc, char *argv[])
 
     const tracey::Camera camera = autoFitCamera(*scene);
 
-    const std::filesystem::path shaderDir =
-        std::filesystem::path(__FILE__).parent_path().parent_path() / "scene_renderer" / "shaders";
-
     auto renderWith = [&](const std::string &backendName) -> std::vector<float> {
         tracey::PathTracerConfig config;
         config.width = size;
@@ -173,10 +170,6 @@ int main(int argc, char *argv[])
         config.useMaterialPrograms = true;
         config.samplesPerFrame = 1;
         config.maxBounces = bounces;
-        config.rayGenShader = shaderDir / "ray_gen.glsl";
-        config.hitShader = shaderDir / "uber_hit.glsl";
-        config.missShader = shaderDir / "sky_miss.glsl";
-        config.resolveShader = shaderDir / "resolve.glsl";
         config.backend = tracey::pathTracerBackendKindFromString(backendName);
 
         tracey::PathTracer tracer(device.get(), config);

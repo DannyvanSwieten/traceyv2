@@ -35,10 +35,6 @@ void RenderEngine::initialize_path_tracer() {
     tracey::PathTracerConfig pt_config;
     pt_config.width = m_pt_width;
     pt_config.height = m_pt_height;
-    pt_config.rayGenShader = m_config.shader_dir / "ray_gen.glsl";
-    pt_config.hitShader = m_config.shader_dir / "uber_hit.glsl";
-    pt_config.missShader = m_config.shader_dir / "sky_miss.glsl";
-    pt_config.resolveShader = m_config.shader_dir / "resolve.glsl";
     pt_config.hdrOutput = m_config.hdr_output;
     // One sample per render_tick. Accumulation stops once max_samples is
     // reached (enforced in EditorServer::render_tick).

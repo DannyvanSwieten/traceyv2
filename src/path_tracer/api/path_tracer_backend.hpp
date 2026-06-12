@@ -5,7 +5,7 @@
 #include "device/buffer.hpp"
 #include "scene/scene_compiler.hpp"
 #include "shading/material_program/material_program.hpp"
-#include "ray_tracing/ray_tracing_pipeline/data_structure.hpp"
+#include "rendering/data_structure.hpp"
 #include "shader_inputs_buffer.hpp"
 
 #include <memory>
@@ -19,10 +19,9 @@ namespace tracey
     enum class PathTracerBackendKind
     {
         Auto,
-        WavefrontCompute, // Vulkan compute, software BVH (to be retired)
-        MetalRT,          // macOS, Metal ray tracing (hardware on M3+)
-        VulkanRT,         // VK_KHR_ray_tracing (Windows/Linux RT GPUs) — stub
-        Cpu,              // native CPU fallback
+        MetalRT,  // macOS, Metal ray tracing (hardware on M3+)
+        VulkanRT, // VK_KHR_ray_tracing (Windows/Linux RT GPUs) — stub
+        Cpu,      // native CPU fallback
     };
 
     // Who owns the presentable output image, and in what form the backend
@@ -30,7 +29,8 @@ namespace tracey
     enum class PathTracerOutputKind
     {
         // Backend writes into the façade-owned output/accumulator images and
-        // copies into the façade-owned readback buffer (wavefront compute).
+        // copies into the façade-owned readback buffer (the future VulkanRT
+        // backend renders this way).
         FacadeImage,
         // Backend owns a presentable Image2D (e.g. Metal RT rendering into an
         // IOSurface-backed texture surfaced as a VulkanImage2D). The façade

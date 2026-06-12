@@ -1,7 +1,6 @@
 #include "backend_registry.hpp"
 
 #include "../backends/cpu/cpu_path_tracer_backend.hpp"
-#include "../backends/wavefront/wavefront_compute_backend.hpp"
 #ifdef TRACEY_PT_HAS_METAL
 #include "../backends/metal/metal_pathtracer_backend.hpp"
 #endif
@@ -25,7 +24,6 @@ namespace tracey
     PathTracerBackendKind pathTracerBackendKindFromString(const std::string &name)
     {
         const std::string n = toLower(name);
-        if (n == "wavefront")  return PathTracerBackendKind::WavefrontCompute;
         if (n == "metal")      return PathTracerBackendKind::MetalRT;
         if (n == "vulkan_rt")  return PathTracerBackendKind::VulkanRT;
         if (n == "cpu")        return PathTracerBackendKind::Cpu;
@@ -36,9 +34,8 @@ namespace tracey
     {
         switch (kind)
         {
-        case PathTracerBackendKind::Auto:             return "auto";
-        case PathTracerBackendKind::WavefrontCompute: return "wavefront";
-        case PathTracerBackendKind::MetalRT:          return "metal";
+        case PathTracerBackendKind::Auto:     return "auto";
+        case PathTracerBackendKind::MetalRT:  return "metal";
         case PathTracerBackendKind::VulkanRT:         return "vulkan_rt";
         case PathTracerBackendKind::Cpu:              return "cpu";
         }
@@ -51,10 +48,6 @@ namespace tracey
         {
         case PathTracerBackendKind::Auto:
             return true;
-        case PathTracerBackendKind::WavefrontCompute:
-            // Needs a compute device (the editor and examples always
-            // construct one).
-            return device != nullptr;
         case PathTracerBackendKind::MetalRT:
 #ifdef TRACEY_PT_HAS_METAL
             return metalRTBackendSupported(device);
@@ -83,20 +76,37 @@ namespace tracey
             kind = pathTracerBackendKindFromString(env);
         }
 
+        auto construct = [](PathTracerBackendKind k) -> std::unique_ptr<PathTracerBackend> {
+            switch (k)
+            {
+            case PathTracerBackendKind::MetalRT:
+#ifdef TRACEY_PT_HAS_METAL
+                return createMetalRTBackend();
+#else
+                break;
+#endif
+            case PathTracerBackendKind::Cpu:
+                return std::make_unique<CpuPathTracerBackend>();
+            case PathTracerBackendKind::VulkanRT:
+            case PathTracerBackendKind::Auto:
+                break;
+            }
+            throw std::runtime_error("Unreachable: unhandled path tracer backend kind");
+        };
+
         if (kind == PathTracerBackendKind::Auto)
         {
-            // Preference order. Today: wavefront. End state once the
-            // platform backends land: MetalRT (macOS) → VulkanRT → Cpu.
+            // Preference order: platform-native hardware RT first, then
+            // the universal CPU fallback.
             const PathTracerBackendKind order[] = {
                 PathTracerBackendKind::MetalRT,
                 PathTracerBackendKind::VulkanRT,
-                PathTracerBackendKind::WavefrontCompute,
                 PathTracerBackendKind::Cpu,
             };
             for (PathTracerBackendKind candidate : order)
             {
                 if (isPathTracerBackendAvailable(candidate, device))
-                    return createPathTracerBackend(candidate, device);
+                    return construct(candidate);
             }
             throw std::runtime_error("No path tracer backend available on this machine");
         }
@@ -107,23 +117,6 @@ namespace tracey
                                      pathTracerBackendKindName(kind) +
                                      "' is not available on this machine");
         }
-
-        switch (kind)
-        {
-        case PathTracerBackendKind::WavefrontCompute:
-            return std::make_unique<WavefrontComputeBackend>();
-        case PathTracerBackendKind::MetalRT:
-#ifdef TRACEY_PT_HAS_METAL
-            return createMetalRTBackend();
-#else
-            break;
-#endif
-        case PathTracerBackendKind::Cpu:
-            return std::make_unique<CpuPathTracerBackend>();
-        case PathTracerBackendKind::VulkanRT:
-        case PathTracerBackendKind::Auto:
-            break;
-        }
-        throw std::runtime_error("Unreachable: unhandled path tracer backend kind");
+        return construct(kind);
     }
 } // namespace tracey

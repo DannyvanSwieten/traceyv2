@@ -36,7 +36,6 @@ namespace tracey
         void draw(uint32_t vertexCount, uint32_t instanceCount,
                  uint32_t firstVertex, uint32_t firstInstance) override;
         void pushConstants(const void* data, uint32_t size, uint32_t offset) override;
-        void bindDescriptorSet(DescriptorSet* set, uint32_t setIndex) override;
         void copyImageToBuffer(const Image2D* image, Buffer* buffer) override;
         void waitUntilCompleted() override;
         void submit() override;

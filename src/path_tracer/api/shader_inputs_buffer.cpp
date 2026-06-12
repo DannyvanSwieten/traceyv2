@@ -1,5 +1,5 @@
 #include "shader_inputs_buffer.hpp"
-#include "ray_tracing/ray_tracing_pipeline/glsl_layout.hpp"
+#include "rendering/glsl_layout.hpp"
 
 #include <stdexcept>
 

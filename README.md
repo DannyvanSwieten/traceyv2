@@ -52,7 +52,10 @@ automatically — no separate frontend step required.
 
 ```
 src/                   Engine library (renderer, scene, SOP/VOP framework)
-  rendering/           Path tracer, rasterizer, post-processing
+  path_tracer/         Path tracer module (tracey_pathtracer library):
+                       Metal RT backend (macOS, hardware RT on M3+),
+                       native CPU fallback, Vulkan-RT slot for Windows
+  rendering/           Vulkan rasterizer (live viewport), post-processing
   scene/               Scene graph, glTF loader, scene compiler (TLAS)
   sops/                Surface-operator nodes (geometry graph)
   vops/                Per-point attribute graph nodes

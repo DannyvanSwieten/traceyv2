@@ -72,6 +72,10 @@ add_library(tracey
     src/scene/camera.hpp
     src/scene/camera.cpp
 
+    src/rendering/data_structure.hpp
+    src/rendering/data_structure.cpp
+    src/rendering/glsl_layout.hpp
+    src/rendering/glsl_layout.cpp
     src/rendering/post_processing.hpp
     src/rendering/post_processing.cpp
     src/rendering/rasterizer.hpp
@@ -234,51 +238,12 @@ add_library(tracey
     src/device/cpu/cpu_top_level_acceleration_structure.hpp
     src/device/cpu/cpu_top_level_acceleration_structure.cpp
 
-    src/ray_tracing/ray_tracing_pipeline/ray_tracing_pipeline.hpp
-    src/ray_tracing/ray_tracing_pipeline/ray_tracing_pipeline_layout.hpp
-    src/ray_tracing/ray_tracing_pipeline/ray_tracing_pipeline_layout.cpp
 
-    src/ray_tracing/ray_tracing_pipeline/shader_binding_table.hpp
-    src/ray_tracing/ray_tracing_pipeline/data_structure.hpp
-    src/ray_tracing/ray_tracing_pipeline/data_structure.cpp
-    src/ray_tracing/ray_tracing_pipeline/glsl_layout.hpp
-    src/ray_tracing/ray_tracing_pipeline/glsl_layout.cpp
 
-    src/ray_tracing/ray_tracing_pipeline/cpu/cpu_shader_binding_table.hpp
-    src/ray_tracing/ray_tracing_pipeline/cpu/cpu_shader_binding_table.cpp
-    src/ray_tracing/ray_tracing_pipeline/cpu/cpu_ray_tracing_pipeline.hpp
-    src/ray_tracing/ray_tracing_pipeline/cpu/cpu_ray_tracing_pipeline.cpp
-    src/ray_tracing/ray_tracing_pipeline/descriptor_set.hpp
-    src/ray_tracing/ray_tracing_pipeline/cpu/cpu_descriptor_set.hpp
-    src/ray_tracing/ray_tracing_pipeline/cpu/cpu_descriptor_set.cpp
-    src/ray_tracing/ray_tracing_pipeline/cpu/cpu_pipeline_compiler.hpp
-    src/ray_tracing/ray_tracing_pipeline/cpu/cpu_pipeline_compiler.cpp
-    src/ray_tracing/ray_tracing_pipeline/cpu/trace_rays_ext.hpp
-    src/ray_tracing/ray_tracing_pipeline/cpu/trace_rays_ext.cpp
 
-    src/ray_tracing/ray_tracing_pipeline/gpu/vulkan_compute_raytracing_pipeline.hpp
-    src/ray_tracing/ray_tracing_pipeline/gpu/vulkan_compute_raytracing_pipeline.cpp
-    src/ray_tracing/ray_tracing_pipeline/gpu/vulkan_compute_raytracing_descriptor_set.hpp
-    src/ray_tracing/ray_tracing_pipeline/gpu/vulkan_compute_raytracing_descriptor_set.cpp
-    src/ray_tracing/ray_tracing_pipeline/gpu/vulkan_compute_pipeline_compiler.hpp
-    src/ray_tracing/ray_tracing_pipeline/gpu/vulkan_compute_pipeline_compiler.cpp
-    src/ray_tracing/ray_tracing_pipeline/gpu/wavefront/vulkan_wavefront_pipeline.hpp
-    src/ray_tracing/ray_tracing_pipeline/gpu/wavefront/vulkan_wavefront_pipeline.cpp
 
-    src/ray_tracing/ray_tracing_command_buffer/ray_tracing_command_buffer.hpp
-    src/ray_tracing/ray_tracing_command_buffer/cpu/cpu_ray_tracing_command_buffer.hpp
-    src/ray_tracing/ray_tracing_command_buffer/cpu/cpu_ray_tracing_command_buffer.cpp
-    src/ray_tracing/ray_tracing_command_buffer/gpu/vulkan_compute_ray_tracing_command_buffer.hpp
-    src/ray_tracing/ray_tracing_command_buffer/gpu/vulkan_compute_ray_tracing_command_buffer.cpp
 
-    src/ray_tracing/shader_module/shader_module.hpp
-    src/ray_tracing/shader_module/cpu/cpu_shader_module.hpp
-    src/ray_tracing/shader_module/cpu/cpu_shader_module.cpp
 
-    src/ray_tracing/shader_builder/glsl_preprocessor.hpp
-    src/ray_tracing/shader_builder/glsl_preprocessor.cpp
-    src/ray_tracing/shader_builder/ray_tracing_shader_builder.hpp
-    src/ray_tracing/shader_builder/ray_tracing_shader_builder.cpp
 )
 
 # Define DEBUG for Debug builds, NDEBUG for non-Debug
@@ -387,8 +352,6 @@ add_library(tracey_pathtracer
     src/path_tracer/api/shader_inputs_buffer.hpp
     src/path_tracer/api/shader_inputs_buffer.cpp
     src/path_tracer/api/shader_inputs_view.hpp
-    src/path_tracer/backends/wavefront/wavefront_compute_backend.hpp
-    src/path_tracer/backends/wavefront/wavefront_compute_backend.cpp
     src/path_tracer/backends/cpu/cpu_path_tracer_backend.hpp
     src/path_tracer/backends/cpu/cpu_path_tracer_backend.cpp
     src/path_tracer/backends/cpu/cpu_texture.hpp

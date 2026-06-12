@@ -2,11 +2,6 @@
 #include "cpu_buffer.hpp"
 #include "cpu_image_2d.hpp"
 #include "cpu_bottom_level_acceleration_structure.hpp"
-#include "../../ray_tracing/shader_module/cpu/cpu_shader_module.hpp"
-#include "../../ray_tracing/ray_tracing_pipeline/cpu/cpu_shader_binding_table.hpp"
-#include "../../ray_tracing/ray_tracing_pipeline/cpu/cpu_descriptor_set.hpp"
-#include "../../ray_tracing/ray_tracing_pipeline/cpu/cpu_ray_tracing_pipeline.hpp"
-#include "../../ray_tracing/ray_tracing_command_buffer/cpu/cpu_ray_tracing_command_buffer.hpp"
 #include "../../device/cpu/cpu_top_level_acceleration_structure.hpp"
 #include <sstream>
 namespace tracey
@@ -19,34 +14,6 @@ namespace tracey
     {
     }
 
-    RayTracingPipeline *CpuComputeDevice::createRayTracingPipeline(const RayTracingPipelineLayoutDescriptor &layout, const ShaderBindingTable *sbt)
-    {
-        auto cpuSbt = dynamic_cast<const CpuShaderBindingTable *>(sbt);
-        if (!cpuSbt)
-        {
-            return nullptr;
-        }
-        return new CpuRayTracingPipeline(layout, *cpuSbt);
-    }
-
-    RayTracingPipeline *CpuComputeDevice::createWaveFrontRayTracingPipeline(const RayTracingPipelineLayoutDescriptor &layout, const ShaderBindingTable *sbt)
-    {
-        // WaveFront pipelines are not supported on CPU devices
-        return nullptr;
-    }
-
-    ShaderModule *CpuComputeDevice::createShaderModule(ShaderStage stage, const std::string_view source, const std::string_view entryPoint)
-    {
-        return new CpuShaderModule(stage, source, entryPoint);
-    }
-    ShaderBindingTable *CpuComputeDevice::createShaderBindingTable(const ShaderModule *rayGen, const std::span<const ShaderModule *> hitShaders, const std::span<const ShaderModule *> missShaders, const ShaderModule *resolveShader)
-    {
-        return new CpuShaderBindingTable(rayGen, hitShaders, missShaders, resolveShader);
-    }
-    RayTracingCommandBuffer *CpuComputeDevice::createRayTracingCommandBuffer()
-    {
-        return new CpuRayTracingCommandBuffer();
-    }
     // void CpuComputeDevice::allocateDescriptorSets(std::span<DescriptorSet *> sets, const RayTracingPipelineLayoutDescriptor &layout)
     // {
     //     for (auto &set : sets)

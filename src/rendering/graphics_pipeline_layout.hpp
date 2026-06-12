@@ -2,7 +2,7 @@
 #include <vector>
 #include <string>
 #include "../device/device.hpp"
-#include "../ray_tracing/ray_tracing_pipeline/data_structure.hpp"
+#include "data_structure.hpp"
 
 namespace tracey
 {
