@@ -89,10 +89,58 @@ export function isNodeSelected(uid: number): boolean {
 
 let pushTimer: ReturnType<typeof setTimeout> | null = null;
 let dirty = false;
-// True debounce, not a throttle: every edit restarts the timer so a typing
-// burst (or a dragged number-input spinner) coalesces into ONE push once
-// activity stops. 300ms feels live without thrashing the cook.
+// Trailing debounce: every edit restarts the timer so a typing burst
+// coalesces into ONE authoritative final push once activity stops. This
+// push also persists position-only edits and closes the undo burst (resets
+// `dirty`), so it owns undo granularity — one entry per burst.
 const PUSH_DEBOUNCE_MS = 300;
+
+// Live-feedback throttle, layered on top of the debounce. The debounce alone
+// means a continuous edit (slider drag, number-box scrub) doesn't reach the
+// engine until the drag STOPS — the viewport jumps to the final value
+// instead of tracking the gesture. This throttle streams cook-relevant
+// intermediate states to the engine at a bounded rate (~16/s) during the
+// burst so the viewport follows along. The engine coalesces cook requests
+// latest-wins (post_cook_request overwrites a single pending slot), so
+// dropped intermediates are harmless and the worker never backs up. It does
+// NOT touch `dirty` — the trailing debounce still owns the final push and
+// undo-burst close, so live streaming can't fragment undo history.
+let liveCooldown = false;
+let livePending = false;
+const PUSH_LIVE_MS = 60;
+
+function doLivePush() {
+  liveCooldown = true;
+  livePending = false;
+  const snapshot = graph();
+  // Only stream when geometry actually changes (a cook is warranted).
+  // Position-only edits (canvas node drags) leave structuralKey unchanged
+  // and ride the trailing debounce with cook:false, exactly as before.
+  if (structuralKey(snapshot) !== structuralKey(lastCommittedGraph)) {
+    lastCommittedGraph = structuredClone(snapshot);
+    api.send<null>('set_sop_graph', {
+      graph: JSON.stringify(snapshot),
+      cook: true,
+    }).catch((e) => {
+      const msg = e instanceof Error ? e.message : JSON.stringify(e);
+      console.error('Failed to push SOP graph (live):', msg);
+    });
+  }
+  setTimeout(() => {
+    liveCooldown = false;
+    // A trailing edit arrived during the cooldown — flush the latest now so
+    // the gesture's end state isn't stuck waiting on the 300ms debounce.
+    if (livePending && dirty) doLivePush();
+  }, PUSH_LIVE_MS);
+}
+
+function scheduleLivePush() {
+  if (liveCooldown) {
+    livePending = true;
+    return;
+  }
+  doLivePush();
+}
 
 // ── Undo / redo ─────────────────────────────────────────────────────────
 //
@@ -162,6 +210,9 @@ function schedulePush() {
     snapshotForUndo();
   }
   dirty = true;
+  // Stream intermediate states so the viewport tracks a drag (throttled);
+  // the debounced push below remains the authoritative final commit.
+  scheduleLivePush();
   if (pushTimer !== null) clearTimeout(pushTimer);
   pushTimer = setTimeout(async () => {
     pushTimer = null;
