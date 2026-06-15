@@ -11,14 +11,6 @@
 
 .number-input.number-input--scrubbing {
   border-color: #5a8 !important;
+  -webkit-user-select: none;
   user-select: none;
-}
-
-/* The native webkit spin buttons fight with the scrub gesture for the
- * same few pixels and none of the 3D packages show them — hide them.
- * Arrow keys / drag cover stepping. */
-.number-input::-webkit-outer-spin-button,
-.number-input::-webkit-inner-spin-button {
-  -webkit-appearance: none;
-  margin: 0;
 }

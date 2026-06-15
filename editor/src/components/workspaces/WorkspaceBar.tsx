@@ -33,7 +33,7 @@ export const WorkspaceBar: Component<WorkspaceBarProps> = (props) => {
           class="workspace-bar-toggle"
           classList={{ 'workspace-bar-toggle--on': autoKeyEnabled() }}
           onClick={() => toggleAutoKey()}
-          title="When on, G/R/S transform commits automatically key the selected actor at the playhead."
+          title="When on, parameter edits and G/R/S transform commits automatically key at the playhead. Same toggle as the playbar's AK."
         >
           <span class="workspace-bar-dot" classList={{ 'workspace-bar-dot--on': autoKeyEnabled() }} />
           Auto-Key

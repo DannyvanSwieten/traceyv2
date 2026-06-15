@@ -1,16 +1,16 @@
-// Animation workspace "auto-key" toggle. When enabled, transform commits
-// (grab/rotate/scale via the G/R/S modal, plus inspector edits in the
-// future) automatically write a keyframe at the current playhead for the
-// affected channels. Inspired by Maya's auto-key mode.
+// Auto-key mode — single source of truth lives in stores/timeline.ts.
 //
-// The actual key-writing happens in App.tsx where the selected-actor +
-// SOP graph context is already available; this module just owns the
-// boolean signal so other parts of the UI can show/hide affordances or
-// gate behaviour without prop-drilling.
-
-import { createSignal } from 'solid-js';
-
-const [enabled, setEnabledInternal] = createSignal(false);
-export const autoKeyEnabled = enabled;
-export function setAutoKey(v: boolean): void { setEnabledInternal(v); }
-export function toggleAutoKey(): void { setEnabledInternal((v) => !v); }
+// This module used to own a SECOND, independent auto-key signal, which meant
+// the editor had two "auto-key" toggles that didn't agree: the playbar "AK"
+// button (timeline.autoKey, gating inspector + actor-property edits) and the
+// Animation-workspace "Auto-Key" button (this module, gating only G/R/S
+// viewport-transform commits). Whichever one you pressed, half the editing
+// surface ignored it. We now re-export the timeline signal under the names
+// this module historically exposed, so every toggle and every gate —
+// playbar, workspace bar, inspector edits, and the G/R/S commit path —
+// shares one boolean.
+export {
+  autoKey as autoKeyEnabled,
+  setAutoKey,
+  toggleAutoKey,
+} from '../stores/timeline';

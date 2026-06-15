@@ -11,9 +11,9 @@ import {
   lookupCatalog,
   SopNode,
 } from '../../lib/sop_graph';
-import { currentGraph, selectedNode, setParam } from '../../stores/sops';
+import { currentGraph, selectedNode, setParam, setParamKeyframe } from '../../stores/sops';
 import { openVopEditor } from '../../stores/vops';
-import { autoKey, setKeyAtPlayhead } from '../../stores/timeline';
+import { autoKey, timeline } from '../../stores/timeline';
 import * as api from '../../lib/api';
 import { NumberInput } from '../number-input/NumberInput';
 import { KeyframeDot } from '../keyframe-dot/KeyframeDot';
@@ -180,12 +180,16 @@ const ParamRow: Component<ParamRowProps> = (props) => {
       // 'string' isn't animatable — channels are numeric.
     }
     if (numeric === null) return;
-    setKeyAtPlayhead({
-      nodeUid: props.node.uid,
-      paramName: props.spec.name,
+    // Write the key into the local graph (NOT the param_set_keyframe IPC) so
+    // it rides the same debounced push as the constant edit above — see
+    // setParamKeyframe for why the IPC path silently lost the key here.
+    setParamKeyframe(
+      props.node.uid,
+      props.spec.name,
       component,
-      value: numeric,
-    }).catch((e) => console.warn('autokey failed:', e));
+      timeline().current_time,
+      numeric,
+    );
   }
 
   const DemoteBtn = () => (

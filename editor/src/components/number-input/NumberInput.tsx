@@ -166,7 +166,15 @@ export const NumberInput: Component<NumberInputProps> = (props) => {
   return (
     <input
       ref={inputRef}
-      type="number"
+      // type="text" (not "number") on purpose: a controlled <input
+      // type=number> reports `.value === ""` for intermediate invalid
+      // states like a lone "-" or "1.", so onInput would store "" and the
+      // controlled binding would wipe the character the user just typed
+      // (the classic "minus has to be pressed twice" bug). We parse and
+      // validate in commit() ourselves, and the spinner/step/scrub
+      // behaviour is all custom, so the native number type buys nothing.
+      type="text"
+      inputmode="decimal"
       id={props.id}
       class={props.class}
       classList={{
@@ -175,9 +183,6 @@ export const NumberInput: Component<NumberInputProps> = (props) => {
         'number-input--idle': !focused(),
       }}
       title={props.title}
-      step={props.step ?? 0.1}
-      min={props.min}
-      max={props.max}
       value={text()}
       onInput={(e) => setText(e.currentTarget.value)}
       onPointerDown={onPointerDown}

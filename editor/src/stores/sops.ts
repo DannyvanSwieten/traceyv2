@@ -18,6 +18,10 @@ import {
   SopNode,
   SopConnection,
   ParamValue,
+  Channel,
+  Channels,
+  Interp,
+  Keyframe,
   emptyGraph,
   syncNextUidRecursive,
   makeNode,
@@ -477,6 +481,65 @@ export function setParam(uid: number, paramName: string, value: ParamValue): voi
             ? { ...value, channels }
             : value;
         return { ...n, params: { ...n.params, [paramName]: next } };
+      }),
+    })),
+  );
+  schedulePush();
+}
+
+// Upsert a keyframe directly into the LOCAL graph (and schedule a push),
+// rather than via the param_set_keyframe IPC. Used by auto-key on inspector
+// param edits: those edits also call setParam(), which schedules a full
+// set_sop_graph push. If we keyed out-of-band through the IPC, that pending
+// push would (a) suppress the sop_graph_changed reload that would surface
+// the key, and (b) 300 ms later overwrite the backend graph with the local
+// copy — which never had the key — silently deleting it. Writing the key
+// into the local graph means the single debounced push carries the constant
+// AND the channel together, and the key shows immediately (reactive store).
+//
+// `time` is in seconds. Replacing a key at the same time preserves its
+// existing tangents (so auto-keying over a curve-editor-shaped key doesn't
+// flatten it); a brand-new key gets zero tangents, matching the engine's
+// setKey default.
+export function setParamKeyframe(
+  uid: number,
+  paramName: string,
+  component: number,
+  time: number,
+  value: number,
+  interp: Interp = 'linear',
+): void {
+  setGraphInternal((g) =>
+    updateAtPath(g, currentPathInternal(), (sg) => ({
+      ...sg,
+      nodes: sg.nodes.map((n) => {
+        if (n.uid !== uid) return n;
+        const prev = n.params[paramName];
+        if (!prev || prev.type === 'string') return n; // not animatable
+        const slots = prev.type === 'vec3' ? 3 : 1;
+        if (component < 0 || component >= slots) return n;
+        // Normalize the channels array to `slots` entries, cloning the
+        // target channel so we don't mutate the previous (immutable) state.
+        const channels: Channels = [];
+        for (let i = 0; i < slots; ++i) channels[i] = prev.channels?.[i] ?? null;
+        const existing = channels[component];
+        const ch: Channel = existing
+          ? { ...existing, keys: existing.keys.slice() }
+          : { keys: [], pre: 'hold', post: 'hold' };
+        const eps = 1e-6;
+        const idx = ch.keys.findIndex((k) => Math.abs(k.t - time) < eps);
+        if (idx >= 0) {
+          ch.keys[idx] = { ...ch.keys[idx], v: value, i: interp };
+        } else {
+          const key: Keyframe = { t: time, v: value, in: 0, out: 0, i: interp };
+          ch.keys.push(key);
+          ch.keys.sort((a, b) => a.t - b.t);
+        }
+        channels[component] = ch;
+        return {
+          ...n,
+          params: { ...n.params, [paramName]: { ...prev, channels } },
+        };
       }),
     })),
   );
