@@ -545,8 +545,9 @@ kernel void pathtrace(
                 accum += color * emission;
             }
 
-            // NEE — unshadowed; dome handled by the miss shader; skipped for
-            // glass (pure delta lobes have no diffuse term).
+            // NEE — direct lighting with shadow rays. Dome is handled by the
+            // miss shader; skipped for glass (pure delta lobes have no diffuse
+            // term).
             if (U.lightCount > 0u && !isGlass) {
                 const float3 diffuseBrdf = albedo * (1.0 - metallic) * (1.0 / 3.14159265);
                 for (uint li = 0u; li < U.lightCount; ++li) {
@@ -559,24 +560,38 @@ kernel void pathtrace(
 
                     float3 Ldir;
                     float falloff;
+                    float lightDist;  // shadow-ray reach
                     if (ltype == 0) {
                         const float3 toLight = posType.xyz - hitPos;
                         const float distSq = max(dot(toLight, toLight), 1e-4);
                         const float rad = colorExtra.w;
                         Ldir = toLight * rsqrt(distSq);
                         falloff = 1.0 / (distSq + rad * rad);
+                        lightDist = sqrt(distSq);
                     } else if (ltype == 3) {
                         const float aw = colorExtra.w;
                         const float ah = lights[li * 6u + 3u].w;
                         Ldir = -normalize(dirIntens.xyz);
                         falloff = max(aw * ah, 1e-4);
+                        lightDist = length(posType.xyz - hitPos);
                     } else {
                         Ldir = -normalize(dirIntens.xyz);
                         falloff = 1.0;
+                        lightDist = 1.0e6;  // distant/sun: anything in the way occludes
                     }
 
                     const float NdotLlight = max(dot(N, Ldir), 0.0);
                     if (NdotLlight <= 0.0) continue;
+
+                    // Shadow ray: skip this light's contribution if blocked.
+                    // Offset along N to avoid self-shadow acne; stop just short
+                    // of the light so the light's own geometry doesn't occlude.
+                    ray sray;
+                    sray.origin = hitPos + N * 0.001;
+                    sray.direction = Ldir;
+                    sray.min_distance = 0.001;
+                    sray.max_distance = max(lightDist - 0.002, 0.002);
+                    if (isect.intersect(sray, accel).type != intersection_type::none) continue;
 
                     const float3 Li = colorExtra.xyz * dirIntens.w * falloff;
                     accum += color * diffuseBrdf * Li * NdotLlight;

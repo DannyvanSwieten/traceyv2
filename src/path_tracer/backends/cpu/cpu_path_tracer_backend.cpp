@@ -539,6 +539,7 @@ namespace tracey
 
                                 glm::vec3 Ldir;
                                 float falloff;
+                                float lightDist;  // shadow-ray reach
                                 if (ltype == 0)
                                 {
                                     const glm::vec3 toLight = glm::vec3(posType) - hitPos;
@@ -546,6 +547,7 @@ namespace tracey
                                     const float rad = colorExtra.w;
                                     Ldir = toLight * (1.0f / std::sqrt(distSq));
                                     falloff = 1.0f / (distSq + rad * rad);
+                                    lightDist = std::sqrt(distSq);
                                 }
                                 else if (ltype == 3)
                                 {
@@ -553,15 +555,27 @@ namespace tracey
                                     const float ah = slots[li * 6u + 3u].w;
                                     Ldir = -glm::normalize(glm::vec3(dirIntens));
                                     falloff = std::max(aw * ah, 1e-4f);
+                                    lightDist = glm::length(glm::vec3(posType) - hitPos);
                                 }
                                 else
                                 {
                                     Ldir = -glm::normalize(glm::vec3(dirIntens));
                                     falloff = 1.0f;
+                                    lightDist = 1.0e6f;  // distant/sun
                                 }
 
                                 const float NdotLlight = std::max(glm::dot(N, Ldir), 0.0f);
                                 if (NdotLlight <= 0.0f) continue;
+
+                                // Shadow ray: skip if the light is occluded.
+                                Ray sray;
+                                sray.origin = hitPos + N * 0.001f;
+                                sray.direction = Ldir;
+                                sray.invDirection = glm::vec3(1.0f) / sray.direction;
+                                if (m_tlas->intersect(sray, 0.001f,
+                                                      std::max(lightDist - 0.002f, 0.002f),
+                                                      RAY_FLAG_NONE))
+                                    continue;
 
                                 const glm::vec3 Li = glm::vec3(colorExtra) * dirIntens.w * falloff;
                                 accum += color * diffuseBrdf * Li * NdotLlight;
