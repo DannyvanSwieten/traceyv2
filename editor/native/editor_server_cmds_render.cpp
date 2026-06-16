@@ -66,17 +66,15 @@ std::optional<std::string> EditorServer::handle_render_commands(
         if (cmd == "set_viewport_resolution") {
             const uint32_t w = req.at("width").get<uint32_t>();
             const uint32_t h = req.at("height").get<uint32_t>();
-            const InsetRect r = compute_inset_rect(w, h);
-            // set_resolutions skips work if neither raster nor PT size actually
-            // changed; only invalidate the accumulator when it did. The
-            // frontend reports rect changes on every layout shift, so clearing
-            // unconditionally here would prevent any path-tracer accumulation.
-            const auto [oldR_w, oldR_h] = m_engine->resolution();
-            const auto [oldP_w, oldP_h] = m_engine->pt_resolution();
-            const bool sizes_changed =
-                w != oldR_w || h != oldR_h || r.w != oldP_w || r.h != oldP_h;
-            m_engine->set_resolutions(w, h, r.w, r.h);
-            if (sizes_changed) m_clear_next_frame = true;
+            // Record the authoritative device-pixel viewport size, then let
+            // apply_pt_resolution pick the right PT size for the current state
+            // (fullscreen render → match the viewport; PiP → inset rect; honour
+            // an explicit render-resolution override). Previously this path
+            // hardcoded the inset rect, so a resize in the Render workspace
+            // reset the fullscreen PT to inset size + aspect → stretched.
+            m_viewport_pixel_w = w;
+            m_viewport_pixel_h = h;
+            apply_pt_resolution();
             return ok_response_null();
         }
         if (cmd == "get_max_samples") {

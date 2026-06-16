@@ -308,10 +308,17 @@ void EditorServer::apply_pt_resolution() {
         pt_w = r.w;
         pt_h = r.h;
     }
+    // Only clear the accumulator when the size actually changed — this helper
+    // is called on every viewport-resolution report (which the frontend sends
+    // on any layout shift), and an unconditional clear would stop the path
+    // tracer ever accumulating.
+    const auto [oldR_w, oldR_h] = m_engine->resolution();
+    const auto [oldP_w, oldP_h] = m_engine->pt_resolution();
     m_engine->set_resolutions(m_viewport_pixel_w, m_viewport_pixel_h, pt_w, pt_h);
-    // Resolution changed → accumulator buffer was reallocated; clear so
-    // we don't show one frame of garbage on transition.
-    m_clear_next_frame = true;
+    const auto [newR_w, newR_h] = m_engine->resolution();
+    const auto [newP_w, newP_h] = m_engine->pt_resolution();
+    if (newR_w != oldR_w || newR_h != oldR_h || newP_w != oldP_w || newP_h != oldP_h)
+        m_clear_next_frame = true;
 }
 
 // Cook the SOP graph and rebuild the live scene from the result. Must be
