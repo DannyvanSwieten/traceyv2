@@ -36,6 +36,7 @@ namespace tracey
         void registerSpiralSop();
         void registerResampleSop();
         void registerSweepSop();
+        void registerMoTextSop();
 
         void registerBuiltinSops()
         {
@@ -46,6 +47,7 @@ namespace tracey
             registerLineSop();
             registerCircleSop();
             registerSpiralSop();
+            registerMoTextSop();
             registerPointsGridSop();
             registerScatterSop();
             registerCopyToPointsSop();

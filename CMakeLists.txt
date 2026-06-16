@@ -156,6 +156,7 @@ add_library(tracey
     src/sops/nodes/spiral_sop.cpp
     src/sops/nodes/resample_sop.cpp
     src/sops/nodes/sweep_sop.cpp
+    src/sops/nodes/mo_text_sop.cpp
 
     # ── VOPs (per-point attribute graph hosted inside attribute_vop SOP) ──
     src/vops/parameter.hpp
@@ -341,6 +342,8 @@ target_include_directories(tracey
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/deps/tinygltf
+    ${CMAKE_CURRENT_SOURCE_DIR}/deps/stb
+    ${CMAKE_CURRENT_SOURCE_DIR}/deps/earcut
 )
 
 # Additional libraries needed when using pkg-config on Unix/Linux/macOS

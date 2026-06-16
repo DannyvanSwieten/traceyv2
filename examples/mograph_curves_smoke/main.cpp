@@ -19,8 +19,10 @@
 
 #include <cmath>
 #include <cstdio>
+#include <fstream>
 #include <functional>
 #include <memory>
+#include <string>
 #include <vector>
 
 namespace {
@@ -317,6 +319,64 @@ int main()
         });
         check(open.pointCount() == 40, "no-caps tube has 40 points");
         check(open.primitiveCount() == 64, "no-caps tube has 64 wall triangles");
+    }
+
+    // ── MoText (extruded 3D text) ────────────────────────────────────
+    std::printf("[mo_text]\n");
+    {
+        // Pick whichever common macOS system font exists; skip if none.
+        const char *candidates[] = {
+            "/System/Library/Fonts/Helvetica.ttc",
+            "/System/Library/Fonts/Geneva.ttf",
+            "/System/Library/Fonts/Supplemental/Arial.ttf",
+            "/Library/Fonts/Arial.ttf",
+        };
+        std::string font;
+        for (const char *c : candidates)
+        {
+            std::ifstream f(c);
+            if (f.good()) { font = c; break; }
+        }
+        if (font.empty())
+        {
+            std::printf("  skip (no system font found)\n");
+        }
+        else
+        {
+            // "Oo" has bowls → holes; validates the containment/earcut path.
+            Geometry g = cookGen("mo_text", [&](SopNode &n) {
+                n.setParamString("font_file", font);
+                n.setParamString("text", "Oo");
+                n.setParamFloat("size", 1.0f);
+                n.setParamFloat("depth", 0.2f);
+            });
+            check(g.pointCount() > 0 && g.primitiveCount() > 0, "extruded text produced a mesh");
+            // Front (z=0) and back (z=-depth) faces present.
+            const auto &P = g.positions();
+            bool hasFront = false, hasBack = false;
+            float minX = 1e9f, maxX = -1e9f;
+            for (const auto &p : P)
+            {
+                if (approxEq(p.z, 0.0f, 1e-3f)) hasFront = true;
+                if (approxEq(p.z, -0.2f, 1e-3f)) hasBack = true;
+                minX = std::min(minX, p.x); maxX = std::max(maxX, p.x);
+            }
+            check(hasFront && hasBack, "front (z=0) and back (z=-depth) faces present");
+            check(maxX - minX > 0.5f, "text has sensible width for size 1");
+            const auto *N = g.vertices().get<Vec3>("N");
+            check(N != nullptr && N->data().size() == g.vertexCount(), "per-vertex normals present");
+
+            // A depth-0 run should make a flat sheet (front only, no -z points).
+            Geometry flat = cookGen("mo_text", [&](SopNode &n) {
+                n.setParamString("font_file", font);
+                n.setParamString("text", "I");
+                n.setParamFloat("depth", 0.0f);
+            });
+            bool anyBack = false;
+            for (const auto &p : flat.positions())
+                if (p.z < -1e-3f) anyBack = true;
+            check(flat.primitiveCount() > 0 && !anyBack, "depth=0 → flat front-only sheet");
+        }
     }
 
     if (failures == 0) std::printf("[mograph_curves_smoke] all checks passed\n");
