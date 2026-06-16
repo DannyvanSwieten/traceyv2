@@ -314,6 +314,33 @@ namespace tracey
                 }
             }
 
+            // Transparency / emission extensions (tinygltf exposes unknown
+            // extensions as a generic value map). These map onto the plain
+            // float material properties convertMaterial packs into GPUMaterial.
+            const auto getExtFloat = [&](const char *ext, const char *key,
+                                         float &out) -> bool {
+                auto it = gltfMat.extensions.find(ext);
+                if (it == gltfMat.extensions.end() || !it->second.Has(key)) return false;
+                out = static_cast<float>(it->second.Get(key).GetNumberAsDouble());
+                return true;
+            };
+            float v = 0.0f;
+            if (getExtFloat("KHR_materials_transmission", "transmissionFactor", v))
+                material.setFloat("transmission", v);
+            if (getExtFloat("KHR_materials_ior", "ior", v))
+                material.setFloat("ior", v);
+            if (getExtFloat("KHR_materials_emissive_strength", "emissiveStrength", v))
+                material.setFloat("emissionStrength", v);
+            // alphaMode BLEND → use baseColor alpha as opacity (MASK is a hard
+            // cutout we approximate the same way; OPAQUE leaves opacity at 1).
+            if (gltfMat.alphaMode == "BLEND" || gltfMat.alphaMode == "MASK")
+            {
+                const float a = pbr.baseColorFactor.size() >= 4
+                                    ? static_cast<float>(pbr.baseColorFactor[3])
+                                    : 1.0f;
+                material.setFloat("opacity", a);
+            }
+
             return material;
         }
 

@@ -93,6 +93,15 @@ namespace tracey
         // material VM stay stable.
         LoadInstanceIndex,
 
+        // dst <- pre-fetched transparency/IOR/opacity inputs (the host fetches
+        // GPUMaterial.transmissionFactor / iorFactor / baseColorA and feeds
+        // them in; passthrough copies them to WriteTransmission/WriteIor/
+        // WriteAlpha). Appended at the end so existing numeric Op values
+        // (which the GPU/CPU VMs hardcode) stay stable.
+        LoadInputTransmission,
+        LoadInputIor,
+        LoadInputOpacity,
+
         Count_
     };
 

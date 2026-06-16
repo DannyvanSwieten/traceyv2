@@ -174,6 +174,9 @@ namespace tracey
             glm::vec2 uv0;
             glm::vec2 uv1;
             uint32_t instanceIndex;
+            float transmission;
+            float ior;
+            float opacity;
         };
 
         struct MatResult
@@ -257,6 +260,9 @@ namespace tracey
                 case Op::LoadInstanceIndex:
                     r[dst] = glm::vec4(static_cast<float>(inp.instanceIndex));
                     break;
+                case Op::LoadInputTransmission: r[dst] = glm::vec4(inp.transmission); break;
+                case Op::LoadInputIor:          r[dst] = glm::vec4(inp.ior); break;
+                case Op::LoadInputOpacity:      r[dst] = glm::vec4(inp.opacity); break;
                 default: break;
                 }
                 if (halt) break;
@@ -466,6 +472,7 @@ namespace tracey
                             hostEmission *= glm::vec3(sampleTex(m_textures, gm.emissiveTexIndex,
                                                                 samplerKindForSlot(gm, 3u), uv));
                         }
+                        hostEmission *= gm.emissiveStrength;
 
                         glm::vec3 T, B;
                         buildTangentFrame(N, T, B);
@@ -483,6 +490,9 @@ namespace tracey
                         vmIn.uv0 = uv;
                         vmIn.uv1 = uv;
                         vmIn.instanceIndex = instanceIdx;
+                        vmIn.transmission = gm.transmissionFactor;
+                        vmIn.ior = gm.iorFactor;
+                        vmIn.opacity = gm.baseColorA;
 
                         const MatResult mat =
                             runMaterialProgram(m_instanceData[instanceIdx].x, vmIn, m_programs);

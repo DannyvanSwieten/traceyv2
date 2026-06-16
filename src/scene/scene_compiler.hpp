@@ -35,11 +35,12 @@ namespace tracey
         int32_t _pad1 = 0;
         int32_t _pad2 = 0;
 
-        // Base color factor (RGBA)
+        // Base color factor (RGB) + opacity (A). baseColorA doubles as the
+        // surface opacity: 1 = opaque, <1 = stochastic see-through.
         float baseColorR = 1.0f;
         float baseColorG = 1.0f;
         float baseColorB = 1.0f;
-        float baseColorA = 1.0f;
+        float baseColorA = 1.0f; // opacity
 
         // Metallic-roughness factors + emissive start
         float metallicFactor = 0.0f;
@@ -47,11 +48,15 @@ namespace tracey
         float emissiveR = 0.0f;
         float emissiveG = 0.0f;
 
-        // Emissive (continued) + padding
+        // Emissive (continued) + transparency/emission params. These three
+        // were padding; the path tracer reads them by fixed offset (17/18/19)
+        // so the layout must stay put. transmissionFactor>0 (+ low metallic)
+        // makes the surface refractive glass; iorFactor is the dielectric
+        // index; emissiveStrength scales the emissive RGB (HDR emitters).
         float emissiveB = 0.0f;
-        float _pad3 = 0.0f;
-        float _pad4 = 0.0f;
-        float _pad5 = 0.0f;
+        float transmissionFactor = 0.0f; // offset 17 (was _pad3)
+        float iorFactor = 1.5f;          // offset 18 (was _pad4)
+        float emissiveStrength = 1.0f;   // offset 19 (was _pad5)
     };
     static_assert(sizeof(GPUMaterial) == 80, "GPUMaterial must be 80 bytes");
 

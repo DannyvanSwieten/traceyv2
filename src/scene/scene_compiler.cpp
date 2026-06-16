@@ -310,6 +310,14 @@ namespace tracey
             gpuMat.emissiveB = emission->b;
         }
 
+        // Transparency / emission scalars. Stored as plain float properties
+        // (set by glTF import or the material UI); absent → struct defaults
+        // (transmission 0, ior 1.5, opacity 1, emissionStrength 1).
+        if (auto t = material.getFloat("transmission")) gpuMat.transmissionFactor = *t;
+        if (auto i = material.getFloat("ior")) gpuMat.iorFactor = *i;
+        if (auto o = material.getFloat("opacity")) gpuMat.baseColorA = *o;
+        if (auto es = material.getFloat("emissionStrength")) gpuMat.emissiveStrength = *es;
+
         return gpuMat;
     }
     SceneCompiler::ObjectData SceneCompiler::compileObject(Device *device, const SceneObject &obj,

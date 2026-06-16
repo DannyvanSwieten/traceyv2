@@ -212,6 +212,21 @@ float3 getMaterialEmissive(device const int *materials,
     return emissiveFactor;
 }
 
+// Transparency / emission scalars packed at fixed offsets in GPUMaterial.
+// (11=opacity/baseColorA, 17=transmission, 18=ior, 19=emissiveStrength.)
+float getMaterialOpacity(device const int *materials, uint instanceIndex) {
+    return as_type<float>(materials[instanceIndex * MATERIAL_STRIDE + 11u]);
+}
+float getMaterialTransmission(device const int *materials, uint instanceIndex) {
+    return as_type<float>(materials[instanceIndex * MATERIAL_STRIDE + 17u]);
+}
+float getMaterialIor(device const int *materials, uint instanceIndex) {
+    return as_type<float>(materials[instanceIndex * MATERIAL_STRIDE + 18u]);
+}
+float getMaterialEmissiveStrength(device const int *materials, uint instanceIndex) {
+    return as_type<float>(materials[instanceIndex * MATERIAL_STRIDE + 19u]);
+}
+
 // ── Material VM (material_vm.glsl + op 35 from opcodes.hpp) ──────────────
 
 struct MatInputs {
@@ -227,6 +242,9 @@ struct MatInputs {
     float2 uv0;
     float2 uv1;
     uint   instanceIndex;
+    float  transmission;
+    float  ior;
+    float  opacity;
 };
 
 struct MatResult {
@@ -313,6 +331,9 @@ MatResult runMaterialProgram(uint programIdx, MatInputs inp,
         case 33u: res.transmission = r[sA].x; break;                        // WriteTransmission
         case 34u: r[dst] = params[paramOffset + imm]; break;                // LoadParam
         case 35u: r[dst] = float4(float(inp.instanceIndex)); break;         // LoadInstanceIndex
+        case 36u: r[dst] = float4(inp.transmission); break;                 // LoadInputTransmission
+        case 37u: r[dst] = float4(inp.ior); break;                          // LoadInputIor
+        case 38u: r[dst] = float4(inp.opacity); break;                      // LoadInputOpacity
         default: break;
         }
     }
@@ -470,7 +491,9 @@ kernel void pathtrace(
             const float2 uv = w * uvs[base + 0u] + u * uvs[base + 1u] + v * uvs[base + 2u];
 
             const float3 hostAlbedo = getMaterialAlbedo(materials, sceneTex, instanceIdx, uv);
-            const float3 hostEmission = getMaterialEmissive(materials, sceneTex, instanceIdx, uv);
+            // Emission scaled by the per-material strength (HDR emitters).
+            const float3 hostEmission = getMaterialEmissive(materials, sceneTex, instanceIdx, uv)
+                                        * getMaterialEmissiveStrength(materials, instanceIdx);
             const float2 hostMR = getMaterialMetallicRoughness(materials, sceneTex, instanceIdx, uv);
 
             float3 T, B;
@@ -489,6 +512,9 @@ kernel void pathtrace(
             vmIn.uv0 = uv;
             vmIn.uv1 = uv;
             vmIn.instanceIndex = instanceIdx;
+            vmIn.transmission = getMaterialTransmission(materials, instanceIdx);
+            vmIn.ior = getMaterialIor(materials, instanceIdx);
+            vmIn.opacity = getMaterialOpacity(materials, instanceIdx);
 
             const uint programId = instanceData[instanceIdx].x;
             MatResult mat = runMaterialProgram(programId, vmIn,

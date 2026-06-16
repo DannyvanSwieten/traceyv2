@@ -83,6 +83,11 @@ namespace tracey
         r = b.allocReg(); b.emit(Op::LoadInputRoughness, r);    b.emit(Op::WriteRoughness, 0, r);
         r = b.allocReg(); b.emit(Op::LoadInputEmission,  r);    b.emit(Op::WriteEmission,  0, r);
         r = b.allocReg(); b.emit(Op::LoadInputNormal,    r);    b.emit(Op::WriteNormal,    0, r);
+        // Transparency / IOR / opacity pass straight through from the
+        // GPUMaterial factors so plain (non-graph) materials can be glass.
+        r = b.allocReg(); b.emit(Op::LoadInputTransmission, r); b.emit(Op::WriteTransmission, 0, r);
+        r = b.allocReg(); b.emit(Op::LoadInputIor,          r); b.emit(Op::WriteIor,          0, r);
+        r = b.allocReg(); b.emit(Op::LoadInputOpacity,      r); b.emit(Op::WriteAlpha,        0, r);
 
         return b.finalize();
     }
