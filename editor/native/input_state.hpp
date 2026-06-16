@@ -32,6 +32,7 @@ struct InputState {
     bool key_q = false;
     bool key_e = false;
     bool key_shift = false;
+    bool key_alt = false;
 
     // Viewport size (logical points, before backing-scale multiplication).
     float viewport_w = 0.0f;

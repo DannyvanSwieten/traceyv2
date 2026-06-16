@@ -2051,18 +2051,20 @@ bool EditorServer::update_camera_from_input(double /*dt*/) {
     // the timeline (play/pause), and the user wants camera navigation to
     // be the default mouse behaviour in the viewport rather than a
     // gated mode.
+    //
+    // Modifier aliases on the LEFT button give full navigation to trackpads
+    // and two-button mice that have no middle button:
+    //   Shift+LMB → pan,  Alt/Option+LMB → dolly.
     constexpr float TUMBLE_SENS = 0.005f;  // radians per pixel
     constexpr float DOLLY_SENS  = 0.01f;   // log-units per pixel
     constexpr float WHEEL_SENS  = 0.05f;   // log-units per scroll tick
 
+    const bool wantPan   = input.mouse_middle || (input.mouse_left && input.key_shift);
+    const bool wantDolly = input.mouse_right  || (input.mouse_left && input.key_alt);
+    const bool wantOrbit = input.mouse_left && !input.key_shift && !input.key_alt;
+
     if (input.mouse_dx != 0.0f || input.mouse_dy != 0.0f) {
-        if (input.mouse_left) {
-            m_orbit_yaw   -= input.mouse_dx * TUMBLE_SENS;
-            m_orbit_pitch -= input.mouse_dy * TUMBLE_SENS;
-            constexpr float kPitchLimit = 1.5707f - 0.01f;
-            m_orbit_pitch = std::clamp(m_orbit_pitch, -kPitchLimit, kPitchLimit);
-            changed = true;
-        } else if (input.mouse_middle) {
+        if (wantPan) {
             // Pan: scale by distance + fov so a fixed pixel delta moves the
             // pivot by the same screen-space amount regardless of zoom.
             const float vh = std::max(1.0f, static_cast<float>(m_viewport_pixel_h));
@@ -2076,10 +2078,16 @@ bool EditorServer::update_camera_from_input(double /*dt*/) {
             m_orbit_pivot_y += delta.y;
             m_orbit_pivot_z += delta.z;
             changed = true;
-        } else if (input.mouse_right) {
+        } else if (wantDolly) {
             // Dolly: exponential so zooming stays smooth at any distance.
             m_orbit_distance *= std::exp(input.mouse_dy * DOLLY_SENS);
             m_orbit_distance = std::max(0.01f, m_orbit_distance);
+            changed = true;
+        } else if (wantOrbit) {
+            m_orbit_yaw   -= input.mouse_dx * TUMBLE_SENS;
+            m_orbit_pitch -= input.mouse_dy * TUMBLE_SENS;
+            constexpr float kPitchLimit = 1.5707f - 0.01f;
+            m_orbit_pitch = std::clamp(m_orbit_pitch, -kPitchLimit, kPitchLimit);
             changed = true;
         }
     }

@@ -109,6 +109,11 @@
     _inputState->mouse_y = self.bounds.size.height - loc.y;
     _inputState->mouse_dx += event.deltaX;
     _inputState->mouse_dy += event.deltaY;
+    // Refresh modifier state on every drag so Shift/Alt camera aliases stay
+    // accurate even if the key was held before the pointer entered the view
+    // (flagsChanged only fires on transitions).
+    _inputState->key_shift = (event.modifierFlags & NSEventModifierFlagShift) != 0;
+    _inputState->key_alt   = (event.modifierFlags & NSEventModifierFlagOption) != 0;
 }
 
 - (void)mouseMoved:(NSEvent*)event { [self updateMousePosition:event]; }
@@ -209,6 +214,7 @@
 - (void)flagsChanged:(NSEvent*)event {
     if (!_inputState) return;
     _inputState->key_shift = (event.modifierFlags & NSEventModifierFlagShift) != 0;
+    _inputState->key_alt   = (event.modifierFlags & NSEventModifierFlagOption) != 0;
 }
 
 @end
