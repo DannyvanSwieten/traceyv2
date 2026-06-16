@@ -312,6 +312,7 @@ namespace tracey
             std::span<const Tlas::Instance>(m_instances.data(), m_instances.size()));
 
         m_lights = scene.lights;
+        m_emitters = scene.emitters;
         m_materials = scene.materials;
 
         const size_t instanceCount = scene.instances.size();
@@ -397,6 +398,12 @@ namespace tracey
 
                     glm::vec3 color(1.0f);
                     glm::vec3 accum(0.0f);
+                    // Count a surface's own emission on direct arrival only when
+                    // NEE couldn't have sampled it: the camera ray and rays that
+                    // arrive via a specular/glossy bounce. After a diffuse bounce,
+                    // emitter NEE already accounted for it — skip to avoid double
+                    // counting.
+                    bool countEmissionOnHit = true;
                     bool alive = true;
 
                     for (uint32_t depth = 0; depth <= in.maxDepth && alive; ++depth)
@@ -516,9 +523,10 @@ namespace tracey
                             continue;
                         }
 
-                        // Emission is additive (an emitter glows AND lights the
-                        // scene via bounces). misWeight 1 here; M3 adds MIS.
-                        if (glm::length(emission) > 0.0f)
+                        // Emitted radiance — counted on direct arrival only when
+                        // emitter NEE couldn't have sampled it (camera ray /
+                        // post-specular), else the NEE below handles it.
+                        if (countEmissionOnHit && glm::length(emission) > 1e-6f)
                         {
                             accum += color * emission;
                         }
@@ -579,6 +587,51 @@ namespace tracey
 
                                 const glm::vec3 Li = glm::vec3(colorExtra) * dirIntens.w * falloff;
                                 accum += color * diffuseBrdf * Li * NdotLlight;
+                            }
+                        }
+
+                        // Emissive area lights (NEE): sample one emissive
+                        // triangle, shadow-test it, and add its contribution.
+                        // Lets glowing geometry light the scene with far less
+                        // noise than waiting for random bounces to hit it.
+                        if (!m_emitters.empty() && !isGlass)
+                        {
+                            const glm::vec3 diffuseBrdf =
+                                albedo * (1.0f - metallic) * (1.0f / 3.14159265f);
+                            const uint32_t ne = static_cast<uint32_t>(m_emitters.size());
+                            const uint32_t ei =
+                                std::min(static_cast<uint32_t>(nextRandom(seed) * ne), ne - 1u);
+                            const auto &E = m_emitters[ei];
+                            // Uniform point on the triangle.
+                            const float su = std::sqrt(nextRandom(seed));
+                            const float b1 = 1.0f - su;
+                            const float b2 = nextRandom(seed) * su;
+                            const glm::vec3 y = E.p0 + b1 * (E.p1 - E.p0) + b2 * (E.p2 - E.p0);
+                            const glm::vec3 toL = y - hitPos;
+                            const float dist2 = std::max(glm::dot(toL, toL), 1e-6f);
+                            const float dist = std::sqrt(dist2);
+                            const glm::vec3 wi = toL / dist;
+                            const float NdotL = glm::dot(N, wi);
+                            glm::vec3 Ng = glm::cross(E.p1 - E.p0, E.p2 - E.p0);
+                            const float ngLen = glm::length(Ng);
+                            if (NdotL > 0.0f && ngLen > 1e-12f)
+                            {
+                                Ng /= ngLen;
+                                const float cosL = std::abs(glm::dot(Ng, -wi));
+                                if (cosL > 1e-4f)
+                                {
+                                    Ray sray;
+                                    sray.origin = hitPos + N * 0.001f;
+                                    sray.direction = wi;
+                                    sray.invDirection = glm::vec3(1.0f) / sray.direction;
+                                    if (!m_tlas->intersect(sray, 0.001f, dist - 0.002f, RAY_FLAG_NONE))
+                                    {
+                                        // pdf_A = 1/(area * ne); to solid angle:
+                                        // ×dist²/cosL. Estimator divides f·Le·NdotL by it.
+                                        const float w = E.area * static_cast<float>(ne) * cosL / dist2;
+                                        accum += color * diffuseBrdf * E.emission * NdotL * w;
+                                    }
+                                }
                             }
                         }
 
@@ -650,6 +703,13 @@ namespace tracey
                             L = glm::normalize(tangentToWorld(L_local, N, T, B));
                             throughput = albedo;
                         }
+
+                        // Gate next-hit emission: a diffuse bounce's emitter
+                        // contribution is already covered by NEE above, so don't
+                        // double-count it on arrival. Specular/glossy (glass,
+                        // metal) bounces aren't sampled by the diffuse NEE, so
+                        // their emitter arrivals must still count.
+                        countEmissionOnHit = isGlass || (r3 < metallic);
 
                         throughput = glm::clamp(throughput, glm::vec3(0.0f), glm::vec3(10.0f));
                         color *= throughput;

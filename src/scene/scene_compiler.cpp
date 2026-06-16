@@ -818,6 +818,39 @@ namespace tracey
                 }
                 result.materials.push_back(gpuMat);
 
+                // Collect emissive triangles (world-space) for path-tracer NEE.
+                // Only when this instance's material actually emits; the common
+                // non-emissive case costs one cheap add + compare here.
+                const Vec3 emission(gpuMat.emissiveR, gpuMat.emissiveG, gpuMat.emissiveB);
+                const float emiss = (emission.x + emission.y + emission.z) * gpuMat.emissiveStrength;
+                constexpr size_t kMaxEmitterTris = 4096;
+                if (emiss > 1e-4f && result.emitters.size() < kMaxEmitterTris)
+                {
+                    if (const SceneObject *obj = scene.getObject(objectRef))
+                    {
+                        const auto &P = obj->positions();
+                        const auto &idx = obj->indices();
+                        const Vec3 emRGB = emission * gpuMat.emissiveStrength;
+                        const size_t triCount = idx.empty() ? P.size() / 3 : idx.size() / 3;
+                        for (size_t t = 0; t < triCount &&
+                                            result.emitters.size() < kMaxEmitterTris; ++t)
+                        {
+                            const uint32_t i0 = idx.empty() ? uint32_t(t * 3 + 0) : idx[t * 3 + 0];
+                            const uint32_t i1 = idx.empty() ? uint32_t(t * 3 + 1) : idx[t * 3 + 1];
+                            const uint32_t i2 = idx.empty() ? uint32_t(t * 3 + 2) : idx[t * 3 + 2];
+                            if (i0 >= P.size() || i1 >= P.size() || i2 >= P.size()) continue;
+                            CompiledScene::EmissiveTri e;
+                            e.p0 = transformPoint(finalTransform, P[i0]);
+                            e.p1 = transformPoint(finalTransform, P[i1]);
+                            e.p2 = transformPoint(finalTransform, P[i2]);
+                            e.area = 0.5f * glm::length(glm::cross(e.p1 - e.p0, e.p2 - e.p0));
+                            if (e.area <= 1e-9f) continue; // skip degenerate
+                            e.emission = emRGB;
+                            result.emitters.push_back(e);
+                        }
+                    }
+                }
+
                 materialIndex++;
             }
         }

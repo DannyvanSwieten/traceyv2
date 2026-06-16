@@ -57,6 +57,7 @@ namespace tracey
         std::vector<Tlas::Instance> m_instances;
         std::unique_ptr<Tlas> m_tlas;
         std::vector<GPULight> m_lights;
+        std::vector<SceneCompiler::CompiledScene::EmissiveTri> m_emitters; // world-space emissive tris (NEE)
         std::vector<GPUMaterial> m_materials;       // per-instance
         std::vector<glm::uvec2> m_instanceData;     // programId, uvOffset
         std::vector<glm::vec2> m_uvs;               // global per-vertex

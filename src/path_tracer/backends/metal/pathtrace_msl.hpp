@@ -61,6 +61,7 @@ struct Uniforms {
     uint   samplesPerFrame;
     uint   width;
     uint   height;
+    uint   emitterCount;  // reuses the host struct's former trailing pad (offset 92)
 };
 
 // ── RNG (bit-exact ports of ray_gen.glsl hash / pbr_lib.glsl nextRandom) ──
@@ -391,6 +392,7 @@ kernel void pathtrace(
     device const float4 *progParams                   [[buffer(11)]],
     device float4 *accumBuffer                        [[buffer(12)]],
     instance_acceleration_structure accel             [[buffer(13)]],
+    device const float4 *emitters                     [[buffer(14)]],
     uint2 gid                                         [[thread_position_in_grid]])
 {
     if (gid.x >= U.width || gid.y >= U.height) return;
@@ -425,6 +427,9 @@ kernel void pathtrace(
 
         float3 color = float3(1.0);   // path throughput
         float3 accum = float3(0.0);   // emitted + NEE direct-light gathers
+        // Count a surface's own emission on direct arrival only when emitter
+        // NEE couldn't have sampled it (camera ray / post-specular bounce).
+        bool countEmissionOnHit = true;
         bool alive = true;
 
         for (uint depth = 0u; depth <= U.maxDepth && alive; ++depth) {
@@ -539,9 +544,10 @@ kernel void pathtrace(
                 continue;
             }
 
-            // Emission is additive (an emitter both glows and lights the scene
-            // via bounces). misWeight stays 1 here; M3's emitter NEE adds MIS.
-            if (length(emission) > 0.0) {
+            // Emitted radiance — counted on direct arrival only when emitter
+            // NEE couldn't have sampled it (camera ray / post-specular), else
+            // the NEE below handles it.
+            if (countEmissionOnHit && length(emission) > 1e-6) {
                 accum += color * emission;
             }
 
@@ -595,6 +601,44 @@ kernel void pathtrace(
 
                     const float3 Li = colorExtra.xyz * dirIntens.w * falloff;
                     accum += color * diffuseBrdf * Li * NdotLlight;
+                }
+            }
+
+            // Emissive area lights (NEE): sample one emissive triangle,
+            // shadow-test it, add its contribution. Mirrors the CPU backend.
+            if (U.emitterCount > 0u && !isGlass) {
+                const float3 diffuseBrdf = albedo * (1.0 - metallic) * (1.0 / 3.14159265);
+                const uint ne = U.emitterCount;
+                const uint ei = min(uint(nextRandom(seed) * float(ne)), ne - 1u);
+                const float4 e0 = emitters[ei * 4u + 0u]; // p0.xyz, area
+                const float4 e1 = emitters[ei * 4u + 1u]; // p1
+                const float4 e2 = emitters[ei * 4u + 2u]; // p2
+                const float4 e3 = emitters[ei * 4u + 3u]; // emission
+                const float su = sqrt(nextRandom(seed));
+                const float b1 = 1.0 - su;
+                const float b2 = nextRandom(seed) * su;
+                const float3 y = e0.xyz + b1 * (e1.xyz - e0.xyz) + b2 * (e2.xyz - e0.xyz);
+                const float3 toL = y - hitPos;
+                const float dist2 = max(dot(toL, toL), 1e-6);
+                const float dist = sqrt(dist2);
+                const float3 wi = toL / dist;
+                const float NdotL = dot(N, wi);
+                float3 Ng = cross(e1.xyz - e0.xyz, e2.xyz - e0.xyz);
+                const float ngLen = length(Ng);
+                if (NdotL > 0.0 && ngLen > 1e-12) {
+                    Ng /= ngLen;
+                    const float cosL = abs(dot(Ng, -wi));
+                    if (cosL > 1e-4) {
+                        ray sray;
+                        sray.origin = hitPos + N * 0.001;
+                        sray.direction = wi;
+                        sray.min_distance = 0.001;
+                        sray.max_distance = max(dist - 0.002, 0.002);
+                        if (isect.intersect(sray, accel).type == intersection_type::none) {
+                            const float w = e0.w * float(ne) * cosL / dist2; // area*ne*cosL/dist²
+                            accum += color * diffuseBrdf * e3.xyz * NdotL * w;
+                        }
+                    }
                 }
             }
 
@@ -656,6 +700,11 @@ kernel void pathtrace(
                 L = normalize(tangentToWorld(L_local, N, T, B));
                 throughput = albedo;
             }
+
+            // Gate next-hit emission: diffuse bounces are covered by emitter
+            // NEE above (don't double count); specular/glossy aren't, so they
+            // must still count emitter arrivals.
+            countEmissionOnHit = isGlass || (r3 < metallic);
 
             throughput = clamp(throughput, float3(0.0), float3(10.0));
             color *= throughput;

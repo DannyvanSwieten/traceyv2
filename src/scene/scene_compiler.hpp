@@ -190,6 +190,20 @@ namespace tracey
             std::unique_ptr<Buffer> lightBuffer;
             uint32_t lightCount = 0;
 
+            // Emissive geometry, flattened to world-space triangles, for the
+            // path tracer's next-event estimation (sampling emitters directly
+            // instead of relying on random bounces hitting them). Built from
+            // any instance whose material emission is non-zero; the backends
+            // upload/copy this and sample it with shadow rays. Capped to keep
+            // a high-poly emissive mesh from exploding the list.
+            struct EmissiveTri
+            {
+                Vec3 p0{0.0f}, p1{0.0f}, p2{0.0f}; // world-space
+                Vec3 emission{0.0f};               // radiance (incl. strength)
+                float area = 0.0f;
+            };
+            std::vector<EmissiveTri> emitters;
+
             // BVH statistics
             size_t totalNodes = 0;
             size_t totalTriangles = 0;

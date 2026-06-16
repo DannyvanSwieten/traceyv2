@@ -98,7 +98,7 @@ namespace tracey
             uint32_t samplesPerFrame;
             uint32_t width;
             uint32_t height;
-            uint32_t _pad4;
+            uint32_t emitterCount;  // was _pad4 — emissive-triangle count for NEE
         };
 
         id<MTLBuffer> makeSharedBuffer(id<MTLDevice> device, const void *data, size_t bytes)
@@ -154,6 +154,8 @@ namespace tracey
         NSMutableArray<id<MTLAccelerationStructure>> *primitiveList = nil;
 
         id<MTLBuffer> lightsBuf = nil;
+        id<MTLBuffer> emittersBuf = nil;   // emissive-triangle list (4 float4/tri)
+        uint32_t emitterCount = 0;
         id<MTLBuffer> materialsBuf = nil;
         id<MTLBuffer> instanceDataBuf = nil;
         id<MTLBuffer> uvsBuf = nil;
@@ -383,6 +385,23 @@ namespace tracey
             materialsBuf = makeSharedBuffer(device, scene.materials.data(),
                                             scene.materials.size() * sizeof(GPUMaterial));
 
+            // Emissive triangles → 4 float4 per tri: p0(xyz)+area, p1, p2,
+            // emission. Empty list → makeSharedBuffer binds a 16-byte dummy.
+            emitterCount = static_cast<uint32_t>(scene.emitters.size());
+            {
+                std::vector<float> packed(scene.emitters.size() * 16);
+                for (size_t i = 0; i < scene.emitters.size(); ++i) {
+                    const auto &e = scene.emitters[i];
+                    float *d = packed.data() + i * 16;
+                    d[0] = e.p0.x; d[1] = e.p0.y; d[2] = e.p0.z; d[3] = e.area;
+                    d[4] = e.p1.x; d[5] = e.p1.y; d[6] = e.p1.z; d[7] = 0.0f;
+                    d[8] = e.p2.x; d[9] = e.p2.y; d[10] = e.p2.z; d[11] = 0.0f;
+                    d[12] = e.emission.x; d[13] = e.emission.y; d[14] = e.emission.z; d[15] = 0.0f;
+                }
+                emittersBuf = makeSharedBuffer(device, packed.data(),
+                                               packed.size() * sizeof(float));
+            }
+
             const size_t uvBytes = static_cast<size_t>(totalVertices) * sizeof(float) * 2;
             if (scene.uvBuffer && uvBytes > 0)
             {
@@ -577,6 +596,7 @@ namespace tracey
             U.samplesPerFrame = impl.config->samplesPerFrame;
             U.width = impl.config->width;
             U.height = impl.config->height;
+            U.emitterCount = impl.emitterCount;
 
             id<MTLCommandBuffer> cmd = [impl.queue commandBuffer];
 
@@ -614,6 +634,7 @@ namespace tracey
             [enc setBuffer:impl.progParamsBuf offset:0 atIndex:11];
             [enc setBuffer:impl.accumBuffer offset:0 atIndex:12];
             [enc setAccelerationStructure:impl.instanceAccel atBufferIndex:13];
+            [enc setBuffer:impl.emittersBuf offset:0 atIndex:14];
             // The instance AS references the primitive ASes indirectly —
             // mark them resident for the dispatch.
             for (id<MTLAccelerationStructure> blas in impl.primitiveList)
