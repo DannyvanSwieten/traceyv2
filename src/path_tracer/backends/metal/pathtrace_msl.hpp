@@ -424,22 +424,28 @@ kernel void pathtrace(
         r.max_distance = 1000.0;
 
         float3 color = float3(1.0);   // path throughput
-        float3 accum = float3(0.0);   // NEE direct-light gathers
+        float3 accum = float3(0.0);   // emitted + NEE direct-light gathers
+        float3 medium = float3(0.0);  // Beer-Lambert absorption of the medium
+                                      // the ray is currently inside (0 = vacuum)
         bool alive = true;
 
         for (uint depth = 0u; depth <= U.maxDepth && alive; ++depth) {
             intersection_result<instancing, triangle_data> hit = isect.intersect(r, accel);
 
             if (hit.type == intersection_type::none) {
-                // ── sky_miss.glsl ──
-                color *= skyRadiance(lights, U.lightCount, r.direction);
+                // ── sky_miss.glsl ── radiance accumulates into `accum`;
+                // `color` is pure throughput.
+                accum += color * skyRadiance(lights, U.lightCount, r.direction);
                 alive = false;
                 break;
             }
 
+            // Beer-Lambert: attenuate by how far the ray travelled through the
+            // current medium (no-op outside glass, where medium == 0).
+            color *= exp(-medium * hit.distance);
+
             // ── uber_hit.glsl ──
             if (depth >= U.maxDepth) {
-                color = float3(0.0);
                 alive = false;
                 break;
             }
@@ -526,12 +532,23 @@ kernel void pathtrace(
             const float roughness = clamp(mat.roughness, 0.04, 1.0);
             const float transmission = clamp(mat.transmission, 0.0, 1.0);
             const float ior = max(mat.ior, 1.0e-3);
+            const float opacity = clamp(mat.alpha, 0.0, 1.0);
             const bool isGlass = transmission > 0.0 && metallic < 0.01;
 
+            // Stochastic opacity: with probability (1-opacity) the surface is
+            // absent for this sample — pass the ray straight through (no shade,
+            // no emit), preserving throughput. Counts as a bounce so stacks of
+            // transparent surfaces stay bounded.
+            if (opacity < 1.0 && nextRandom(seed) >= opacity) {
+                r.origin = hitPos + incomingDir * 0.001;
+                r.direction = incomingDir;
+                continue;
+            }
+
+            // Emission is additive (an emitter both glows and lights the scene
+            // via bounces). misWeight stays 1 here; M3's emitter NEE adds MIS.
             if (length(emission) > 0.0) {
-                color *= emission;
-                alive = false;
-                break;
+                accum += color * emission;
             }
 
             // NEE — unshadowed; dome handled by the miss shader; skipped for
@@ -581,6 +598,9 @@ kernel void pathtrace(
             const float NdotV = max(dot(N, V), 0.001);
 
             if (isGlass) {
+                // Dielectric: Fresnel chooses reflect vs refract. Reflection is
+                // colorless (white); refraction tint comes from Beer-Lambert
+                // absorption inside the medium, not a flat surface multiply.
                 const float etaI = entering ? 1.0 : ior;
                 const float etaT = entering ? ior : 1.0;
                 const float eta = etaI / etaT;
@@ -589,16 +609,22 @@ kernel void pathtrace(
 
                 if (r3 < F) {
                     L = reflect(incomingDir, N);
-                    throughput = albedo;
+                    throughput = float3(1.0);
                 } else {
                     const float3 refracted = refract(incomingDir, N, eta);
                     if (dot(refracted, refracted) < 1.0e-6) {
-                        L = reflect(incomingDir, N);
-                        throughput = albedo;
+                        L = reflect(incomingDir, N); // total internal reflection
+                        throughput = float3(1.0);
                     } else {
                         L = normalize(refracted);
                         const float etaScale = (etaT * etaT) / (etaI * etaI);
-                        throughput = albedo * transmission * etaScale;
+                        throughput = float3(transmission * etaScale);
+                        // Entering glass → set the absorption of the medium we
+                        // now travel through (albedo = per-unit transmission
+                        // color). Exiting → back to vacuum.
+                        medium = entering
+                            ? -log(clamp(albedo, float3(1.0e-3), float3(1.0)))
+                            : float3(0.0);
                     }
                 }
             } else if (r3 < metallic) {
@@ -636,7 +662,9 @@ kernel void pathtrace(
         }
 
         // ── resolve.glsl: fold this sample into the running mean ──
-        const float3 sampleColor = color + accum;
+        // All radiance (emission, sky, NEE) lives in `accum`; `color` is now
+        // pure throughput, consumed during the walk.
+        const float3 sampleColor = accum;
         const int n = (U.currentSample - 1) * int(U.samplesPerFrame) + int(s) + 1;
         mean = mean + (sampleColor - mean) / float(n);
     }

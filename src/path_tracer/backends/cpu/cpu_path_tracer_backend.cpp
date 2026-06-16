@@ -397,6 +397,8 @@ namespace tracey
 
                     glm::vec3 color(1.0f);
                     glm::vec3 accum(0.0f);
+                    glm::vec3 medium(0.0f); // Beer-Lambert absorption of the
+                                            // current medium (0 = vacuum)
                     bool alive = true;
 
                     for (uint32_t depth = 0; depth <= in.maxDepth && alive; ++depth)
@@ -405,15 +407,18 @@ namespace tracey
 
                         if (!hit)
                         {
-                            color *= skyRadiance(m_lights, in.lightCount, ray.direction);
+                            accum += color * skyRadiance(m_lights, in.lightCount, ray.direction);
                             alive = false;
                             break;
                         }
 
+                        // Beer-Lambert: attenuate over the distance travelled in
+                        // the current medium (no-op outside glass).
+                        color *= glm::exp(-medium * hit->t);
+
                         // ── uber_hit ──
                         if (depth >= in.maxDepth)
                         {
-                            color = glm::vec3(0.0f);
                             alive = false;
                             break;
                         }
@@ -503,13 +508,25 @@ namespace tracey
                         const float roughness = glm::clamp(mat.roughness, 0.04f, 1.0f);
                         const float transmission = glm::clamp(mat.transmission, 0.0f, 1.0f);
                         const float ior = std::max(mat.ior, 1.0e-3f);
+                        const float opacity = glm::clamp(mat.alpha, 0.0f, 1.0f);
                         const bool isGlass = transmission > 0.0f && metallic < 0.01f;
 
+                        // Stochastic opacity: with prob (1-opacity) the surface
+                        // is absent for this sample — pass the ray straight
+                        // through (no shade, no emit), preserving throughput.
+                        if (opacity < 1.0f && nextRandom(seed) >= opacity)
+                        {
+                            ray.origin = hitPos + incomingDir * 0.001f;
+                            ray.direction = incomingDir;
+                            ray.invDirection = glm::vec3(1.0f) / ray.direction;
+                            continue;
+                        }
+
+                        // Emission is additive (an emitter glows AND lights the
+                        // scene via bounces). misWeight 1 here; M3 adds MIS.
                         if (glm::length(emission) > 0.0f)
                         {
-                            color *= emission;
-                            alive = false;
-                            break;
+                            accum += color * emission;
                         }
 
                         if (in.lightCount > 0 && !isGlass)
@@ -567,6 +584,8 @@ namespace tracey
 
                         if (isGlass)
                         {
+                            // Dielectric: reflection is colorless; refraction
+                            // tint comes from Beer-Lambert absorption inside.
                             const float etaI = entering ? 1.0f : ior;
                             const float etaT = entering ? ior : 1.0f;
                             const float eta = etaI / etaT;
@@ -576,21 +595,24 @@ namespace tracey
                             if (r3 < F)
                             {
                                 L = glm::reflect(incomingDir, N);
-                                throughput = albedo;
+                                throughput = glm::vec3(1.0f);
                             }
                             else
                             {
                                 const glm::vec3 refracted = glm::refract(incomingDir, N, eta);
                                 if (glm::dot(refracted, refracted) < 1.0e-6f)
                                 {
-                                    L = glm::reflect(incomingDir, N);
-                                    throughput = albedo;
+                                    L = glm::reflect(incomingDir, N); // total internal reflection
+                                    throughput = glm::vec3(1.0f);
                                 }
                                 else
                                 {
                                     L = glm::normalize(refracted);
                                     const float etaScale = (etaT * etaT) / (etaI * etaI);
-                                    throughput = albedo * transmission * etaScale;
+                                    throughput = glm::vec3(transmission * etaScale);
+                                    medium = entering
+                                        ? -glm::log(glm::clamp(albedo, glm::vec3(1.0e-3f), glm::vec3(1.0f)))
+                                        : glm::vec3(0.0f);
                                 }
                             }
                         }
@@ -634,7 +656,9 @@ namespace tracey
                     }
 
                     // ── resolve ──
-                    const glm::vec3 sampleColor = color + accum;
+                    // All radiance (emission, sky, NEE) lives in `accum`;
+                    // `color` is pure throughput, consumed during the walk.
+                    const glm::vec3 sampleColor = accum;
                     const int n = (in.currentSample - 1) * static_cast<int>(samplesPerFrame) +
                                   static_cast<int>(s) + 1;
                     mean = mean + (sampleColor - mean) / static_cast<float>(n);
