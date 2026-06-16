@@ -45,6 +45,18 @@ Geometry cookGen(const char *kind, const std::function<void(SopNode &)> &setup =
     return node->cook({});
 }
 
+// Cook a 1-input modifier node over `input`.
+Geometry cookMod(const char *kind, const Geometry &input,
+                 const std::function<void(SopNode &)> &setup = {})
+{
+    auto node = SopRegistry::instance().create(kind, 2);
+    if (!node) return {};
+    if (setup) setup(*node);
+    const Geometry *in = &input;
+    std::vector<const Geometry *> inputs{in};
+    return node->cook(inputs);
+}
+
 // World tangent = orient rotates local +Z.
 glm::vec3 tangentOf(const Vec4 &orient)
 {
@@ -160,6 +172,72 @@ int main()
                 if (!approxEq(std::sqrt(q.x*q.x+q.y*q.y+q.z*q.z+q.w*q.w), 1.0f)) allUnit = false;
             check(allUnit, "all orients unit quaternions");
         }
+    }
+
+    // ── Resample (line: exact even spacing) ──────────────────────────
+    std::printf("[resample line]\n");
+    {
+        Geometry line = cookGen("line", [](SopNode &n) {
+            n.setParamVec3("start", Vec3(-3.0f, 0.0f, 0.0f));
+            n.setParamVec3("end", Vec3(3.0f, 0.0f, 0.0f));
+            n.setParamInt("points", 4);
+        });
+        Geometry g = cookMod("resample", line, [](SopNode &n) {
+            n.setParamString("mode", "count");
+            n.setParamInt("count", 7);
+        });
+        check(g.pointCount() == 7, "resampled to 7 points");
+        const auto &P = g.positions();
+        if (P.size() == 7)
+        {
+            check(approxEq(P.front().x, -3.0f) && approxEq(P.back().x, 3.0f), "endpoints preserved");
+            bool even = true;
+            for (size_t i = 0; i + 1 < P.size(); ++i)
+                if (!approxEq(P[i + 1].x - P[i].x, 1.0f)) even = false;
+            check(even, "even 1.0 spacing along the line");
+        }
+    }
+
+    // ── Resample (closed circle: even arc spacing, closed preserved) ──
+    std::printf("[resample circle]\n");
+    {
+        Geometry circ = cookGen("circle", [](SopNode &n) {
+            n.setParamFloat("radius", 2.0f);
+            n.setParamInt("segments", 12);
+        });
+        Geometry g = cookMod("resample", circ, [](SopNode &n) {
+            n.setParamString("mode", "count");
+            n.setParamInt("count", 24);
+        });
+        check(g.pointCount() == 24, "resampled closed ring to 24 points");
+        check(mograph::curveClosed(g), "closed flag preserved");
+        const auto &P = g.positions();
+        if (P.size() == 24)
+        {
+            float mn = 1e9f, mx = 0.0f;
+            for (size_t i = 0; i < P.size(); ++i)
+            {
+                float d = glm::length(P[(i + 1) % P.size()] - P[i]);
+                mn = std::min(mn, d);
+                mx = std::max(mx, d);
+            }
+            check(mx / std::max(mn, 1e-6f) < 1.1f, "roughly uniform arc spacing");
+        }
+    }
+
+    // ── Resample by length ───────────────────────────────────────────
+    std::printf("[resample length]\n");
+    {
+        Geometry line = cookGen("line", [](SopNode &n) {
+            n.setParamVec3("start", Vec3(0.0f, 0.0f, 0.0f));
+            n.setParamVec3("end", Vec3(10.0f, 0.0f, 0.0f));
+            n.setParamInt("points", 2);
+        });
+        Geometry g = cookMod("resample", line, [](SopNode &n) {
+            n.setParamString("mode", "length");
+            n.setParamFloat("segment_length", 1.0f);
+        });
+        check(g.pointCount() == 11, "length 10 / seg 1 → 11 points");
     }
 
     if (failures == 0) std::printf("[mograph_curves_smoke] all checks passed\n");
