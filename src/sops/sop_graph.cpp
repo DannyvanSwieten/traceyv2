@@ -345,6 +345,18 @@ namespace tracey
                         node->paramVec3("rotate_euler_deg", Vec3(0.0f)));
                     a.scale = node->paramVec3("scale", Vec3(1.0f));
                     a.materialLibraryName = node->paramString("material_library_name", "");
+                    a.overrideMaterial = node->paramBool("override_material", false);
+                    if (a.overrideMaterial)
+                    {
+                        a.ovBaseColor       = node->paramVec3("base_color", Vec3(0.8f));
+                        a.ovMetallic        = node->paramFloat("metallic", 0.0f);
+                        a.ovRoughness       = node->paramFloat("roughness", 0.5f);
+                        a.ovEmission        = node->paramVec3("emission", Vec3(0.0f));
+                        a.ovEmissionStrength = node->paramFloat("emission_strength", 1.0f);
+                        a.ovTransmission    = node->paramFloat("transmission", 0.0f);
+                        a.ovIor             = node->paramFloat("ior", 1.5f);
+                        a.ovOpacity         = node->paramFloat("opacity", 1.0f);
+                    }
                     if (!inputs.empty() && inputs[0])
                         a.geometry = std::make_shared<const Geometry>(*inputs[0]);
                     emitted.push_back(std::move(a));

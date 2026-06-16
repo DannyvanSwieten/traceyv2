@@ -121,6 +121,22 @@ namespace tracey
             // "actor doesn't care" so a Cd-less template doesn't clobber
             // a user-assigned material library.
             bool hasTint = false;
+
+            // Object Output material override. When `overrideMaterial` is true
+            // (the output node's `override_material` toggle), these factors
+            // drive the actor's material instead of the glTF/SOP source —
+            // letting any object be made glass/emissive from the node's
+            // params (sliders, keyframable) with no library graph. Gated by
+            // the toggle so imported materials aren't clobbered when off.
+            bool overrideMaterial = false;
+            Vec3 ovBaseColor{0.8f, 0.8f, 0.8f};
+            float ovMetallic = 0.0f;
+            float ovRoughness = 0.5f;
+            Vec3 ovEmission{0.0f, 0.0f, 0.0f};
+            float ovEmissionStrength = 1.0f;
+            float ovTransmission = 0.0f;
+            float ovIor = 1.5f;
+            float ovOpacity = 1.0f;
         };
 
         // Abstract base for all SOP nodes.

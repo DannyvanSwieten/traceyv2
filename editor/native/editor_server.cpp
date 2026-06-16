@@ -1163,6 +1163,21 @@ void EditorServer::apply_emitted(std::vector<tracey::sops::EmittedActor>&& emitt
                                         base.z * ea.tint.z));
         }
 
+        // Object Output inline material override — the output node's factor
+        // params drive the material (sliders, keyframable) when the user
+        // toggled it on. Wins over the glTF/SOP source + tint; the material
+        // library graph still takes precedence at hit time when assigned.
+        if (ea.overrideMaterial) {
+            mat.setAlbedo(ea.ovBaseColor);
+            mat.setMetallic(ea.ovMetallic);
+            mat.setRoughness(ea.ovRoughness);
+            mat.setEmission(ea.ovEmission);
+            mat.setFloat("emissionStrength", ea.ovEmissionStrength);
+            mat.setFloat("transmission", ea.ovTransmission);
+            mat.setFloat("ior", ea.ovIor);
+            mat.setFloat("opacity", ea.ovOpacity);
+        }
+
         if (!ea.instances.empty()) {
             // Instance-group emit: one Actor sitting at identity, N
             // SceneInstances each carrying its own local transform and
