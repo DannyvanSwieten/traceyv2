@@ -144,10 +144,16 @@ add_library(tracey
     src/sops/mograph/orient_util.hpp
     src/sops/mograph/falloff.hpp
     src/sops/mograph/effector_base.hpp
+    src/sops/mograph/curve_frame.hpp
     src/sops/nodes/plain_effector_sop.cpp
     src/sops/nodes/random_effector_sop.cpp
     src/sops/nodes/noise_effector_sop.cpp
     src/sops/nodes/step_effector_sop.cpp
+
+    # ── MoGraph Phase 2: curves / sweep / text ──
+    src/sops/nodes/line_sop.cpp
+    src/sops/nodes/circle_sop.cpp
+    src/sops/nodes/spiral_sop.cpp
 
     # ── VOPs (per-point attribute graph hosted inside attribute_vop SOP) ──
     src/vops/parameter.hpp

@@ -38,6 +38,10 @@ add_executable(instance_vop_smoke
     instance_vop_smoke/main.cpp
 )
 
+add_executable(mograph_curves_smoke
+    mograph_curves_smoke/main.cpp
+)
+
 add_executable(dop_geometry_source_smoke
     dop_geometry_source_smoke/main.cpp
 )
@@ -119,6 +123,12 @@ target_link_libraries(cloners_smoke
     glm
 )
 
+target_link_libraries(mograph_curves_smoke
+    PRIVATE
+    tracey
+    glm
+)
+
 target_link_libraries(instance_vop_smoke
     PRIVATE
     tracey
@@ -194,7 +204,7 @@ endif()
 # layer, so even the headless smoke tests need the rpath at runtime.
 set(TRACEY_EXAMPLE_RPATH_TARGETS
     scene_renderer pt_backend_compare
-    sop_eval_test attribute_vop_smoke cloners_smoke instance_vop_smoke dop_smoke dop_geometry_source_smoke vop_codegen_smoke attribute_gpu_smoke
+    sop_eval_test attribute_vop_smoke cloners_smoke mograph_curves_smoke instance_vop_smoke dop_smoke dop_geometry_source_smoke vop_codegen_smoke attribute_gpu_smoke
     example_projects)
 if(APPLE)
     list(APPEND TRACEY_EXAMPLE_RPATH_TARGETS metal_interop_spike)

@@ -31,6 +31,9 @@ namespace tracey
         void registerRandomEffectorSop();
         void registerNoiseEffectorSop();
         void registerStepEffectorSop();
+        void registerLineSop();
+        void registerCircleSop();
+        void registerSpiralSop();
 
         void registerBuiltinSops()
         {
@@ -38,6 +41,9 @@ namespace tracey
             // Effectors → Combiners → Output → Lights → Subnet.
             registerPrimitiveSops();
             registerGltfImportSop();
+            registerLineSop();
+            registerCircleSop();
+            registerSpiralSop();
             registerPointsGridSop();
             registerScatterSop();
             registerCopyToPointsSop();
