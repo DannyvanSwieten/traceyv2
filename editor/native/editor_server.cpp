@@ -543,6 +543,20 @@ uint64_t actor_structural_sig(const tracey::sops::EmittedActor &a) {
     // material so the new color reaches the materialBuffer.
     sig_mix(h, &a.hasTint, sizeof(a.hasTint));
     if (a.hasTint) sig_mix(h, &a.tint, sizeof(a.tint));
+    // Object Output inline material override — structural so a slider change
+    // forces the material-rebuild (slow) path; without it the per-actor diff
+    // sees no change and the new material never reaches the materialBuffer.
+    sig_mix(h, &a.overrideMaterial, sizeof(a.overrideMaterial));
+    if (a.overrideMaterial) {
+        sig_mix(h, &a.ovBaseColor, sizeof(a.ovBaseColor));
+        sig_mix(h, &a.ovMetallic, sizeof(a.ovMetallic));
+        sig_mix(h, &a.ovRoughness, sizeof(a.ovRoughness));
+        sig_mix(h, &a.ovEmission, sizeof(a.ovEmission));
+        sig_mix(h, &a.ovEmissionStrength, sizeof(a.ovEmissionStrength));
+        sig_mix(h, &a.ovTransmission, sizeof(a.ovTransmission));
+        sig_mix(h, &a.ovIor, sizeof(a.ovIor));
+        sig_mix(h, &a.ovOpacity, sizeof(a.ovOpacity));
+    }
     // Instance-group count + per-instance tints are INTENTIONALLY NOT
     // folded in here. A particle sim spawning/dying entries every cook
     // would otherwise flip this hash and force the slow path —
@@ -612,6 +626,20 @@ static uint64_t emitted_signature(const std::vector<tracey::sops::EmittedActor>&
             mix(&e.scale,     sizeof(e.scale));
             mix(&e.hasTint,   sizeof(e.hasTint));
             if (e.hasTint) mix(&e.tint, sizeof(e.tint));
+        }
+        // Object Output inline material override — fold in so dragging a
+        // material slider flips the signature and apply_emitted actually
+        // re-applies it (otherwise the "nothing changed" early-out swallows it).
+        mix(&a.overrideMaterial, sizeof(a.overrideMaterial));
+        if (a.overrideMaterial) {
+            mix(&a.ovBaseColor, sizeof(a.ovBaseColor));
+            mix(&a.ovMetallic, sizeof(a.ovMetallic));
+            mix(&a.ovRoughness, sizeof(a.ovRoughness));
+            mix(&a.ovEmission, sizeof(a.ovEmission));
+            mix(&a.ovEmissionStrength, sizeof(a.ovEmissionStrength));
+            mix(&a.ovTransmission, sizeof(a.ovTransmission));
+            mix(&a.ovIor, sizeof(a.ovIor));
+            mix(&a.ovOpacity, sizeof(a.ovOpacity));
         }
         // Geometry digest — defer to geometry_dedup_hash so a VOP that
         // writes Cd / N / uv (point or vertex class) flips this
