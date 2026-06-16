@@ -2012,7 +2012,7 @@ void EditorServer::export_video_loop(VideoExportRequest req) {
     m_export_in_progress.store(false);
 }
 
-bool EditorServer::update_camera_from_input(double /*dt*/) {
+bool EditorServer::update_camera_from_input(double dt) {
     if (!m_window) return false;
     auto& input = m_window->input();
 
@@ -2053,25 +2053,19 @@ bool EditorServer::update_camera_from_input(double /*dt*/) {
 
     bool changed = false;
 
-    // Drag-to-navigate: LMB tumbles, MMB pans, RMB dollies — no modifier
-    // key. The Space modifier was dropped because Space is reserved for
-    // the timeline (play/pause), and the user wants camera navigation to
-    // be the default mouse behaviour in the viewport rather than a
-    // gated mode.
-    //
-    // Modifier aliases on the LEFT button give full navigation to trackpads
-    // and two-button mice that have no middle button:
-    //   Shift+LMB → pan,  Alt/Option+LMB → dolly.
+    // Drag-to-navigate: LMB tumbles, MMB pans, RMB dollies — no modifier key.
     constexpr float TUMBLE_SENS = 0.005f;  // radians per pixel
     constexpr float DOLLY_SENS  = 0.01f;   // log-units per pixel
     constexpr float WHEEL_SENS  = 0.05f;   // log-units per scroll tick
 
-    const bool wantPan   = input.mouse_middle || (input.mouse_left && input.key_shift);
-    const bool wantDolly = input.mouse_right  || (input.mouse_left && input.key_alt);
-    const bool wantOrbit = input.mouse_left && !input.key_shift && !input.key_alt;
-
     if (input.mouse_dx != 0.0f || input.mouse_dy != 0.0f) {
-        if (wantPan) {
+        if (input.mouse_left) {
+            m_orbit_yaw   -= input.mouse_dx * TUMBLE_SENS;
+            m_orbit_pitch -= input.mouse_dy * TUMBLE_SENS;
+            constexpr float kPitchLimit = 1.5707f - 0.01f;
+            m_orbit_pitch = std::clamp(m_orbit_pitch, -kPitchLimit, kPitchLimit);
+            changed = true;
+        } else if (input.mouse_middle) {
             // Pan: scale by distance + fov so a fixed pixel delta moves the
             // pivot by the same screen-space amount regardless of zoom.
             const float vh = std::max(1.0f, static_cast<float>(m_viewport_pixel_h));
@@ -2085,16 +2079,10 @@ bool EditorServer::update_camera_from_input(double /*dt*/) {
             m_orbit_pivot_y += delta.y;
             m_orbit_pivot_z += delta.z;
             changed = true;
-        } else if (wantDolly) {
+        } else if (input.mouse_right) {
             // Dolly: exponential so zooming stays smooth at any distance.
             m_orbit_distance *= std::exp(input.mouse_dy * DOLLY_SENS);
             m_orbit_distance = std::max(0.01f, m_orbit_distance);
-            changed = true;
-        } else if (wantOrbit) {
-            m_orbit_yaw   -= input.mouse_dx * TUMBLE_SENS;
-            m_orbit_pitch -= input.mouse_dy * TUMBLE_SENS;
-            constexpr float kPitchLimit = 1.5707f - 0.01f;
-            m_orbit_pitch = std::clamp(m_orbit_pitch, -kPitchLimit, kPitchLimit);
             changed = true;
         }
     }
@@ -2108,6 +2096,39 @@ bool EditorServer::update_camera_from_input(double /*dt*/) {
     }
     input.scroll_dx = 0.0f;
     input.scroll_dy = 0.0f;
+
+    // Keyboard strafe (fly): translate the whole camera rig along the view
+    // axes while keys are held — the universal WASD+QE scheme. W/S = forward
+    // /back (along the look direction), A/D = left/right, Q/E = down/up
+    // (world vertical). Moves the orbit pivot (camera follows it), so it
+    // composes with mouse orbit/pan/dolly. Click the viewport first so it has
+    // keyboard focus. Speed scales with orbit distance (consistent feel at any
+    // zoom) and dt (frame-rate independent).
+    {
+        const glm::quat qyaw   = glm::angleAxis(m_orbit_yaw,   glm::vec3(0, 1, 0));
+        const glm::quat qpitch = glm::angleAxis(m_orbit_pitch, glm::vec3(1, 0, 0));
+        const glm::quat rot    = qyaw * qpitch;
+        const glm::vec3 fwd   = rot * glm::vec3(0, 0, -1);
+        const glm::vec3 right = rot * glm::vec3(1, 0, 0);
+        const glm::vec3 worldUp(0.0f, 1.0f, 0.0f);
+        glm::vec3 move(0.0f);
+        if (input.key_w) move += fwd;
+        if (input.key_s) move -= fwd;
+        if (input.key_d) move += right;
+        if (input.key_a) move -= right;
+        if (input.key_e) move += worldUp;
+        if (input.key_q) move -= worldUp;
+        if (glm::dot(move, move) > 1e-6f) {
+            constexpr float STRAFE_SENS = 1.5f; // orbit-distances per second
+            const float speed = std::max(0.05f, m_orbit_distance) * STRAFE_SENS *
+                                 static_cast<float>(dt);
+            const glm::vec3 d = glm::normalize(move) * speed;
+            m_orbit_pivot_x += d.x;
+            m_orbit_pivot_y += d.y;
+            m_orbit_pivot_z += d.z;
+            changed = true;
+        }
+    }
 
     if (changed) {
         // Compose yaw (around world Y) then pitch (around local X) and place
