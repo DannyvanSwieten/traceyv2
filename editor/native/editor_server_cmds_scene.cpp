@@ -64,6 +64,23 @@ std::optional<std::string> EditorServer::handle_scene_commands(
             if (m_broadcast) m_broadcast(R"({"event":"scene_changed"})");
             return ok_response(actor->getUid());
         }
+        if (cmd == "delete_actor") {
+            // Remove a manually-created actor (e.g. a create_light dome/sun)
+            // directly from the scene. SOP-emitted actors are deleted via SOP
+            // node removal instead; this path is for actors with no source
+            // node, which the cook never manages — so the removal is permanent
+            // (apply_emitted only reconciles actors in m_emitted_actor_to_actor).
+            const uint64_t id = req.at("actor_id").get<uint64_t>();
+            auto* a = m_engine->scene().getActor(id);
+            if (!a) return ok_response(false);
+            m_engine->scene().removeActor(static_cast<size_t>(id));
+            if (m_selected_actor_id && *m_selected_actor_id == id)
+                m_selected_actor_id.reset();
+            if (m_engine->path_tracer_ready()) m_engine->compile_scene();
+            m_clear_next_frame = true;
+            if (m_broadcast) m_broadcast(R"({"event":"scene_changed"})");
+            return ok_response(true);
+        }
         if (cmd == "set_light_params") {
             // Patch handler: the frontend sends only the keys it changed,
             // so each field is `value(key, current)` so missing keys

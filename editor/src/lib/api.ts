@@ -198,6 +198,11 @@ export type LightKind = 'dome' | 'sun' | 'point' | 'area';
 export const createLight = (type: LightKind, name?: string) =>
   send<number>('create_light', name ? { type, name } : { type });
 
+// Remove a manually-created actor (lights from createLight) directly from the
+// scene. SOP-emitted actors are removed via SOP-node deletion instead.
+export const deleteActor = (actorId: number) =>
+  send<boolean>('delete_actor', { actor_id: actorId });
+
 // Patch handler: send only the fields you changed. The native side reads
 // each key with a default, so missing keys leave their stored value alone.
 // Triggers a re-compile so both rasterizer + path tracer see the new

@@ -661,7 +661,17 @@ const App: Component = () => {
                 return;
               }
               if (a.sop_node_uid == null) {
-                console.warn('[delete] actor has no sop_node_uid — it was not produced by the cook (manually created or stale state); nothing to remove from the SOP graph', a);
+                // Manually-created actor (e.g. a light from "+ Add Light") —
+                // not produced by the cook, so there's no SOP node to remove.
+                // Delete it straight from the scene instead.
+                try {
+                  await api.deleteActor(id);
+                  if (selectedActorId() === id) setSelectedActorId(null);
+                  await refreshActors('refresh after delete actor');
+                  if (viewportRef) viewportRef.render();
+                } catch (e) {
+                  console.warn('[delete] deleteActor failed:', e);
+                }
                 return;
               }
               // The SOP graph store can drift from the backend after some
