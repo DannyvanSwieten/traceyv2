@@ -425,8 +425,6 @@ kernel void pathtrace(
 
         float3 color = float3(1.0);   // path throughput
         float3 accum = float3(0.0);   // emitted + NEE direct-light gathers
-        float3 medium = float3(0.0);  // Beer-Lambert absorption of the medium
-                                      // the ray is currently inside (0 = vacuum)
         bool alive = true;
 
         for (uint depth = 0u; depth <= U.maxDepth && alive; ++depth) {
@@ -439,10 +437,6 @@ kernel void pathtrace(
                 alive = false;
                 break;
             }
-
-            // Beer-Lambert: attenuate by how far the ray travelled through the
-            // current medium (no-op outside glass, where medium == 0).
-            color *= exp(-medium * hit.distance);
 
             // ── uber_hit.glsl ──
             if (depth >= U.maxDepth) {
@@ -598,9 +592,10 @@ kernel void pathtrace(
             const float NdotV = max(dot(N, V), 0.001);
 
             if (isGlass) {
-                // Dielectric: Fresnel chooses reflect vs refract. Reflection is
-                // colorless (white); refraction tint comes from Beer-Lambert
-                // absorption inside the medium, not a flat surface multiply.
+                // Dielectric: Fresnel chooses reflect vs refract. The glass
+                // tint is the surface baseColor applied to transmitted light
+                // (glTF KHR_transmission "thin" model). Depth-based volumetric
+                // absorption is a future add behind an attenuation param.
                 const float etaI = entering ? 1.0 : ior;
                 const float etaT = entering ? ior : 1.0;
                 const float eta = etaI / etaT;
@@ -609,22 +604,16 @@ kernel void pathtrace(
 
                 if (r3 < F) {
                     L = reflect(incomingDir, N);
-                    throughput = float3(1.0);
+                    throughput = albedo;
                 } else {
                     const float3 refracted = refract(incomingDir, N, eta);
                     if (dot(refracted, refracted) < 1.0e-6) {
                         L = reflect(incomingDir, N); // total internal reflection
-                        throughput = float3(1.0);
+                        throughput = albedo;
                     } else {
                         L = normalize(refracted);
                         const float etaScale = (etaT * etaT) / (etaI * etaI);
-                        throughput = float3(transmission * etaScale);
-                        // Entering glass → set the absorption of the medium we
-                        // now travel through (albedo = per-unit transmission
-                        // color). Exiting → back to vacuum.
-                        medium = entering
-                            ? -log(clamp(albedo, float3(1.0e-3), float3(1.0)))
-                            : float3(0.0);
+                        throughput = albedo * transmission * etaScale;
                     }
                 }
             } else if (r3 < metallic) {

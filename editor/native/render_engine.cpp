@@ -441,11 +441,20 @@ void RenderEngine::set_resolutions(uint32_t raster_w, uint32_t raster_h,
 
     if (pt_changed && m_path_tracer) {
         // Recreate the path tracer so its output image, descriptor sets, and
-        // accumulator get rebuilt at the new size. Per-actor material graphs
-        // are preserved (they live on the actors) and get re-uploaded on the
-        // next compile_scene.
+        // accumulator get rebuilt at the new size. Geometry/materials/lights
+        // re-bind on the next dispatch (the fresh backend's scene revision
+        // differs from the compiled scene's), but the material-program buffer
+        // is uploaded out-of-band by setMaterialPrograms — the fresh instance
+        // starts empty, so we MUST re-push it here. Without this the hit
+        // shader's runMaterialProgram reads a stale/empty program slot and
+        // every surface renders as garbage (blown-out white) until the next
+        // compile_scene. Switching to the Render workspace collapses the
+        // dopesheet, which resizes the viewport and trips exactly this path.
         m_path_tracer.reset();
         initialize_path_tracer();
+        if (m_compiled_scene && !m_compiled_scene->materialPrograms.headers().empty()) {
+            m_path_tracer->setMaterialPrograms(m_compiled_scene->materialPrograms);
+        }
     }
     if (raster_changed && m_rasterizer) {
         m_rasterizer.reset();

@@ -397,8 +397,6 @@ namespace tracey
 
                     glm::vec3 color(1.0f);
                     glm::vec3 accum(0.0f);
-                    glm::vec3 medium(0.0f); // Beer-Lambert absorption of the
-                                            // current medium (0 = vacuum)
                     bool alive = true;
 
                     for (uint32_t depth = 0; depth <= in.maxDepth && alive; ++depth)
@@ -411,10 +409,6 @@ namespace tracey
                             alive = false;
                             break;
                         }
-
-                        // Beer-Lambert: attenuate over the distance travelled in
-                        // the current medium (no-op outside glass).
-                        color *= glm::exp(-medium * hit->t);
 
                         // ── uber_hit ──
                         if (depth >= in.maxDepth)
@@ -584,8 +578,8 @@ namespace tracey
 
                         if (isGlass)
                         {
-                            // Dielectric: reflection is colorless; refraction
-                            // tint comes from Beer-Lambert absorption inside.
+                            // Dielectric: glass tint is the surface baseColor on
+                            // transmitted light (glTF KHR_transmission thin model).
                             const float etaI = entering ? 1.0f : ior;
                             const float etaT = entering ? ior : 1.0f;
                             const float eta = etaI / etaT;
@@ -595,7 +589,7 @@ namespace tracey
                             if (r3 < F)
                             {
                                 L = glm::reflect(incomingDir, N);
-                                throughput = glm::vec3(1.0f);
+                                throughput = albedo;
                             }
                             else
                             {
@@ -603,16 +597,13 @@ namespace tracey
                                 if (glm::dot(refracted, refracted) < 1.0e-6f)
                                 {
                                     L = glm::reflect(incomingDir, N); // total internal reflection
-                                    throughput = glm::vec3(1.0f);
+                                    throughput = albedo;
                                 }
                                 else
                                 {
                                     L = glm::normalize(refracted);
                                     const float etaScale = (etaT * etaT) / (etaI * etaI);
-                                    throughput = glm::vec3(transmission * etaScale);
-                                    medium = entering
-                                        ? -glm::log(glm::clamp(albedo, glm::vec3(1.0e-3f), glm::vec3(1.0f)))
-                                        : glm::vec3(0.0f);
+                                    throughput = albedo * transmission * etaScale;
                                 }
                             }
                         }
