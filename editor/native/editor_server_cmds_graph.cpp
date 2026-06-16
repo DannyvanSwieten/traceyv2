@@ -82,6 +82,15 @@ std::optional<std::string> EditorServer::handle_graph_commands(
             // collect_dop_stamps in post_cook_request below reads the
             // flag NOW.
             m_has_dop_imports = detect_dop_imports();
+            // Same eager refresh for the animated-SOP-param gate that drives
+            // the per-frame re-cook during playback. apply_emitted also
+            // recomputes it, but its "nothing changed" early-out skips that
+            // update when a cook's actors are byte-identical to the previous
+            // frame — exactly what happens when auto-key writes a keyframe
+            // whose value matches the current frame (0° at frame 1, or
+            // 360°≡0° at the loop end). Without this the graph would be
+            // animated but playback would never re-cook it.
+            m_has_animated_sop_params = detect_animated_sop_params();
             // Any SOP edit potentially changes the geometry that a
             // pop_source(emit_mode=geometry) reads from. Blanket-
             // invalidate the DOP sim cache so the next playhead read
