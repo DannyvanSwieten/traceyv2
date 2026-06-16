@@ -155,6 +155,7 @@ add_library(tracey
     src/sops/nodes/circle_sop.cpp
     src/sops/nodes/spiral_sop.cpp
     src/sops/nodes/resample_sop.cpp
+    src/sops/nodes/sweep_sop.cpp
 
     # ── VOPs (per-point attribute graph hosted inside attribute_vop SOP) ──
     src/vops/parameter.hpp

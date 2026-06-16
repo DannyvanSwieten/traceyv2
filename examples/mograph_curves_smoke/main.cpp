@@ -57,6 +57,19 @@ Geometry cookMod(const char *kind, const Geometry &input,
     return node->cook(inputs);
 }
 
+// Cook a 2-input node over (a, b).
+Geometry cook2(const char *kind, const Geometry &a, const Geometry &b,
+               const std::function<void(SopNode &)> &setup = {})
+{
+    auto node = SopRegistry::instance().create(kind, 3);
+    if (!node) return {};
+    if (setup) setup(*node);
+    const Geometry *pa = &a;
+    const Geometry *pb = &b;
+    std::vector<const Geometry *> inputs{pa, pb};
+    return node->cook(inputs);
+}
+
 // World tangent = orient rotates local +Z.
 glm::vec3 tangentOf(const Vec4 &orient)
 {
@@ -238,6 +251,72 @@ int main()
             n.setParamFloat("segment_length", 1.0f);
         });
         check(g.pointCount() == 11, "length 10 / seg 1 → 11 points");
+    }
+
+    // ── Sweep (circle profile along a vertical line → tube) ──────────
+    std::printf("[sweep]\n");
+    {
+        Geometry profile = cookGen("circle", [](SopNode &n) {
+            n.setParamFloat("radius", 0.3f);
+            n.setParamInt("segments", 8);
+        }); // 8 closed points
+        Geometry pathLine = cookGen("line", [](SopNode &n) {
+            n.setParamVec3("start", Vec3(0.0f, 0.0f, 0.0f));
+            n.setParamVec3("end", Vec3(0.0f, 4.0f, 0.0f));
+            n.setParamInt("points", 5);
+        }); // 5 open points along +Y
+
+        Geometry tube = cook2("sweep", pathLine, profile, [](SopNode &n) {
+            n.setParamBool("caps", true);
+        });
+        // 5 rings × 8 profile points = 40, + 2 cap centroids
+        check(tube.pointCount() == 42, "tube has 40 grid + 2 cap points");
+        // walls 4 spans × 8 × 2 = 64, caps 2 ends × 8 = 16 → 80 tris
+        check(tube.primitiveCount() == 80, "80 triangles (walls + caps)");
+
+        const auto &P = tube.positions();
+        const auto *N = tube.points().get<Vec3>("N");
+        bool onRadius = true;
+        for (size_t k = 0; k < 40; ++k) // grid points only
+        {
+            const float r = std::sqrt(P[k].x * P[k].x + P[k].z * P[k].z);
+            if (!approxEq(r, 0.3f, 1e-3f)) onRadius = false;
+        }
+        check(onRadius, "all wall points at profile radius 0.3 from the path axis");
+
+        // Outward normal: N points away from the Y axis for a grid point.
+        bool nOutward = true;
+        if (N)
+            for (size_t k = 0; k < 40; ++k)
+            {
+                glm::vec3 radial = glm::normalize(glm::vec3(P[k].x, 0.0f, P[k].z));
+                if (glm::dot(radial, N->data()[k]) < 0.9f) nOutward = false;
+            }
+        check(N && nOutward, "smooth normals point radially outward");
+
+        // Winding: the first wall triangle's geometric normal must agree with
+        // outward (cross(P1-P0,P2-P0) is the engine's front-face normal).
+        const auto &prims = tube.primitivesList();
+        const auto &v2p = tube.vertexToPoint();
+        if (!prims.empty())
+        {
+            const auto &pr = prims[0];
+            const glm::vec3 p0 = P[v2p[pr.firstVertex]];
+            const glm::vec3 p1 = P[v2p[pr.firstVertex + 1]];
+            const glm::vec3 p2 = P[v2p[pr.firstVertex + 2]];
+            const glm::vec3 gn = glm::cross(p1 - p0, p2 - p0);
+            const glm::vec3 center = (p0 + p1 + p2) / 3.0f;
+            const glm::vec3 radial = glm::normalize(glm::vec3(center.x, 0.0f, center.z));
+            check(glm::dot(glm::normalize(gn), radial) > 0.5f,
+                  "triangle winding yields outward-facing front normal");
+        }
+
+        // caps off → fewer points/tris
+        Geometry open = cook2("sweep", pathLine, profile, [](SopNode &n) {
+            n.setParamBool("caps", false);
+        });
+        check(open.pointCount() == 40, "no-caps tube has 40 points");
+        check(open.primitiveCount() == 64, "no-caps tube has 64 wall triangles");
     }
 
     if (failures == 0) std::printf("[mograph_curves_smoke] all checks passed\n");
