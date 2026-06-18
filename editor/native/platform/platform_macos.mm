@@ -55,6 +55,18 @@
     [self broadcastMenuEvent:@"menu-export"];
 }
 
+- (void)menuExportGltf:(id)sender {
+    [self broadcastMenuEvent:@"menu-export-gltf"];
+}
+
+- (void)menuExportGlb:(id)sender {
+    [self broadcastMenuEvent:@"menu-export-glb"];
+}
+
+- (void)menuExportObj:(id)sender {
+    [self broadcastMenuEvent:@"menu-export-obj"];
+}
+
 - (void)menuOpenScene:(id)sender {
     [self broadcastMenuEvent:@"menu-open-scene"];
 }
@@ -399,6 +411,21 @@ struct MacEditorWindow : EditorWindow {
         [fileMenu addItemWithTitle:@"Export Image..."
                             action:@selector(menuExport:)
                      keyEquivalent:@"e"];
+        {
+            NSMenuItem* exportGeo =
+                [fileMenu addItemWithTitle:@"Export Geometry" action:nil keyEquivalent:@""];
+            NSMenu* geoMenu = [[NSMenu alloc] initWithTitle:@"Export Geometry"];
+            [geoMenu addItemWithTitle:@"glTF (.gltf)..."
+                               action:@selector(menuExportGltf:)
+                        keyEquivalent:@""];
+            [geoMenu addItemWithTitle:@"glTF Binary (.glb)..."
+                               action:@selector(menuExportGlb:)
+                        keyEquivalent:@""];
+            [geoMenu addItemWithTitle:@"Wavefront (.obj)..."
+                               action:@selector(menuExportObj:)
+                        keyEquivalent:@""];
+            [exportGeo setSubmenu:geoMenu];
+        }
         [fileMenuItem setSubmenu:fileMenu];
 
         NSMenuItem* editMenuItem = [[NSMenuItem alloc] init];

@@ -17,6 +17,7 @@
 #include "scene/gltf_loader.hpp"
 #include "scene/material_instance.hpp"
 #include "scene/scene.hpp"
+#include "scene/scene_exporter.hpp"
 #include "scene/scene_instance.hpp"
 #include "scene/scene_object.hpp"
 #include "scene/transform.hpp"

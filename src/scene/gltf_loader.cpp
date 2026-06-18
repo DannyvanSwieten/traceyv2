@@ -4,6 +4,7 @@
 #include "gltf_loader.hpp"
 #include "camera.hpp"
 #include <tiny_gltf.h>
+#include <glm/gtx/matrix_decompose.hpp>
 #include <iostream>
 #include <unordered_map>
 #include <cmath>
@@ -344,19 +345,42 @@ namespace tracey
             return material;
         }
 
-        // Convert GLTF node transform to our Transform
+        // Convert GLTF node transform to our Transform. A node specifies its
+        // local transform EITHER as a full 4x4 matrix OR as TRS components
+        // (the glTF spec forbids mixing the two). Both are handled here:
+        //   - The matrix form is decomposed into TRS. Previously it was
+        //     ignored entirely, which silently placed every matrix-based node
+        //     at the origin (many exporters, e.g. Blender, emit `matrix`).
+        //   - The quaternion is applied directly. The old path round-tripped
+        //     it through euler *degrees* and handed that Vec3 to
+        //     setRotation(Quaternion), which reinterpreted the degree values
+        //     as radians — so any non-trivial TRS rotation came in wrong.
         Transform convertNodeTransform(const tinygltf::Node &node)
         {
             Transform transform;
 
-            if (!node.matrix.empty())
+            if (node.matrix.size() == 16)
             {
-                // Node has a matrix - decompose it
-                // For simplicity, we'll extract TRS if available, otherwise use identity
-                // Full matrix decomposition would be more complex
+                // glTF matrices are stored column-major, matching glm::mat4.
+                glm::mat4 m(1.0f);
+                for (int col = 0; col < 4; ++col)
+                    for (int row = 0; row < 4; ++row)
+                        m[col][row] = static_cast<float>(node.matrix[col * 4 + row]);
+
+                glm::vec3 scale, translation, skew;
+                glm::vec4 perspective;
+                glm::quat rotation;
+                if (glm::decompose(m, scale, rotation, translation, skew, perspective))
+                {
+                    transform.setPosition(translation);
+                    transform.setRotation(rotation);
+                    transform.setScale(scale);
+                }
+                return transform;
             }
 
-            if (!node.translation.empty())
+            // TRS form.
+            if (node.translation.size() == 3)
             {
                 transform.setPosition(Vec3(
                     static_cast<float>(node.translation[0]),
@@ -364,22 +388,17 @@ namespace tracey
                     static_cast<float>(node.translation[2])));
             }
 
-            if (!node.rotation.empty())
+            if (node.rotation.size() == 4)
             {
-                // GLTF uses quaternions (x, y, z, w)
-                // Convert quaternion to euler angles (degrees)
-                float x = static_cast<float>(node.rotation[0]);
-                float y = static_cast<float>(node.rotation[1]);
-                float z = static_cast<float>(node.rotation[2]);
-                float w = static_cast<float>(node.rotation[3]);
-
-                // Convert quaternion to euler angles
-                glm::quat q(w, x, y, z);
-                Vec3 euler = glm::degrees(glm::eulerAngles(q));
-                transform.setRotation(euler);
+                // glTF stores quaternions as (x, y, z, w); glm::quat takes (w, x, y, z).
+                transform.setRotation(glm::quat(
+                    static_cast<float>(node.rotation[3]),
+                    static_cast<float>(node.rotation[0]),
+                    static_cast<float>(node.rotation[1]),
+                    static_cast<float>(node.rotation[2])));
             }
 
-            if (!node.scale.empty())
+            if (node.scale.size() == 3)
             {
                 transform.setScale(Vec3(
                     static_cast<float>(node.scale[0]),

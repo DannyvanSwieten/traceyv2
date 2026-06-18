@@ -69,6 +69,8 @@ add_library(tracey
     src/scene/blas_cache.cpp
     src/scene/gltf_loader.hpp
     src/scene/gltf_loader.cpp
+    src/scene/scene_exporter.hpp
+    src/scene/scene_exporter.cpp
     src/scene/camera.hpp
     src/scene/camera.cpp
 

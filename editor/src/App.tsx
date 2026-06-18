@@ -180,6 +180,9 @@ const App: Component = () => {
 
   let unlistenImport: (() => void) | undefined;
   let unlistenExport: (() => void) | undefined;
+  let unlistenExportGltf: (() => void) | undefined;
+  let unlistenExportGlb: (() => void) | undefined;
+  let unlistenExportObj: (() => void) | undefined;
 
   // Import is just "remember this file" — adds an entry to the asset browser
   // and stops. Pulling geometry into the scene is a separate action the user
@@ -359,6 +362,25 @@ const App: Component = () => {
     }
   };
 
+  // Export the cooked scene geometry to glTF/GLB/OBJ. Prompts for a path with
+  // the matching extension, then hands the live scene to the native exporter.
+  const handleExportGeometry = async (format: api.GeometryFormat) => {
+    const ext = format;
+    try {
+      const selected = await api.saveFileDialog(
+        `Export Geometry (${format.toUpperCase()})`,
+        `scene.${ext}`,
+        [{ description: `${format.toUpperCase()} geometry`, extensions: [ext] }],
+      );
+      if (!selected) return;
+      await api.exportScene(selected, format);
+      showToast(`Exported ${format.toUpperCase()}`, { kind: 'success', detail: selected });
+    } catch (e) {
+      console.error('Export geometry failed:', e);
+      showToast('Export failed', { kind: 'error', detail: String(e) });
+    }
+  };
+
   const applyWorkspace = (name: WorkspaceName) => {
     const w = WORKSPACES[name];
     setSopEditorOpen(w.sopOpen);
@@ -412,6 +434,18 @@ const App: Component = () => {
         group: 'File', hint: '⌘E',
         keywords: 'render mp4',
         run: () => { setExportVideoOpen(true); } },
+      { id: 'file.exportGltf', label: 'Export Geometry: glTF…',
+        group: 'File',
+        keywords: 'export geometry gltf mesh interchange blender',
+        run: () => handleExportGeometry('gltf') },
+      { id: 'file.exportGlb', label: 'Export Geometry: GLB…',
+        group: 'File',
+        keywords: 'export geometry glb mesh binary interchange blender unreal',
+        run: () => handleExportGeometry('glb') },
+      { id: 'file.exportObj', label: 'Export Geometry: OBJ…',
+        group: 'File',
+        keywords: 'export geometry obj wavefront mesh mtl',
+        run: () => handleExportGeometry('obj') },
       { id: 'edit.undo', label: 'Undo',
         group: 'Edit', hint: '⌘Z',
         run: () => undo().then((ok) => {
@@ -476,6 +510,9 @@ const App: Component = () => {
       // File → Export… (Cmd+E) opens the video export dialog.
       setExportVideoOpen(true);
     });
+    unlistenExportGltf = api.listen('menu-export-gltf', () => handleExportGeometry('gltf'));
+    unlistenExportGlb = api.listen('menu-export-glb', () => handleExportGeometry('glb'));
+    unlistenExportObj = api.listen('menu-export-obj', () => handleExportGeometry('obj'));
     unlistenOpenScene = api.listen('menu-open-scene', () => handleOpenScene());
     unlistenSaveScene = api.listen('menu-save-scene', () => handleSaveScene());
     unlistenSaveSceneAs = api.listen('menu-save-scene-as', () => handleSaveSceneAs());
@@ -511,6 +548,9 @@ const App: Component = () => {
   onCleanup(() => {
     unlistenImport?.();
     unlistenExport?.();
+    unlistenExportGltf?.();
+    unlistenExportGlb?.();
+    unlistenExportObj?.();
     unlistenOpenScene?.();
     unlistenSaveScene?.();
     unlistenSaveSceneAs?.();

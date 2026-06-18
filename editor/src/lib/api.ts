@@ -459,6 +459,14 @@ export const loadScene = (path: string) => send<null>('load_scene', { path });
 export const exportImage = (path: string, format: string) =>
   send<null>('export_image', { path, format });
 
+// Export the live cooked scene geometry to a standard interchange format.
+// 'gltf'/'glb' round-trip through the importer (meshes + per-instance
+// transforms + PBR material factors incl. transmission/ior/emission); 'obj'
+// writes baked world-space triangles + a sidecar .mtl.
+export type GeometryFormat = 'gltf' | 'glb' | 'obj';
+export const exportScene = (path: string, format: GeometryFormat) =>
+  send<null>('export_scene', { path, format });
+
 // ─── Viewport surface (native overlay) ─────────────────────────────────────
 
 export const setViewportRect = (x: number, y: number, width: number, height: number) =>

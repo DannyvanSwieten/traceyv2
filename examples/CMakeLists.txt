@@ -58,6 +58,10 @@ add_executable(attribute_gpu_smoke
     attribute_gpu_smoke/main.cpp
 )
 
+add_executable(scene_export_smoke
+    scene_export_smoke/main.cpp
+)
+
 # Generator for shipped example .tracey project folders. The output lives
 # under examples/projects/ and is checked into the repo; this target
 # rebuilds those files from C++ when the schema (or the showcased graph)
@@ -163,6 +167,12 @@ target_link_libraries(attribute_gpu_smoke
     shaderc
 )
 
+target_link_libraries(scene_export_smoke
+    PRIVATE
+    tracey
+    glm
+)
+
 target_link_libraries(example_projects
     PRIVATE
     tracey
@@ -204,7 +214,7 @@ endif()
 # layer, so even the headless smoke tests need the rpath at runtime.
 set(TRACEY_EXAMPLE_RPATH_TARGETS
     scene_renderer pt_backend_compare
-    sop_eval_test attribute_vop_smoke cloners_smoke mograph_curves_smoke instance_vop_smoke dop_smoke dop_geometry_source_smoke vop_codegen_smoke attribute_gpu_smoke
+    sop_eval_test attribute_vop_smoke cloners_smoke mograph_curves_smoke instance_vop_smoke dop_smoke dop_geometry_source_smoke vop_codegen_smoke attribute_gpu_smoke scene_export_smoke
     example_projects)
 if(APPLE)
     list(APPEND TRACEY_EXAMPLE_RPATH_TARGETS metal_interop_spike)

@@ -503,6 +503,24 @@ std::optional<std::string> EditorServer::handle_io_commands(
                       static_cast<std::streamsize>(m_last_render_pixels.size()));
             return ok_response_null();
         }
+        if (cmd == "export_scene") {
+            const auto path = req.at("path").get<std::string>();
+            const auto format = req.at("format").get<std::string>();
+            if (path.empty()) return err_response("Missing output path");
+
+            tracey::SceneExporter::Format fmt;
+            if (format == "gltf")      fmt = tracey::SceneExporter::Format::GltfJson;
+            else if (format == "glb")  fmt = tracey::SceneExporter::Format::Glb;
+            else if (format == "obj")  fmt = tracey::SceneExporter::Format::Obj;
+            else return err_response("Unsupported geometry format: " + format);
+
+            // Runs with m_mutex held (same lock that guards scene mutation),
+            // exporting the live scene at its current cooked frame.
+            std::string err;
+            if (!tracey::SceneExporter::exportToFile(m_engine->scene(), path, fmt, &err))
+                return err_response(err.empty() ? "Export failed" : err);
+            return ok_response_null();
+        }
         if (cmd == "export_video_start") {
             if (m_export_in_progress.load())
                 return err_response("Export already running");
