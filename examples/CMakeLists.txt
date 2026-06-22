@@ -102,6 +102,10 @@ if(TRACEY_WITH_USD)
     # tracey_usd (the USD-isolated lib) the way the editor does.
     add_executable(usd_import_smoke usd_import_smoke/main.cpp)
     target_link_libraries(usd_import_smoke PRIVATE tracey_usd glm)
+
+    # Diagnostic: dump a stage's material/texture structure (raw USD).
+    add_executable(usd_inspect usd_inspect/main.cpp)
+    target_link_libraries(usd_inspect PRIVATE usd usdGeom usdShade)
 endif()
 
 target_link_libraries(blas
@@ -285,7 +289,7 @@ if(APPLE)
 endif()
 # usd_smoke only exists when USD is vendored; it needs the USD dylib rpath.
 if(TRACEY_WITH_USD)
-    list(APPEND TRACEY_EXAMPLE_RPATH_TARGETS usd_smoke usd_import_smoke)
+    list(APPEND TRACEY_EXAMPLE_RPATH_TARGETS usd_smoke usd_import_smoke usd_inspect)
 endif()
 # The OIDN dylibs live in deps/oidn/lib; add it so the main libOpenImageDenoise
 # (and the sibling core/device libs it loads via @loader_path) resolve.

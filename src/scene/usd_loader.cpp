@@ -209,6 +209,21 @@ namespace tracey
         MaterialInstance convertBoundMaterial(const UsdPrim &prim)
         {
             MaterialInstance m("pbr");
+
+            // displayColor: USD's preview/fallback color for prims with no
+            // bound shading material. Many real assets rely on it entirely —
+            // the Pixar Kitchen Set colors all 1788 meshes via a constant
+            // displayColor and binds NO materials + ships NO textures. Read it
+            // first as the albedo (constant interp → one color; varying →
+            // first sample) so such assets import in their intended colors
+            // instead of flat grey. A real bound UsdPreviewSurface below wins.
+            if (UsdGeomPrimvar dc = UsdGeomPrimvarsAPI(prim).GetPrimvar(TfToken("displayColor")))
+            {
+                VtArray<GfVec3f> colors;
+                if (dc.ComputeFlattened(&colors) && !colors.empty())
+                    m.setAlbedo(Vec3(colors[0][0], colors[0][1], colors[0][2]));
+            }
+
             UsdShadeMaterial mat = UsdShadeMaterialBindingAPI(prim).ComputeBoundMaterial();
             if (!mat) return m;
             UsdShadeShader surface = mat.ComputeSurfaceSource();
