@@ -4,11 +4,12 @@
 
 import * as api from './api';
 import { SopNode } from './sop_graph';
-import { buildSubnetTree, ensureCatalog } from './import_subnets';
+import { buildSubnetTree, ensureCatalog, groupNameFromPath } from './import_subnets';
 
 // Public entry point: peek the glTF, then build one root-level subnet per
-// top-level glTF node, each wired with `gltf_import` nodes. Returns the list so
-// the caller can drop them into the currently-edited graph (today: addNode).
+// top-level glTF node, each wired with `gltf_import` nodes, all nested under a
+// single import-group subnet (named after the file) so the asset is one
+// outliner entry the user can toggle/delete as a unit.
 export async function buildSubnetsFromGltf(filePath: string): Promise<SopNode[]> {
   // The catalog must be loaded first — makeNode resolves 'gltf_import' /
   // 'object_output' through it and returns null when absent (silently
@@ -16,5 +17,6 @@ export async function buildSubnetsFromGltf(filePath: string): Promise<SopNode[]>
   // used to hit exactly that.
   await ensureCatalog();
   const peek = await api.peekGltf(filePath);
-  return buildSubnetTree(peek.roots, filePath, 'gltf_import');
+  return buildSubnetTree(peek.roots, filePath, 'gltf_import', 0,
+    groupNameFromPath(filePath));
 }

@@ -159,13 +159,45 @@ export function buildSubnetTree(
   filePath: string,
   importKind: string,
   fps = 0,
+  groupName = '',
 ): SopNode[] {
-  return roots.map((r, i) => {
+  const subnets = roots.map((r, i) => {
     const subnet = buildSubnet(r, filePath, importKind, fps);
     // Lay roots out horizontally so a multi-root scene doesn't pile up.
     subnet.pos = [120 + i * NODE_DX, 120];
     return subnet;
   });
+
+  // Ungrouped: drop the subnets at the graph root as-is.
+  if (!groupName) return subnets;
+
+  // Grouped: nest every imported subnet inside ONE outer "group" subnet so the
+  // whole asset is a single outliner entry — toggling its visibility hides the
+  // entire import (visibility cascades to children at compile time) and
+  // deleting the group removes every imported actor in one operation. The
+  // group itself is a transform-only marker (identity TRS, no geometry).
+  const inner = emptyGraph();
+  inner.nodes.push(...subnets);
+  const group: SopNode = {
+    uid: allocNodeUid(),
+    kind: 'subnet',
+    pos: [120, 120],
+    params: {
+      name: stringParam(groupName || 'imported'),
+      translate: vec3Param([0, 0, 0]),
+      rotate_euler_deg: vec3Param([0, 0, 0]),
+      scale: vec3Param([1, 1, 1]),
+    },
+    subgraph: inner,
+  };
+  return [group];
+}
+
+// Derive a tidy group name from a file path: basename without extension.
+export function groupNameFromPath(filePath: string): string {
+  const base = filePath.split(/[/\\]/).pop() ?? filePath;
+  const dot = base.lastIndexOf('.');
+  return dot > 0 ? base.slice(0, dot) : base;
 }
 
 // Ensure the SOP catalog is loaded before building (so makeNode resolves the

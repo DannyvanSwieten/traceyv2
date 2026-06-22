@@ -761,18 +761,30 @@ namespace tracey
         };
         std::unordered_map<std::string, ActorMaterialEntry> graphJsonToEntry;
 
+        // Effective visibility CASCADES down the hierarchy: an actor renders
+        // only if it AND every ancestor is visible. Hiding a group/subnet thus
+        // hides its whole subtree — Blender/C4D collection semantics, and what
+        // makes "disable the whole import at once" work by toggling the import
+        // group node. Walks the parent chain (depth is tiny, so negligible).
+        auto effectivelyVisible = [&scene](const Actor *a) -> bool {
+            for (const Actor *cur = a; cur != nullptr;)
+            {
+                if (!cur->visible()) return false;
+                if (!cur->hasParent()) break;
+                cur = scene.getActor(cur->parent());
+            }
+            return true;
+        };
+
         for (const auto &node : sceneNodes)
         {
             const Actor *actor = node.actor;
             const Mat4 &worldTransform = node.worldTransform;
 
-            // Hidden actors contribute no instances to the path tracer's TLAS
-            // or the rasterizer's draw list. Children are still walked because
-            // Scene::flatten emits one SceneNode per actor with its world
-            // transform already composed, so skipping a parent does NOT
-            // suppress its children — that matches Houdini-style "display
-            // flag" semantics (hide a subnet, its children remain visible).
-            if (!actor->visible()) continue;
+            // Hidden actors (and any actor under a hidden ancestor) contribute
+            // no instances to the path tracer's TLAS or the rasterizer's draw
+            // list.
+            if (!effectivelyVisible(actor)) continue;
 
             // Resolve this actor's program id once -- all instances under the
             // actor share it. Empty graph -> passthrough at index 0.

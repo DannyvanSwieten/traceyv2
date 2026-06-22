@@ -6,7 +6,7 @@
 
 import * as api from './api';
 import { SopNode } from './sop_graph';
-import { buildSubnetTree, ensureCatalog } from './import_subnets';
+import { buildSubnetTree, ensureCatalog, groupNameFromPath } from './import_subnets';
 
 export interface UsdImportResult {
   subnets: SopNode[];
@@ -25,7 +25,8 @@ export async function buildSubnetsFromUsd(filePath: string): Promise<UsdImportRe
   const fps = peek.time_codes_per_second && peek.time_codes_per_second > 0
     ? peek.time_codes_per_second
     : 24;
-  const subnets = buildSubnetTree(peek.roots, filePath, 'usd_import', fps);
+  const subnets = buildSubnetTree(peek.roots, filePath, 'usd_import', fps,
+    groupNameFromPath(filePath));
 
   let timeline: UsdImportResult['timeline'] | undefined;
   if (peek.animated) {
