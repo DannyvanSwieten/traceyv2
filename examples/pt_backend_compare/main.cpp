@@ -19,6 +19,10 @@
 #include "scene/gltf_loader.hpp"
 #include "scene/usd_loader.hpp"
 #include "scene/camera.hpp"
+#include "scene/scene.hpp"
+#include "scene/actor.hpp"
+#include "scene/light.hpp"
+#include "scene/transform.hpp"
 #include "path_tracer/api/path_tracer.hpp"
 #include "path_tracer/api/backend_registry.hpp"
 #include "graph/graphs/shader_graph/shader_graph.hpp"
@@ -26,6 +30,7 @@
 #include "graph/graphs/shader_graph/compiler.hpp"
 
 #include <glm/glm.hpp>
+#include <glm/gtc/quaternion.hpp>  // angleAxis for the --sun direction
 
 #include <array>
 #include <cmath>
@@ -120,6 +125,7 @@ int main(int argc, char *argv[])
     float aperture = 0.0f;    // >0 enables thin-lens DOF (R4 lens parity test)
     float focal = -1.0f;      // >0 overrides the focal distance (else camera default)
     float motionDx = 0.0f;    // !=0 translates all instances by (dx,0,0) over the shutter (R4 motion parity test)
+    float sunIntensity = 0.0f; // >0 injects a Distant (sun) light — analytic-NEE + shadow-ray parity test
 
     for (int i = 1; i < argc; ++i)
     {
@@ -139,6 +145,7 @@ int main(int argc, char *argv[])
         else if (arg == "--aperture") aperture = std::stof(next());
         else if (arg == "--focal") focal = std::stof(next());
         else if (arg == "--motion") motionDx = std::stof(next());
+        else if (arg == "--sun") sunIntensity = std::stof(next());
         else scenePath = arg;
     }
 
@@ -156,6 +163,35 @@ int main(int argc, char *argv[])
         scene = tracey::GltfLoader::loadFromFile(scenePath);
     else
         scene = tracey::SceneLoader::loadFromFile(scenePath);
+
+    // Inject a Distant (sun) light to exercise analytic-light NEE + shadow rays.
+    // Direction comes from the actor's rotation × -Z, so aim -Z down/front-right
+    // and pick an intensity that clearly lights + self-shadows the model.
+    if (sunIntensity > 0.0f)
+    {
+        auto *sun = scene->createActor();
+        sun->setName("CompareSun");
+        const glm::vec3 from(0.0f, 0.0f, -1.0f);
+        const glm::vec3 to = glm::normalize(glm::vec3(-0.4f, -1.0f, -0.5f));
+        glm::vec3 axis = glm::cross(from, to);
+        const float axisLen = glm::length(axis);
+        glm::quat q(1.0f, 0.0f, 0.0f, 0.0f);
+        if (axisLen > 1e-6f)
+        {
+            axis /= axisLen;
+            const float angle = std::acos(glm::clamp(glm::dot(from, to), -1.0f, 1.0f));
+            q = glm::angleAxis(angle, axis);
+        }
+        tracey::Transform xf;
+        xf.setRotation(q);
+        sun->setTransform(xf);
+        tracey::Light light;
+        light.type = tracey::LightType::Distant;
+        light.color = tracey::Vec3(1.0f, 0.97f, 0.92f);
+        light.intensity = sunIntensity;
+        sun->setLight(light);
+        std::cout << "Injected Distant sun (intensity " << sunIntensity << ")\n";
+    }
 
     std::unique_ptr<tracey::Device> device(
         tracey::createDevice(tracey::DeviceType::Gpu, tracey::DeviceBackend::Compute));
