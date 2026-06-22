@@ -59,9 +59,22 @@ if(APPLE)
         "-framework AVFoundation"
     )
 
+    # OpenUSD import: the editor is the (only) app that links tracey_usd. The
+    # core renderer + C API stay USD-free; this is the one consumer that pulls
+    # the heavy dep in. TRACEY_HAS_USD gates the editor's USD code paths
+    # (peek_usd IPC, usd_import SOP registration, USD material re-resolution).
+    if(TRACEY_WITH_USD)
+        target_link_libraries(tracey_editor PRIVATE tracey_usd)
+        target_compile_definitions(tracey_editor PRIVATE TRACEY_HAS_USD=1)
+    endif()
+
     set(TRACEY_EDITOR_RPATH "/usr/local/lib")
     if(TRACEY_WITH_OIDN)
         list(APPEND TRACEY_EDITOR_RPATH "${TRACEY_OIDN_LIBDIR}")
+    endif()
+    # USD ships shared libs (libusd_*.dylib + libtbb.dylib) under deps/usd/lib.
+    if(TRACEY_WITH_USD)
+        list(APPEND TRACEY_EDITOR_RPATH "${TRACEY_USD_LIBDIR}")
     endif()
     set_target_properties(tracey_editor PROPERTIES
         MACOSX_BUNDLE TRUE

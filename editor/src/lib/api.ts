@@ -535,6 +535,17 @@ export interface GltfPeekResult {
 export const peekGltf = (path: string) =>
   send<GltfPeekResult>('peek_gltf', { path });
 
+// ─── USD peek (structural import helper) ───────────────────────────────────
+// Same hierarchy shape as the glTF peek — the importer treats them
+// identically (a node tree with local/world TRS + SceneObject keys). USD's
+// first slice is flat: one node per mesh prim, carrying the prim's world TRS
+// and its Sdf path as the `mesh_names` entry the `usd_import` SOP looks up.
+export type HierarchyNode = GltfHierarchyNode;
+export type PeekResult = GltfPeekResult;
+
+export const peekUsd = (path: string) =>
+  send<PeekResult>('peek_usd', { path });
+
 // ─── MaterialX import ──────────────────────────────────────────────────────
 // Read a .mtlx and map its standard_surface materials onto the engine BSDF.
 // `params` are keyed EXACTLY by the object_output SOP's override-param names,

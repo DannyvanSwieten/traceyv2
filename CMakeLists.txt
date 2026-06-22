@@ -454,7 +454,8 @@ if(TRACEY_WITH_USD)
     # include it freely; only this .cpp pulls pxr. Layered tracey <- tracey_usd.
     add_library(tracey_usd
         src/scene/usd_loader.hpp
-        src/scene/usd_loader.cpp)
+        src/scene/usd_loader.cpp
+        src/sops/nodes/usd_import_sop.cpp)
     target_link_libraries(tracey_usd PUBLIC tracey)
     target_link_libraries(tracey_usd PRIVATE usd usdGeom usdShade usdLux glm::glm)
     target_compile_definitions(tracey_usd PRIVATE TRACEY_HAS_USD=1)

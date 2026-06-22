@@ -5,6 +5,8 @@
 
 #include "editor_server_cmds_common.hpp"
 
+#include "scene/usd_loader.hpp" // USD-free header; peek_usd handler guarded by TRACEY_HAS_USD
+
 namespace tracey_editor {
 
 std::optional<std::string> EditorServer::handle_render_commands(
@@ -296,6 +298,44 @@ std::optional<std::string> EditorServer::handle_render_commands(
             json roots_json = json::array();
             for (const auto& r : roots) roots_json.push_back(toJson(r));
             return ok_response({{"path", path}, {"roots", roots_json}});
+        }
+        if (cmd == "peek_usd") {
+            // Structural walk of a USD stage → the same hierarchy shape as
+            // peek_gltf (flat first slice: one node per mesh prim, world TRS +
+            // the prim's Sdf path as the SceneObject key). The frontend's
+            // buildSubnetsFromUsd turns it into usd_import → object_output
+            // chains. Mirrors peek_gltf exactly so the importers share a path.
+#ifdef TRACEY_HAS_USD
+            const auto path = req.at("path").get<std::string>();
+            std::vector<tracey::UsdLoader::HierarchyNode> roots;
+            try {
+                roots = tracey::UsdLoader::peekHierarchy(path);
+            } catch (const std::exception& e) {
+                return err_response(std::string("peek_usd: ") + e.what());
+            }
+
+            std::function<json(const tracey::UsdLoader::HierarchyNode&)> toJson;
+            toJson = [&](const tracey::UsdLoader::HierarchyNode& n) -> json {
+                json out;
+                out["name"] = n.name;
+                out["translate"] = {n.translate.x, n.translate.y, n.translate.z};
+                out["rotate_euler_deg"] = {n.rotateEulerDeg.x, n.rotateEulerDeg.y, n.rotateEulerDeg.z};
+                out["scale"] = {n.scale.x, n.scale.y, n.scale.z};
+                json meshNames = json::array();
+                for (const auto& mn : n.meshObjectNames) meshNames.push_back(mn);
+                out["mesh_names"] = std::move(meshNames);
+                json children = json::array();
+                for (const auto& c : n.children) children.push_back(toJson(c));
+                out["children"] = std::move(children);
+                return out;
+            };
+
+            json roots_json = json::array();
+            for (const auto& r : roots) roots_json.push_back(toJson(r));
+            return ok_response({{"path", path}, {"roots", roots_json}});
+#else
+            return err_response("peek_usd: this build has no OpenUSD support");
+#endif
         }
         if (cmd == "set_viewport_visible") {
             if (!m_window) return err_response("No window");

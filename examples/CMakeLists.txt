@@ -97,6 +97,11 @@ target_link_libraries(materialx_smoke
 if(TRACEY_WITH_USD)
     add_executable(usd_smoke usd_smoke/main.cpp)
     target_link_libraries(usd_smoke PRIVATE usd usdGeom)
+
+    # U1.4 import contract: peek↔load lockstep + material recovery. Links
+    # tracey_usd (the USD-isolated lib) the way the editor does.
+    add_executable(usd_import_smoke usd_import_smoke/main.cpp)
+    target_link_libraries(usd_import_smoke PRIVATE tracey_usd glm)
 endif()
 
 target_link_libraries(blas
@@ -280,7 +285,7 @@ if(APPLE)
 endif()
 # usd_smoke only exists when USD is vendored; it needs the USD dylib rpath.
 if(TRACEY_WITH_USD)
-    list(APPEND TRACEY_EXAMPLE_RPATH_TARGETS usd_smoke)
+    list(APPEND TRACEY_EXAMPLE_RPATH_TARGETS usd_smoke usd_import_smoke)
 endif()
 # The OIDN dylibs live in deps/oidn/lib; add it so the main libOpenImageDenoise
 # (and the sibling core/device libs it loads via @loader_path) resolve.

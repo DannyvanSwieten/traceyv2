@@ -59,6 +59,7 @@ import {
   setPtBackend,
 } from './stores/render_settings';
 import { buildSubnetsFromGltf } from './lib/gltf_import';
+import { buildSubnetsFromUsd } from './lib/usd_import';
 import { fetchCatalog as fetchSopCatalog } from './lib/sop_graph';
 import { isVopEditorOpen } from './stores/vops';
 import { isMaterialEditorOpen, setMaterialEditorOpen } from './stores/materials';
@@ -193,8 +194,10 @@ const App: Component = () => {
   // re-load the same asset multiple times for repeated instances).
   const handleImport = async () => {
     try {
-      const selected = await api.openFileDialog('Import glTF', [
+      const selected = await api.openFileDialog('Import 3D Asset', [
+        { description: '3D Assets', extensions: ['gltf', 'glb', 'usd', 'usda', 'usdc', 'usdz'] },
         { description: 'glTF', extensions: ['gltf', 'glb'] },
+        { description: 'USD', extensions: ['usd', 'usda', 'usdc', 'usdz'] },
       ]);
       if (!selected) return;
       addAsset(selected);
@@ -217,7 +220,14 @@ const App: Component = () => {
       // stay blank with no indication of why.
       const beforeCount = actors().length;
 
-      const subnets = await buildSubnetsFromGltf(asset.path);
+      // Dispatch by file extension — glTF and USD build the same procedural
+      // subnet tree, just with their own import SOP under the hood. The user
+      // never has to know which; they just loaded a file.
+      const ext = asset.path.split('.').pop()?.toLowerCase() ?? '';
+      const isUsd = ext === 'usd' || ext === 'usda' || ext === 'usdc' || ext === 'usdz';
+      const subnets = isUsd
+        ? await buildSubnetsFromUsd(asset.path)
+        : await buildSubnetsFromGltf(asset.path);
       for (const s of subnets) addNode(s);
       // Skip the 300ms debounce so the cook fires immediately. Without
       // this, the user sees the subnet shapes appear in the canvas but

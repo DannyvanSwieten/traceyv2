@@ -12,6 +12,7 @@
 #include "scene/actor.hpp"
 #include "scene/camera.hpp"
 #include "scene/gltf_loader.hpp"
+#include "scene/usd_loader.hpp"
 #include "scene/material_instance.hpp"
 #include "scene/scene.hpp"
 #include "scene/scene_instance.hpp"
@@ -51,6 +52,13 @@
 #include <glm/gtc/matrix_transform.hpp>  // glm::lookAt for default camera pose
 
 #include <json.hpp>
+
+#ifdef TRACEY_HAS_USD
+// Defined in tracey_usd (src/sops/nodes/usd_import_sop.cpp). Forward-declared
+// here — the usd_import SOP type isn't in any core header (USD stays out of
+// core); the editor registers it into the shared SopRegistry at startup.
+namespace tracey { namespace sops { void registerUsdImportSop(); } }
+#endif
 
 #include <algorithm>
 #include <chrono>
@@ -103,6 +111,12 @@ EditorServer::EditorServer(std::unique_ptr<RenderEngine> engine, EditorWindow* w
         tracey::sops::registerBuiltinSops();
         tracey::vops::registerBuiltinVops();
         tracey::dops::registerBuiltinDops();
+#ifdef TRACEY_HAS_USD
+        // The usd_import SOP lives in tracey_usd (USD stays out of core); the
+        // editor is its only consumer, so it registers the type into the shared
+        // SopRegistry singleton here after the builtins.
+        tracey::sops::registerUsdImportSop();
+#endif
         s_sopsRegistered = true;
     }
     m_sop_graph = std::make_unique<tracey::sops::SopGraph>(0);
@@ -971,6 +985,36 @@ void EditorServer::apply_emitted(std::vector<tracey::sops::EmittedActor>&& emitt
         return false;
     };
 
+#ifdef TRACEY_HAS_USD
+    // USD twin of pullGltfMaterial: usd_import SOPs stamp _usd_source_path /
+    // _usd_source_mesh; the bound UsdPreviewSurface material lives on the
+    // cached stage's matching SceneInstance (objectRef == the prim path), so
+    // the same actor-walk recovers it. Guarded — tracey_usd is only linked in
+    // USD-enabled editor builds. (USD textures aren't embedded into the Scene
+    // yet, so there's no embedded-texture mirror here — a U1.3 follow-up.)
+    auto pullUsdMaterial = [&](const tracey::Geometry& geo,
+                               tracey::MaterialInstance* out) -> bool {
+        const auto* pathAttr = geo.detail().get<std::string>("_usd_source_path");
+        const auto* meshAttr = geo.detail().get<std::string>("_usd_source_mesh");
+        if (!pathAttr || !meshAttr) return false;
+        if (pathAttr->data().empty() || meshAttr->data().empty()) return false;
+        const std::string& path = pathAttr->data()[0];
+        const std::string& meshName = meshAttr->data()[0];
+        auto src = tracey::UsdLoader::loadFromFileCached(path);
+        if (!src) return false;
+        for (const auto& a : src->actors()) {
+            if (!a) continue;
+            for (const auto& inst : a->instances()) {
+                if (inst.objectRef() == meshName) {
+                    *out = inst.material();
+                    return true;
+                }
+            }
+        }
+        return false;
+    };
+#endif
+
     // Composite keys whose Actor got newly created (or recreated after a
     // structural change) in this pass. Used by Pass 2 below to gate parent
     // re-wiring — addChild isn't idempotent, so re-running it on unchanged
@@ -1188,6 +1232,14 @@ void EditorServer::apply_emitted(std::vector<tracey::sops::EmittedActor>&& emitt
             if (pullGltfMaterial(*ea.geometry, &fromGltf)) {
                 mat = fromGltf;
             }
+#ifdef TRACEY_HAS_USD
+            // USD-imported actors carry _usd_source_* instead — pull the bound
+            // UsdPreviewSurface material the same way.
+            tracey::MaterialInstance fromUsd("pbr");
+            if (pullUsdMaterial(*ea.geometry, &fromUsd)) {
+                mat = fromUsd;
+            }
+#endif
         }
         // Per-instance albedo tint (Phase C of GPU instancing). When the
         // upstream cook attached a tint — e.g. `instance` SOP forwarding

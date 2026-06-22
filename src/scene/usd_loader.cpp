@@ -38,6 +38,8 @@
 #include <glm/gtx/matrix_decompose.hpp>
 #include <glm/gtc/quaternion.hpp>
 
+#include <mutex>
+#include <unordered_map>
 #include <vector>
 
 PXR_NAMESPACE_USING_DIRECTIVE
@@ -57,6 +59,43 @@ namespace tracey
                 for (int j = 0; j < 4; ++j)
                     g[i][j] = static_cast<float>(M[i][j]);
             return g;
+        }
+
+        // Quaternion → ZYX-intrinsic euler-degrees. Copied verbatim from
+        // gltf_loader.cpp so USD peek lands rotations in the SAME convention
+        // the editor's transform_sop / subnet / set_actor_rotation_euler use —
+        // peek populates SOP `rotate_euler_deg` directly with no conversion at
+        // the call site. Gimbal-locked near ±90° pitch (as Houdini lives with).
+        Vec3 quatToEulerDegZYX(const glm::quat &q)
+        {
+            const glm::mat3 m = glm::mat3_cast(q);
+            const float r02 = m[0][2];
+            const float r00 = m[0][0];
+            const float r01 = m[0][1];
+            const float r12 = m[1][2];
+            const float r22 = m[2][2];
+
+            const float sy = -r02;
+            const float cy = std::sqrt(r00 * r00 + r01 * r01);
+
+            float rx, ry, rz;
+            if (cy > 1e-6f)
+            {
+                rx = std::atan2(r12, r22);
+                ry = std::atan2(sy, cy);
+                rz = std::atan2(r01, r00);
+            }
+            else
+            {
+                const float r11 = m[1][1];
+                const float r21 = m[2][1];
+                rx = std::atan2(-r21, r11);
+                ry = std::atan2(sy, cy);
+                rz = 0.0f;
+            }
+
+            constexpr float kRad2Deg = 180.0f / 3.1415926535f;
+            return Vec3(rx * kRad2Deg, ry * kRad2Deg, rz * kRad2Deg);
         }
 
         Transform transformFromMatrix(const glm::mat4 &m)
@@ -299,6 +338,89 @@ namespace tracey
                   << (gotCamera ? ", 1 camera" : "") << " from " << path << std::endl;
         return scene;
     }
+
+    namespace
+    {
+        // Process-wide parsed-stage cache (mirrors GltfLoader's). Stores
+        // shared_ptr<const Scene> so the SOP cook + apply_emitted material
+        // re-resolution share one parse. Guarded by a mutex — cooks run on a
+        // worker thread.
+        std::mutex g_cacheMutex;
+        std::unordered_map<std::string, std::shared_ptr<const Scene>> g_cache;
+    }
+
+    std::shared_ptr<const Scene> UsdLoader::loadFromFileCached(const std::string &path)
+    {
+        {
+            std::lock_guard<std::mutex> lock(g_cacheMutex);
+            auto it = g_cache.find(path);
+            if (it != g_cache.end()) return it->second;
+        }
+        // Parse outside the lock (USD open can be slow); first writer wins on
+        // the rare race — both produce equivalent scenes.
+        std::shared_ptr<const Scene> parsed = loadFromFile(path);
+        if (!parsed) return nullptr;
+        std::lock_guard<std::mutex> lock(g_cacheMutex);
+        auto [it, inserted] = g_cache.emplace(path, parsed);
+        return it->second;
+    }
+
+    void UsdLoader::invalidateCache(const std::string &path)
+    {
+        std::lock_guard<std::mutex> lock(g_cacheMutex);
+        g_cache.erase(path);
+    }
+
+    std::vector<UsdLoader::HierarchyNode> UsdLoader::peekHierarchy(const std::string &path)
+    {
+        std::vector<HierarchyNode> roots;
+        UsdStageRefPtr stage = UsdStage::Open(path);
+        if (!stage)
+        {
+            std::cerr << "[usd] peek failed to open stage: " << path << std::endl;
+            return roots;
+        }
+
+        // Flat first slice: one root node per mesh prim, carrying its world
+        // transform (decomposed to TRS). meshObjectNames = the prim's full path
+        // — the exact key loadFromFile registers the SceneObject under, so the
+        // usd_import SOP's getObject() lookup hits. Lights/camera/Xform nesting
+        // are follow-ups (the subnet importer is geometry-only, like glTF).
+        for (const UsdPrim &prim : stage->Traverse())
+        {
+            UsdGeomMesh mesh(prim);
+            if (!mesh) continue;
+
+            // Skip prims with no usable geometry (mirrors convertMesh's gate)
+            // so peek never emits a name the cook can't resolve.
+            VtArray<GfVec3f> points;
+            VtArray<int> faceCounts;
+            mesh.GetPointsAttr().Get(&points);
+            mesh.GetFaceVertexCountsAttr().Get(&faceCounts);
+            if (points.empty() || faceCounts.empty()) continue;
+
+            const glm::mat4 world = toGlm(
+                UsdGeomXformable(prim).ComputeLocalToWorldTransform(UsdTimeCode::Default()));
+            glm::vec3 scale, translation, skew;
+            glm::vec4 perspective;
+            glm::quat rotation;
+
+            HierarchyNode node;
+            node.name = prim.GetName().GetString();
+            if (node.name.empty()) node.name = prim.GetPath().GetString();
+            if (glm::decompose(world, scale, rotation, translation, skew, perspective))
+            {
+                node.translate = translation;
+                node.rotateEulerDeg = quatToEulerDegZYX(rotation);
+                node.scale = scale;
+            }
+            node.meshObjectNames.push_back(prim.GetPath().GetString());
+            roots.push_back(std::move(node));
+        }
+
+        std::cout << "[usd] peek: " << roots.size() << " mesh prim(s) in " << path << std::endl;
+        return roots;
+    }
 }
 
 #else // !TRACEY_HAS_USD
@@ -312,6 +434,18 @@ namespace tracey
         std::cerr << "[usd] build has no OpenUSD support; cannot load " << path
                   << " (run scripts/bootstrap_deps.sh and rebuild)." << std::endl;
         return nullptr;
+    }
+
+    std::shared_ptr<const Scene> UsdLoader::loadFromFileCached(const std::string &)
+    {
+        return nullptr;
+    }
+
+    void UsdLoader::invalidateCache(const std::string &) {}
+
+    std::vector<UsdLoader::HierarchyNode> UsdLoader::peekHierarchy(const std::string &)
+    {
+        return {};
     }
 }
 
