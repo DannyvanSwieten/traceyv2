@@ -39,16 +39,31 @@ int main(int argc, char **argv)
     }
 
     // ── Peek ──
-    auto roots = tracey::UsdLoader::peekHierarchy(path);
-    std::printf("peek: %zu mesh node(s)\n", roots.size());
+    tracey::UsdLoader::StageTimeInfo timeInfo;
+    auto roots = tracey::UsdLoader::peekHierarchy(path, &timeInfo);
+    std::printf("peek: %zu mesh node(s)  animated=%s fps=%.3g range=[%.3g, %.3g]\n",
+                roots.size(), timeInfo.hasAnimation ? "yes" : "no",
+                timeInfo.timeCodesPerSecond, timeInfo.startTimeCode, timeInfo.endTimeCode);
     for (const auto &n : roots)
     {
-        std::printf("  node '%s'  T=(%.3g,%.3g,%.3g) R=(%.3g,%.3g,%.3g) S=(%.3g,%.3g,%.3g)  meshes=%zu\n",
+        std::printf("  node '%s'  T=(%.3g,%.3g,%.3g) R=(%.3g,%.3g,%.3g) S=(%.3g,%.3g,%.3g)  meshes=%zu samples=%zu\n",
                     n.name.c_str(),
                     n.translate.x, n.translate.y, n.translate.z,
                     n.rotateEulerDeg.x, n.rotateEulerDeg.y, n.rotateEulerDeg.z,
                     n.scale.x, n.scale.y, n.scale.z,
-                    n.meshObjectNames.size());
+                    n.meshObjectNames.size(), n.trsSamples.size());
+        // Print first + last sample so animated transforms are visible.
+        if (n.trsSamples.size() >= 2)
+        {
+            const auto &a = n.trsSamples.front();
+            const auto &b = n.trsSamples.back();
+            std::printf("      t=%.3g T=(%.3g,%.3g,%.3g) R=(%.3g,%.3g,%.3g) → "
+                        "t=%.3g T=(%.3g,%.3g,%.3g) R=(%.3g,%.3g,%.3g)\n",
+                        a.timeCode, a.translate.x, a.translate.y, a.translate.z,
+                        a.rotateEulerDeg.x, a.rotateEulerDeg.y, a.rotateEulerDeg.z,
+                        b.timeCode, b.translate.x, b.translate.y, b.translate.z,
+                        b.rotateEulerDeg.x, b.rotateEulerDeg.y, b.rotateEulerDeg.z);
+        }
     }
 
     // ── Load (cached — the SOP cook + apply_emitted share this) ──

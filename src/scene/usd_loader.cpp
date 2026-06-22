@@ -26,6 +26,8 @@
 #include <pxr/usd/usdShade/material.h>
 #include <pxr/usd/usdShade/materialBindingAPI.h>
 #include <pxr/usd/usdShade/shader.h>
+#include <pxr/usd/usd/timeCode.h>
+#include <pxr/usd/sdf/path.h>
 #include <pxr/base/gf/camera.h>
 #include <pxr/base/gf/matrix4d.h>
 #include <pxr/base/gf/vec2f.h>
@@ -39,6 +41,7 @@
 #include <glm/gtc/quaternion.hpp>
 
 #include <mutex>
+#include <set>
 #include <unordered_map>
 #include <vector>
 
@@ -96,6 +99,45 @@ namespace tracey
 
             constexpr float kRad2Deg = 180.0f / 3.1415926535f;
             return Vec3(rx * kRad2Deg, ry * kRad2Deg, rz * kRad2Deg);
+        }
+
+        // Decompose a world matrix to TRS. When `prevEulerDeg` is non-null the
+        // euler result is unwrapped to stay within ±180° of it per axis, so a
+        // continuously rotating prim's per-frame decomposition doesn't jump
+        // ±360° between adjacent samples (which would make playback spin).
+        //
+        // LIMITATION: the editor animates rotation as ZYX euler-degree channels,
+        // and matrix→euler is singular at ry = ±90° (the middle-axis gimbal).
+        // Translate/scale and X/Z-axis rotations bake cleanly at any angle;
+        // rotations that cross ±90° about *world Y* can't be represented as a
+        // continuous euler path and will tumble. The proper fix is quaternion
+        // keyframe channels in the animation engine (a separate enhancement);
+        // until then, euler is what the editor's own rotation keys use too.
+        void decomposeTRS(const glm::mat4 &m, glm::vec3 &outT, glm::vec3 &outR,
+                          glm::vec3 &outS, const glm::vec3 *prevEulerDeg)
+        {
+            glm::vec3 scale, translation, skew;
+            glm::vec4 perspective;
+            glm::quat rotation;
+            if (!glm::decompose(m, scale, rotation, translation, skew, perspective))
+            {
+                outT = glm::vec3(0.0f);
+                outR = glm::vec3(0.0f);
+                outS = glm::vec3(1.0f);
+                return;
+            }
+            outT = translation;
+            outS = scale;
+            glm::vec3 e = quatToEulerDegZYX(rotation);
+            if (prevEulerDeg)
+            {
+                for (int i = 0; i < 3; ++i)
+                {
+                    while (e[i] - (*prevEulerDeg)[i] > 180.0f)  e[i] -= 360.0f;
+                    while (e[i] - (*prevEulerDeg)[i] < -180.0f) e[i] += 360.0f;
+                }
+            }
+            outR = e;
         }
 
         Transform transformFromMatrix(const glm::mat4 &m)
@@ -371,7 +413,8 @@ namespace tracey
         g_cache.erase(path);
     }
 
-    std::vector<UsdLoader::HierarchyNode> UsdLoader::peekHierarchy(const std::string &path)
+    std::vector<UsdLoader::HierarchyNode> UsdLoader::peekHierarchy(const std::string &path,
+                                                                  StageTimeInfo *outInfo)
     {
         std::vector<HierarchyNode> roots;
         UsdStageRefPtr stage = UsdStage::Open(path);
@@ -381,11 +424,19 @@ namespace tracey
             return roots;
         }
 
+        StageTimeInfo info;
+        const double tcps = stage->GetTimeCodesPerSecond();
+        info.timeCodesPerSecond = (tcps > 0.0) ? tcps : 24.0;
+        info.startTimeCode = stage->GetStartTimeCode();
+        info.endTimeCode = stage->GetEndTimeCode();
+
         // Flat first slice: one root node per mesh prim, carrying its world
         // transform (decomposed to TRS). meshObjectNames = the prim's full path
         // — the exact key loadFromFile registers the SceneObject under, so the
-        // usd_import SOP's getObject() lookup hits. Lights/camera/Xform nesting
-        // are follow-ups (the subnet importer is geometry-only, like glTF).
+        // usd_import SOP's getObject() lookup hits. When the prim's world
+        // transform is animated (its own or an ancestor's xformOps carry time
+        // samples) we also emit the per-sample TRS so the importer bakes
+        // keyframes. Xform-nesting preservation is a follow-up (still flat).
         for (const UsdPrim &prim : stage->Traverse())
         {
             UsdGeomMesh mesh(prim);
@@ -399,26 +450,76 @@ namespace tracey
             mesh.GetFaceVertexCountsAttr().Get(&faceCounts);
             if (points.empty() || faceCounts.empty()) continue;
 
-            const glm::mat4 world = toGlm(
-                UsdGeomXformable(prim).ComputeLocalToWorldTransform(UsdTimeCode::Default()));
-            glm::vec3 scale, translation, skew;
-            glm::vec4 perspective;
-            glm::quat rotation;
-
             HierarchyNode node;
             node.name = prim.GetName().GetString();
             if (node.name.empty()) node.name = prim.GetPath().GetString();
-            if (glm::decompose(world, scale, rotation, translation, skew, perspective))
-            {
-                node.translate = translation;
-                node.rotateEulerDeg = quatToEulerDegZYX(rotation);
-                node.scale = scale;
-            }
             node.meshObjectNames.push_back(prim.GetPath().GetString());
+
+            // Static (default-time) transform — the fallback + the constant
+            // value the channels override during playback.
+            UsdGeomXformable xformable(prim);
+            decomposeTRS(toGlm(xformable.ComputeLocalToWorldTransform(UsdTimeCode::Default())),
+                         node.translate, node.rotateEulerDeg, node.scale, nullptr);
+
+            // World transform = product up the chain, so collect the union of
+            // xform time samples on the prim AND its ancestors (ancestor
+            // animation moves the child too). Empty union → static prim.
+            std::set<double> times;
+            for (UsdPrim p = prim; p && p.GetPath() != SdfPath::AbsoluteRootPath();
+                 p = p.GetParent())
+            {
+                UsdGeomXformable xf(p);
+                if (!xf) continue;
+                std::vector<double> ts;
+                if (xf.GetTimeSamples(&ts))
+                    for (double t : ts) times.insert(t);
+            }
+
+            if (!times.empty())
+            {
+                node.trsSamples.reserve(times.size());
+                glm::vec3 prevR = node.rotateEulerDeg;
+                bool first = true;
+                for (double t : times)
+                {
+                    TrsSample s;
+                    s.timeCode = t;
+                    decomposeTRS(toGlm(xformable.ComputeLocalToWorldTransform(UsdTimeCode(t))),
+                                 s.translate, s.rotateEulerDeg, s.scale,
+                                 first ? nullptr : &prevR);
+                    prevR = s.rotateEulerDeg;
+                    if (first)
+                    {
+                        // Anchor the constant value to the first sample.
+                        node.translate = s.translate;
+                        node.rotateEulerDeg = s.rotateEulerDeg;
+                        node.scale = s.scale;
+                        first = false;
+                    }
+                    node.trsSamples.push_back(s);
+                }
+                info.hasAnimation = true;
+            }
+
             roots.push_back(std::move(node));
         }
 
-        std::cout << "[usd] peek: " << roots.size() << " mesh prim(s) in " << path << std::endl;
+        // Derive a range from the samples when the stage didn't author one.
+        if (info.hasAnimation && info.endTimeCode <= info.startTimeCode)
+        {
+            double mn = 1e30, mx = -1e30;
+            for (const auto &n : roots)
+                for (const auto &s : n.trsSamples)
+                {
+                    mn = std::min(mn, s.timeCode);
+                    mx = std::max(mx, s.timeCode);
+                }
+            if (mx >= mn) { info.startTimeCode = mn; info.endTimeCode = mx; }
+        }
+
+        if (outInfo) *outInfo = info;
+        std::cout << "[usd] peek: " << roots.size() << " mesh prim(s)"
+                  << (info.hasAnimation ? " (animated)" : "") << " in " << path << std::endl;
         return roots;
     }
 }
@@ -443,7 +544,8 @@ namespace tracey
 
     void UsdLoader::invalidateCache(const std::string &) {}
 
-    std::vector<UsdLoader::HierarchyNode> UsdLoader::peekHierarchy(const std::string &)
+    std::vector<UsdLoader::HierarchyNode> UsdLoader::peekHierarchy(const std::string &,
+                                                                  StageTimeInfo *)
     {
         return {};
     }

@@ -79,7 +79,7 @@ import {
   setActiveWorkspaceInternal,
   type WorkspaceName,
 } from './lib/workspaces';
-import { togglePlayPause } from './stores/timeline';
+import { togglePlayPause, setRange as setTimelineRange } from './stores/timeline';
 import './App.css';
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(Math.max(v, lo), hi);
@@ -225,10 +225,27 @@ const App: Component = () => {
       // never has to know which; they just loaded a file.
       const ext = asset.path.split('.').pop()?.toLowerCase() ?? '';
       const isUsd = ext === 'usd' || ext === 'usda' || ext === 'usdc' || ext === 'usdz';
-      const subnets = isUsd
-        ? await buildSubnetsFromUsd(asset.path)
-        : await buildSubnetsFromGltf(asset.path);
+      let subnets;
+      let usdTimeline: { fps: number; frameStart: number; frameEnd: number } | undefined;
+      if (isUsd) {
+        const res = await buildSubnetsFromUsd(asset.path);
+        subnets = res.subnets;
+        usdTimeline = res.timeline;
+      } else {
+        subnets = await buildSubnetsFromGltf(asset.path);
+      }
       for (const s of subnets) addNode(s);
+
+      // Animated USD → size the timeline to the imported clip's frame range so
+      // the playhead + dopesheet cover it. The keyframes themselves rode in on
+      // the subnet params above (baked channels), so playback just works.
+      if (usdTimeline) {
+        try {
+          await setTimelineRange(usdTimeline.fps, usdTimeline.frameStart, usdTimeline.frameEnd);
+        } catch (e) {
+          console.warn('USD timeline range set failed:', e);
+        }
+      }
 
       // USD stages carry lights + a camera too. Geometry flows through the
       // procedural subnets above; the lights/camera come in natively (they're

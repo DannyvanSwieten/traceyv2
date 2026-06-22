@@ -528,6 +528,15 @@ export const openFolderDialog = (title: string) =>
 // children. Reads structural metadata only — no buffers, accessors or
 // images — so even large files peek quickly.
 
+// One animated world-transform sample (USD import). `t` is in the stage's
+// time-code units; the importer converts to seconds via the peek's fps.
+export interface TrsSample {
+  t: number;
+  translate: [number, number, number];
+  rotate_euler_deg: [number, number, number];
+  scale: [number, number, number];
+}
+
 export interface GltfHierarchyNode {
   name: string;
   translate: [number, number, number];
@@ -540,11 +549,20 @@ export interface GltfHierarchyNode {
   // dropping all but the first.
   mesh_names: string[];
   children: GltfHierarchyNode[];
+  // USD only: present + non-empty when the prim's world transform is
+  // animated. The importer bakes these into keyframe channels on the
+  // subnet's TRS params. Absent for static prims + all glTF nodes.
+  trs_samples?: TrsSample[];
 }
 
 export interface GltfPeekResult {
   path: string;
   roots: GltfHierarchyNode[];
+  // USD only: stage time metadata → the editor timeline.
+  animated?: boolean;
+  time_codes_per_second?: number;
+  start_time_code?: number;
+  end_time_code?: number;
 }
 
 export const peekGltf = (path: string) =>

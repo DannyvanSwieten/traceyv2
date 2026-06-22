@@ -16,6 +16,9 @@ import {
   SopGraph,
   ParamValueString,
   ParamValueVec3,
+  Channels,
+  Interp,
+  Extrap,
   allocNodeUid,
   emptyGraph,
   fetchCatalog,
@@ -34,6 +37,32 @@ function vec3Param(value: [number, number, number]): ParamValueVec3 {
   return { type: 'vec3', value };
 }
 
+// Build an animated vec3 param: a per-component keyframe channel sampled from
+// the USD time samples. Keys are in seconds (USD timeCode / fps). The constant
+// `value` stays as the first-sample fallback. Linear interp, hold extrap —
+// matches what the engine bakes for an unedited imported channel. These ride
+// into the native graph via set_sop_graph (which deserializes channels), so no
+// per-key IPC is needed.
+function vec3ParamAnimated(
+  staticValue: [number, number, number],
+  samples: api.TrsSample[],
+  field: 'translate' | 'rotate_euler_deg' | 'scale',
+  fps: number,
+): ParamValueVec3 {
+  const channels: Channels = [0, 1, 2].map((axis) => ({
+    keys: samples.map((s) => ({
+      t: s.t / fps,
+      v: s[field][axis],
+      in: 0,
+      out: 0,
+      i: 'linear' as Interp,
+    })),
+    pre: 'hold' as Extrap,
+    post: 'hold' as Extrap,
+  }));
+  return { type: 'vec3', value: staticValue, channels };
+}
+
 // Build the inner SOP graph for one node. Mesh-bearing nodes get one
 // `<importKind> → object_output` chain per mesh entry; child nodes recurse
 // into nested subnets alongside.
@@ -41,6 +70,7 @@ function buildInnerGraph(
   n: api.HierarchyNode,
   filePath: string,
   importKind: string,
+  fps: number,
 ): SopGraph {
   const g = emptyGraph();
 
@@ -74,7 +104,7 @@ function buildInnerGraph(
   let childX = 120;
   const childY = n.mesh_names.length > 0 ? importY + 2 * NODE_DY : importY;
   for (const child of n.children) {
-    const childSubnet = buildSubnet(child, filePath, importKind);
+    const childSubnet = buildSubnet(child, filePath, importKind, fps);
     childSubnet.pos = [childX, childY];
     g.nodes.push(childSubnet);
     childX += NODE_DX;
@@ -87,7 +117,23 @@ function buildSubnet(
   n: api.HierarchyNode,
   filePath: string,
   importKind: string,
+  fps: number,
 ): SopNode {
+  // Animated prim → bake keyframe channels onto the subnet's TRS params, so
+  // the imported actor animates exactly as authored in USD. Static prims keep
+  // plain constant params. fps comes from the stage's timeCodesPerSecond.
+  const samples = n.trs_samples;
+  const animated = !!samples && samples.length > 0 && fps > 0;
+  const tParam = animated
+    ? vec3ParamAnimated(n.translate, samples!, 'translate', fps)
+    : vec3Param(n.translate);
+  const rParam = animated
+    ? vec3ParamAnimated(n.rotate_euler_deg, samples!, 'rotate_euler_deg', fps)
+    : vec3Param(n.rotate_euler_deg);
+  const sParam = animated
+    ? vec3ParamAnimated(n.scale, samples!, 'scale', fps)
+    : vec3Param(n.scale);
+
   // Construct by hand (not via makeNode) so we can stamp a custom inner graph
   // in place of makeNode's empty-with-output seed.
   const subnet: SopNode = {
@@ -96,11 +142,11 @@ function buildSubnet(
     pos: [0, 0],
     params: {
       name: stringParam(n.name || `node_${allocNodeUid()}`),
-      translate: vec3Param(n.translate),
-      rotate_euler_deg: vec3Param(n.rotate_euler_deg),
-      scale: vec3Param(n.scale),
+      translate: tParam,
+      rotate_euler_deg: rParam,
+      scale: sParam,
     },
-    subgraph: buildInnerGraph(n, filePath, importKind),
+    subgraph: buildInnerGraph(n, filePath, importKind, fps),
   };
   return subnet;
 }
@@ -112,9 +158,10 @@ export function buildSubnetTree(
   roots: api.HierarchyNode[],
   filePath: string,
   importKind: string,
+  fps = 0,
 ): SopNode[] {
   return roots.map((r, i) => {
-    const subnet = buildSubnet(r, filePath, importKind);
+    const subnet = buildSubnet(r, filePath, importKind, fps);
     // Lay roots out horizontally so a multi-root scene doesn't pile up.
     subnet.pos = [120 + i * NODE_DX, 120];
     return subnet;

@@ -308,8 +308,9 @@ std::optional<std::string> EditorServer::handle_render_commands(
 #ifdef TRACEY_HAS_USD
             const auto path = req.at("path").get<std::string>();
             std::vector<tracey::UsdLoader::HierarchyNode> roots;
+            tracey::UsdLoader::StageTimeInfo timeInfo;
             try {
-                roots = tracey::UsdLoader::peekHierarchy(path);
+                roots = tracey::UsdLoader::peekHierarchy(path, &timeInfo);
             } catch (const std::exception& e) {
                 return err_response(std::string("peek_usd: ") + e.what());
             }
@@ -324,6 +325,21 @@ std::optional<std::string> EditorServer::handle_render_commands(
                 json meshNames = json::array();
                 for (const auto& mn : n.meshObjectNames) meshNames.push_back(mn);
                 out["mesh_names"] = std::move(meshNames);
+                // Animated world transform → per-sample TRS (timeCode units).
+                // Absent/empty for static prims. The frontend bakes these into
+                // keyframe channels on the subnet's transform params.
+                if (!n.trsSamples.empty()) {
+                    json samples = json::array();
+                    for (const auto& s : n.trsSamples) {
+                        samples.push_back({
+                            {"t", s.timeCode},
+                            {"translate", {s.translate.x, s.translate.y, s.translate.z}},
+                            {"rotate_euler_deg", {s.rotateEulerDeg.x, s.rotateEulerDeg.y, s.rotateEulerDeg.z}},
+                            {"scale", {s.scale.x, s.scale.y, s.scale.z}},
+                        });
+                    }
+                    out["trs_samples"] = std::move(samples);
+                }
                 json children = json::array();
                 for (const auto& c : n.children) children.push_back(toJson(c));
                 out["children"] = std::move(children);
@@ -332,7 +348,15 @@ std::optional<std::string> EditorServer::handle_render_commands(
 
             json roots_json = json::array();
             for (const auto& r : roots) roots_json.push_back(toJson(r));
-            return ok_response({{"path", path}, {"roots", roots_json}});
+            // Stage time metadata → the editor timeline (fps + frame range).
+            return ok_response({
+                {"path", path},
+                {"roots", roots_json},
+                {"animated", timeInfo.hasAnimation},
+                {"time_codes_per_second", timeInfo.timeCodesPerSecond},
+                {"start_time_code", timeInfo.startTimeCode},
+                {"end_time_code", timeInfo.endTimeCode},
+            });
 #else
             return err_response("peek_usd: this build has no OpenUSD support");
 #endif

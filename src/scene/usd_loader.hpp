@@ -53,6 +53,19 @@ namespace tracey
         // and load stay in lockstep. Geometry travels in the prim's local
         // space, so the subnet's world TRS positions it correctly. Nested Xform
         // hierarchy preservation is a follow-up.
+        // One animated world-transform sample, decomposed to TRS. `timeCode`
+        // is in the stage's time-code units (seconds = timeCode /
+        // timeCodesPerSecond). Euler angles are unwrapped across the sample
+        // sequence so a continuously-rotating prim doesn't flip ±360° between
+        // adjacent frames at decomposition boundaries.
+        struct TrsSample
+        {
+            double timeCode = 0.0;
+            Vec3 translate{0.0f};
+            Vec3 rotateEulerDeg{0.0f};
+            Vec3 scale{1.0f};
+        };
+
         struct HierarchyNode
         {
             std::string name;
@@ -61,13 +74,28 @@ namespace tracey
             Vec3 scale{1.0f};
             std::vector<std::string> meshObjectNames;
             std::vector<HierarchyNode> children;
+            // Non-empty → the prim's world transform is animated; the importer
+            // bakes these into keyframe channels on the subnet's TRS params.
+            // The static translate/rotate/scale above hold the first sample.
+            std::vector<TrsSample> trsSamples;
+        };
+
+        // Stage time metadata → the editor's timeline (fps + frame range).
+        struct StageTimeInfo
+        {
+            double timeCodesPerSecond = 24.0;
+            double startTimeCode = 0.0;
+            double endTimeCode = 0.0;
+            bool hasAnimation = false; // any mesh prim has animated transforms
         };
 
         // Reads geometry structurally enough to compute per-prim world
-        // transforms, but skips heavy buffer decode where possible. Returns one
-        // root node per mesh prim. Returns an empty vector on failure / when USD
-        // support isn't compiled in.
-        static std::vector<HierarchyNode> peekHierarchy(const std::string &path);
+        // transforms (and, for animated prims, samples them across the stage's
+        // authored time samples). Returns one root node per mesh prim. When
+        // `outInfo` is non-null it receives the stage's time metadata. Returns
+        // an empty vector on failure / when USD support isn't compiled in.
+        static std::vector<HierarchyNode> peekHierarchy(const std::string &path,
+                                                        StageTimeInfo *outInfo = nullptr);
 
         // True when the build links OpenUSD (TRACEY_HAS_USD).
         static bool available();
