@@ -570,6 +570,24 @@ private:
         bool denoise = false; // EXR only; ignored without TRACEY_WITH_OIDN
     };
     void render_still_loop(RenderStillRequest req);
+
+    // ── USD stage import (async) ────────────────────────────────────────
+    // The stage's lights, camera, and instanced geometry are imported on a
+    // worker thread so a big asset (Kitchen Set: 1788 instances + a full BLAS
+    // build) doesn't block the main run loop — which is what made the WebView
+    // beachball. The worker parses off-mutex, then mutates the scene + compiles
+    // under m_mutex (render_tick try_locks → just skips frames), broadcasting
+    // `usd_import_progress` / `usd_import_done` / `usd_import_error` so the
+    // frontend can show a responsive loading overlay.
+    struct UsdStageImportRequest {
+        std::string path;
+        bool lights = true;
+        bool camera = true;
+        bool instances = true;
+    };
+    std::atomic<bool> m_import_in_progress{false};
+    std::thread m_import_thread;
+    void import_usd_stage_worker(UsdStageImportRequest req);
 };
 
 }  // namespace tracey_editor

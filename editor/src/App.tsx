@@ -149,6 +149,10 @@ const App: Component = () => {
   const [dopEditorOpen, setDopEditorOpen] = createSignal(false);
   const [exportVideoOpen, setExportVideoOpen] = createSignal(false);
   const [renderingStill, setRenderingStill] = createSignal(false);
+  // Non-null while an asset import is in flight → shows the loading overlay.
+  const [loadingState, setLoadingState] = createSignal<
+    { name: string; stage: string; done: number; total: number } | null
+  >(null);
   // Resizable panel sizes — seeded from localStorage so the layout survives
   // across sessions. Min/max stay loose enough for laptop displays.
   const persisted = loadPersistedLayout();
@@ -213,19 +217,46 @@ const App: Component = () => {
   // parented actor tree mirroring the file. Safe to call multiple times on
   // the same asset — each call creates a fresh subnet subtree with new uids.
   const handleLoadAsset = async (asset: { id?: string; path: string }) => {
+    const name = asset.path.split(/[/\\]/).pop() ?? asset.path;
+    const ext = asset.path.split('.').pop()?.toLowerCase() ?? '';
+    const isUsd = ext === 'usd' || ext === 'usda' || ext === 'usdc' || ext === 'usdz';
+    // Generous: a very large asset can take minutes to cook + build BLASes.
+    const LOAD_TIMEOUT_MS = 600000;
+
+    // Resolve when any of `events` fires (or on timeout → false). Used to wait
+    // on the async cook + the async USD-extras worker without blocking.
+    const waitForAny = (events: string[], timeoutMs: number) =>
+      new Promise<boolean>((resolve) => {
+        let done = false;
+        const offs: Array<() => void> = [];
+        const finish = (ok: boolean) => {
+          if (done) return;
+          done = true;
+          clearTimeout(timer);
+          offs.forEach((o) => o());
+          resolve(ok);
+        };
+        const timer = setTimeout(() => finish(false), timeoutMs);
+        for (const e of events) offs.push(api.listen(e, () => finish(true)));
+      });
+
+    // Live progress → overlay. Stays subscribed for the whole load.
+    const offProgress = api.listen('usd_import_progress', (m) => {
+      setLoadingState((s) =>
+        s ? {
+          ...s,
+          stage: typeof m.stage === 'string' ? m.stage : s.stage,
+          done: typeof m.done === 'number' ? m.done : 0,
+          total: typeof m.total === 'number' ? m.total : 0,
+        } : s);
+    });
+
+    setLoadingState({ name, stage: 'Reading…', done: 0, total: 0 });
     try {
-      // Snapshot the actor count so we can tell whether the cook actually
-      // produced anything. If it doesn't grow within a couple seconds the
-      // import silently failed downstream (gltf_import couldn't open the
-      // file, mesh name mismatch, etc.) and the viewport would otherwise
-      // stay blank with no indication of why.
       const beforeCount = actors().length;
 
-      // Dispatch by file extension — glTF and USD build the same procedural
-      // subnet tree, just with their own import SOP under the hood. The user
-      // never has to know which; they just loaded a file.
-      const ext = asset.path.split('.').pop()?.toLowerCase() ?? '';
-      const isUsd = ext === 'usd' || ext === 'usda' || ext === 'usdc' || ext === 'usdz';
+      // Build the procedural subnet tree (peek + construct). glTF + USD share
+      // the builder; only the import SOP kind differs.
       let subnets;
       let usdTimeline: { fps: number; frameStart: number; frameEnd: number } | undefined;
       if (isUsd) {
@@ -237,9 +268,6 @@ const App: Component = () => {
       }
       for (const s of subnets) addNode(s);
 
-      // Animated USD → size the timeline to the imported clip's frame range so
-      // the playhead + dopesheet cover it. The keyframes themselves rode in on
-      // the subnet params above (baked channels), so playback just works.
       if (usdTimeline) {
         try {
           await setTimelineRange(usdTimeline.fps, usdTimeline.frameStart, usdTimeline.frameEnd);
@@ -248,77 +276,42 @@ const App: Component = () => {
         }
       }
 
-      // USD stages carry lights + a camera too. Geometry flows through the
-      // procedural subnets above; the lights/camera come in natively (they're
-      // scene fixtures, not geometry) so the whole stage appears, not just the
-      // meshes. Best-effort — a stage with no lights/camera is fine.
-      if (isUsd) {
-        try {
-          const extras = await api.importUsdStage(asset.path);
-          if (extras.lights > 0 || extras.camera || extras.instances > 0) {
-            console.log(`USD: imported ${extras.lights} light(s), ${extras.instances} instance(s)`,
-                        extras.camera ? '+ camera' : '');
-          }
-        } catch (e) {
-          console.warn('USD lights/camera import failed:', e);
+      // Geometry cook (async on the engine's worker). Only wait when we
+      // actually pushed geometry subnets — an all-instanced USD has none.
+      let cookedOk = true;
+      if (subnets.length > 0) {
+        setLoadingState((s) => (s ? { ...s, stage: 'Building geometry…' } : s));
+        await flushSopGraph();
+        if (viewportRef) viewportRef.render();
+        cookedOk = await waitForAny(['scene_changed'], LOAD_TIMEOUT_MS);
+        if (!cookedOk) {
+          console.error('Load timed out — no scene_changed for', asset.path);
+          showToast('Load timed out — the engine did not finish cooking in time.', {
+            kind: 'error', detail: asset.path,
+          });
+          return;
         }
       }
-      // Skip the 300ms debounce so the cook fires immediately. Without
-      // this, the user sees the subnet shapes appear in the canvas but
-      // nothing changes in the viewport for a third of a second — long
-      // enough to feel broken.
-      await flushSopGraph();
-      if (viewportRef) viewportRef.render();
 
-      // Wait for the next scene_changed (the engine emits one per cook
-      // completion), with a generous timeout so we don't hang the UI on a
-      // truly stuck cook. Then verify the actor list actually grew — empty
-      // imports show as "blank viewport" which is the symptom we're
-      // diagnosing.
-      // Generous timeout: a large asset (the Pixar Kitchen Set is 1788 meshes)
-      // can take tens of seconds to cook + build BLASes. 3s false-alarmed on it.
-      const LOAD_TIMEOUT_MS = 120000;
-      const sawSceneChanged = await new Promise<boolean>((resolve) => {
-        let done = false;
-        const timer = setTimeout(() => {
-          if (done) return;
-          done = true;
-          unlisten();
-          resolve(false);
-        }, LOAD_TIMEOUT_MS);
-        const unlisten = api.listen('scene_changed', () => {
-          if (done) return;
-          done = true;
-          clearTimeout(timer);
-          unlisten();
-          resolve(true);
-        });
-      });
-
-      if (!sawSceneChanged) {
-        console.error('Load timed out — no scene_changed for', asset.path);
-        showToast('Load timed out — the engine did not finish cooking in time.', {
-          kind: 'error',
-          detail: asset.path,
-        });
-        return;
+      // USD lights / camera / instanced geometry — imported on a native worker
+      // thread (no main-thread block), so the overlay stays live + animated.
+      if (isUsd) {
+        setLoadingState((s) => (s ? { ...s, stage: 'Importing lights & instances…' } : s));
+        api.importUsdStage(asset.path).catch((e) =>
+          console.warn('USD extras import dispatch failed:', e));
+        await waitForAny(['usd_import_done', 'usd_import_error'], LOAD_TIMEOUT_MS);
       }
-      // Refresh actor list now that the cook is applied.
+
       await refreshActors('refresh after load');
       if (actors().length <= beforeCount) {
         console.warn('Load completed but actor count did not grow:', asset.path);
-        showToast('Loaded the file but no geometry actors appeared — check the editor console.', {
-          kind: 'error',
-          detail: asset.path,
+        showToast('Loaded the file but no actors appeared — check the editor console.', {
+          kind: 'error', detail: asset.path,
         });
       }
     } catch (e) {
-      // The asset list survives across sessions (localStorage), so common
-      // failure here is a stale path: the file got moved/deleted, or the
-      // user opened the editor on a different machine. Surface it instead
-      // of console.warn'ing into the void, and offer to drop the entry.
       const msg = e instanceof Error ? e.message : String(e);
-      console.error('glTF subnet import failed for', asset.path, ':', msg);
+      console.error('Asset import failed for', asset.path, ':', msg);
       const assetId = asset.id;
       showToast(`Failed to load asset: ${msg}`, {
         kind: 'error',
@@ -327,6 +320,9 @@ const App: Component = () => {
           ? { label: 'Remove from browser', run: () => removeAsset(assetId) }
           : undefined,
       });
+    } finally {
+      offProgress();
+      setLoadingState(null);
     }
   };
 
@@ -728,6 +724,23 @@ const App: Component = () => {
           if (viewportRef) viewportRef.render();
         }}
       />
+
+      {/* Asset-load progress overlay. Shown while an import is in flight; the
+          heavy native work runs on worker threads so this stays animated. */}
+      <Show when={loadingState()}>
+        {(ls) => (
+          <div class="load-overlay">
+            <div class="load-card">
+              <div class="load-title">Loading {ls().name}</div>
+              <div class="load-stage">{ls().stage}</div>
+              <div class="load-bar"><div class="load-bar-fill" /></div>
+              <Show when={ls().total > 0}>
+                <div class="load-count">{ls().done} / {ls().total}</div>
+              </Show>
+            </div>
+          </div>
+        )}
+      </Show>
 
       <div
         class="main-content"

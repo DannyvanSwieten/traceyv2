@@ -2432,6 +2432,142 @@ void EditorServer::render_still_loop(RenderStillRequest req) {
     m_export_in_progress.store(false);
 }
 
+void EditorServer::import_usd_stage_worker(UsdStageImportRequest req) {
+#ifdef TRACEY_HAS_USD
+    auto progress = [this](const char* stage, int done, int total) {
+        if (m_broadcast)
+            m_broadcast(json{{"event", "usd_import_progress"}, {"stage", stage},
+                             {"done", done}, {"total", total}}.dump());
+    };
+
+    // Heavy parse — off the mutex AND off the main thread, so the UI stays live.
+    progress("Reading USD…", 0, 0);
+    auto src = tracey::UsdLoader::loadFromFileCached(req.path);
+    if (!src) {
+        if (m_broadcast)
+            m_broadcast(json{{"event", "usd_import_error"},
+                             {"message", "failed to load " + req.path}}.dump());
+        m_import_in_progress.store(false);
+        return;
+    }
+
+    int lightCount = 0, instanceCount = 0;
+    bool setCam = false;
+    {
+        // Scene mutation + compile under m_mutex. render_tick try_locks, so it
+        // just skips frames while we hold it — the main run loop (WebView, the
+        // progress events below) keeps turning, so no beachball.
+        std::lock_guard<std::mutex> lock(m_mutex);
+
+        if (req.lights) {
+            progress("Lights…", 0, 0);
+            for (const auto* a : src->actors()) {
+                if (!a || !a->hasLight()) continue;
+                auto* actor = m_engine->scene().createActor();
+                actor->setName(a->name().empty() ? "usd_light" : a->name());
+                actor->setTransform(a->transform());
+                actor->setLight(*a->light());
+                ++lightCount;
+            }
+        }
+
+        if (req.camera && src->hasCamera()) {
+            const tracey::Camera& uc = src->camera();
+            const glm::vec3 P = uc.position();
+            const glm::vec3 F = glm::normalize(glm::mat3_cast(uc.rotation()) * glm::vec3(0, 0, -1));
+            glm::vec3 mn(1e30f), mx(-1e30f);
+            bool anyGeo = false;
+            for (const auto& node : src->flatten()) {
+                if (!node.actor) continue;
+                for (const auto& inst : node.actor->instances()) {
+                    const auto* obj = src->getObject(inst.objectRef());
+                    if (!obj) continue;
+                    glm::mat4 w = node.worldTransform;
+                    if (inst.hasLocalTransform()) w = w * inst.localTransform()->toMatrix();
+                    for (const auto& p : obj->positions()) {
+                        const glm::vec4 wp = w * glm::vec4(p, 1.0f);
+                        mn = glm::min(mn, glm::vec3(wp));
+                        mx = glm::max(mx, glm::vec3(wp));
+                        anyGeo = true;
+                    }
+                }
+            }
+            const glm::vec3 center = anyGeo ? (mn + mx) * 0.5f : glm::vec3(0.0f);
+            float d = glm::dot(center - P, F);
+            if (!(d > 0.5f)) d = std::max(0.5f, glm::length(center - P));
+            const glm::vec3 pivot = P + F * d;
+            m_orbit_pivot_x = pivot.x; m_orbit_pivot_y = pivot.y; m_orbit_pivot_z = pivot.z;
+            m_orbit_distance = d;
+            m_orbit_pitch = std::asin(std::clamp(F.y, -1.0f, 1.0f));
+            m_orbit_yaw = std::atan2(-F.x, -F.z);
+            m_orbit_initialized = true;
+            const glm::quat qyaw = glm::angleAxis(m_orbit_yaw, glm::vec3(0, 1, 0));
+            const glm::quat qpitch = glm::angleAxis(m_orbit_pitch, glm::vec3(1, 0, 0));
+            const glm::quat rot = qyaw * qpitch;
+            tracey::Camera cam = uc;
+            cam.setRotation(rot);
+            cam.setPosition(pivot - (rot * glm::vec3(0, 0, -1)) * d);
+            m_engine->scene().setCamera(cam);
+            setCam = true;
+        }
+
+        if (req.instances) {
+            // Count placements up front for a determinate progress bar.
+            int totalInst = 0;
+            for (const auto* a : src->actors()) {
+                if (!a) continue;
+                const std::string& nm = a->name();
+                if (nm.rfind("instance:", 0) == 0 || nm.rfind("instancer:", 0) == 0)
+                    totalInst += static_cast<int>(a->instances().size());
+            }
+            tracey::Actor* instActor = nullptr;
+            for (const auto* a : src->actors()) {
+                if (!a) continue;
+                const std::string& nm = a->name();
+                if (nm.rfind("instance:", 0) != 0 && nm.rfind("instancer:", 0) != 0) continue;
+                for (const auto& inst : a->instances()) {
+                    const std::string& objRef = inst.objectRef();
+                    if (!m_engine->scene().hasObject(objRef)) {
+                        const auto* srcObj = src->getObject(objRef);
+                        if (!srcObj) continue;
+                        m_engine->scene().addObject(
+                            objRef, std::make_unique<tracey::SceneObject>(*srcObj));
+                    }
+                    if (!instActor) {
+                        instActor = m_engine->scene().createActor();
+                        std::string base = req.path;
+                        auto slash = base.find_last_of("/\\");
+                        if (slash != std::string::npos) base = base.substr(slash + 1);
+                        auto dot = base.find_last_of('.');
+                        if (dot != std::string::npos) base = base.substr(0, dot);
+                        instActor->setName(base + " (instances)");
+                    }
+                    instActor->addInstance(inst);
+                    if ((++instanceCount % 500) == 0)
+                        progress("Placing instances…", instanceCount, totalInst);
+                }
+            }
+        }
+
+        progress("Building acceleration structures…", 0, 0);
+        if (m_engine->path_tracer_ready()) m_engine->compile_scene();
+        m_clear_next_frame = true;
+    }
+
+    if (m_broadcast) {
+        m_broadcast(json{{"event", "usd_import_done"}, {"lights", lightCount},
+                         {"camera", setCam}, {"instances", instanceCount}}.dump());
+        m_broadcast(R"({"event":"scene_changed"})");
+    }
+    m_import_in_progress.store(false);
+#else
+    (void)req;
+    if (m_broadcast)
+        m_broadcast(R"({"event":"usd_import_error","message":"this build has no OpenUSD support"})");
+    m_import_in_progress.store(false);
+#endif
+}
+
 bool EditorServer::update_camera_from_input(double dt) {
     if (!m_window) return false;
     auto& input = m_window->input();

@@ -168,6 +168,11 @@ export function buildSubnetTree(
     return subnet;
   });
 
+  // Nothing to group (e.g. an all-instanced USD stage has no mesh subnets —
+  // its geometry comes in via import_usd_stage instead). Don't leave an empty
+  // group node behind.
+  if (subnets.length === 0) return [];
+
   // Ungrouped: drop the subnets at the graph root as-is.
   if (!groupName) return subnets;
 

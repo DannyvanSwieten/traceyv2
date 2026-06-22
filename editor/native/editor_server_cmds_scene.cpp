@@ -67,128 +67,28 @@ std::optional<std::string> EditorServer::handle_scene_commands(
             return ok_response(actor->getUid());
         }
         if (cmd == "import_usd_stage") {
-            // Native half of USD import: the stage's UsdLux lights + camera.
-            // (Meshes flow through the procedural SOP path — peek_usd +
-            // usd_import subnets — handled on the frontend; lights/camera are
-            // first-class scene fixtures, not geometry, so they come in here as
-            // manually-created actors / scene camera, exactly like create_light
-            // and the orbital camera framing. Re-importing duplicates them,
-            // matching the geometry path's "re-load for another instance.")
+            // Async: the stage's lights / camera / instanced geometry are
+            // imported on a worker thread (import_usd_stage_worker) so a big
+            // asset doesn't block the main run loop (which beachballed the
+            // WebView). Returns immediately; the worker broadcasts
+            // usd_import_progress / usd_import_done / usd_import_error.
+            // (Regular meshes still flow through the procedural SOP path —
+            // peek_usd + usd_import subnets — on the frontend.)
 #ifdef TRACEY_HAS_USD
-            const std::string path = req.at("path").get<std::string>();
-            const bool wantLights = req.value("lights", true);
-            const bool wantCamera = req.value("camera", true);
-            const bool wantInstances = req.value("instances", true);
-            auto src = tracey::UsdLoader::loadFromFileCached(path);
-            if (!src) return err_response("import_usd_stage: failed to load " + path);
+            if (m_import_in_progress.load())
+                return err_response("A USD import is already running");
+            UsdStageImportRequest ir;
+            ir.path      = req.at("path").get<std::string>();
+            ir.lights    = req.value("lights", true);
+            ir.camera    = req.value("camera", true);
+            ir.instances = req.value("instances", true);
+            if (ir.path.empty()) return err_response("Missing path");
 
-            int lightCount = 0;
-            if (wantLights) {
-                for (const auto* a : src->actors()) {
-                    if (!a || !a->hasLight()) continue;
-                    auto* actor = m_engine->scene().createActor();
-                    actor->setName(a->name().empty() ? "usd_light" : a->name());
-                    actor->setTransform(a->transform());
-                    actor->setLight(*a->light()); // full Light: type/color/intensity/radius/size/hdri
-                    ++lightCount;
-                }
-            }
-
-            bool setCam = false;
-            if (wantCamera && src->hasCamera()) {
-                const tracey::Camera& uc = src->camera();
-                const glm::vec3 P = uc.position();
-                const glm::vec3 F =
-                    glm::normalize(glm::mat3_cast(uc.rotation()) * glm::vec3(0, 0, -1));
-
-                // World-space bbox center of the imported geometry → a sensible
-                // focus point for the orbit pivot. Kept ON the view ray so the
-                // recomposed orbital camera reproduces the USD camera's pose.
-                glm::vec3 mn(1e30f), mx(-1e30f);
-                bool anyGeo = false;
-                for (const auto& node : src->flatten()) {
-                    if (!node.actor) continue;
-                    for (const auto& inst : node.actor->instances()) {
-                        const auto* obj = src->getObject(inst.objectRef());
-                        if (!obj) continue;
-                        glm::mat4 w = node.worldTransform;
-                        if (inst.hasLocalTransform())
-                            w = w * inst.localTransform()->toMatrix();
-                        for (const auto& p : obj->positions()) {
-                            const glm::vec4 wp = w * glm::vec4(p, 1.0f);
-                            mn = glm::min(mn, glm::vec3(wp));
-                            mx = glm::max(mx, glm::vec3(wp));
-                            anyGeo = true;
-                        }
-                    }
-                }
-                const glm::vec3 center = anyGeo ? (mn + mx) * 0.5f : glm::vec3(0.0f);
-                float d = glm::dot(center - P, F); // focus distance along the ray
-                if (!(d > 0.5f)) d = std::max(0.5f, glm::length(center - P));
-                const glm::vec3 pivot = P + F * d;
-
-                // Drive the native orbital state so the framing sticks under
-                // the orbit controls (same inverse the orbital seed uses).
-                m_orbit_pivot_x = pivot.x;
-                m_orbit_pivot_y = pivot.y;
-                m_orbit_pivot_z = pivot.z;
-                m_orbit_distance = d;
-                m_orbit_pitch = std::asin(std::clamp(F.y, -1.0f, 1.0f));
-                m_orbit_yaw = std::atan2(-F.x, -F.z);
-                m_orbit_initialized = true;
-
-                const glm::quat qyaw = glm::angleAxis(m_orbit_yaw, glm::vec3(0, 1, 0));
-                const glm::quat qpitch = glm::angleAxis(m_orbit_pitch, glm::vec3(1, 0, 0));
-                const glm::quat rot = qyaw * qpitch;
-                tracey::Camera cam = uc; // carry fov / aperture / focal distance
-                cam.setRotation(rot);
-                cam.setPosition(pivot - (rot * glm::vec3(0, 0, -1)) * d); // == P
-                m_engine->scene().setCamera(cam);
-                setCam = true;
-            }
-
-            // PointInstancer + native-instanced geometry: the loader staged these
-            // as "instance:" / "instancer:" actors in the cached scene. Merge all
-            // their SceneInstances onto ONE live actor (sharing the prototype
-            // SceneObjects, copied in as needed) so a heavily-instanced asset is a
-            // single outliner entry, deletable as a unit, instead of thousands of
-            // actors. Geometry stays shared → the SceneCompiler still instances.
-            int instanceCount = 0;
-            if (wantInstances) {
-                tracey::Actor* instActor = nullptr;
-                for (const auto* a : src->actors()) {
-                    if (!a) continue;
-                    const std::string& nm = a->name();
-                    if (nm.rfind("instance:", 0) != 0 && nm.rfind("instancer:", 0) != 0)
-                        continue;
-                    for (const auto& inst : a->instances()) {
-                        const std::string& objRef = inst.objectRef();
-                        if (!m_engine->scene().hasObject(objRef)) {
-                            const auto* srcObj = src->getObject(objRef);
-                            if (!srcObj) continue; // missing prototype geometry
-                            m_engine->scene().addObject(
-                                objRef, std::make_unique<tracey::SceneObject>(*srcObj));
-                        }
-                        if (!instActor) {
-                            instActor = m_engine->scene().createActor();
-                            std::string base = path;
-                            auto slash = base.find_last_of("/\\");
-                            if (slash != std::string::npos) base = base.substr(slash + 1);
-                            auto dot = base.find_last_of('.');
-                            if (dot != std::string::npos) base = base.substr(0, dot);
-                            instActor->setName(base + " (instances)");
-                        }
-                        instActor->addInstance(inst);
-                        ++instanceCount;
-                    }
-                }
-            }
-
-            if (m_engine->path_tracer_ready()) m_engine->compile_scene();
-            m_clear_next_frame = true;
-            if (m_broadcast) m_broadcast(R"({"event":"scene_changed"})");
-            return ok_response({{"lights", lightCount}, {"camera", setCam},
-                                {"instances", instanceCount}});
+            if (m_import_thread.joinable()) m_import_thread.join();
+            m_import_in_progress.store(true);
+            m_import_thread = std::thread(
+                [this, r = std::move(ir)]() mutable { import_usd_stage_worker(std::move(r)); });
+            return ok_response_null();
 #else
             return err_response("import_usd_stage: this build has no OpenUSD support");
 #endif

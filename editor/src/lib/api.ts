@@ -233,11 +233,16 @@ export const setLightParams = (actorId: number, patch: LightParamPatch) =>
 // camera (framing the native orbital view). The meshes come in separately via
 // the procedural usd_import subnet path. Returns how many lights landed and
 // whether the camera was applied.
+// Async: returns immediately once the import worker is spawned. Progress +
+// completion arrive as broadcast events — subscribe via listen():
+//   'usd_import_progress' { stage: string, done: number, total: number }
+//   'usd_import_done'     { lights: number, camera: boolean, instances: number }
+//   'usd_import_error'    { message: string }
 export const importUsdStage = (
   path: string,
   opts?: { lights?: boolean; camera?: boolean; instances?: boolean }
 ) =>
-  send<{ lights: number; camera: boolean; instances: number }>('import_usd_stage', {
+  send<null>('import_usd_stage', {
     path,
     lights: opts?.lights ?? true,
     camera: opts?.camera ?? true,
