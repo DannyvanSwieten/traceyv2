@@ -2712,10 +2712,14 @@ bool EditorServer::update_camera_from_input(double dt) {
 }
 
 void EditorServer::render_tick() {
-    // Pause the live viewport while the offline export worker has the engine.
-    // The worker drives its own seek/cook/render loop and would otherwise
-    // contend with us for the path tracer state.
-    if (m_export_in_progress.load()) return;
+    // Pause the live viewport while an offline worker has the engine — the
+    // sequence/still export worker OR the async USD-import worker. Both mutate
+    // GPU resources (compile_scene, BLAS/vertex-buffer create+free, memory
+    // map/unmap) on their own thread; if we kept rendering we'd touch the same
+    // VkDeviceMemory / buffers concurrently (a Vulkan threading error — and a
+    // use-after-free on buffers the import frees). The import also hides the
+    // viewport behind the loading overlay, so there's nothing to show anyway.
+    if (m_export_in_progress.load() || m_import_in_progress.load()) return;
 
     // try_lock instead of lock: render_tick fires from CVDisplayLink via
     // dispatch_async(main_queue). If a command handler holds m_mutex while
