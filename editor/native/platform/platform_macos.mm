@@ -113,6 +113,31 @@
     return self;
 }
 
+// Zero every held movement key. Called when viewport focus changes: if focus
+// leaves the native view (e.g. the user clicks into the WebView UI) mid-press,
+// the matching keyUp is delivered elsewhere and never reaches us — without
+// this the key stays "down" and the camera flies forever. Clearing on BOTH
+// resign and become also recovers from a keyUp lost while the app was inactive
+// (Cmd-Tab away while holding a key, release, Cmd-Tab back).
+- (void)clearMovementKeys {
+    if (!_inputState) return;
+    _inputState->key_w = false;
+    _inputState->key_a = false;
+    _inputState->key_s = false;
+    _inputState->key_d = false;
+    _inputState->key_q = false;
+    _inputState->key_e = false;
+    _inputState->key_shift = false;
+}
+- (BOOL)resignFirstResponder {
+    [self clearMovementKeys];
+    return [super resignFirstResponder];
+}
+- (BOOL)becomeFirstResponder {
+    [self clearMovementKeys];
+    return [super becomeFirstResponder];
+}
+
 - (BOOL)acceptsFirstResponder {
     return YES;
 }
@@ -213,7 +238,11 @@
 
 - (void)handleKey:(NSEvent*)event pressed:(BOOL)pressed {
     if (!_inputState) return;
-    if (event.modifierFlags & NSEventModifierFlagCommand) return;
+    // Don't treat Cmd+key (menu shortcuts like Cmd+S) as camera movement — but
+    // ONLY skip the key-DOWN. A key-UP must always be honoured: if the user
+    // releases a held movement key while Cmd happens to be down, swallowing the
+    // up-event would leave the key "stuck" and the camera flying forever.
+    if (pressed && (event.modifierFlags & NSEventModifierFlagCommand)) return;
     switch (event.keyCode) {
     case 13: _inputState->key_w = pressed; break;
     case 0:  _inputState->key_a = pressed; break;
