@@ -252,6 +252,9 @@ const App: Component = () => {
     });
 
     setLoadingState({ name, stage: 'Reading…', done: 0, total: 0 });
+    // The native Metal viewport is an NSView ON TOP of the WebView, so it would
+    // cover the loading overlay. Hide it for the duration of the load.
+    api.setViewportVisible(false).catch(() => {});
     try {
       const beforeCount = actors().length;
 
@@ -323,6 +326,8 @@ const App: Component = () => {
     } finally {
       offProgress();
       setLoadingState(null);
+      api.setViewportVisible(true).catch(() => {});
+      if (viewportRef) viewportRef.render();
     }
   };
 

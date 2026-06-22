@@ -439,6 +439,11 @@ namespace tracey
                 if (blasIndex >= scene.vertexBuffers.size()) continue;
                 const Buffer* vb = scene.vertexBuffers[blasIndex];
                 uint32_t vertexCount = scene.vertexCounts[blasIndex];
+                // An object can have a BLAS but a null rasterizer vertex buffer
+                // (the index-contract nullptr in compile_scene). Skip it —
+                // binding a null buffer is a Vulkan error (drawBatch guards the
+                // same way). Surfaced by instanced USD imports.
+                if (!vb || vertexCount == 0) continue;
 
                 glm::mat4 model(1.0f);
                 for (int r = 0; r < 3; ++r)
@@ -483,6 +488,11 @@ namespace tracey
                 if (blasIndex >= scene.vertexBuffers.size()) continue;
                 const Buffer* vb = scene.vertexBuffers[blasIndex];
                 uint32_t vertexCount = scene.vertexCounts[blasIndex];
+                // An object can have a BLAS but a null rasterizer vertex buffer
+                // (the index-contract nullptr in compile_scene). Skip it —
+                // binding a null buffer is a Vulkan error (drawBatch guards the
+                // same way). Surfaced by instanced USD imports.
+                if (!vb || vertexCount == 0) continue;
 
                 glm::mat4 model(1.0f);
                 for (int r = 0; r < 3; ++r)
