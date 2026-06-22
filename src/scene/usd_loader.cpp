@@ -20,6 +20,8 @@
 #include <pxr/usd/usdGeom/primvarsAPI.h>
 #include <pxr/usd/usdGeom/metrics.h>
 #include <pxr/usd/usdGeom/tokens.h>
+#include <pxr/usd/usdGeom/pointInstancer.h>
+#include <pxr/usd/usd/relationship.h>
 #include <pxr/usd/usdLux/lightAPI.h>
 #include <pxr/usd/usdLux/distantLight.h>
 #include <pxr/usd/usdLux/sphereLight.h>
@@ -441,6 +443,113 @@ namespace tracey
             if (hasN) out.setNormals(std::move(outNrm));
             return true;
         }
+
+        // One prototype mesh: its shared SceneObject name, its transform within
+        // the prototype root, and its bound material. Shared by both instancing
+        // paths (UsdGeomPointInstancer + native scenegraph instancing).
+        struct ProtoMesh
+        {
+            std::string objName;
+            glm::mat4 relToProto;
+            MaterialInstance material;
+        };
+
+        // Gather every mesh under `protoRoot` into SceneObjects (added ONCE,
+        // keyed by `keyPrefix`::<path> so all instances of this prototype share
+        // the geometry → one BLAS each). Each entry also records the mesh's
+        // transform relative to the prototype root (so multi-mesh / offset
+        // prototypes instance correctly) + its material. Instance proxies are
+        // traversed so a prototype that itself contains nested instances still
+        // yields its geometry.
+        std::vector<ProtoMesh> gatherPrototypeMeshes(const UsdPrim &protoRoot,
+                                                     Scene &scene,
+                                                     const std::string &keyPrefix)
+        {
+            std::vector<ProtoMesh> out;
+            if (!protoRoot) return out;
+            const glm::mat4 invWp = glm::inverse(toGlm(
+                UsdGeomXformable(protoRoot).ComputeLocalToWorldTransform(UsdTimeCode::Default())));
+            for (const UsdPrim &m : UsdPrimRange(protoRoot, UsdTraverseInstanceProxies()))
+            {
+                UsdGeomMesh mesh(m);
+                if (!mesh) continue;
+                const std::string objName = keyPrefix + "::" + m.GetPath().GetString();
+                if (!scene.hasObject(objName))
+                {
+                    auto obj = std::make_unique<SceneObject>();
+                    if (!convertMesh(mesh, *obj)) continue;
+                    obj->setName(objName);
+                    scene.addObject(objName, std::move(obj));
+                }
+                ProtoMesh pm;
+                pm.objName = objName;
+                pm.relToProto = invWp * toGlm(
+                    UsdGeomXformable(m).ComputeLocalToWorldTransform(UsdTimeCode::Default()));
+                pm.material = convertBoundMaterial(m);
+                out.push_back(std::move(pm));
+            }
+            return out;
+        }
+
+        // Expand a UsdGeomPointInstancer into shared prototype geometry +
+        // per-instance placements: one Actor holding a SceneInstance per
+        // (instance × prototype-mesh), each carrying that instance's world
+        // transform. The SceneCompiler builds one BLAS per prototype mesh and
+        // one TLAS instance per placement — true hardware instancing. Returns
+        // the number of placements created. Static (default-time) only;
+        // per-instance animation + invisibleIds are follow-ups.
+        int convertPointInstancer(const UsdGeomPointInstancer &pi, Scene &scene,
+                                  const glm::mat4 &upM)
+        {
+            const UsdPrim prim = pi.GetPrim();
+            SdfPathVector protoPaths;
+            pi.GetPrototypesRel().GetTargets(&protoPaths);
+            if (protoPaths.empty()) return 0;
+
+            VtArray<int> protoIndices;
+            pi.GetProtoIndicesAttr().Get(&protoIndices);
+            if (protoIndices.empty()) return 0;
+
+            // IncludeProtoXform: bake each prototype root's own transform into
+            // the placement. IgnoreMask: keep the result 1:1 with protoIndices.
+            VtArray<GfMatrix4d> xforms;
+            if (!pi.ComputeInstanceTransformsAtTime(
+                    &xforms, UsdTimeCode::Default(), UsdTimeCode::Default(),
+                    UsdGeomPointInstancer::IncludeProtoXform,
+                    UsdGeomPointInstancer::IgnoreMask))
+                return 0;
+            if (xforms.size() != protoIndices.size()) return 0;
+
+            UsdStageWeakPtr stage = prim.GetStage();
+            const glm::mat4 Winstancer = toGlm(
+                UsdGeomXformable(prim).ComputeLocalToWorldTransform(UsdTimeCode::Default()));
+
+            std::vector<std::vector<ProtoMesh>> protoMeshes(protoPaths.size());
+            for (size_t k = 0; k < protoPaths.size(); ++k)
+                protoMeshes[k] = gatherPrototypeMeshes(
+                    stage->GetPrimAtPath(protoPaths[k]), scene,
+                    prim.GetPath().GetString() + "::proto" + std::to_string(k));
+
+            Actor *actor = scene.createActor();
+            actor->setName("instancer:" + prim.GetPath().GetString());
+
+            int count = 0;
+            for (size_t i = 0; i < protoIndices.size(); ++i)
+            {
+                const int k = protoIndices[i];
+                if (k < 0 || k >= static_cast<int>(protoMeshes.size())) continue;
+                const glm::mat4 Xi = toGlm(xforms[i]);
+                for (const auto &pm : protoMeshes[k])
+                {
+                    SceneInstance inst(pm.objName, pm.material);
+                    inst.setLocalTransform(
+                        transformFromMatrix(upM * Winstancer * Xi * pm.relToProto));
+                    actor->addInstance(std::move(inst));
+                    ++count;
+                }
+            }
+            return count;
+        }
     }
 
     bool UsdLoader::available() { return true; }
@@ -456,10 +565,76 @@ namespace tracey
 
         auto scene = std::make_unique<Scene>();
         const glm::mat4 upM = upAxisToYup(stage); // Z-up → Y-up when needed
-        int meshes = 0, lights = 0;
+        int meshes = 0, lights = 0, instances = 0;
         bool gotCamera = false;
+
+        // Pre-pass: gather every PointInstancer's prototype roots. The prototype
+        // geometry lives in the stage like any other prim, so we must NOT import
+        // it as standalone meshes — it's instanced via the PointInstancer below.
+        SdfPathVector protoRoots;
+        for (const UsdPrim &p : stage->Traverse())
+            if (p.IsA<UsdGeomPointInstancer>())
+            {
+                SdfPathVector targets;
+                UsdGeomPointInstancer(p).GetPrototypesRel().GetTargets(&targets);
+                for (const SdfPath &t : targets) protoRoots.push_back(t);
+            }
+        auto underPrototype = [&protoRoots](const SdfPath &path) {
+            for (const SdfPath &r : protoRoots)
+                if (path == r || path.HasPrefix(r)) return true;
+            return false;
+        };
+
+        // Shared prototype geometry for native (scenegraph) instancing, keyed by
+        // prototype path so all instances of the same master reuse one BLAS set.
+        std::unordered_map<std::string, std::vector<ProtoMesh>> protoCache;
+
         for (const UsdPrim &prim : stage->Traverse())
         {
+            // Prototype geometry is consumed by its PointInstancer, not imported
+            // standalone.
+            if (underPrototype(prim.GetPath())) continue;
+
+            // PointInstancer → shared prototypes + per-instance placements.
+            if (prim.IsA<UsdGeomPointInstancer>())
+            {
+                instances += convertPointInstancer(UsdGeomPointInstancer(prim), *scene, upM);
+                continue;
+            }
+
+            // Native scenegraph instancing: an `instanceable` prim that
+            // references shared content (the Pixar Kitchen Set's instanced
+            // variant is 425 of these). USD composes it into a prototype;
+            // Traverse() doesn't descend into the instance's children, so we
+            // pull geometry from the prototype, share it across all instances of
+            // that master (one BLAS set), and place each by its world transform.
+            if (prim.IsInstance())
+            {
+                UsdPrim proto = prim.GetPrototype();
+                if (proto)
+                {
+                    const std::string key = proto.GetPath().GetString();
+                    auto it = protoCache.find(key);
+                    if (it == protoCache.end())
+                        it = protoCache.emplace(key, gatherPrototypeMeshes(proto, *scene, key)).first;
+                    if (!it->second.empty())
+                    {
+                        const glm::mat4 instWorld = upM * toGlm(
+                            UsdGeomXformable(prim).ComputeLocalToWorldTransform(UsdTimeCode::Default()));
+                        Actor *actor = scene->createActor();
+                        actor->setName("instance:" + prim.GetPath().GetString());
+                        for (const auto &pm : it->second)
+                        {
+                            SceneInstance inst(pm.objName, pm.material);
+                            inst.setLocalTransform(transformFromMatrix(instWorld * pm.relToProto));
+                            actor->addInstance(std::move(inst));
+                            ++instances;
+                        }
+                    }
+                }
+                continue;
+            }
+
             const glm::mat4 world = upM * toGlm(
                 UsdGeomXformable(prim).ComputeLocalToWorldTransform(UsdTimeCode::Default()));
 
@@ -517,7 +692,8 @@ namespace tracey
             ++meshes;
         }
 
-        std::cout << "[usd] imported " << meshes << " mesh(es), " << lights << " light(s)"
+        std::cout << "[usd] imported " << meshes << " mesh(es), " << instances
+                  << " instance(s), " << lights << " light(s)"
                   << (gotCamera ? ", 1 camera" : "") << " from " << path << std::endl;
         return scene;
     }
@@ -572,6 +748,24 @@ namespace tracey
         info.endTimeCode = stage->GetEndTimeCode();
         const glm::mat4 upM = upAxisToYup(stage); // must match loadFromFile
 
+        // PointInstancer prototype roots — their meshes are instanced, not
+        // standalone, so the SOP geometry import must skip them (mirrors
+        // loadFromFile). Native-instanced (instanceable) prims are naturally
+        // skipped: Traverse() doesn't descend into them, and they're not meshes.
+        SdfPathVector protoRoots;
+        for (const UsdPrim &p : stage->Traverse())
+            if (p.IsA<UsdGeomPointInstancer>())
+            {
+                SdfPathVector targets;
+                UsdGeomPointInstancer(p).GetPrototypesRel().GetTargets(&targets);
+                for (const SdfPath &t : targets) protoRoots.push_back(t);
+            }
+        auto underPrototype = [&protoRoots](const SdfPath &path) {
+            for (const SdfPath &r : protoRoots)
+                if (path == r || path.HasPrefix(r)) return true;
+            return false;
+        };
+
         // Flat first slice: one root node per mesh prim, carrying its world
         // transform (decomposed to TRS). meshObjectNames = the prim's full path
         // — the exact key loadFromFile registers the SceneObject under, so the
@@ -581,6 +775,7 @@ namespace tracey
         // keyframes. Xform-nesting preservation is a follow-up (still flat).
         for (const UsdPrim &prim : stage->Traverse())
         {
+            if (underPrototype(prim.GetPath())) continue; // instanced via its PointInstancer
             UsdGeomMesh mesh(prim);
             if (!mesh) continue;
 
