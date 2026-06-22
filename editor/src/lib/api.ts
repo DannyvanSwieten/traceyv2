@@ -228,6 +228,21 @@ export interface LightParamPatch {
 export const setLightParams = (actorId: number, patch: LightParamPatch) =>
   send<boolean>('set_light_params', { actor_id: actorId, ...patch });
 
+// Import the non-geometry half of a USD stage — its UsdLux lights (as native
+// light actors, full type/color/intensity/radius/size/hdri fidelity) and its
+// camera (framing the native orbital view). The meshes come in separately via
+// the procedural usd_import subnet path. Returns how many lights landed and
+// whether the camera was applied.
+export const importUsdStage = (
+  path: string,
+  opts?: { lights?: boolean; camera?: boolean }
+) =>
+  send<{ lights: number; camera: boolean }>('import_usd_stage', {
+    path,
+    lights: opts?.lights ?? true,
+    camera: opts?.camera ?? true,
+  });
+
 // Tell the native side that a JS modal grab (G/R/S) is active. While
 // true the engine suppresses camera orbit/pan/dolly and instead
 // broadcasts `viewport_pointer` events so the JS grab can drive the

@@ -5,6 +5,8 @@
 
 #include "editor_server_cmds_common.hpp"
 
+#include "scene/usd_loader.hpp" // USD-free header; import_usd_stage guarded by TRACEY_HAS_USD
+
 namespace tracey_editor {
 
 std::optional<std::string> EditorServer::handle_scene_commands(
@@ -63,6 +65,94 @@ std::optional<std::string> EditorServer::handle_scene_commands(
             m_clear_next_frame = true;
             if (m_broadcast) m_broadcast(R"({"event":"scene_changed"})");
             return ok_response(actor->getUid());
+        }
+        if (cmd == "import_usd_stage") {
+            // Native half of USD import: the stage's UsdLux lights + camera.
+            // (Meshes flow through the procedural SOP path — peek_usd +
+            // usd_import subnets — handled on the frontend; lights/camera are
+            // first-class scene fixtures, not geometry, so they come in here as
+            // manually-created actors / scene camera, exactly like create_light
+            // and the orbital camera framing. Re-importing duplicates them,
+            // matching the geometry path's "re-load for another instance.")
+#ifdef TRACEY_HAS_USD
+            const std::string path = req.at("path").get<std::string>();
+            const bool wantLights = req.value("lights", true);
+            const bool wantCamera = req.value("camera", true);
+            auto src = tracey::UsdLoader::loadFromFileCached(path);
+            if (!src) return err_response("import_usd_stage: failed to load " + path);
+
+            int lightCount = 0;
+            if (wantLights) {
+                for (const auto* a : src->actors()) {
+                    if (!a || !a->hasLight()) continue;
+                    auto* actor = m_engine->scene().createActor();
+                    actor->setName(a->name().empty() ? "usd_light" : a->name());
+                    actor->setTransform(a->transform());
+                    actor->setLight(*a->light()); // full Light: type/color/intensity/radius/size/hdri
+                    ++lightCount;
+                }
+            }
+
+            bool setCam = false;
+            if (wantCamera && src->hasCamera()) {
+                const tracey::Camera& uc = src->camera();
+                const glm::vec3 P = uc.position();
+                const glm::vec3 F =
+                    glm::normalize(glm::mat3_cast(uc.rotation()) * glm::vec3(0, 0, -1));
+
+                // World-space bbox center of the imported geometry → a sensible
+                // focus point for the orbit pivot. Kept ON the view ray so the
+                // recomposed orbital camera reproduces the USD camera's pose.
+                glm::vec3 mn(1e30f), mx(-1e30f);
+                bool anyGeo = false;
+                for (const auto& node : src->flatten()) {
+                    if (!node.actor) continue;
+                    for (const auto& inst : node.actor->instances()) {
+                        const auto* obj = src->getObject(inst.objectRef());
+                        if (!obj) continue;
+                        glm::mat4 w = node.worldTransform;
+                        if (inst.hasLocalTransform())
+                            w = w * inst.localTransform()->toMatrix();
+                        for (const auto& p : obj->positions()) {
+                            const glm::vec4 wp = w * glm::vec4(p, 1.0f);
+                            mn = glm::min(mn, glm::vec3(wp));
+                            mx = glm::max(mx, glm::vec3(wp));
+                            anyGeo = true;
+                        }
+                    }
+                }
+                const glm::vec3 center = anyGeo ? (mn + mx) * 0.5f : glm::vec3(0.0f);
+                float d = glm::dot(center - P, F); // focus distance along the ray
+                if (!(d > 0.5f)) d = std::max(0.5f, glm::length(center - P));
+                const glm::vec3 pivot = P + F * d;
+
+                // Drive the native orbital state so the framing sticks under
+                // the orbit controls (same inverse the orbital seed uses).
+                m_orbit_pivot_x = pivot.x;
+                m_orbit_pivot_y = pivot.y;
+                m_orbit_pivot_z = pivot.z;
+                m_orbit_distance = d;
+                m_orbit_pitch = std::asin(std::clamp(F.y, -1.0f, 1.0f));
+                m_orbit_yaw = std::atan2(-F.x, -F.z);
+                m_orbit_initialized = true;
+
+                const glm::quat qyaw = glm::angleAxis(m_orbit_yaw, glm::vec3(0, 1, 0));
+                const glm::quat qpitch = glm::angleAxis(m_orbit_pitch, glm::vec3(1, 0, 0));
+                const glm::quat rot = qyaw * qpitch;
+                tracey::Camera cam = uc; // carry fov / aperture / focal distance
+                cam.setRotation(rot);
+                cam.setPosition(pivot - (rot * glm::vec3(0, 0, -1)) * d); // == P
+                m_engine->scene().setCamera(cam);
+                setCam = true;
+            }
+
+            if (m_engine->path_tracer_ready()) m_engine->compile_scene();
+            m_clear_next_frame = true;
+            if (m_broadcast) m_broadcast(R"({"event":"scene_changed"})");
+            return ok_response({{"lights", lightCount}, {"camera", setCam}});
+#else
+            return err_response("import_usd_stage: this build has no OpenUSD support");
+#endif
         }
         if (cmd == "delete_actor") {
             // Remove a manually-created actor (e.g. a create_light dome/sun)

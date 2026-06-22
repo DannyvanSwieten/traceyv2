@@ -17,6 +17,8 @@
 #include "scene/actor.hpp"
 #include "scene/scene_instance.hpp"
 #include "scene/material_instance.hpp"
+#include "scene/light.hpp"
+#include "scene/camera.hpp"
 
 #include <cstdio>
 #include <string>
@@ -107,6 +109,34 @@ int main(int argc, char **argv)
     }
 
     std::printf("materials recovered: %d\n", materialsFound);
+
+    // ── Lights + camera (what import_usd_stage replicates into the editor) ──
+    int lightCount = 0;
+    const char *kTypeName[] = {"point", "distant", "dome", "area"};
+    for (const auto &a : scene->actors())
+    {
+        if (!a || !a->hasLight()) continue;
+        const auto &l = *a->light();
+        const int t = static_cast<int>(l.type);
+        std::printf("  light '%s' type=%s intensity=%.3g color=(%.2g,%.2g,%.2g)\n",
+                    a->name().c_str(),
+                    (t >= 0 && t < 4) ? kTypeName[t] : "?",
+                    l.intensity, l.color.x, l.color.y, l.color.z);
+        ++lightCount;
+    }
+    std::printf("lights imported: %d\n", lightCount);
+
+    if (scene->hasCamera())
+    {
+        const auto &c = scene->camera();
+        std::printf("camera: pos=(%.3g,%.3g,%.3g) fov=%.3g\n",
+                    c.position().x, c.position().y, c.position().z, c.fov());
+    }
+    else
+    {
+        std::printf("camera: (none)\n");
+    }
+
     std::printf("usd_import_smoke: %s\n", ok ? "PASS" : "FAIL");
     return ok ? 0 : 1;
 }

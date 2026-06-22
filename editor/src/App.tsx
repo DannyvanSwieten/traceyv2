@@ -229,6 +229,22 @@ const App: Component = () => {
         ? await buildSubnetsFromUsd(asset.path)
         : await buildSubnetsFromGltf(asset.path);
       for (const s of subnets) addNode(s);
+
+      // USD stages carry lights + a camera too. Geometry flows through the
+      // procedural subnets above; the lights/camera come in natively (they're
+      // scene fixtures, not geometry) so the whole stage appears, not just the
+      // meshes. Best-effort — a stage with no lights/camera is fine.
+      if (isUsd) {
+        try {
+          const extras = await api.importUsdStage(asset.path);
+          if (extras.lights > 0 || extras.camera) {
+            console.log(`USD: imported ${extras.lights} light(s)`,
+                        extras.camera ? '+ camera' : '');
+          }
+        } catch (e) {
+          console.warn('USD lights/camera import failed:', e);
+        }
+      }
       // Skip the 300ms debounce so the cook fires immediately. Without
       // this, the user sees the subnet shapes appear in the canvas but
       // nothing changes in the viewport for a third of a second — long
