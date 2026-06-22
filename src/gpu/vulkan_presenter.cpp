@@ -367,8 +367,11 @@ namespace tracey
 
         if (m_needsRecreation)
         {
+            // recreateSwapchain() owns the flag now: it clears it on success
+            // and KEEPS it set when it defers on a transient 0×0 surface, so
+            // we retry next present instead of acquiring from a stale/missing
+            // swapchain.
             recreateSwapchain();
-            m_needsRecreation = false;
         }
 
         // Wait for frame N-3 to complete
@@ -469,8 +472,11 @@ namespace tracey
 
         if (m_needsRecreation)
         {
+            // recreateSwapchain() owns the flag now: it clears it on success
+            // and KEEPS it set when it defers on a transient 0×0 surface, so
+            // we retry next present instead of acquiring from a stale/missing
+            // swapchain.
             recreateSwapchain();
-            m_needsRecreation = false;
         }
 
         // Wait for frame N-3 to complete
@@ -572,8 +578,11 @@ namespace tracey
 
         if (m_needsRecreation)
         {
+            // recreateSwapchain() owns the flag now: it clears it on success
+            // and KEEPS it set when it defers on a transient 0×0 surface, so
+            // we retry next present instead of acquiring from a stale/missing
+            // swapchain.
             recreateSwapchain();
-            m_needsRecreation = false;
         }
 
         vkWaitForFences(m_context.device(), 1, &m_frameSync[m_currentFrame].inFlightFence, VK_TRUE, UINT64_MAX);
@@ -829,6 +838,20 @@ namespace tracey
         // Query new surface capabilities
         querySurfaceCapabilities();
 
+        // Transient zero-size surface — e.g. switching to the Render tab / PT
+        // preview before the window layout settles, where the CAMetalLayer
+        // momentarily reports a 0×0 drawable. Creating a swapchain at that
+        // extent throws, and because this runs on the present path that throw
+        // was uncaught and crashed the app ("can't create a swapchain"). Defer
+        // instead: keep the current swapchain intact and leave the recreation
+        // flag set so the next present retries once a real size arrives.
+        const VkExtent2D extent = chooseSwapExtent(m_surfaceCapabilities);
+        if (extent.width == 0 || extent.height == 0)
+        {
+            m_needsRecreation = true;
+            return;
+        }
+
         // Store old swapchain
         m_oldSwapchain = m_swapchain;
 
@@ -838,6 +861,10 @@ namespace tracey
         // Create new swapchain
         createSwapchain();
         createSwapchainImageViews();
+
+        // Success — clear the flag here (callers no longer do, so a deferred
+        // recreate above can keep it set).
+        m_needsRecreation = false;
     }
 
     void VulkanPresenter::waitIdle()

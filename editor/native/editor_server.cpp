@@ -2776,6 +2776,12 @@ void EditorServer::render_tick() {
             m_render_frames_completed.load(std::memory_order_acquire) > 0;
         const auto t0 = clock::now();
         bool presented = false;
+        // A present can throw on a recoverable swapchain condition (the surface
+        // momentarily reports a 0×0 / out-of-date drawable while switching to
+        // the Render tab or PT preview). Treat any such throw like a present
+        // failure: drop the frame and zero the tracked size so the next tick
+        // recreates the swapchain at the real size — never let it crash the app.
+        try {
         if (m_pt_preview_enabled && has_geometry && m_pt_fullscreen) {
             // Render workspace: PT replaces the rasterizer entirely.
             // No raster output needed.
@@ -2807,6 +2813,13 @@ void EditorServer::render_tick() {
                 }
                 presented = true;
             }
+        }
+        } catch (const std::exception& e) {
+            std::fprintf(stderr,
+                "[viewport] present failed (recoverable — skipping frame): %s\n", e.what());
+            m_viewport_pixel_w = 0;
+            m_viewport_pixel_h = 0;
+            presented = false;
         }
         if (presented) present_ms = elapsedMs(t0);
     }
