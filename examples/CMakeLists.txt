@@ -303,4 +303,15 @@ set_target_properties(
     MACOSX_RPATH ON
     BUILD_RPATH "${TRACEY_EXAMPLE_RPATH}"
     INSTALL_RPATH "${TRACEY_EXAMPLE_RPATH}"
+    # Use ONLY the explicit rpath above; don't let CMake also fold every
+    # link-time -L directory into the build rpath. Homebrew's pkg-config emits
+    # -L/opt/homebrew/lib for shaderc, and that directory carries its OWN
+    # (different-version) copies of libOpenImageDenoise + libtbb — duplicates of
+    # what deps/oidn/lib provides. With both in the rpath, CMake can't order
+    # them without a cycle ("cannot generate a safe runtime search path"). The
+    # explicit rpath (/usr/local/lib for Vulkan+shaderc, deps/oidn + deps/usd
+    # for the heavy deps + their bundled tbb) already covers every dylib these
+    # targets load at runtime, so skipping the auto link-dir rpath is safe and
+    # removes the cycle.
+    BUILD_WITH_INSTALL_RPATH TRUE
 )

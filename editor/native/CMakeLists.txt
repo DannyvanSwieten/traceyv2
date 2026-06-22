@@ -84,7 +84,15 @@ if(APPLE)
         MACOSX_BUNDLE_GUI_IDENTIFIER "com.tracey.editor"
         MACOSX_RPATH ON
         BUILD_RPATH "${TRACEY_EDITOR_RPATH}"
-        INSTALL_RPATH "${TRACEY_EDITOR_RPATH}")
+        INSTALL_RPATH "${TRACEY_EDITOR_RPATH}"
+        # Use only the explicit rpath; skip CMake's automatic link-dir rpath.
+        # tracey links shaderc via pkg-config, which (statically) propagates
+        # -L/opt/homebrew/lib to the editor — and that dir holds conflicting
+        # copies of libOpenImageDenoise + libtbb vs deps/oidn/lib, which CMake
+        # can't order without a cycle. The explicit rpath already covers every
+        # dylib the editor loads (Vulkan+shaderc in /usr/local/lib, oidn+usd+tbb
+        # in deps). Same fix as the examples. See examples/CMakeLists.txt.
+        BUILD_WITH_INSTALL_RPATH TRUE)
 
     if(EXISTS "${TRACEY_EDITOR_FRONTEND_DIR}/package.json")
         add_custom_command(TARGET tracey_editor POST_BUILD
