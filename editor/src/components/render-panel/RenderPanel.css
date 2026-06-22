@@ -81,6 +81,26 @@
   color: #ddd;
 }
 
+.render-panel-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font: 12px system-ui, -apple-system, sans-serif;
+  color: #ddd;
+  cursor: pointer;
+}
+.render-panel-checkbox input[type='checkbox'] {
+  accent-color: #3d6a92;
+  cursor: pointer;
+}
+.render-panel-checkbox input[type='checkbox']:disabled {
+  cursor: default;
+}
+.render-panel-checkbox:has(input:disabled) {
+  color: #777;
+  cursor: default;
+}
+
 .render-panel-actions {
   display: flex;
   flex-direction: column;

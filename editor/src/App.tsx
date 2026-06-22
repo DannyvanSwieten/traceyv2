@@ -50,6 +50,8 @@ import {
   maxBounces,
   renderResolution,
   ptBackend,
+  denoiseEnabled,
+  denoiserAvailable,
   initRenderSettings,
   setPtPreview,
   setFrameLocked,
@@ -57,6 +59,7 @@ import {
   setMaxBounces,
   setRenderResolution,
   setPtBackend,
+  setDenoiseEnabled,
 } from './stores/render_settings';
 import { buildSubnetsFromGltf } from './lib/gltf_import';
 import { buildSubnetsFromUsd } from './lib/usd_import';
@@ -485,7 +488,10 @@ const App: Component = () => {
         samples: maxSamples(),
         max_bounces: maxBounces(),
         format,
-        denoise: format === 'exr',
+        // The Render-panel Denoise toggle. Works for both PNG and EXR now —
+        // the native still path renders linear + AOVs when denoising and
+        // tonemaps back to 8-bit for PNG. No-op if OIDN isn't built in.
+        denoise: denoiseEnabled() && denoiserAvailable(),
       });
     } catch (e) {
       cleanup();
@@ -995,6 +1001,9 @@ const App: Component = () => {
               setResolution={setRenderResolution}
               ptBackend={ptBackend}
               setPtBackend={setPtBackend}
+              denoise={denoiseEnabled}
+              setDenoise={setDenoiseEnabled}
+              denoiserAvailable={denoiserAvailable}
               onResetRender={() => {
                 api.resetPtAccumulator().catch(() => {});
               }}

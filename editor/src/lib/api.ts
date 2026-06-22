@@ -325,6 +325,11 @@ export const getPtBackend = () => send<string>('get_pt_backend');
 export const setPtBackend = (backend: PtBackend) =>
   send<null>('set_pt_backend', { backend });
 
+// True when the native build linked Intel OIDN (TRACEY_WITH_OIDN). When false,
+// the Denoise toggle is greyed out and the denoise flag is ignored by renders.
+export const getDenoiserAvailable = () =>
+  send<boolean>('get_denoiser_available');
+
 // Toggle the rasterizer's antialiased point-sprite overlay (drawn on top of
 // the triangle pass in the main view). PiP path-tracer view is unaffected.
 export const getShowPoints = () => send<boolean>('get_show_points');

@@ -17,12 +17,25 @@ const [resolutionSignal, setResolutionSignal] = createSignal<[number, number]>([
 // Path-tracer backend: 'auto' | 'metal' (GPU) | 'cpu'.
 const [ptBackendSignal, setPtBackendSignal] = createSignal<api.PtBackend>('auto');
 
+// OIDN denoise preference (a UI/output setting, not engine state — applied at
+// still/sequence render time). Persisted to localStorage so it survives a
+// reload. Defaults ON when the build links OIDN. `denoiserAvailable` mirrors
+// whether the native build linked OIDN at all (TRACEY_WITH_OIDN); the UI greys
+// the toggle out when false.
+const DENOISE_KEY = 'tracey.denoiseEnabled';
+const [denoiseSignal, setDenoiseSignal] = createSignal<boolean>(
+  localStorage.getItem(DENOISE_KEY) !== '0'
+);
+const [denoiserAvailableSignal, setDenoiserAvailableSignal] = createSignal(false);
+
 export const ptPreviewEnabled = ptPreviewSignal;
 export const frameLocked = frameLockedSignal;
 export const maxSamples = maxSamplesSignal;
 export const maxBounces = maxBouncesSignal;
 export const renderResolution = resolutionSignal;
 export const ptBackend = ptBackendSignal;
+export const denoiseEnabled = denoiseSignal;
+export const denoiserAvailable = denoiserAvailableSignal;
 
 // Seed every signal from the engine so the toolbar reflects native state
 // (and any project-stored preference) before the user touches anything.
@@ -41,6 +54,18 @@ export function initRenderSettings(): void {
   api.getPtBackend()
     .then((b) => setPtBackendSignal(b as api.PtBackend))
     .catch(() => {});
+  api.getDenoiserAvailable()
+    .then(setDenoiserAvailableSignal)
+    .catch(() => {});
+}
+
+// Pure UI/output preference — no engine push; persisted for next session and
+// read at render time by the still/sequence export paths.
+export function setDenoiseEnabled(next: boolean): void {
+  setDenoiseSignal(next);
+  try {
+    localStorage.setItem(DENOISE_KEY, next ? '1' : '0');
+  } catch { /* private mode / quota — non-fatal */ }
 }
 
 // Optimistic flip + native push, rolled back on failure. The native

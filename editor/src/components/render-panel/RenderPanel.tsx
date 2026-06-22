@@ -25,6 +25,11 @@ interface RenderPanelProps {
   // Path-tracer backend: 'auto' | 'metal' (GPU) | 'cpu'.
   ptBackend: () => string;
   setPtBackend: (b: api.PtBackend) => void;
+  // OIDN denoise toggle (applied to still / sequence renders). `denoiserAvailable`
+  // is false when the build didn't link OIDN — then the checkbox is disabled.
+  denoise: () => boolean;
+  setDenoise: (v: boolean) => void;
+  denoiserAvailable: () => boolean;
   onResetRender: () => void;
   // Render one still frame to an image file at the current Output resolution +
   // Samples. Parent owns the save-dialog + native call (wiring lives in App).
@@ -127,6 +132,28 @@ export const RenderPanel: Component<RenderPanelProps> = (props) => {
             />
             <span class="render-panel-value">{props.maxBounces()}</span>
           </div>
+        </div>
+        <div class="render-panel-row">
+          <label class="render-panel-label" for="render-panel-denoise">
+            Denoise
+          </label>
+          <label
+            class="render-panel-checkbox"
+            title={
+              props.denoiserAvailable()
+                ? 'Run the Intel Open Image Denoise filter (albedo + normal guided) on still and sequence renders.'
+                : 'This build was not compiled with Intel OIDN (TRACEY_WITH_OIDN).'
+            }
+          >
+            <input
+              id="render-panel-denoise"
+              type="checkbox"
+              checked={props.denoise() && props.denoiserAvailable()}
+              disabled={!props.denoiserAvailable()}
+              onChange={(e) => props.setDenoise(e.currentTarget.checked)}
+            />
+            <span>{props.denoiserAvailable() ? 'OIDN' : 'unavailable'}</span>
+          </label>
         </div>
       </section>
 

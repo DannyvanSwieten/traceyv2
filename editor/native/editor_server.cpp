@@ -2302,12 +2302,17 @@ void EditorServer::render_still_loop(RenderStillRequest req) {
         if (m_broadcast) m_broadcast(msg.dump());
     };
     const bool exr = (req.format == "exr");
+    // Denoise needs the LINEAR beauty + albedo/normal AOV guides, which only the
+    // AOV/linear output mode produces. So denoising forces that mode even for a
+    // PNG still — we then tonemap the denoised linear beauty back to 8-bit below.
+    const bool will_denoise = req.denoise && tracey::denoiserAvailable();
+    const bool need_linear = exr || will_denoise;
 
     // Snapshot + (re)configure the path tracer, mirroring export_video_loop:
     // optional resize to the target still resolution, optional bounce override,
-    // and EXR → AOV+linear output mode. Recompile the CURRENT scene against the
-    // reconfigured PT (the BlasCache makes this cheap — no re-cook of the SOP
-    // graph, and no timeline seek: a still is "this frame, as it is now").
+    // and EXR/denoise → AOV+linear output mode. Recompile the CURRENT scene
+    // against the reconfigured PT (the BlasCache makes this cheap — no re-cook of
+    // the SOP graph, and no timeline seek: a still is "this frame, as it is now").
     uint32_t width = 0, height = 0;
     uint32_t saved_raster_w = 0, saved_raster_h = 0, saved_pt_w = 0, saved_pt_h = 0;
     float saved_aspect = 1.0f;
@@ -2347,7 +2352,7 @@ void EditorServer::render_still_loop(RenderStillRequest req) {
             m_engine->set_max_bounces(static_cast<uint32_t>(req.max_bounces));
             bounces_changed = true;
         }
-        if (exr && !m_engine->export_aovs()) {
+        if (need_linear && !m_engine->export_aovs()) {
             m_engine->set_export_aovs(true);
             export_aovs_changed = true;
         }
@@ -2449,6 +2454,44 @@ void EditorServer::render_still_loop(RenderStillRequest req) {
             if (!tracey::writeMultiLayerExr(req.path, static_cast<int>(width),
                                             static_cast<int>(height), layers, &exr_err)) {
                 success = false; errMsg = "EXR write failed: " + exr_err;
+            }
+        } else if (will_denoise) {
+            // PNG + denoise: the PT ran in linear/AOV mode (need_linear), so read
+            // back the LINEAR beauty + albedo/normal guides, denoise, then tonemap
+            // the result to 8-bit with the same operator the display path uses
+            // (Reinhard mean/(mean+1) + gamma 2.2) before writing the PNG.
+            std::vector<float> beauty(pixel_count * 4), albedo(pixel_count * 4),
+                normalAov(pixel_count * 4);
+            {
+                std::lock_guard<std::mutex> lock(m_mutex);
+                auto *pt = m_engine->path_tracer();
+                pt->readback(reinterpret_cast<uint8_t *>(beauty.data()));
+                pt->readbackAOV(tracey::AovKind::Albedo, albedo.data());
+                pt->readbackAOV(tracey::AovKind::Normal, normalAov.data());
+            }
+            std::vector<float> denoised(pixel_count * 4);
+            const float *src = beauty.data();
+            std::string derr;
+            if (tracey::denoiseImage(static_cast<int>(width), static_cast<int>(height),
+                                     beauty.data(), albedo.data(), normalAov.data(),
+                                     denoised.data(), &derr))
+                src = denoised.data();
+            else
+                std::fprintf(stderr, "[still] denoise failed: %s\n", derr.c_str());
+            std::vector<uint8_t> pixels(pixel_count * 4);
+            for (size_t p = 0; p < pixel_count; ++p) {
+                for (int c = 0; c < 3; ++c) {
+                    float v = src[p * 4 + c];
+                    v = v / (v + 1.0f);                       // Reinhard tonemap
+                    v = std::pow(std::max(v, 0.0f), 1.0f / 2.2f);  // gamma
+                    pixels[p * 4 + c] = static_cast<uint8_t>(
+                        std::clamp(v, 0.0f, 1.0f) * 255.0f + 0.5f);
+                }
+                pixels[p * 4 + 3] = 255;
+            }
+            if (!tracey::writePng(req.path, static_cast<int>(width),
+                                  static_cast<int>(height), pixels.data())) {
+                success = false; errMsg = "PNG write failed: " + req.path;
             }
         } else {
             std::vector<uint8_t> pixels(pixel_count * 4);

@@ -5,6 +5,7 @@
 
 #include "editor_server_cmds_common.hpp"
 
+#include "io/denoiser.hpp"      // denoiserAvailable() for the get_denoiser_available query
 #include "scene/usd_loader.hpp" // USD-free header; peek_usd handler guarded by TRACEY_HAS_USD
 
 namespace tracey_editor {
@@ -105,6 +106,11 @@ std::optional<std::string> EditorServer::handle_render_commands(
         }
         if (cmd == "get_pt_backend") {
             return ok_response(m_engine->pt_backend());
+        }
+        if (cmd == "get_denoiser_available") {
+            // True only when the build linked Intel OIDN (TRACEY_WITH_OIDN). The
+            // UI greys out the Denoise toggle when this is false.
+            return ok_response(tracey::denoiserAvailable());
         }
         if (cmd == "set_pt_backend") {
             m_engine->set_pt_backend(req.at("backend").get<std::string>());

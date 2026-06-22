@@ -1,6 +1,7 @@
 import { Component, Show, createEffect, createSignal, onCleanup } from 'solid-js';
 import * as api from '../../lib/api';
 import { timeline } from '../../stores/timeline';
+import { denoiseEnabled, denoiserAvailable } from '../../stores/render_settings';
 import { NumberInput } from '../number-input/NumberInput';
 import './ExportVideoDialog.css';
 
@@ -26,7 +27,9 @@ export const ExportVideoDialog: Component<ExportVideoDialogProps> = (props) => {
   const [height, setHeight] = createSignal(720);
   const [codec, setCodec] = createSignal<api.VideoCodec>('h264');
   const [format, setFormat] = createSignal<'video' | 'exr'>('video');
-  const [denoise, setDenoise] = createSignal(true);
+  // Seed from the Render-panel preference so the dialog reflects the user's
+  // global denoise choice; they can still override it per-export here.
+  const [denoise, setDenoise] = createSignal(denoiseEnabled() && denoiserAvailable());
   const [errorMsg, setErrorMsg] = createSignal('');
   const [progressFrame, setProgressFrame] = createSignal(0);
   const [progressTotal, setProgressTotal] = createSignal(0);
