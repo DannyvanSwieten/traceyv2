@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <memory>
 #include <mutex>
+#include <shared_mutex>
 #include <string>
 #include <utility>
 #include <vector>
@@ -143,6 +144,17 @@ public:
         const tracey::SceneCompiler::CompiledScene &scene,
         const tracey::Camera &camera);
 
+    // Accumulate ONE path-tracer sample against an explicit scene snapshot +
+    // camera, into the PT's own output image/accumulator (no readback — the
+    // live viewport composites outputImage() straight off the GPU). Used by the
+    // PT worker thread so the CPU backend's synchronous per-sample compute runs
+    // off the main thread. `clear` resets the Welford accumulator first.
+    // Returns the sample wall-clock in ms, or 0 if there's nothing to trace.
+    double render_path_tracer_with(
+        const tracey::SceneCompiler::CompiledScene &scene,
+        const tracey::Camera &camera,
+        bool clear);
+
     // Rebuild ONLY the TLAS from the current scene's actor transforms.
     // Keeps the BLAS cache, material buffer, UV buffer, and per-instance
     // material/program-id bookkeeping untouched. Caller must guarantee:
@@ -224,17 +236,21 @@ private:
     std::unique_ptr<tracey::Scene> m_scene;
     std::unique_ptr<tracey::PathTracer> m_path_tracer;
     std::unique_ptr<tracey::Rasterizer> m_rasterizer;
-    // Serializes the render worker thread's GPU work (render_rasterizer_with)
-    // against any operation that recreates or rebuilds GPU resources
-    // (set_resolutions, compile_scene, set_pt_backend). Vulkan requires external
-    // synchronization for object lifetime: without this, the worker thread can
-    // be binding/submitting/mapping buffers and command pools while the main
-    // thread (a resolution switch, a cook-apply) frees and recreates them —
-    // producing vkFreeCommandBuffers / vkUnmapMemory THREADING ERRORs and
-    // use-after-free. These mutators run rarely and the worker's render is
-    // short, so the brief mutual exclusion is cheap. (Not recursive: verified
-    // none of the guarded methods call another guarded method.)
-    std::mutex m_gpu_mutex;
+    // Guards GPU-resource lifetime across our worker threads. The two render
+    // entry points — render_rasterizer_with (rasterizer worker) and
+    // render_path_tracer_with (PT worker) — take a SHARED lock: they read the
+    // resources and don't free each other's, so they run concurrently. Anything
+    // that recreates/rebuilds GPU resources — set_resolutions, compile_scene,
+    // set_pt_backend — takes a UNIQUE lock, so it waits for every in-flight
+    // render to finish and blocks new ones until it's done.
+    //
+    // Without this, a worker could be binding/submitting/mapping buffers and
+    // command pools while the main thread (a resolution switch, a cook-apply)
+    // frees and recreates them — producing vkFreeCommandBuffers / vkUnmapMemory
+    // THREADING ERRORs and use-after-free. Mutators are rare and a render is
+    // short, so the exclusion is cheap. (No method takes both lock kinds, and no
+    // guarded method calls another, so there's no recursive-acquire deadlock.)
+    std::shared_mutex m_gpu_mutex;
     // shared_ptr so the render worker thread can hold a snapshot of the
     // current scene (via shared_ptr copy) while the main thread swaps in
     // a freshly compiled scene from apply_emitted. Once all snapshots

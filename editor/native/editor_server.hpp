@@ -261,6 +261,38 @@ private:
     // even if the thread was never started (no-op).
     void stop_render_thread();
 
+    // ── Path-tracer worker thread ─────────────────────────────────────────
+    // The path tracer renders one sample per tick. The Metal backend just
+    // dispatches to the GPU (cheap on the calling thread), but the CPU backend
+    // computes the whole sample synchronously — running that on render_tick
+    // (the main thread) beach-balls the UI every sample. So the PT sample runs
+    // here, off the main thread, exactly like the rasterizer above. The main
+    // thread keeps presenting tracer->outputImage() (the last completed
+    // accumulation) and stays responsive.
+    struct PtRenderRequest
+    {
+        std::shared_ptr<const tracey::SceneCompiler::CompiledScene> scene;
+        tracey::Camera camera;
+        // Reset the Welford accumulator before this sample (camera moved,
+        // scene edited, bounce/backend changed). OR-ed across coalesced
+        // requests so a clear is never dropped by latest-wins overwrite.
+        bool clear = false;
+    };
+
+    std::thread             m_pt_thread;
+    std::mutex              m_pt_mutex;
+    std::condition_variable m_pt_cv;
+    std::optional<PtRenderRequest> m_pending_pt_request;
+    bool m_pt_thread_should_exit = false;
+    // One per completed PT sample — lets the main thread know the output image
+    // holds at least one accumulated frame before it presents the PT fullscreen.
+    std::atomic<uint64_t> m_pt_frames_completed{0};
+    // Last PT sample wall-clock (ms), for the profiler broadcast.
+    std::atomic<double> m_pt_sample_ms{0.0};
+
+    void pt_render_thread_main();
+    void stop_pt_render_thread();
+
     // Scene-level SOP graph. The Houdini-style /obj network: cooking it
     // produces the list of actors the path tracer renders. All actor
     // creation/edits flow through here.

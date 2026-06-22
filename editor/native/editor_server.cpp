@@ -195,6 +195,10 @@ EditorServer::EditorServer(std::unique_ptr<RenderEngine> engine, EditorWindow* w
     // first dispatch isn't racing the rasterizer/path-tracer ctors.
     m_render_thread = std::thread([this] { render_thread_main(); });
 
+    // Path-tracer worker — same rationale; keeps the (synchronous, CPU-backend)
+    // per-sample trace off the main thread so the UI never beach-balls.
+    m_pt_thread = std::thread([this] { pt_render_thread_main(); });
+
     // Default-Dome spawn. A fresh editor session opens with no scene
     // file; without this the viewport stays unlit until the user adds a
     // light (the shader has an unlit-albedo fallback, but Blender/Unity
@@ -224,9 +228,10 @@ EditorServer::~EditorServer() {
     m_cook_request_cv.notify_one();
     if (m_cook_thread.joinable()) m_cook_thread.join();
 
-    // Render worker also has to stop BEFORE the engine tears down — it
-    // dereferences m_engine->rasterizer/path_tracer on every iteration.
+    // Render + PT workers also have to stop BEFORE the engine tears down — they
+    // dereference m_engine->rasterizer/path_tracer on every iteration.
     stop_render_thread();
+    stop_pt_render_thread();
 
     // Clear the global dispatcher BEFORE the engine (and its device)
     // tear down, so any late cook that races shutdown sees nullptr
@@ -1792,6 +1797,48 @@ void EditorServer::stop_render_thread() {
     if (m_render_thread.joinable()) m_render_thread.join();
 }
 
+// ── Path-tracer worker thread ─────────────────────────────────────────────
+// Drains the latest posted PT request and accumulates one sample. The CPU
+// backend computes this synchronously (all cores, but blocking the calling
+// thread); doing it here instead of on render_tick is what keeps the UI from
+// beach-balling each sample. render_path_tracer_with takes the engine's shared
+// GPU lock, so it's safe against set_resolutions / set_pt_backend / compile.
+void EditorServer::pt_render_thread_main() {
+    for (;;) {
+        PtRenderRequest request;
+        {
+            std::unique_lock<std::mutex> lk(m_pt_mutex);
+            m_pt_cv.wait(lk, [this] {
+                return m_pt_thread_should_exit ||
+                       m_pending_pt_request.has_value();
+            });
+            if (m_pt_thread_should_exit) return;
+            request = std::move(*m_pending_pt_request);
+            m_pending_pt_request.reset();
+        }
+
+        if (!request.scene || !m_engine) continue;
+
+        try {
+            const double ms = m_engine->render_path_tracer_with(
+                *request.scene, request.camera, request.clear);
+            m_pt_sample_ms.store(ms, std::memory_order_relaxed);
+            m_pt_frames_completed.fetch_add(1, std::memory_order_release);
+        } catch (const std::exception& e) {
+            std::fprintf(stderr, "[pt worker] sample failed: %s\n", e.what());
+        }
+    }
+}
+
+void EditorServer::stop_pt_render_thread() {
+    {
+        std::lock_guard<std::mutex> lk(m_pt_mutex);
+        m_pt_thread_should_exit = true;
+    }
+    m_pt_cv.notify_one();
+    if (m_pt_thread.joinable()) m_pt_thread.join();
+}
+
 // Called from the message thread under m_mutex. Hands a serialized graph
 // (+ playhead time) to the worker. Returns immediately; the cook completes
 // asynchronously and gets applied on the next render_tick.
@@ -2892,17 +2939,33 @@ void EditorServer::render_tick() {
         // render_tick — skip it entirely when the inset preview is off.
         // We still run the rasterizer above so the viewport stays live.
         if (m_pt_preview_enabled && has_geometry && !at_cap) {
-            // want_pixels=false: the live viewport composites
-            // path_tracer()->outputImage() straight off the GPU through
-            // ViewportRenderer::present_composite. Pulling the framebuffer
-            // back to the CPU here would just discard it after grabbing
-            // width/height/render_time_ms — and the elided
-            // vkCmdCopyImageToBuffer + mapForReading shave the unmeasured
-            // chunk out of the per-tick budget.
-            auto result = m_engine->render_frame(clear, /*want_pixels=*/false);
-            m_last_render_width = result.width;
-            m_last_render_height = result.height;
-            m_last_render_time_ms = result.render_time_ms;
+            // Offload the sample to the PT worker thread. The Metal backend just
+            // dispatches to the GPU, but the CPU backend computes the whole
+            // sample synchronously — doing that here would beach-ball the UI
+            // every sample. The worker accumulates into the PT's output image;
+            // we composite/present it (off the GPU, no readback) below.
+            //
+            // Latest-wins mailbox like the rasterizer: if the worker hasn't
+            // drained the previous request we overwrite it, but we OR the clear
+            // flag in so a pending accumulation reset (camera move, edit) is
+            // never dropped by the overwrite.
+            PtRenderRequest req;
+            req.scene = m_engine->compiled_scene_snapshot();
+            req.camera = m_engine->scene().camera();
+            req.clear = clear;
+            {
+                std::lock_guard<std::mutex> plk(m_pt_mutex);
+                if (m_pending_pt_request && m_pending_pt_request->clear)
+                    req.clear = true;
+                m_pending_pt_request = std::move(req);
+            }
+            m_pt_cv.notify_one();
+            // Profiler reads the worker's last sample time; sizes track the PT.
+            m_last_render_time_ms = m_pt_sample_ms.load(std::memory_order_relaxed);
+            if (auto* t = m_engine->path_tracer()) {
+                m_last_render_width = t->width();
+                m_last_render_height = t->height();
+            }
         }
     } catch (const std::exception& e) {
         std::fprintf(stderr, "[viewport] render failed: %s\n", e.what());
@@ -2921,6 +2984,14 @@ void EditorServer::render_tick() {
         // doesn't need raster at all, so it stays reachable.
         const bool raster_ready =
             m_render_frames_completed.load(std::memory_order_acquire) > 0;
+        // The PT worker likewise may not have accumulated its first sample yet
+        // (the CPU backend can take a while). Until it has, present the
+        // rasterized scene so the viewport shows the geometry immediately
+        // instead of an uninitialised PT image. Once true it stays true, so a
+        // finished accumulation (max samples reached) keeps being re-presented
+        // every tick without re-rendering — we just re-blit the retained image.
+        const bool pt_ready =
+            m_pt_frames_completed.load(std::memory_order_acquire) > 0;
         const auto t0 = clock::now();
         bool presented = false;
         // A present can throw on a recoverable swapchain condition (the surface
@@ -2930,26 +3001,31 @@ void EditorServer::render_tick() {
         // recreates the swapchain at the real size — never let it crash the app.
         try {
         if (m_pt_preview_enabled && has_geometry && m_pt_fullscreen) {
-            // Render workspace: PT replaces the rasterizer entirely.
-            // No raster output needed.
-            if (auto* pt_output = tracer->outputImage()) {
-                if (!m_viewport->present(pt_output)) {
+            // Render workspace: PT replaces the rasterizer entirely. Before the
+            // first PT sample lands, fall back to the rasterizer so the frame
+            // isn't blank/garbage while the CPU backend computes sample 0.
+            auto* present_img = (pt_ready ? tracer->outputImage()
+                                          : (raster_ready ? raster_output : nullptr));
+            if (present_img) {
+                if (!m_viewport->present(present_img)) {
                     m_viewport_pixel_w = 0;
                     m_viewport_pixel_h = 0;
                 }
                 presented = true;
             }
         } else if (raster_output && raster_ready) {
-            if (!has_geometry || !m_pt_preview_enabled) {
-                // Raster-only present. Most common path during scene
-                // editing; the rasterizer-only branch skips the composite
-                // sampler bind + inset blit in ViewportRenderer.
+            auto* pt_output = pt_ready ? tracer->outputImage() : nullptr;
+            if (!has_geometry || !m_pt_preview_enabled || !pt_output) {
+                // Raster-only present. Most common path during scene editing;
+                // also the fallback until the PT worker's first inset sample.
+                // The rasterizer-only branch skips the composite sampler bind +
+                // inset blit in ViewportRenderer.
                 if (!m_viewport->present(raster_output)) {
                     m_viewport_pixel_w = 0;
                     m_viewport_pixel_h = 0;
                 }
                 presented = true;
-            } else if (auto* pt_output = tracer->outputImage()) {
+            } else {
                 // PiP composite: rasterizer fills the viewport, PT
                 // accumulator overlays in the top-right inset.
                 const InsetRect r = compute_inset_rect(m_viewport_pixel_w, m_viewport_pixel_h);
