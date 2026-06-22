@@ -3,7 +3,12 @@
    chrome (dark surface, scrollable body) so it reads as a peer of
    the graph editors rather than an inspector card. */
 .render-panel {
-  flex: 1;
+  /* Fixed-width dock column, like the SOP/Material graph docks — driven by
+     --sop-dock-w (the Render workspace sets this from renderDockW, default
+     300, draggable down to 200). Previously `flex: 1` made the panel GROW to
+     fill all remaining width, ignoring the dock width entirely. */
+  width: var(--sop-dock-w, 300px);
+  flex-shrink: 0;
   display: flex;
   flex-direction: column;
   background: #1e1e1e;
