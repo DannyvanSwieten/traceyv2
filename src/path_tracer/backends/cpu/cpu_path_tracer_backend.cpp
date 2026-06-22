@@ -8,6 +8,7 @@
 #include "path_tracer/api/path_tracer.hpp"
 #include "path_tracer/api/shader_inputs_view.hpp"
 #include "core/parallel.hpp"
+#include "io/denoiser.hpp"   // interactive denoise post-pass (OIDN, guarded)
 #include "shading/material_program/opcodes.hpp"
 
 #include <glm/glm.hpp>
@@ -998,6 +999,60 @@ namespace tracey
                 }
             }
         });
+
+        // ── Interactive denoise (CPU backend) ───────────────────────────────
+        // m_accumulator IS the linear beauty (one RGBA32F per pixel), so OIDN
+        // can read it with no readback. Run once per frame (after this call's
+        // samplesPerFrame samples), guided by albedo + normal when AOVs are on,
+        // then tonemap the denoised linear over the display image — matching the
+        // per-pixel Reinhard + gamma 2.2 above. Skipped under linearOutput so it
+        // never touches the EXR / host-side export-denoise path; a no-op (and
+        // denoiserAvailable()==false) when the build lacks OIDN.
+        if (m_config->denoisePreview && !m_config->linearOutput &&
+            tracey::denoiserAvailable() && pixelCount > 0)
+        {
+            m_denoiseScratch.resize(pixelCount);
+            const float *albedo = nullptr;
+            const float *normal = nullptr;
+            if (m_config->enableAovs)
+            {
+                const auto &aAov = m_aovs[static_cast<size_t>(AovKind::Albedo)];
+                const auto &nAov = m_aovs[static_cast<size_t>(AovKind::Normal)];
+                if (aAov.size() == pixelCount)
+                    albedo = reinterpret_cast<const float *>(aAov.data());
+                if (nAov.size() == pixelCount)
+                    normal = reinterpret_cast<const float *>(nAov.data());
+            }
+            if (tracey::denoiseImage(static_cast<int>(W), static_cast<int>(H),
+                                     reinterpret_cast<const float *>(m_accumulator.data()),
+                                     albedo, normal,
+                                     reinterpret_cast<float *>(m_denoiseScratch.data())))
+            {
+                const bool hdr = m_config->hdrOutput;
+                parallel_for_chunks(pixelCount, [&](size_t begin, size_t end) {
+                    for (size_t i = begin; i < end; ++i)
+                    {
+                        const glm::vec3 c(m_denoiseScratch[i]);
+                        const glm::vec3 t = c / (c + glm::vec3(1.0f));
+                        const glm::vec3 g =
+                            glm::pow(glm::max(t, glm::vec3(0.0f)), glm::vec3(1.0f / 2.2f));
+                        if (hdr)
+                        {
+                            auto *out = reinterpret_cast<float *>(m_pixels.data()) + i * 4;
+                            out[0] = g.r; out[1] = g.g; out[2] = g.b; out[3] = 1.0f;
+                        }
+                        else
+                        {
+                            auto *out = m_pixels.data() + i * 4;
+                            out[0] = static_cast<uint8_t>(glm::clamp(g.r, 0.0f, 1.0f) * 255.0f + 0.5f);
+                            out[1] = static_cast<uint8_t>(glm::clamp(g.g, 0.0f, 1.0f) * 255.0f + 0.5f);
+                            out[2] = static_cast<uint8_t>(glm::clamp(g.b, 0.0f, 1.0f) * 255.0f + 0.5f);
+                            out[3] = 255;
+                        }
+                    }
+                });
+            }
+        }
 
         const auto end = std::chrono::high_resolution_clock::now();
         return std::chrono::duration<double, std::milli>(end - start).count();

@@ -38,6 +38,9 @@ struct RenderConfig {
     // EXR sequence export flips it on (and forces hdr/float output) via
     // set_export_aovs(), which recreates the PT.
     bool export_aovs = false;
+    // Interactive denoise of the live viewport (CPU backend). Persisted here so
+    // it survives PT recreation; pushed live to the PT via set_denoise_preview.
+    bool denoise_preview = false;
 };
 
 struct RenderResult {
@@ -124,6 +127,15 @@ public:
     // brackets its frame loop with set_export_aovs(true)/(false).
     bool export_aovs() const { return m_config.export_aovs; }
     void set_export_aovs(bool v);
+
+    // Live interactive denoise toggle for the viewport. No PT recreation, no
+    // accumulation reset — just changes what each frame writes to the display
+    // image (CPU backend). Stored in m_config so PT recreation preserves it.
+    bool denoise_preview() const { return m_config.denoise_preview; }
+    void set_denoise_preview(bool v) {
+        m_config.denoise_preview = v;
+        if (m_path_tracer) m_path_tracer->setDenoisePreview(v);
+    }
 
     bool path_tracer_ready() const { return m_path_tracer != nullptr; }
     bool rasterizer_ready() const { return m_rasterizer != nullptr; }

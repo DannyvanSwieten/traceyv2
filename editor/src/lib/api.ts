@@ -330,6 +330,12 @@ export const setPtBackend = (backend: PtBackend) =>
 export const getDenoiserAvailable = () =>
   send<boolean>('get_denoiser_available');
 
+// Live viewport denoise (currently the CPU path tracer backend). No effect on
+// the GPU backend yet, and ignored without OIDN. Independent of the per-render
+// (still/sequence) denoise flag — this is the interactive preview.
+export const setDenoisePreview = (value: boolean) =>
+  send<null>('set_denoise_preview', { value });
+
 // Toggle the rasterizer's antialiased point-sprite overlay (drawn on top of
 // the triangle pass in the main view). PiP path-tracer view is unaffected.
 export const getShowPoints = () => send<boolean>('get_show_points');

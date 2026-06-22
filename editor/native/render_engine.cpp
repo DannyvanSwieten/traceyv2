@@ -39,6 +39,9 @@ void RenderEngine::initialize_path_tracer() {
     pt_config.hdrOutput = m_config.hdr_output || m_config.export_aovs;
     pt_config.enableAovs = m_config.export_aovs;
     pt_config.linearOutput = m_config.export_aovs;
+    // Live interactive denoise (CPU backend honours it). Rebuilt from m_config
+    // here so a PT recreation (resolution / backend switch) preserves the state.
+    pt_config.denoisePreview = m_config.denoise_preview;
     // One sample per render_tick. Accumulation stops once max_samples is
     // reached (enforced in EditorServer::render_tick).
     pt_config.samplesPerFrame = 1;

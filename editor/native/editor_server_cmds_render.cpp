@@ -112,6 +112,12 @@ std::optional<std::string> EditorServer::handle_render_commands(
             // UI greys out the Denoise toggle when this is false.
             return ok_response(tracey::denoiserAvailable());
         }
+        if (cmd == "set_denoise_preview") {
+            // Live viewport denoise (CPU backend). No accumulation reset — it
+            // only changes what each frame writes to the display image.
+            m_engine->set_denoise_preview(req.at("value").get<bool>());
+            return ok_response_null();
+        }
         if (cmd == "set_pt_backend") {
             m_engine->set_pt_backend(req.at("backend").get<std::string>());
             m_clear_next_frame = true;  // restart accumulation on the new backend

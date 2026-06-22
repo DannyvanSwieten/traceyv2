@@ -39,6 +39,15 @@ namespace tracey
         // viewport leaves this false for a display-ready tonemapped image.
         bool linearOutput = false;
 
+        // Interactive denoise: when true (and NOT linearOutput), a backend that
+        // supports it runs OIDN on the accumulated LINEAR beauty each frame and
+        // writes the tonemapped denoised result to the display image — a clean
+        // live preview at low sample counts. Currently honoured by the CPU
+        // backend (its pixels are already host-side); the GPU backend ignores
+        // it (would need readback+denoise+upload). Skipped under linearOutput so
+        // it never interferes with the EXR / host-side export-denoise path.
+        bool denoisePreview = false;
+
         // If true, the pipeline binds the four MaterialProgram SSBOs and the
         // hit shader is expected to be the uber-VM hit. Defaults to false so
         // legacy hit shaders keep working unchanged.
@@ -127,6 +136,12 @@ namespace tracey
         /// Get/set max bounces (ray depth)
         uint32_t maxBounces() const { return m_config.maxBounces; }
         void setMaxBounces(uint32_t bounces) { m_config.maxBounces = bounces; }
+
+        // Live, no recreation: the backend reads m_config through a pointer, so
+        // toggling this just changes what the next frame writes to the display
+        // image (no accumulator reset). See PathTracerConfig::denoisePreview.
+        bool denoisePreview() const { return m_config.denoisePreview; }
+        void setDenoisePreview(bool v) { m_config.denoisePreview = v; }
 
         /// Replace the material program buffers with the given packed programs.
         /// Only valid when config.useMaterialPrograms is true. Clears

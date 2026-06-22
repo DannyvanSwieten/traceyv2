@@ -57,15 +57,21 @@ export function initRenderSettings(): void {
   api.getDenoiserAvailable()
     .then(setDenoiserAvailableSignal)
     .catch(() => {});
+  // Push the persisted denoise preference to the engine so the live viewport
+  // (CPU backend) reflects it from launch, not just after the user toggles.
+  api.setDenoisePreview(denoiseSignal()).catch(() => {});
 }
 
-// Pure UI/output preference — no engine push; persisted for next session and
-// read at render time by the still/sequence export paths.
+// Persisted preference, read at render time by the still/sequence export paths.
+// ALSO pushed to the engine so the live viewport (CPU backend) denoises in real
+// time — one toggle governs both the interactive preview and file output.
 export function setDenoiseEnabled(next: boolean): void {
   setDenoiseSignal(next);
   try {
     localStorage.setItem(DENOISE_KEY, next ? '1' : '0');
   } catch { /* private mode / quota — non-fatal */ }
+  api.setDenoisePreview(next).catch((e) =>
+    console.warn('set_denoise_preview failed:', e));
 }
 
 // Optimistic flip + native push, rolled back on failure. The native

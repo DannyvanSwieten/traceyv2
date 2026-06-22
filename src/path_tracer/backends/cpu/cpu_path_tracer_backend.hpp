@@ -59,6 +59,11 @@ namespace tracey
         // m_config->enableAovs; empty otherwise. See readbackAOV().
         std::array<std::vector<glm::vec4>, static_cast<size_t>(AovKind::Count)> m_aovs;
 
+        // Scratch for the interactive denoise post-pass (m_config->denoisePreview):
+        // OIDN writes the denoised linear beauty here, then we tonemap it into
+        // m_pixels. Reused across frames to avoid per-frame allocation.
+        std::vector<glm::vec4> m_denoiseScratch;
+
         // Per-scene state, rebuilt when revision changes.
         uint64_t m_sceneRevision = ~0ull;
         std::vector<const Blas *> m_blasPtrs;
