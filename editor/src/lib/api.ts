@@ -235,12 +235,13 @@ export const setLightParams = (actorId: number, patch: LightParamPatch) =>
 // whether the camera was applied.
 export const importUsdStage = (
   path: string,
-  opts?: { lights?: boolean; camera?: boolean }
+  opts?: { lights?: boolean; camera?: boolean; instances?: boolean }
 ) =>
-  send<{ lights: number; camera: boolean }>('import_usd_stage', {
+  send<{ lights: number; camera: boolean; instances: number }>('import_usd_stage', {
     path,
     lights: opts?.lights ?? true,
     camera: opts?.camera ?? true,
+    instances: opts?.instances ?? true,
   });
 
 // Tell the native side that a JS modal grab (G/R/S) is active. While

@@ -78,6 +78,7 @@ std::optional<std::string> EditorServer::handle_scene_commands(
             const std::string path = req.at("path").get<std::string>();
             const bool wantLights = req.value("lights", true);
             const bool wantCamera = req.value("camera", true);
+            const bool wantInstances = req.value("instances", true);
             auto src = tracey::UsdLoader::loadFromFileCached(path);
             if (!src) return err_response("import_usd_stage: failed to load " + path);
 
@@ -146,10 +147,48 @@ std::optional<std::string> EditorServer::handle_scene_commands(
                 setCam = true;
             }
 
+            // PointInstancer + native-instanced geometry: the loader staged these
+            // as "instance:" / "instancer:" actors in the cached scene. Merge all
+            // their SceneInstances onto ONE live actor (sharing the prototype
+            // SceneObjects, copied in as needed) so a heavily-instanced asset is a
+            // single outliner entry, deletable as a unit, instead of thousands of
+            // actors. Geometry stays shared → the SceneCompiler still instances.
+            int instanceCount = 0;
+            if (wantInstances) {
+                tracey::Actor* instActor = nullptr;
+                for (const auto* a : src->actors()) {
+                    if (!a) continue;
+                    const std::string& nm = a->name();
+                    if (nm.rfind("instance:", 0) != 0 && nm.rfind("instancer:", 0) != 0)
+                        continue;
+                    for (const auto& inst : a->instances()) {
+                        const std::string& objRef = inst.objectRef();
+                        if (!m_engine->scene().hasObject(objRef)) {
+                            const auto* srcObj = src->getObject(objRef);
+                            if (!srcObj) continue; // missing prototype geometry
+                            m_engine->scene().addObject(
+                                objRef, std::make_unique<tracey::SceneObject>(*srcObj));
+                        }
+                        if (!instActor) {
+                            instActor = m_engine->scene().createActor();
+                            std::string base = path;
+                            auto slash = base.find_last_of("/\\");
+                            if (slash != std::string::npos) base = base.substr(slash + 1);
+                            auto dot = base.find_last_of('.');
+                            if (dot != std::string::npos) base = base.substr(0, dot);
+                            instActor->setName(base + " (instances)");
+                        }
+                        instActor->addInstance(inst);
+                        ++instanceCount;
+                    }
+                }
+            }
+
             if (m_engine->path_tracer_ready()) m_engine->compile_scene();
             m_clear_next_frame = true;
             if (m_broadcast) m_broadcast(R"({"event":"scene_changed"})");
-            return ok_response({{"lights", lightCount}, {"camera", setCam}});
+            return ok_response({{"lights", lightCount}, {"camera", setCam},
+                                {"instances", instanceCount}});
 #else
             return err_response("import_usd_stage: this build has no OpenUSD support");
 #endif

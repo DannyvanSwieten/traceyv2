@@ -255,8 +255,8 @@ const App: Component = () => {
       if (isUsd) {
         try {
           const extras = await api.importUsdStage(asset.path);
-          if (extras.lights > 0 || extras.camera) {
-            console.log(`USD: imported ${extras.lights} light(s)`,
+          if (extras.lights > 0 || extras.camera || extras.instances > 0) {
+            console.log(`USD: imported ${extras.lights} light(s), ${extras.instances} instance(s)`,
                         extras.camera ? '+ camera' : '');
           }
         } catch (e) {
