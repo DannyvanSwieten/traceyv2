@@ -96,6 +96,11 @@ std::optional<std::string> EditorServer::handle_render_commands(
         }
         if (cmd == "set_max_bounces") {
             m_engine->set_max_bounces(req.at("bounces").get<uint32_t>());
+            // Bounce depth changes the radiance of every sample, so the already-
+            // accumulated samples (at the old depth) are stale — restart the
+            // Welford accumulator so the new depth takes effect from sample 0.
+            // (Unlike set_max_samples, which only moves the cap and keeps going.)
+            m_clear_next_frame = true;
             return ok_response_null();
         }
         if (cmd == "get_pt_backend") {
