@@ -19,9 +19,14 @@
 // wavefront backend), which is what keeps the cross-API handoff safe.
 
 #import <Metal/Metal.h>
+#import <simd/simd.h>   // simd_uint2 for the tonemap kernel's dims arg
 
 #include "metal_pathtracer_backend.hpp"
 #include "pathtrace_msl.hpp"
+
+#ifdef TRACEY_HAS_OIDN
+#include <OpenImageDenoise/oidn.h>  // on-device Metal denoise (oidnNewMetalDevice)
+#endif
 
 #include "path_tracer/api/path_tracer.hpp"
 #include "device/gpu/vulkan_compute_device.hpp"
@@ -141,6 +146,21 @@ namespace tracey
         // the hardware motion AS. sceneHasMotion (set at scene build) selects it.
         id<MTLComputePipelineState> pathtracePipelineMotion = nil;
         bool sceneHasMotion = false;
+        // Denoise-at-convergence: tonemaps the OIDN-denoised linear buffer into
+        // outputTexture (see denoise()).
+        id<MTLComputePipelineState> tonemapPipeline = nil;
+        id<MTLBuffer> denoiseOutBuf = nil;  // OIDN's denoised linear output (float4/px)
+#ifdef TRACEY_HAS_OIDN
+        // Lazily created on first denoise(), torn down with the backend. The OIDN
+        // Metal device shares this backend's MTLCommandQueue + accum/AOV buffers,
+        // so denoising never leaves the GPU (no readback).
+        OIDNDevice oidnDevice = nullptr;
+        OIDNFilter oidnFilter = nullptr;
+        OIDNBuffer oidnColorBuf = nullptr;
+        OIDNBuffer oidnOutBuf = nullptr;
+        OIDNBuffer oidnAlbedoBuf = nullptr;
+        OIDNBuffer oidnNormalBuf = nullptr;
+#endif
 
         // Accumulator: float4 per pixel, running mean (resolve.glsl).
         id<MTLBuffer> accumBuffer = nil;
@@ -520,7 +540,20 @@ namespace tracey
     };
 
     MetalPathTracerBackend::MetalPathTracerBackend() : m_impl(std::make_unique<Impl>()) {}
-    MetalPathTracerBackend::~MetalPathTracerBackend() = default;
+    MetalPathTracerBackend::~MetalPathTracerBackend()
+    {
+#ifdef TRACEY_HAS_OIDN
+        if (m_impl)
+        {
+            if (m_impl->oidnColorBuf) oidnReleaseBuffer(m_impl->oidnColorBuf);
+            if (m_impl->oidnOutBuf) oidnReleaseBuffer(m_impl->oidnOutBuf);
+            if (m_impl->oidnAlbedoBuf) oidnReleaseBuffer(m_impl->oidnAlbedoBuf);
+            if (m_impl->oidnNormalBuf) oidnReleaseBuffer(m_impl->oidnNormalBuf);
+            if (m_impl->oidnFilter) oidnReleaseFilter(m_impl->oidnFilter);
+            if (m_impl->oidnDevice) oidnReleaseDevice(m_impl->oidnDevice);
+        }
+#endif
+    }
 
     void MetalPathTracerBackend::initialize(const InitParams &params)
     {
@@ -583,10 +616,15 @@ namespace tracey
         };
         impl.pathtracePipeline = makePipeline(@"pathtrace");
         impl.pathtracePipelineMotion = makePipeline(@"pathtrace_motion");
+        impl.tonemapPipeline = makePipeline(@"tonemap_buffer");
 
         const size_t pixelCount = static_cast<size_t>(impl.config->width) * impl.config->height;
         impl.accumBuffer = [impl.device newBufferWithLength:pixelCount * 16
                                                     options:MTLResourceStorageModePrivate];
+        // OIDN writes the denoised linear beauty here (GPU-only; the tonemap
+        // kernel reads it into outputTexture). Same float4/px layout as accum.
+        impl.denoiseOutBuf = [impl.device newBufferWithLength:pixelCount * 16
+                                                      options:MTLResourceStorageModePrivate];
 
         const size_t pixelSize = impl.config->hdrOutput ? 16 : 4;
         impl.readbackBytes = pixelCount * pixelSize;
@@ -780,6 +818,102 @@ namespace tracey
         auto &impl = *m_impl;
         std::memcpy(dst, impl.readbackBuffer.contents, impl.readbackBytes);
         return impl.readbackBytes;
+    }
+
+    bool MetalPathTracerBackend::denoise()
+    {
+#ifndef TRACEY_HAS_OIDN
+        return false;
+#else
+        auto &impl = *m_impl;
+        // Export path denoises host-side (and wants linear) — leave it alone.
+        if (!impl.config || impl.config->linearOutput) return false;
+        if (!impl.accumBuffer || !impl.denoiseOutBuf || !impl.outputTexture ||
+            !impl.tonemapPipeline)
+            return false;
+
+        const uint32_t W = impl.config->width;
+        const uint32_t H = impl.config->height;
+        if (W == 0 || H == 0) return false;
+
+        // Lazily stand up the OIDN Metal device + RT filter, sharing this
+        // backend's command queue and accum/AOV MTLBuffers (no readback). Cached
+        // for the backend's lifetime — the buffers are stable until a resolution
+        // change, which recreates the whole backend.
+        if (!impl.oidnDevice)
+        {
+            id<MTLCommandQueue> q = impl.queue;
+            impl.oidnDevice = oidnNewMetalDevice((const MTLCommandQueue_id *)&q, 1);
+            if (!impl.oidnDevice) return false;
+            oidnCommitDevice(impl.oidnDevice);
+            const char *msg = nullptr;
+            if (oidnGetDeviceError(impl.oidnDevice, &msg) != OIDN_ERROR_NONE)
+            {
+                std::fprintf(stderr, "[metal denoise] device: %s\n", msg ? msg : "?");
+                oidnReleaseDevice(impl.oidnDevice);
+                impl.oidnDevice = nullptr;
+                return false;
+            }
+        }
+        if (!impl.oidnFilter)
+        {
+            const size_t stride = 16;  // float4/px; OIDN reads RGB, skips A
+            impl.oidnColorBuf = oidnNewSharedBufferFromMetal(impl.oidnDevice, impl.accumBuffer);
+            impl.oidnOutBuf = oidnNewSharedBufferFromMetal(impl.oidnDevice, impl.denoiseOutBuf);
+            impl.oidnFilter = oidnNewFilter(impl.oidnDevice, "RT");
+            oidnSetFilterImage(impl.oidnFilter, "color", impl.oidnColorBuf,
+                               OIDN_FORMAT_FLOAT3, W, H, 0, stride, 0);
+            // Albedo + normal guides only when the AOVs are full-size (export/AOV
+            // mode). The interactive viewport runs AOV-free → beauty-only denoise.
+            if (impl.config->enableAovs)
+            {
+                impl.oidnAlbedoBuf = oidnNewSharedBufferFromMetal(
+                    impl.oidnDevice, impl.aovBuffers[static_cast<size_t>(AovKind::Albedo)]);
+                impl.oidnNormalBuf = oidnNewSharedBufferFromMetal(
+                    impl.oidnDevice, impl.aovBuffers[static_cast<size_t>(AovKind::Normal)]);
+                oidnSetFilterImage(impl.oidnFilter, "albedo", impl.oidnAlbedoBuf,
+                                   OIDN_FORMAT_FLOAT3, W, H, 0, stride, 0);
+                oidnSetFilterImage(impl.oidnFilter, "normal", impl.oidnNormalBuf,
+                                   OIDN_FORMAT_FLOAT3, W, H, 0, stride, 0);
+            }
+            oidnSetFilterImage(impl.oidnFilter, "output", impl.oidnOutBuf,
+                               OIDN_FORMAT_FLOAT3, W, H, 0, stride, 0);
+            oidnSetFilterBool(impl.oidnFilter, "hdr", true);
+            oidnCommitFilter(impl.oidnFilter);
+            const char *msg = nullptr;
+            if (oidnGetDeviceError(impl.oidnDevice, &msg) != OIDN_ERROR_NONE)
+            {
+                std::fprintf(stderr, "[metal denoise] filter: %s\n", msg ? msg : "?");
+                return false;
+            }
+        }
+
+        // Run OIDN on the converged accumulator → denoiseOutBuf (both GPU). OIDN
+        // submits to our queue; oidnExecuteFilter blocks until it completes.
+        oidnExecuteFilter(impl.oidnFilter);
+        const char *msg = nullptr;
+        if (oidnGetDeviceError(impl.oidnDevice, &msg) != OIDN_ERROR_NONE)
+        {
+            std::fprintf(stderr, "[metal denoise] execute: %s\n", msg ? msg : "?");
+            return false;
+        }
+
+        // Tonemap the denoised linear buffer into the display texture.
+        id<MTLCommandBuffer> cmd = [impl.queue commandBuffer];
+        id<MTLComputeCommandEncoder> enc = [cmd computeCommandEncoder];
+        [enc setComputePipelineState:impl.tonemapPipeline];
+        [enc setTexture:impl.outputTexture atIndex:0];
+        [enc setBuffer:impl.denoiseOutBuf offset:0 atIndex:0];
+        const simd_uint2 dims = {W, H};
+        [enc setBytes:&dims length:sizeof(dims) atIndex:1];
+        const MTLSize tg = MTLSizeMake(8, 8, 1);
+        const MTLSize grid = MTLSizeMake((W + 7) / 8, (H + 7) / 8, 1);
+        [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+        [enc endEncoding];
+        [cmd commit];
+        [cmd waitUntilCompleted];
+        return cmd.status != MTLCommandBufferStatusError;
+#endif
     }
 
     bool MetalPathTracerBackend::aovsAvailable() const

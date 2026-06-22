@@ -36,6 +36,7 @@ namespace tracey
         size_t readback(void *dst) override;
         bool aovsAvailable() const override;
         size_t readbackAOV(AovKind aov, void *dst) override;
+        bool denoise() override;  // on-device OIDN Metal denoise → outputTexture
 
     private:
         struct Impl;

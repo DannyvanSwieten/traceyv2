@@ -1072,5 +1072,22 @@ kernel void pathtrace_motion(
                   progHeaders, progParams, accumBuffer, accel, emitters, aovAlbedo,
                   aovNormal, aovDepth, aovPosition, aovEmission, aovInstanceId, gid);
 }
+
+// Tonemap a LINEAR float4 buffer (e.g. the OIDN-denoised beauty) into the
+// display texture, matching the per-sample resolve (Reinhard mean/(mean+1) +
+// gamma 2.2). Used by the GPU backend's denoise() pass after OIDN writes the
+// denoised linear result into `src`.
+kernel void tonemap_buffer(
+    texture2d<float, access::write> outImage [[texture(0)]],
+    device const float4 *src                 [[buffer(0)]],
+    constant uint2 &dims                      [[buffer(1)]],
+    uint2 gid                                 [[thread_position_in_grid]])
+{
+    if (gid.x >= dims.x || gid.y >= dims.y) return;
+    const float3 c = src[gid.y * dims.x + gid.x].rgb;
+    const float3 t = c / (c + float3(1.0));
+    const float3 g = pow(max(t, float3(0.0)), float3(1.0 / 2.2));
+    outImage.write(float4(g, 1.0), gid);
+}
 )MSL";
 } // namespace tracey
