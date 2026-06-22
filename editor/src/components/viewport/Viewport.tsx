@@ -1,6 +1,7 @@
-import { Component, Show, createSignal, onMount, onCleanup, Accessor } from 'solid-js';
+import { Component, Show, createSignal, createEffect, onMount, onCleanup, Accessor } from 'solid-js';
 import * as api from '../../lib/api';
 import { renderStats } from '../../stores/render_stats';
+import { renderResolution } from '../../stores/render_settings';
 import './Viewport.css';
 
 // Compact count formatting for the header stats readout: 1234 → "1.2k",
@@ -66,14 +67,40 @@ export const Viewport: Component<ViewportProps> = (props) => {
   const reportRect = () => {
     if (!placeholderRef) return;
     const r = placeholderRef.getBoundingClientRect();
-    const x = Math.round(r.left);
-    const y = Math.round(r.top);
-    const w = Math.max(0, Math.round(r.width));
-    const h = Math.max(0, Math.round(r.height));
+    const availW = Math.max(0, Math.round(r.width));
+    const availH = Math.max(0, Math.round(r.height));
+
+    // Constrain the rendered region to the output's aspect ratio so the
+    // viewport always frames exactly what will be rendered — the largest
+    // render-aspect rect that fits, centered, with the surrounding placeholder
+    // showing through as letterbox/pillarbox bars. A "match viewport"
+    // resolution ([0, 0]) imposes no constraint and fills the panel.
+    let w = availW;
+    let h = availH;
+    let offX = 0;
+    let offY = 0;
+    const [rw, rh] = renderResolution();
+    if (rw > 0 && rh > 0 && availW > 0 && availH > 0) {
+      const targetAspect = rw / rh;
+      if (availW / availH > targetAspect) {
+        // Panel wider than the target → height-limited (pillarbox L/R).
+        h = availH;
+        w = Math.round(availH * targetAspect);
+      } else {
+        // Panel taller than the target → width-limited (letterbox T/B).
+        w = availW;
+        h = Math.round(availW / targetAspect);
+      }
+      offX = Math.round((availW - w) / 2);
+      offY = Math.round((availH - h) / 2);
+    }
+
+    const x = Math.round(r.left) + offX;
+    const y = Math.round(r.top) + offY;
     api.setViewportRect(x, y, w, h).catch((e) =>
       console.error('setViewportRect failed:', e)
     );
-    // Match the path tracer's render resolution to the viewport's actual
+    // Match the path tracer's render resolution to the (constrained) viewport's
     // device-pixel dimensions, otherwise the swapchain blit stretches.
     const dpr = window.devicePixelRatio || 1;
     if (w > 0 && h > 0) {
@@ -97,6 +124,13 @@ export const Viewport: Component<ViewportProps> = (props) => {
     scrollListener = () => reportRect();
     window.addEventListener('resize', scrollListener);
     window.addEventListener('scroll', scrollListener, true);
+  });
+
+  // Re-fit the viewport whenever the output resolution (and thus the target
+  // aspect ratio) changes — switching 1080p ↔ 4K ↔ Viewport re-letterboxes.
+  createEffect(() => {
+    renderResolution();
+    reportRect();
   });
 
   onCleanup(() => {

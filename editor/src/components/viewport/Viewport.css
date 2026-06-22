@@ -37,7 +37,10 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #2d2d2d;
+  /* Near-black so the aspect-ratio letterbox/pillarbox bars (the area the
+     native render view doesn't cover) read clearly as the frame around the
+     rendered region. */
+  background: #0e0e0e;
   overflow: hidden;
   cursor: grab;
   outline: none;
