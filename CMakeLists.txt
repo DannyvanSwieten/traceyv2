@@ -510,6 +510,24 @@ if(APPLE)
     target_compile_definitions(tracey_pathtracer PRIVATE TRACEY_PT_HAS_METAL=1)
 endif()
 
+# ── Tracey C embedding API ──────────────────────────────────────────────────
+# Pure-C ABI boundary for embedding the path tracer in third-party apps.
+# Links the engine + path tracer; the public header (tracey_c.h) exposes only
+# opaque handles + POD structs — no STL/glm/USD/MaterialX in the surface. This
+# is the deliberate embedding boundary the renderer commits to: heavy optional
+# modules stay behind it, never in the ABI.
+add_library(tracey_c
+    src/c_api/tracey_c.h
+    src/c_api/tracey_c.cpp
+)
+target_link_libraries(tracey_c PUBLIC tracey_pathtracer)
+target_link_libraries(tracey_c PRIVATE glm::glm)
+target_include_directories(tracey_c
+    PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/c_api
+)
+
 # Native C++ editor
 option(BUILD_EDITOR "Build the native C++ editor" ON)
 if(BUILD_EDITOR)

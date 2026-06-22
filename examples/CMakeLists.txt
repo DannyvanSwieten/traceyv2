@@ -226,6 +226,13 @@ target_link_libraries(example_projects
     glm
 )
 
+# C API smoke — compiled as PURE C (main.c), the acceptance test that the
+# embedding ABI links + works with no C++ in the consumer: build a cube scene,
+# render it, read back non-trivial pixels.
+add_executable(c_api_smoke c_api_smoke/main.c)
+set_target_properties(c_api_smoke PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED ON)
+target_link_libraries(c_api_smoke PRIVATE tracey_c)
+
 # Backend parity harness: renders one scene with two PathTracer backends
 # and gates on PSNR. The acceptance test for new backends (Metal RT, CPU)
 # against the wavefront reference.
@@ -266,7 +273,7 @@ endif()
 # layer, so even the headless smoke tests need the rpath at runtime.
 set(TRACEY_EXAMPLE_RPATH_TARGETS
     scene_renderer pt_backend_compare
-    sop_eval_test attribute_vop_smoke cloners_smoke mograph_curves_smoke instance_vop_smoke dop_smoke dop_geometry_source_smoke vop_codegen_smoke attribute_gpu_smoke scene_export_smoke exr_roundtrip_smoke denoiser_smoke exr_inspect materialx_smoke
+    sop_eval_test attribute_vop_smoke cloners_smoke mograph_curves_smoke instance_vop_smoke dop_smoke dop_geometry_source_smoke vop_codegen_smoke attribute_gpu_smoke scene_export_smoke exr_roundtrip_smoke denoiser_smoke exr_inspect materialx_smoke c_api_smoke
     example_projects)
 if(APPLE)
     list(APPEND TRACEY_EXAMPLE_RPATH_TARGETS metal_interop_spike)
