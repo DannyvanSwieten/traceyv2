@@ -283,6 +283,10 @@ private:
         // scene_generation() at snapshot time — stale-snapshot guard (see
         // RenderRequest::generation).
         uint64_t generation = 0;
+        // Denoise-only pass: no new sample, just run OIDN over the converged
+        // accumulator and write the denoised result to the display image. Posted
+        // once accumulation reaches max samples (see m_pt_denoised_at_cap).
+        bool denoiseOnly = false;
     };
 
     std::thread             m_pt_thread;
@@ -295,6 +299,10 @@ private:
     std::atomic<uint64_t> m_pt_frames_completed{0};
     // Last PT sample wall-clock (ms), for the profiler broadcast.
     std::atomic<double> m_pt_sample_ms{0.0};
+    // True once we've posted the one-shot denoise for the CURRENT accumulation
+    // (max samples reached). Re-armed when accumulation resets (clear) or the
+    // denoise toggle changes, so each convergence denoises exactly once.
+    bool m_pt_denoised_at_cap = false;
 
     void pt_render_thread_main();
     void stop_pt_render_thread();

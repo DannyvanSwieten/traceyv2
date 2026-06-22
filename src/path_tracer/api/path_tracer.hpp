@@ -94,6 +94,13 @@ namespace tracey
                       bool clearAccumulation = true,
                       bool wantReadback = true);
 
+        /// One-shot denoise of the converged accumulation into the display
+        /// output (call once max samples is reached, not per frame). Delegates
+        /// to the backend; for host-pixel backends it also re-uploads the
+        /// denoised pixels to the presentable image. Returns true if it ran
+        /// (false when the backend doesn't support it or OIDN isn't built in).
+        bool denoise();
+
         /// Get the presentable output image (HDR or LDR depending on config).
         /// Valid after calling render(). Depending on the backend's output
         /// kind this is either the façade-owned image or one the backend

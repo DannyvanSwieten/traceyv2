@@ -1817,7 +1817,22 @@ void EditorServer::pt_render_thread_main() {
             m_pending_pt_request.reset();
         }
 
-        if (!request.scene || !m_engine) continue;
+        if (!m_engine) continue;
+
+        // Denoise-only pass: no new sample, no scene needed — run OIDN over the
+        // converged accumulator and write the denoised result to the display
+        // image. Bump the completed counter so the present picks it up.
+        if (request.denoiseOnly) {
+            try {
+                m_engine->denoise_path_tracer();
+                m_pt_frames_completed.fetch_add(1, std::memory_order_release);
+            } catch (const std::exception& e) {
+                std::fprintf(stderr, "[pt worker] denoise failed: %s\n", e.what());
+            }
+            continue;
+        }
+
+        if (!request.scene) continue;
 
         try {
             const double ms = m_engine->render_path_tracer_with(
@@ -3025,6 +3040,26 @@ void EditorServer::render_tick() {
                 m_last_render_width = t->width();
                 m_last_render_height = t->height();
             }
+        }
+        // Denoise at convergence: once accumulation reaches max samples, run a
+        // SINGLE OIDN pass over the converged image (not per frame — that's the
+        // whole point). Re-armed when accumulation resets (clear) so each
+        // convergence denoises exactly once; toggling the Denoise setting also
+        // re-arms it (set_denoise_preview) so enabling it cleans up the image
+        // that's already on screen without a re-render.
+        if (clear) {
+            m_pt_denoised_at_cap = false;
+        } else if (at_cap && m_pt_preview_enabled && has_geometry &&
+                   !m_pt_denoised_at_cap && m_engine->denoise_preview() &&
+                   tracey::denoiserAvailable()) {
+            PtRenderRequest req;
+            req.denoiseOnly = true;
+            {
+                std::lock_guard<std::mutex> plk(m_pt_mutex);
+                m_pending_pt_request = std::move(req);
+            }
+            m_pt_cv.notify_one();
+            m_pt_denoised_at_cap = true;
         }
     } catch (const std::exception& e) {
         std::fprintf(stderr, "[viewport] render failed: %s\n", e.what());

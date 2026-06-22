@@ -268,6 +268,17 @@ double RenderEngine::render_path_tracer_with(
     return m_path_tracer->render(scene, camera, clear, /*want_pixels=*/false);
 }
 
+bool RenderEngine::denoise_path_tracer()
+{
+    // Shared lock: reads the PT accumulator + writes the display output, like a
+    // render. Excluded only by set_resolutions / set_pt_backend (which would
+    // free the accumulator) — never runs concurrently with a sample because
+    // both go through the single PT worker thread.
+    std::shared_lock<std::shared_mutex> gpu_lk(m_gpu_mutex);
+    if (!m_path_tracer) return false;
+    return m_path_tracer->denoise();
+}
+
 bool RenderEngine::refresh_tlas_only() {
     if (!m_compiled_scene) return false;
     // Note: tlas may legitimately be null when PT preview is off

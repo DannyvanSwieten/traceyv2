@@ -177,6 +177,13 @@ public:
         bool clear,
         uint64_t expectedGeneration);
 
+    // One-shot denoise of the converged path-tracer image into the display
+    // output (call once max samples is reached). Reads only the PT's own
+    // accumulator/AOVs — no scene snapshot — so no generation guard is needed;
+    // takes the shared GPU lock so a resolution/backend switch can't free the
+    // accumulator mid-denoise. Returns true if the backend denoised.
+    bool denoise_path_tracer();
+
     // Monotonic counter bumped by every compile_scene(). A render snapshot
     // captures this; the render workers compare it to skip stale snapshots whose
     // BlasCache buffers may have been evicted. Read by render_tick under m_mutex

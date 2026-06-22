@@ -132,6 +132,17 @@ namespace tracey
         return t;
     }
 
+    bool PathTracer::denoise()
+    {
+        if (!m_backend->denoise()) return false;
+        // Host-pixel backends wrote the denoised result into their CPU buffer;
+        // push it to the presentable image (the GPU backend wrote its texture
+        // directly). No m_sampleCount change — denoise doesn't add a sample.
+        if (m_backend->outputKind() == PathTracerOutputKind::CpuPixels)
+            uploadCpuOutput();
+        return true;
+    }
+
     void PathTracer::uploadCpuOutput()
     {
         const void *pixels = m_backend->cpuOutputPixels();

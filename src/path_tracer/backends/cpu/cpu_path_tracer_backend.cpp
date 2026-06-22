@@ -1000,62 +1000,68 @@ namespace tracey
             }
         });
 
-        // ── Interactive denoise (CPU backend) ───────────────────────────────
-        // m_accumulator IS the linear beauty (one RGBA32F per pixel), so OIDN
-        // can read it with no readback. Run once per frame (after this call's
-        // samplesPerFrame samples), guided by albedo + normal when AOVs are on,
-        // then tonemap the denoised linear over the display image — matching the
-        // per-pixel Reinhard + gamma 2.2 above. Skipped under linearOutput so it
-        // never touches the EXR / host-side export-denoise path; a no-op (and
-        // denoiserAvailable()==false) when the build lacks OIDN.
-        if (m_config->denoisePreview && !m_config->linearOutput &&
-            tracey::denoiserAvailable() && pixelCount > 0)
-        {
-            m_denoiseScratch.resize(pixelCount);
-            const float *albedo = nullptr;
-            const float *normal = nullptr;
-            if (m_config->enableAovs)
-            {
-                const auto &aAov = m_aovs[static_cast<size_t>(AovKind::Albedo)];
-                const auto &nAov = m_aovs[static_cast<size_t>(AovKind::Normal)];
-                if (aAov.size() == pixelCount)
-                    albedo = reinterpret_cast<const float *>(aAov.data());
-                if (nAov.size() == pixelCount)
-                    normal = reinterpret_cast<const float *>(nAov.data());
-            }
-            if (tracey::denoiseImage(static_cast<int>(W), static_cast<int>(H),
-                                     reinterpret_cast<const float *>(m_accumulator.data()),
-                                     albedo, normal,
-                                     reinterpret_cast<float *>(m_denoiseScratch.data())))
-            {
-                const bool hdr = m_config->hdrOutput;
-                parallel_for_chunks(pixelCount, [&](size_t begin, size_t end) {
-                    for (size_t i = begin; i < end; ++i)
-                    {
-                        const glm::vec3 c(m_denoiseScratch[i]);
-                        const glm::vec3 t = c / (c + glm::vec3(1.0f));
-                        const glm::vec3 g =
-                            glm::pow(glm::max(t, glm::vec3(0.0f)), glm::vec3(1.0f / 2.2f));
-                        if (hdr)
-                        {
-                            auto *out = reinterpret_cast<float *>(m_pixels.data()) + i * 4;
-                            out[0] = g.r; out[1] = g.g; out[2] = g.b; out[3] = 1.0f;
-                        }
-                        else
-                        {
-                            auto *out = m_pixels.data() + i * 4;
-                            out[0] = static_cast<uint8_t>(glm::clamp(g.r, 0.0f, 1.0f) * 255.0f + 0.5f);
-                            out[1] = static_cast<uint8_t>(glm::clamp(g.g, 0.0f, 1.0f) * 255.0f + 0.5f);
-                            out[2] = static_cast<uint8_t>(glm::clamp(g.b, 0.0f, 1.0f) * 255.0f + 0.5f);
-                            out[3] = 255;
-                        }
-                    }
-                });
-            }
-        }
-
         const auto end = std::chrono::high_resolution_clock::now();
         return std::chrono::duration<double, std::milli>(end - start).count();
+    }
+
+    // One-shot denoise of the converged accumulation (see PathTracerBackend::
+    // denoise — invoked once max samples is reached, not per frame). m_accumulator
+    // IS the linear beauty (one RGBA32F per pixel), so OIDN reads it with no
+    // readback; guided by albedo + normal when AOVs are on. The denoised linear
+    // is tonemapped over the display buffer (m_pixels) with the same Reinhard +
+    // gamma 2.2 as the per-sample resolve. Skipped under linearOutput so it never
+    // touches the EXR / host-side export-denoise path.
+    bool CpuPathTracerBackend::denoise()
+    {
+        if (!m_config || m_config->linearOutput || !tracey::denoiserAvailable())
+            return false;
+        const size_t pixelCount =
+            static_cast<size_t>(m_config->width) * m_config->height;
+        if (pixelCount == 0 || m_accumulator.size() != pixelCount) return false;
+
+        m_denoiseScratch.resize(pixelCount);
+        const float *albedo = nullptr;
+        const float *normal = nullptr;
+        if (m_config->enableAovs)
+        {
+            const auto &aAov = m_aovs[static_cast<size_t>(AovKind::Albedo)];
+            const auto &nAov = m_aovs[static_cast<size_t>(AovKind::Normal)];
+            if (aAov.size() == pixelCount)
+                albedo = reinterpret_cast<const float *>(aAov.data());
+            if (nAov.size() == pixelCount)
+                normal = reinterpret_cast<const float *>(nAov.data());
+        }
+        if (!tracey::denoiseImage(static_cast<int>(m_config->width),
+                                  static_cast<int>(m_config->height),
+                                  reinterpret_cast<const float *>(m_accumulator.data()),
+                                  albedo, normal,
+                                  reinterpret_cast<float *>(m_denoiseScratch.data())))
+            return false;
+
+        const bool hdr = m_config->hdrOutput;
+        parallel_for_chunks(pixelCount, [&](size_t begin, size_t end) {
+            for (size_t i = begin; i < end; ++i)
+            {
+                const glm::vec3 c(m_denoiseScratch[i]);
+                const glm::vec3 t = c / (c + glm::vec3(1.0f));
+                const glm::vec3 g =
+                    glm::pow(glm::max(t, glm::vec3(0.0f)), glm::vec3(1.0f / 2.2f));
+                if (hdr)
+                {
+                    auto *out = reinterpret_cast<float *>(m_pixels.data()) + i * 4;
+                    out[0] = g.r; out[1] = g.g; out[2] = g.b; out[3] = 1.0f;
+                }
+                else
+                {
+                    auto *out = m_pixels.data() + i * 4;
+                    out[0] = static_cast<uint8_t>(glm::clamp(g.r, 0.0f, 1.0f) * 255.0f + 0.5f);
+                    out[1] = static_cast<uint8_t>(glm::clamp(g.g, 0.0f, 1.0f) * 255.0f + 0.5f);
+                    out[2] = static_cast<uint8_t>(glm::clamp(g.b, 0.0f, 1.0f) * 255.0f + 0.5f);
+                    out[3] = 255;
+                }
+            }
+        });
+        return true;
     }
 
     size_t CpuPathTracerBackend::readback(void *dst)

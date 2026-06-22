@@ -113,9 +113,12 @@ std::optional<std::string> EditorServer::handle_render_commands(
             return ok_response(tracey::denoiserAvailable());
         }
         if (cmd == "set_denoise_preview") {
-            // Live viewport denoise (CPU backend). No accumulation reset — it
-            // only changes what each frame writes to the display image.
+            // Denoise-at-convergence toggle for the viewport. Re-arm the at-cap
+            // denoise so the change takes effect on the image that's already on
+            // screen: turning it ON denoises the converged frame on the next
+            // tick (no re-render); turning it OFF stops re-applying it.
             m_engine->set_denoise_preview(req.at("value").get<bool>());
+            m_pt_denoised_at_cap = false;
             return ok_response_null();
         }
         if (cmd == "set_pt_backend") {

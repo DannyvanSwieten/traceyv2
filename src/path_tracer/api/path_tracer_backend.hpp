@@ -137,6 +137,15 @@ namespace tracey
                                 uint32_t accumulatedSampleCount,
                                 bool clearAccumulation,
                                 bool wantReadback) = 0;
+
+        // One-shot denoise of the CURRENT accumulated beauty into the display
+        // output, run once accumulation has converged (max samples reached) —
+        // NOT per sample. Reads the linear accumulator (+ albedo/normal AOVs
+        // when available) through OIDN, tonemaps the result, and writes it to
+        // the same output the per-sample path writes (CpuPixels: the host pixel
+        // buffer; BackendImage: the output texture). Returns true if it ran.
+        // Default: unsupported (no-op) — the GPU backend overrides it.
+        virtual bool denoise() { return false; }
     };
 
 } // namespace tracey
