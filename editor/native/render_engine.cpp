@@ -386,6 +386,16 @@ bool RenderEngine::refresh_tlas_only() {
             v.resize(newN);
         }
     };
+    // Commit the rebuilt instances/TLAS under the unique GPU lock: the async
+    // render workers read m_compiled_scene (the SAME object — this is an
+    // in-place mutation, not a fresh CompiledScene) under the shared lock, so
+    // without this they could observe a half-swapped instances vector
+    // mid-reallocation. Bump the scene generation too, so a snapshot captured
+    // before this mutation is skipped by the workers rather than rendered
+    // against the new instance layout. (Buffer lifetime is already covered by
+    // CompiledScene's keep-alive; this closes the instances-vector data race.)
+    std::unique_lock<std::shared_mutex> gpu_lk(m_gpu_mutex);
+    m_scene_generation.fetch_add(1, std::memory_order_release);
     extend(m_compiled_scene->instanceToMaterialIndex);
     extend(m_compiled_scene->instanceProgramIndex);
     extend(m_compiled_scene->instanceUvOffset);

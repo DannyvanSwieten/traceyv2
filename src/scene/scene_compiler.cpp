@@ -640,6 +640,13 @@ namespace tracey
             result.blases.push_back(entry->blas.get());
             result.vertexBuffers.push_back(entry->vertexBuffer.get());
             result.colorBuffers.push_back(entry->colorBuffer.get());
+            // Pin these resources for the lifetime of this CompiledScene so an
+            // in-flight render snapshot survives a cache eviction (see
+            // CompiledScene::retainedBuffers). shared_ptr<T> → shared_ptr<const T>
+            // is implicit; null colorBuffer is fine (shared_ptr can hold null).
+            result.retainedBlases.push_back(entry->blas);
+            result.retainedBuffers.push_back(entry->vertexBuffer);
+            result.retainedBuffers.push_back(entry->colorBuffer);
             result.vertexCounts.push_back(static_cast<uint32_t>(entry->vertexCount));
             result.totalTriangles += entry->vertexCount / 3;
             if (entry->blas) result.totalNodes += entry->blas->nodeCount();

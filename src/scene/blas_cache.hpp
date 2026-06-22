@@ -21,19 +21,24 @@ namespace tracey
     // BLAS + buffers and the recompile becomes just "rebuild the TLAS",
     // which is orders of magnitude cheaper than per-object BVH builds.
     //
-    // Lifetime: the cache owns the GPU resources. CompiledScene stores raw
-    // observer pointers into the cache for entries it consumed. Callers
-    // (RenderEngine::compile_scene) call markAllUntouched() before compile
-    // and evictUntouched() after, so entries that didn't survive the new
-    // compile get freed.
+    // Lifetime: the cache shares ownership of the GPU resources via shared_ptr.
+    // CompiledScene stores raw observer pointers into the cache for entries it
+    // consumed AND retains a shared_ptr to each (retainedBuffers/retainedBlases)
+    // so the resources outlive the cache entry. Callers
+    // (RenderEngine::compile_scene) call markAllUntouched() before compile and
+    // evictUntouched() after; an evicted entry drops the CACHE's reference, but
+    // any in-flight render snapshot still holding the shared_ptr keeps the
+    // buffer alive until that snapshot is gone. This is what stops the async
+    // render worker from binding a freed vertex buffer (getMTLBuffer segfault)
+    // when a cook/import recompiles the scene mid-render.
     class BlasCache
     {
     public:
         struct Entry
         {
-            std::unique_ptr<BottomLevelAccelerationStructure> blas;
-            std::unique_ptr<Buffer> vertexBuffer;
-            std::unique_ptr<Buffer> colorBuffer;
+            std::shared_ptr<BottomLevelAccelerationStructure> blas;
+            std::shared_ptr<Buffer> vertexBuffer;
+            std::shared_ptr<Buffer> colorBuffer;
             size_t vertexCount = 0;
             // UVs travel with the cache entry rather than the GPU because the
             // compiler concatenates them into a global uvBuffer per compile —

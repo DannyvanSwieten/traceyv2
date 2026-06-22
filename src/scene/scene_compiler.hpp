@@ -136,6 +136,16 @@ namespace tracey
             // observer-into-cache contract as vertexBuffers.
             std::vector<const Buffer *> colorBuffers;
 
+            // Keep-alive: shared_ptr copies of every BlasCache resource the
+            // observer pointers above (blases / vertexBuffers / colorBuffers)
+            // point at. These pin the GPU resources for the lifetime of THIS
+            // CompiledScene, so the async render worker — which may still hold a
+            // shared_ptr<CompiledScene> snapshot after the engine recompiled and
+            // the cache evicted those entries — never dereferences a freed
+            // buffer/BLAS. Not indexed directly; existence is what matters.
+            std::vector<std::shared_ptr<const BottomLevelAccelerationStructure>> retainedBlases;
+            std::vector<std::shared_ptr<const Buffer>> retainedBuffers;
+
             // Vertex counts per buffer (parallel to vertexBuffers).
             // The buffers store positions (vec3) per triangle vertex, so this
             // doubles as the draw count for non-indexed rasterization.
