@@ -18,6 +18,8 @@
 #include <pxr/usd/usdGeom/mesh.h>
 #include <pxr/usd/usdGeom/xformable.h>
 #include <pxr/usd/usdGeom/primvarsAPI.h>
+#include <pxr/usd/usdGeom/metrics.h>
+#include <pxr/usd/usdGeom/tokens.h>
 #include <pxr/usd/usdLux/lightAPI.h>
 #include <pxr/usd/usdLux/distantLight.h>
 #include <pxr/usd/usdLux/sphereLight.h>
@@ -42,6 +44,7 @@
 #define GLM_ENABLE_EXPERIMENTAL
 #include <glm/gtx/matrix_decompose.hpp>
 #include <glm/gtc/quaternion.hpp>
+#include <glm/gtc/matrix_transform.hpp> // glm::rotate / glm::radians (up-axis fix)
 
 #include <mutex>
 #include <set>
@@ -65,6 +68,20 @@ namespace tracey
                 for (int j = 0; j < 4; ++j)
                     g[i][j] = static_cast<float>(M[i][j]);
             return g;
+        }
+
+        // Conversion from the stage's up-axis to the engine's Y-up convention.
+        // USD stages declare upAxis = "Y" or "Z" (Z is the default for many DCC
+        // exports — Maya/Houdini/Pixar Kitchen Set). For a Z-up stage we rotate
+        // the whole scene −90° about X so +Z maps to +Y: (x,y,z) → (x, z, −y).
+        // Pre-multiplied into every prim's world transform (geometry, camera,
+        // lights), so the scene comes in upright instead of laid on its side.
+        glm::mat4 upAxisToYup(const UsdStageRefPtr &stage)
+        {
+            if (UsdGeomGetStageUpAxis(stage) == UsdGeomTokens->z)
+                return glm::rotate(glm::mat4(1.0f), glm::radians(-90.0f),
+                                   glm::vec3(1.0f, 0.0f, 0.0f));
+            return glm::mat4(1.0f);
         }
 
         // Quaternion → ZYX-intrinsic euler-degrees. Copied verbatim from
@@ -292,9 +309,16 @@ namespace tracey
         }
 
         // Triangulate a UsdGeomMesh into a SceneObject. Returns false if the
-        // mesh has no usable geometry. Per-vertex normals + `st` only (face-
-        // varying primvars are a follow-up; the engine computes face normals
-        // and defaults UVs when absent).
+        // mesh has no usable geometry. Handles USD primvar interpolation
+        // (constant / uniform / vertex / varying / faceVarying) for `st` (UV)
+        // and normals: when either is face-varying or uniform, the mesh is
+        // DE-INDEXED — one output vertex per triangle corner, each carrying its
+        // own UV/normal — because a renderer wanting one attribute per vertex
+        // can't share a point that has different UVs/normals on different
+        // faces. This is what makes production assets (Pixar Kitchen Set etc.,
+        // whose `st` + normals are face-varying) texture + shade correctly.
+        // Meshes with no `st` and no authored normals keep the cheap shared-
+        // point path (the engine computes face normals).
         bool convertMesh(const UsdGeomMesh &mesh, SceneObject &out)
         {
             VtArray<GfVec3f> points;
@@ -304,52 +328,102 @@ namespace tracey
             mesh.GetFaceVertexIndicesAttr().Get(&faceIndices);
             if (points.empty() || faceCounts.empty() || faceIndices.empty()) return false;
 
-            std::vector<Vec3> positions(points.size());
-            for (size_t i = 0; i < points.size(); ++i)
-                positions[i] = Vec3(points[i][0], points[i][1], points[i][2]);
+            // `st` (UV) — ComputeFlattened resolves indexed primvars to a plain
+            // array sized per its interpolation.
+            UsdGeomPrimvar stPv = UsdGeomPrimvarsAPI(mesh.GetPrim()).GetPrimvar(TfToken("st"));
+            VtArray<GfVec2f> st;
+            TfToken stInterp;
+            const bool hasSt = stPv && stPv.ComputeFlattened(&st) && !st.empty();
+            if (hasSt) stInterp = stPv.GetInterpolation();
 
-            // Fan-triangulate each polygon over the shared point indices.
-            std::vector<uint32_t> indices;
-            size_t offset = 0;
-            for (int c : faceCounts)
+            // Normals (built-in attr, not a primvar) + their interpolation.
+            VtArray<GfVec3f> normals;
+            TfToken nInterp;
+            const bool hasN = mesh.GetNormalsAttr().Get(&normals) && !normals.empty();
+            if (hasN) nInterp = mesh.GetNormalsInterpolation();
+
+            // Resolve a primvar value index for a given face / face-vertex /
+            // point per the interpolation token.
+            auto indexFor = [&](const TfToken &interp, int faceIdx,
+                                size_t fvGlobal, int pointIdx, size_t n) -> size_t {
+                size_t i;
+                if (interp == UsdGeomTokens->constant)        i = 0;
+                else if (interp == UsdGeomTokens->uniform)    i = static_cast<size_t>(faceIdx);
+                else if (interp == UsdGeomTokens->faceVarying) i = fvGlobal;
+                else /* vertex / varying */                    i = static_cast<size_t>(pointIdx);
+                return (i < n) ? i : 0;
+            };
+
+            const bool deindex = hasSt || hasN;
+
+            if (!deindex)
             {
-                if (c >= 3 && offset + c <= faceIndices.size())
+                // Cheap path: shared points + fan indices; engine computes face
+                // normals; no UVs.
+                std::vector<Vec3> positions(points.size());
+                for (size_t i = 0; i < points.size(); ++i)
+                    positions[i] = Vec3(points[i][0], points[i][1], points[i][2]);
+                std::vector<uint32_t> indices;
+                size_t offset = 0;
+                for (int c : faceCounts)
+                {
+                    if (c >= 3 && offset + c <= faceIndices.size())
+                        for (int k = 1; k + 1 < c; ++k)
+                        {
+                            indices.push_back(static_cast<uint32_t>(faceIndices[offset + 0]));
+                            indices.push_back(static_cast<uint32_t>(faceIndices[offset + k]));
+                            indices.push_back(static_cast<uint32_t>(faceIndices[offset + k + 1]));
+                        }
+                    offset += static_cast<size_t>(c < 0 ? 0 : c);
+                }
+                if (indices.empty()) return false;
+                out.setPositions(std::move(positions));
+                out.setIndices(std::move(indices));
+                return true;
+            }
+
+            // De-index: one output vertex per triangle corner.
+            std::vector<Vec3> outPos;
+            std::vector<Vec2> outUv;
+            std::vector<Vec3> outNrm;
+            std::vector<uint32_t> outIdx;
+            size_t fvOffset = 0;
+            for (int faceIdx = 0; faceIdx < static_cast<int>(faceCounts.size()); ++faceIdx)
+            {
+                const int c = faceCounts[faceIdx];
+                if (c >= 3 && fvOffset + static_cast<size_t>(c) <= faceIndices.size())
                 {
                     for (int k = 1; k + 1 < c; ++k)
                     {
-                        indices.push_back(static_cast<uint32_t>(faceIndices[offset + 0]));
-                        indices.push_back(static_cast<uint32_t>(faceIndices[offset + k]));
-                        indices.push_back(static_cast<uint32_t>(faceIndices[offset + k + 1]));
+                        const int corner[3] = {0, k, k + 1};
+                        for (int ci = 0; ci < 3; ++ci)
+                        {
+                            const size_t fvGlobal = fvOffset + static_cast<size_t>(corner[ci]);
+                            const int pointIdx = faceIndices[fvGlobal];
+                            const auto &p = points[pointIdx];
+                            outPos.emplace_back(p[0], p[1], p[2]);
+                            if (hasSt)
+                            {
+                                const size_t i = indexFor(stInterp, faceIdx, fvGlobal, pointIdx, st.size());
+                                outUv.emplace_back(st[i][0], st[i][1]);
+                            }
+                            if (hasN)
+                            {
+                                const size_t i = indexFor(nInterp, faceIdx, fvGlobal, pointIdx, normals.size());
+                                outNrm.emplace_back(normals[i][0], normals[i][1], normals[i][2]);
+                            }
+                            outIdx.push_back(static_cast<uint32_t>(outPos.size() - 1));
+                        }
                     }
                 }
-                offset += static_cast<size_t>(c < 0 ? 0 : c);
+                fvOffset += static_cast<size_t>(c < 0 ? 0 : c);
             }
-            if (indices.empty()) return false;
+            if (outIdx.empty()) return false;
 
-            out.setPositions(std::move(positions));
-            out.setIndices(std::move(indices));
-
-            VtArray<GfVec3f> normals;
-            if (mesh.GetNormalsAttr().Get(&normals) && normals.size() == points.size())
-            {
-                std::vector<Vec3> n(normals.size());
-                for (size_t i = 0; i < normals.size(); ++i)
-                    n[i] = Vec3(normals[i][0], normals[i][1], normals[i][2]);
-                out.setNormals(std::move(n));
-            }
-
-            UsdGeomPrimvar st = UsdGeomPrimvarsAPI(mesh.GetPrim()).GetPrimvar(TfToken("st"));
-            if (st)
-            {
-                VtArray<GfVec2f> uvs;
-                if (st.Get(&uvs) && uvs.size() == points.size())
-                {
-                    std::vector<Vec2> u(uvs.size());
-                    for (size_t i = 0; i < uvs.size(); ++i)
-                        u[i] = Vec2(uvs[i][0], uvs[i][1]);
-                    out.setUvs(std::move(u));
-                }
-            }
+            out.setPositions(std::move(outPos));
+            out.setIndices(std::move(outIdx));
+            if (hasSt) out.setUvs(std::move(outUv));
+            if (hasN) out.setNormals(std::move(outNrm));
             return true;
         }
     }
@@ -366,11 +440,12 @@ namespace tracey
         }
 
         auto scene = std::make_unique<Scene>();
+        const glm::mat4 upM = upAxisToYup(stage); // Z-up → Y-up when needed
         int meshes = 0, lights = 0;
         bool gotCamera = false;
         for (const UsdPrim &prim : stage->Traverse())
         {
-            const glm::mat4 world = toGlm(
+            const glm::mat4 world = upM * toGlm(
                 UsdGeomXformable(prim).ComputeLocalToWorldTransform(UsdTimeCode::Default()));
 
             // First camera found becomes the scene camera.
@@ -480,6 +555,7 @@ namespace tracey
         info.timeCodesPerSecond = (tcps > 0.0) ? tcps : 24.0;
         info.startTimeCode = stage->GetStartTimeCode();
         info.endTimeCode = stage->GetEndTimeCode();
+        const glm::mat4 upM = upAxisToYup(stage); // must match loadFromFile
 
         // Flat first slice: one root node per mesh prim, carrying its world
         // transform (decomposed to TRS). meshObjectNames = the prim's full path
@@ -509,7 +585,7 @@ namespace tracey
             // Static (default-time) transform — the fallback + the constant
             // value the channels override during playback.
             UsdGeomXformable xformable(prim);
-            decomposeTRS(toGlm(xformable.ComputeLocalToWorldTransform(UsdTimeCode::Default())),
+            decomposeTRS(upM * toGlm(xformable.ComputeLocalToWorldTransform(UsdTimeCode::Default())),
                          node.translate, node.rotateEulerDeg, node.scale, nullptr);
 
             // World transform = product up the chain, so collect the union of
@@ -535,7 +611,7 @@ namespace tracey
                 {
                     TrsSample s;
                     s.timeCode = t;
-                    decomposeTRS(toGlm(xformable.ComputeLocalToWorldTransform(UsdTimeCode(t))),
+                    decomposeTRS(upM * toGlm(xformable.ComputeLocalToWorldTransform(UsdTimeCode(t))),
                                  s.translate, s.rotateEulerDeg, s.scale,
                                  first ? nullptr : &prevR);
                     prevR = s.rotateEulerDeg;
