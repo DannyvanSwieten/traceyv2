@@ -92,6 +92,7 @@ interface PersistedLayout {
   leftPanelW?: number;
   rightPanelW?: number;
   sopDockW?: number;
+  renderDockW?: number;
   browserH?: number;
   dopesheetH?: number;
 }
@@ -162,6 +163,10 @@ const App: Component = () => {
   // into an attribute_vop swaps the contents in place rather than opening a
   // second dock).
   const [sopDockW, setSopDockW] = createSignal(persisted.sopDockW ?? 600);
+  // The Render workspace's settings panel needs far less width than a node
+  // graph, so it gets its own (narrower) dock width — keeping the graph dock at
+  // its comfortable default while letting the render viewport be much larger.
+  const [renderDockW, setRenderDockW] = createSignal(persisted.renderDockW ?? 300);
   const [browserH, setBrowserH] = createSignal(persisted.browserH ?? 150);
   const [dopesheetH, setDopesheetH] = createSignal(
     persisted.dopesheetH ?? DOPESHEET_DEFAULT_HEIGHT,
@@ -175,6 +180,7 @@ const App: Component = () => {
       leftPanelW: leftPanelW(),
       rightPanelW: rightPanelW(),
       sopDockW: sopDockW(),
+      renderDockW: renderDockW(),
       browserH: browserH(),
       dopesheetH: dopesheetH(),
     };
@@ -756,7 +762,10 @@ const App: Component = () => {
           createEffect(() => {
             el.style.setProperty('--left-panel-w', `${leftPanelW()}px`);
             el.style.setProperty('--right-panel-w', `${rightPanelW()}px`);
-            el.style.setProperty('--sop-dock-w', `${sopDockW()}px`);
+            el.style.setProperty(
+              '--sop-dock-w',
+              `${activeWorkspace() === 'render' ? renderDockW() : sopDockW()}px`,
+            );
             el.style.setProperty('--browser-h', `${browserH()}px`);
           });
         }}
@@ -934,7 +943,11 @@ const App: Component = () => {
         >
           <Splitter
             orientation="vertical"
-            onDrag={(dx) => setSopDockW((w) => clamp(w - dx, 380, 1400))}
+            onDrag={(dx) =>
+              activeWorkspace() === 'render'
+                ? setRenderDockW((w) => clamp(w - dx, 200, 900))
+                : setSopDockW((w) => clamp(w - dx, 380, 1400))
+            }
           />
           {/* Dock body priority when in Render workspace: RenderPanel
               wins. Otherwise the same Material > DOP > SOP precedence
