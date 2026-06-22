@@ -2549,8 +2549,15 @@ void EditorServer::import_usd_stage_worker(UsdStageImportRequest req) {
             }
         }
 
-        progress("Building acceleration structures…", 0, 0);
-        if (m_engine->path_tracer_ready()) m_engine->compile_scene();
+        // Only recompile if we actually ADDED geometry (lights/instances).
+        // For a stage with no instances/lights (e.g. the non-instanced Kitchen
+        // Set — its meshes come via the SOP cook, which already compiled),
+        // a second compile here is not just wasteful: it churns the BlasCache,
+        // which can free buffers the live compiled scene the rasterizer is
+        // drawing still points at → a dangling VkBuffer → "vkCmdBindVertexBuffers
+        // pBuffers[0] is VK_NULL_HANDLE". Skipping the no-op compile avoids it.
+        if ((lightCount > 0 || instanceCount > 0) && m_engine->path_tracer_ready())
+            m_engine->compile_scene();
         m_clear_next_frame = true;
     }
 
