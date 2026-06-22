@@ -148,6 +148,7 @@ const App: Component = () => {
   // DOP graph editor shares the same dock slot as SOP / Material.
   const [dopEditorOpen, setDopEditorOpen] = createSignal(false);
   const [exportVideoOpen, setExportVideoOpen] = createSignal(false);
+  const [renderingStill, setRenderingStill] = createSignal(false);
   // Resizable panel sizes — seeded from localStorage so the layout survives
   // across sessions. Min/max stay loose enough for laptop displays.
   const persisted = loadPersistedLayout();
@@ -423,6 +424,62 @@ const App: Component = () => {
     } catch (e) {
       console.error('Export geometry failed:', e);
       showToast('Export failed', { kind: 'error', detail: String(e) });
+    }
+  };
+
+  // Render a single still frame to PNG/EXR at the Render panel's Output
+  // resolution + Samples. Prompts for a path (format inferred from extension),
+  // kicks off the native render_still worker, and toasts on done/error.
+  const handleRenderStill = async () => {
+    if (renderingStill()) return;
+    let selected: string | null = null;
+    try {
+      selected = await api.saveFileDialog('Render Still', 'render.png', [
+        { description: 'PNG image', extensions: ['png'] },
+        { description: 'OpenEXR (linear + AOVs)', extensions: ['exr'] },
+      ]);
+    } catch (e) {
+      console.error('Render still: save dialog failed', e);
+      return;
+    }
+    if (!selected) return;
+    const path = selected;
+    const ext = path.split('.').pop()?.toLowerCase();
+    const format: 'png' | 'exr' = ext === 'exr' ? 'exr' : 'png';
+    const [w, h] = renderResolution();
+
+    setRenderingStill(true);
+    let offDone = () => {};
+    let offErr = () => {};
+    const cleanup = () => { offDone(); offErr(); setRenderingStill(false); };
+    offDone = api.listen('render_still_done', (msg) => {
+      cleanup();
+      showToast(msg.cancelled === true ? 'Render cancelled' : 'Rendered still', {
+        kind: msg.cancelled === true ? 'info' : 'success',
+        detail: path,
+      });
+    });
+    offErr = api.listen('render_still_error', (msg) => {
+      cleanup();
+      showToast('Render failed', {
+        kind: 'error',
+        detail: typeof msg.message === 'string' ? msg.message : 'unknown error',
+      });
+    });
+
+    try {
+      await api.renderStill({
+        path,
+        width: w,
+        height: h,
+        samples: maxSamples(),
+        max_bounces: maxBounces(),
+        format,
+        denoise: format === 'exr',
+      });
+    } catch (e) {
+      cleanup();
+      showToast('Render failed', { kind: 'error', detail: String(e) });
     }
   };
 
@@ -907,6 +964,8 @@ const App: Component = () => {
               onResetRender={() => {
                 api.resetPtAccumulator().catch(() => {});
               }}
+              onRenderStill={handleRenderStill}
+              rendering={renderingStill}
             />
           </Show>
         </Show>

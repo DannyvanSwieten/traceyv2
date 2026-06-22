@@ -26,6 +26,11 @@ interface RenderPanelProps {
   ptBackend: () => string;
   setPtBackend: (b: api.PtBackend) => void;
   onResetRender: () => void;
+  // Render one still frame to an image file at the current Output resolution +
+  // Samples. Parent owns the save-dialog + native call (wiring lives in App).
+  onRenderStill: () => void;
+  // True while a still/sequence render is running — disables the button.
+  rendering: () => boolean;
 }
 
 // Standard preview / output resolutions. Kept verbatim from the
@@ -128,6 +133,15 @@ export const RenderPanel: Component<RenderPanelProps> = (props) => {
       <section class="render-panel-section">
         <h4 class="render-panel-section-title">Actions</h4>
         <div class="render-panel-actions">
+          <button
+            type="button"
+            class="render-panel-button render-panel-button--accent"
+            onClick={props.onRenderStill}
+            disabled={props.rendering()}
+            title="Render one frame at the Output resolution + Samples above, and save it to a PNG or EXR file."
+          >
+            {props.rendering() ? 'Rendering…' : 'Render Still…'}
+          </button>
           <button
             type="button"
             class="render-panel-button"

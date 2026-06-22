@@ -573,6 +573,36 @@ std::optional<std::string> EditorServer::handle_io_commands(
             }
             return ok_response_null();
         }
+        if (cmd == "render_still") {
+            // Single offline frame at an arbitrary resolution → one PNG or EXR.
+            // Shares the export worker (mutually exclusive with a sequence export).
+            if (m_export_in_progress.load())
+                return err_response("A render/export is already running");
+
+            RenderStillRequest still;
+            still.path        = req.at("path").get<std::string>();
+            still.width       = req.value("width", 0);
+            still.height      = req.value("height", 0);
+            still.samples     = req.value("samples", 64);
+            still.max_bounces = req.value("max_bounces", 0);
+            still.format      = req.value("format", std::string{"png"});
+            still.denoise     = req.value("denoise", false);
+
+            if (still.path.empty()) return err_response("Missing output path");
+            if (still.format != "png" && still.format != "exr")
+                return err_response("Unsupported format: " + still.format);
+            if (still.samples < 1) return err_response("samples must be >= 1");
+            if (still.max_bounces < 0) return err_response("max_bounces must be >= 0");
+            if (still.width < 0 || still.height < 0)
+                return err_response("width/height must be >= 0");
+
+            if (m_export_thread.joinable()) m_export_thread.join();
+            m_export_cancel.store(false);
+            m_export_in_progress.store(true);
+            m_export_thread = std::thread(
+                [this, r = std::move(still)]() mutable { render_still_loop(std::move(r)); });
+            return ok_response_null();
+        }
 
     return std::nullopt;
 }

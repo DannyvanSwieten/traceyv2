@@ -9,6 +9,7 @@
 #include "core/parallel.hpp"
 #include "io/denoiser.hpp"
 #include "io/exr_writer.hpp"
+#include "io/png_writer.hpp"
 #include "scene/actor.hpp"
 #include "scene/camera.hpp"
 #include "scene/gltf_loader.hpp"
@@ -2245,6 +2246,188 @@ void EditorServer::export_video_loop(VideoExportRequest req) {
                          {"cancelled", false}});
     }
 
+    m_export_cancel.store(false);
+    m_export_in_progress.store(false);
+}
+
+void EditorServer::render_still_loop(RenderStillRequest req) {
+    auto broadcast_event = [this](const json& msg) {
+        if (m_broadcast) m_broadcast(msg.dump());
+    };
+    const bool exr = (req.format == "exr");
+
+    // Snapshot + (re)configure the path tracer, mirroring export_video_loop:
+    // optional resize to the target still resolution, optional bounce override,
+    // and EXR → AOV+linear output mode. Recompile the CURRENT scene against the
+    // reconfigured PT (the BlasCache makes this cheap — no re-cook of the SOP
+    // graph, and no timeline seek: a still is "this frame, as it is now").
+    uint32_t width = 0, height = 0;
+    uint32_t saved_raster_w = 0, saved_raster_h = 0, saved_pt_w = 0, saved_pt_h = 0;
+    float saved_aspect = 1.0f;
+    uint32_t saved_max_bounces = 0;
+    bool resolution_changed = false, bounces_changed = false, export_aovs_changed = false;
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        if (!m_engine || !m_engine->path_tracer_ready() ||
+            !m_engine->compiled_scene_ready() || !m_engine->scene().hasCamera()) {
+            broadcast_event({{"event", "render_still_error"},
+                             {"message", "engine not ready (open a scene first)"}});
+            m_export_in_progress.store(false);
+            return;
+        }
+        const auto [r_w, r_h] = m_engine->resolution();
+        const auto [p_w, p_h] = m_engine->pt_resolution();
+        saved_raster_w = r_w; saved_raster_h = r_h;
+        saved_pt_w = p_w; saved_pt_h = p_h;
+        saved_aspect = m_engine->scene().camera().aspectRatio();
+
+        if (req.width > 0 && req.height > 0) {
+            width = static_cast<uint32_t>(req.width);
+            height = static_cast<uint32_t>(req.height);
+            m_engine->set_resolutions(saved_raster_w, saved_raster_h, width, height);
+            tracey::Camera cam = m_engine->scene().camera();
+            cam.setAspectRatio(static_cast<float>(width) / static_cast<float>(height));
+            m_engine->scene().setCamera(cam);
+            resolution_changed = (width != saved_pt_w || height != saved_pt_h);
+        } else {
+            width = saved_pt_w;
+            height = saved_pt_h;
+        }
+
+        saved_max_bounces = m_engine->max_bounces();
+        if (req.max_bounces > 0 &&
+            static_cast<uint32_t>(req.max_bounces) != saved_max_bounces) {
+            m_engine->set_max_bounces(static_cast<uint32_t>(req.max_bounces));
+            bounces_changed = true;
+        }
+        if (exr && !m_engine->export_aovs()) {
+            m_engine->set_export_aovs(true);
+            export_aovs_changed = true;
+        }
+        // Re-bind the current scene to the (possibly resized / AOV-mode) PT.
+        m_engine->compile_scene();
+    }
+    if (width == 0 || height == 0) {
+        broadcast_event({{"event", "render_still_error"},
+                         {"message", "viewport has zero size"}});
+        m_export_in_progress.store(false);
+        return;
+    }
+
+    auto restore_engine_state = [&]() {
+        if (!resolution_changed && !bounces_changed && !export_aovs_changed) return;
+        std::lock_guard<std::mutex> lock(m_mutex);
+        if (export_aovs_changed) m_engine->set_export_aovs(false);
+        if (resolution_changed) {
+            m_engine->set_resolutions(saved_raster_w, saved_raster_h, saved_pt_w, saved_pt_h);
+            if (m_engine->scene().hasCamera()) {
+                tracey::Camera cam = m_engine->scene().camera();
+                cam.setAspectRatio(saved_aspect);
+                m_engine->scene().setCamera(cam);
+            }
+        }
+        if (bounces_changed) m_engine->set_max_bounces(saved_max_bounces);
+        m_engine->compile_scene(); // rebind the original scene to the restored PT
+        m_clear_next_frame = true;
+    };
+
+    const int samples = std::max(1, req.samples);
+    const size_t pixel_count = static_cast<size_t>(width) * height;
+    bool success = true;
+    std::string errMsg;
+
+    auto take_n = [&](const float *rgba, int n) {
+        std::vector<float> out(pixel_count * static_cast<size_t>(n));
+        for (size_t p = 0; p < pixel_count; ++p)
+            for (int c = 0; c < n; ++c) out[p * n + c] = rgba[p * 4 + c];
+        return out;
+    };
+
+    try {
+        // Accumulate all samples under the lock — render_tick() is paused
+        // (m_export_in_progress), so we hold the engine for the whole render.
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            for (int s = 0; s < samples; ++s) {
+                if (m_export_cancel.load()) break;
+                const bool last = (s == samples - 1);
+                m_engine->render_frame(/*clear=*/s == 0, /*want_pixels=*/last);
+            }
+        }
+
+        if (m_export_cancel.load()) {
+            // fall through to the done(cancelled) broadcast below
+        } else if (exr) {
+            std::vector<float> beauty(pixel_count * 4), albedo(pixel_count * 4),
+                normalAov(pixel_count * 4), depth(pixel_count * 4),
+                position(pixel_count * 4), emission(pixel_count * 4),
+                instanceId(pixel_count * 4);
+            {
+                std::lock_guard<std::mutex> lock(m_mutex);
+                auto *pt = m_engine->path_tracer();
+                pt->readback(reinterpret_cast<uint8_t *>(beauty.data()));
+                pt->readbackAOV(tracey::AovKind::Albedo, albedo.data());
+                pt->readbackAOV(tracey::AovKind::Normal, normalAov.data());
+                pt->readbackAOV(tracey::AovKind::Depth, depth.data());
+                pt->readbackAOV(tracey::AovKind::Position, position.data());
+                pt->readbackAOV(tracey::AovKind::Emission, emission.data());
+                pt->readbackAOV(tracey::AovKind::InstanceId, instanceId.data());
+            }
+            std::vector<float> denoised;
+            const float *beautySrc = beauty.data();
+            if (req.denoise && tracey::denoiserAvailable()) {
+                denoised.resize(pixel_count * 4);
+                std::string derr;
+                if (tracey::denoiseImage(static_cast<int>(width), static_cast<int>(height),
+                                         beauty.data(), albedo.data(), normalAov.data(),
+                                         denoised.data(), &derr))
+                    beautySrc = denoised.data();
+                else
+                    std::fprintf(stderr, "[still] denoise failed: %s\n", derr.c_str());
+            }
+            const auto bRGB = take_n(beautySrc, 3);
+            const auto aRGB = take_n(albedo.data(), 3);
+            const auto nXYZ = take_n(normalAov.data(), 3);
+            const auto pXYZ = take_n(position.data(), 3);
+            const auto eRGB = take_n(emission.data(), 3);
+            const auto zR = take_n(depth.data(), 1);
+            const auto idR = take_n(instanceId.data(), 1);
+            const std::vector<tracey::ExrLayer> layers = {
+                {"", 3, bRGB.data()},        {"albedo", 3, aRGB.data()},
+                {"N", 3, nXYZ.data()},       {"P", 3, pXYZ.data()},
+                {"emission", 3, eRGB.data()},{"Z", 1, zR.data()},
+                {"id", 1, idR.data()},
+            };
+            std::string exr_err;
+            if (!tracey::writeMultiLayerExr(req.path, static_cast<int>(width),
+                                            static_cast<int>(height), layers, &exr_err)) {
+                success = false; errMsg = "EXR write failed: " + exr_err;
+            }
+        } else {
+            std::vector<uint8_t> pixels(pixel_count * 4);
+            {
+                std::lock_guard<std::mutex> lock(m_mutex);
+                m_engine->path_tracer()->readback(pixels.data());
+            }
+            if (!tracey::writePng(req.path, static_cast<int>(width),
+                                  static_cast<int>(height), pixels.data())) {
+                success = false; errMsg = "PNG write failed: " + req.path;
+            }
+        }
+    } catch (const std::exception &e) {
+        success = false;
+        errMsg = std::string("render failed: ") + e.what();
+    }
+
+    restore_engine_state();
+
+    if (m_export_cancel.load()) {
+        broadcast_event({{"event", "render_still_done"}, {"path", req.path}, {"cancelled", true}});
+    } else if (!success) {
+        broadcast_event({{"event", "render_still_error"}, {"message", errMsg}});
+    } else {
+        broadcast_event({{"event", "render_still_done"}, {"path", req.path}, {"cancelled", false}});
+    }
     m_export_cancel.store(false);
     m_export_in_progress.store(false);
 }

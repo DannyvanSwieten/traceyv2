@@ -98,6 +98,8 @@ add_library(tracey
 
     src/io/exr_writer.hpp
     src/io/exr_writer.cpp
+    src/io/png_writer.hpp
+    src/io/png_writer.cpp
     src/io/denoiser.hpp
     src/io/denoiser.cpp
     deps/tinyexr/miniz.c

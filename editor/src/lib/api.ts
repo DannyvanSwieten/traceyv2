@@ -644,6 +644,29 @@ export const exportVideoStart = (req: VideoExportRequest) =>
   send<null>('export_video_start', req as unknown as Record<string, unknown>);
 export const exportVideoCancel = () => send<null>('export_video_cancel');
 
+// ─── Still render ────────────────────────────────────────────────────────────
+// Render a SINGLE offline frame at an arbitrary resolution → one image file.
+// Renders the current scene + camera as-is (no timeline seek). The native
+// worker broadcasts `render_still_done` ({path, cancelled}) and
+// `render_still_error` ({message}); subscribe via listen(). Shares the export
+// worker, so it's mutually exclusive with a sequence export.
+export interface RenderStillRequest {
+  path: string;
+  // Output resolution. 0 → use the current path-tracer viewport size.
+  width: number;
+  height: number;
+  samples: number;
+  // Max ray bounces. 0 leaves the engine's current setting alone.
+  max_bounces?: number;
+  // 'png' → LDR (tonemapped) PNG. 'exr' → linear multi-layer EXR (beauty + AOVs).
+  format?: 'png' | 'exr';
+  // EXR only: OIDN-denoise the beauty before writing. Ignored without OIDN.
+  denoise?: boolean;
+}
+
+export const renderStill = (req: RenderStillRequest) =>
+  send<null>('render_still', req as unknown as Record<string, unknown>);
+
 // ─── Timeline / playback ───────────────────────────────────────────────────
 // The playhead is owned by the native side (advances in render_tick), so the
 // frontend only sends transport commands and listens for `timeline_tick`

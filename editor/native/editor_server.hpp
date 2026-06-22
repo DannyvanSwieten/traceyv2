@@ -553,6 +553,23 @@ private:
     std::thread m_export_thread;
 
     void export_video_loop(VideoExportRequest req);
+
+    // ── Still render ────────────────────────────────────────────────────
+    // A single offline frame at an arbitrary resolution → one PNG (LDR,
+    // tonemapped) or one multi-layer EXR (linear beauty + AOVs, optionally
+    // denoised). Renders the CURRENT scene + camera (no timeline seek, no
+    // re-cook). Shares the export worker/flags — a still and a sequence export
+    // are mutually exclusive, and render_tick() pauses for both.
+    struct RenderStillRequest {
+        std::string path;
+        int width = 0;        // 0 = use current viewport (path tracer) resolution
+        int height = 0;
+        int samples = 64;
+        int max_bounces = 0;  // 0 = leave the engine's current setting alone
+        std::string format = "png"; // "png" (LDR) | "exr" (linear + AOVs)
+        bool denoise = false; // EXR only; ignored without TRACEY_WITH_OIDN
+    };
+    void render_still_loop(RenderStillRequest req);
 };
 
 }  // namespace tracey_editor
