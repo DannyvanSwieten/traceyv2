@@ -26,8 +26,11 @@
 #include <pxr/usd/usdShade/material.h>
 #include <pxr/usd/usdShade/materialBindingAPI.h>
 #include <pxr/usd/usdShade/shader.h>
+#include <pxr/usd/usdShade/connectableAPI.h>
+#include <pxr/usd/usdShade/input.h>
 #include <pxr/usd/usd/timeCode.h>
 #include <pxr/usd/sdf/path.h>
+#include <pxr/usd/sdf/assetPath.h>
 #include <pxr/base/gf/camera.h>
 #include <pxr/base/gf/matrix4d.h>
 #include <pxr/base/gf/vec2f.h>
@@ -155,9 +158,37 @@ namespace tracey
             return t;
         }
 
+        // Follow a UsdPreviewSurface input's connection to a UsdUVTexture and
+        // return its resolved image file path (empty when the input isn't
+        // texture-connected). USD textures are external files; we hand the
+        // path straight to SceneCompiler::loadTexture, which reads it from disk
+        // via stb_image (no need to pre-decode into an embedded buffer the way
+        // glTF does). One hop only — UV transforms / primvar readers upstream
+        // of the UsdUVTexture are a follow-up.
+        std::string connectedTextureFile(const UsdShadeShader &surface, const char *inputName)
+        {
+            UsdShadeInput in = surface.GetInput(TfToken(inputName));
+            if (!in) return {};
+            const UsdShadeSourceInfoVector sources = in.GetConnectedSources();
+            if (sources.empty() || !sources[0].source) return {};
+            UsdShadeShader tex(sources[0].source.GetPrim());
+            if (!tex) return {};
+            TfToken id;
+            tex.GetIdAttr().Get(&id);
+            if (id != TfToken("UsdUVTexture")) return {};
+            UsdShadeInput fileIn = tex.GetInput(TfToken("file"));
+            if (!fileIn) return {};
+            SdfAssetPath asset;
+            if (!fileIn.Get(&asset)) return {};
+            std::string path = asset.GetResolvedPath();
+            if (path.empty()) path = asset.GetAssetPath(); // unresolvable → authored path
+            return path;
+        }
+
         // Map a prim's bound UsdPreviewSurface to a MaterialInstance. Reads
-        // constant input values/defaults; texture-connected inputs are a
-        // follow-up (the value/fallback is used until then).
+        // constant input values/defaults AND follows texture-connected inputs
+        // (diffuseColor/normal/emissive/occlusion/metallic-roughness) to their
+        // UsdUVTexture file paths.
         MaterialInstance convertBoundMaterial(const UsdPrim &prim)
         {
             MaterialInstance m("pbr");
@@ -185,6 +216,26 @@ namespace tracey
             m.setEmission(getC("emissiveColor", GfVec3f(0.0f, 0.0f, 0.0f)));
             m.setFloat("clearcoat", getF("clearcoat", 0.0f));
             m.setFloat("clearcoatRoughness", getF("clearcoatRoughness", 0.0f));
+
+            // Texture-connected inputs → file paths on the MaterialInstance.
+            // SceneCompiler::convertMaterial reads these slots, loads the file,
+            // and binds it into the GPUMaterial's texture index.
+            auto setTex = [&](const char *input, const char *slot) {
+                std::string f = connectedTextureFile(surface, input);
+                if (!f.empty()) m.setTexture(slot, f);
+            };
+            setTex("diffuseColor", TEXTURE_ALBEDO);
+            setTex("normal", TEXTURE_NORMAL);
+            setTex("emissiveColor", TEXTURE_EMISSIVE);
+            setTex("occlusion", TEXTURE_OCCLUSION);
+            // metallic + roughness usually share one ORM-style texture (the
+            // renderer's MR slot samples G=roughness, B=metallic — matching
+            // UsdUVTexture ORM packing). Prefer whichever input is connected.
+            {
+                std::string mr = connectedTextureFile(surface, "roughness");
+                if (mr.empty()) mr = connectedTextureFile(surface, "metallic");
+                if (!mr.empty()) m.setTexture(TEXTURE_METALLIC_ROUGHNESS, mr);
+            }
             return m;
         }
 

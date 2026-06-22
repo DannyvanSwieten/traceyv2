@@ -1,0 +1,58 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    upAxis = "Y"
+    metersPerUnit = 1
+)
+
+def Xform "World"
+{
+    def Mesh "Cube" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        float3[] extent = [(-1, -1, -1), (1, 1, 1)]
+        int[] faceVertexCounts = [4, 4, 4, 4, 4, 4]
+        int[] faceVertexIndices = [0, 3, 2, 1, 4, 5, 6, 7, 0, 4, 7, 3, 1, 2, 6, 5, 3, 7, 6, 2, 0, 1, 5, 4]
+        point3f[] points = [(-1, -1, -1), (1, -1, -1), (1, 1, -1), (-1, 1, -1), (-1, -1, 1), (1, -1, 1), (1, 1, 1), (-1, 1, 1)]
+        texCoord2f[] primvars:st = [(0, 0), (1, 0), (1, 1), (0, 1), (0, 0), (1, 0), (1, 1), (0, 1)] (
+            interpolation = "vertex"
+        )
+        rel material:binding = </World/Materials/TexMat>
+        uniform token subdivisionScheme = "none"
+    }
+
+    def Scope "Materials"
+    {
+        def Material "TexMat"
+        {
+            token outputs:surface.connect = </World/Materials/TexMat/Surface.outputs:surface>
+
+            def Shader "Surface"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor.connect = </World/Materials/TexMat/DiffTex.outputs:rgb>
+                float inputs:metallic = 0
+                float inputs:roughness = 0.5
+                token outputs:surface
+            }
+
+            def Shader "DiffTex"
+            {
+                uniform token info:id = "UsdUVTexture"
+                asset inputs:file = @checker.png@
+                float2 inputs:st.connect = </World/Materials/TexMat/STReader.outputs:result>
+                token inputs:wrapS = "repeat"
+                token inputs:wrapT = "repeat"
+                float3 outputs:rgb
+            }
+
+            def Shader "STReader"
+            {
+                uniform token info:id = "UsdPrimvarReader_float2"
+                token inputs:varname = "st"
+                float2 outputs:result
+            }
+        }
+    }
+}

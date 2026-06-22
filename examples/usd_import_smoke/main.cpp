@@ -117,6 +117,13 @@ int main(int argc, char **argv)
                                         albedo->x, albedo->y, albedo->z);
                             ++materialsFound;
                         }
+                        // Texture-connected slots (U1.3 textures).
+                        const char *slots[] = {tracey::TEXTURE_ALBEDO, tracey::TEXTURE_NORMAL,
+                                               tracey::TEXTURE_METALLIC_ROUGHNESS,
+                                               tracey::TEXTURE_EMISSIVE, tracey::TEXTURE_OCCLUSION};
+                        for (const char *slot : slots)
+                            if (auto tex = mat.getTexture(slot))
+                                std::printf("    texture %-20s = %s\n", slot, tex->c_str());
                     }
                 }
             }
