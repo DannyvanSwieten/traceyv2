@@ -34,6 +34,8 @@ namespace tracey
                         bool clearAccumulation,
                         bool wantReadback) override;
         size_t readback(void *dst) override;
+        bool aovsAvailable() const override;
+        size_t readbackAOV(AovKind aov, void *dst) override;
 
     private:
         struct Impl;

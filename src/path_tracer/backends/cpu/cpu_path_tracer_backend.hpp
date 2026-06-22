@@ -18,6 +18,7 @@
 
 #include <glm/glm.hpp>
 
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <vector>
@@ -40,6 +41,8 @@ namespace tracey
                         bool clearAccumulation,
                         bool wantReadback) override;
         size_t readback(void *dst) override;
+        bool aovsAvailable() const override;
+        size_t readbackAOV(AovKind aov, void *dst) override;
 
     private:
         void bindScene(const SceneCompiler::CompiledScene &scene);
@@ -51,10 +54,17 @@ namespace tracey
         std::vector<glm::vec4> m_accumulator;  // running mean per pixel
         std::vector<uint8_t> m_pixels;         // packed RGBA8 or RGBA32F
 
+        // AOV layers (one RGBA32F running-mean per pixel), parallel to
+        // m_accumulator, indexed by AovKind. Allocated/written only when
+        // m_config->enableAovs; empty otherwise. See readbackAOV().
+        std::array<std::vector<glm::vec4>, static_cast<size_t>(AovKind::Count)> m_aovs;
+
         // Per-scene state, rebuilt when revision changes.
         uint64_t m_sceneRevision = ~0ull;
         std::vector<const Blas *> m_blasPtrs;
         std::vector<Tlas::Instance> m_instances;
+        std::vector<Tlas::Instance> m_instancesEnd;  // R4 motion: shutter-close poses
+        bool m_hasMotion = false;
         std::unique_ptr<Tlas> m_tlas;
         std::vector<GPULight> m_lights;
         std::vector<SceneCompiler::CompiledScene::EmissiveTri> m_emitters; // world-space emissive tris (NEE)
@@ -62,6 +72,7 @@ namespace tracey
         std::vector<glm::uvec2> m_instanceData;     // programId, uvOffset
         std::vector<glm::vec2> m_uvs;               // global per-vertex
         std::vector<glm::vec4> m_normals;           // global per-vertex
+        std::vector<glm::vec4> m_positions;         // global per-vertex (object space)
         std::vector<CpuTexture> m_textures;
 
         // Packed material programs (interpreted directly).

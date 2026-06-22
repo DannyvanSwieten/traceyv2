@@ -96,6 +96,14 @@ std::optional<std::string> EditorServer::handle_render_commands(
             m_engine->set_max_bounces(req.at("bounces").get<uint32_t>());
             return ok_response_null();
         }
+        if (cmd == "get_pt_backend") {
+            return ok_response(m_engine->pt_backend());
+        }
+        if (cmd == "set_pt_backend") {
+            m_engine->set_pt_backend(req.at("backend").get<std::string>());
+            m_clear_next_frame = true;  // restart accumulation on the new backend
+            return ok_response_null();
+        }
         if (cmd == "get_show_points") {
             return ok_response(m_engine->show_points());
         }

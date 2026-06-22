@@ -30,6 +30,11 @@ struct RenderConfig {
     // Path tracer backend: "auto" | "wavefront" | "metal" | "vulkan_rt" |
     // "cpu". Overridable at launch via the TRACEY_PT_BACKEND env var.
     std::string pt_backend = "auto";
+    // EXR-export mode: the path tracer also emits AOV layers and writes the
+    // beauty image as LINEAR (float, no tonemap). Off for the viewport; the
+    // EXR sequence export flips it on (and forces hdr/float output) via
+    // set_export_aovs(), which recreates the PT.
+    bool export_aovs = false;
 };
 
 struct RenderResult {
@@ -55,6 +60,12 @@ public:
     const tracey::Scene& scene() const { return *m_scene; }
 
     void compile_scene();
+
+    // R4 motion blur: attach shutter-close instance poses (parallel to the
+    // live compiled scene's `instances`) and bump the revision so the
+    // path-tracer backend rebuilds with the motion AS. No-op when the counts
+    // mismatch or there's no compiled scene.
+    void set_motion_end_instances(std::vector<tracey::Tlas::Instance> endInstances);
 
     // Controls whether subsequent compile_scene() calls build BLAS / TLAS
     // and upload the material programs. Off → the rasterizer still works
@@ -96,6 +107,20 @@ public:
     uint32_t current_samples() const;
     uint32_t max_bounces() const;
     void set_max_bounces(uint32_t bounces);
+
+    // Path-tracer backend selection at runtime: "auto" | "metal" | "cpu".
+    // Recreates the PT (the façade rebuilds output resources for the new
+    // backend's output kind) and re-pushes material programs, mirroring
+    // set_export_aovs(). No-op if unchanged.
+    const std::string& pt_backend() const { return m_config.pt_backend; }
+    void set_pt_backend(const std::string& backend);
+
+    // Toggle EXR-export mode (AOV layers + linear/float beauty). Recreates the
+    // path tracer (output image, accumulator, AOV buffers) and re-pushes the
+    // material programs, mirroring set_resolutions(). The EXR sequence export
+    // brackets its frame loop with set_export_aovs(true)/(false).
+    bool export_aovs() const { return m_config.export_aovs; }
+    void set_export_aovs(bool v);
 
     bool path_tracer_ready() const { return m_path_tracer != nullptr; }
     bool rasterizer_ready() const { return m_rasterizer != nullptr; }

@@ -19,6 +19,7 @@ import { dopGraph, selectedNode, setParam } from '../../stores/dops';
 import { openVopEditor } from '../../stores/vops';
 import { sopGraph } from '../../stores/sops';
 import type { ParamValueVec3, SopGraph as SopGraphType, SopNode as SopNodeType } from '../../lib/sop_graph';
+import { humanizeParamName } from '../../lib/param_label';
 import { NumberInput } from '../number-input/NumberInput';
 
 // Walk every SOP node in the live graph (including subnet children).
@@ -113,6 +114,7 @@ interface ParamRowProps {
 
 const ParamRow: Component<ParamRowProps> = (props) => {
   const cur = () => props.node.params[props.spec.name];
+  const displayName = () => humanizeParamName(props.spec.name);
 
   function patch(v: ParamValue) {
     setParam(props.node.uid, props.spec.name, v);
@@ -147,7 +149,7 @@ const ParamRow: Component<ParamRowProps> = (props) => {
           when={(() => { const r = range(); return r && r.min !== r.max ? r : null; })()}
           fallback={
             <div class="sop-param-row">
-              <label>{props.spec.name}</label>
+              <label>{displayName()}</label>
               <NumberInput
                 step={0.01}
                 title={props.spec.name}
@@ -161,7 +163,7 @@ const ParamRow: Component<ParamRowProps> = (props) => {
             const step = r().step > 0 ? r().step : (r().max - r().min) / 200;
             return (
               <div class="sop-param-row sop-param-slider-row">
-                <label>{props.spec.name}</label>
+                <label>{displayName()}</label>
                 <div class="sop-param-slider-group">
                   <input
                     type="range"
@@ -196,7 +198,7 @@ const ParamRow: Component<ParamRowProps> = (props) => {
             present, else "<kind> #<uid>". `0` is the "(none)" sentinel.
             See pop_source's emit_mode="geometry" path. */}
         <div class="sop-param-row">
-          <label>{props.spec.name}</label>
+          <label>{displayName()}</label>
           <select
             title={props.spec.name}
             value={String(intValue())}
@@ -217,7 +219,7 @@ const ParamRow: Component<ParamRowProps> = (props) => {
           when={(() => { const o = options(); return o && o.length > 0 ? o : null; })()}
           fallback={
             <div class="sop-param-row">
-              <label>{props.spec.name}</label>
+              <label>{displayName()}</label>
               <NumberInput
                 step={1}
                 decimals={0}
@@ -230,7 +232,7 @@ const ParamRow: Component<ParamRowProps> = (props) => {
         >
           {(opts) => (
             <div class="sop-param-row">
-              <label>{props.spec.name}</label>
+              <label>{displayName()}</label>
               <select
                 title={props.spec.name}
                 value={String(intValue())}
@@ -249,7 +251,7 @@ const ParamRow: Component<ParamRowProps> = (props) => {
 
       <Match when={props.spec.type === 'bool'}>
         <div class="sop-param-row">
-          <label>{props.spec.name}</label>
+          <label>{displayName()}</label>
           <input
             type="checkbox"
             title={props.spec.name}
@@ -261,7 +263,7 @@ const ParamRow: Component<ParamRowProps> = (props) => {
 
       <Match when={props.spec.type === 'vec3'}>
         <div class="sop-param-row sop-param-vec3-row">
-          <label>{props.spec.name}</label>
+          <label>{displayName()}</label>
           <div class="sop-param-vec3-group">
             <For each={[0, 1, 2] as const}>
               {(idx) => (
@@ -279,7 +281,7 @@ const ParamRow: Component<ParamRowProps> = (props) => {
 
       <Match when={props.spec.type === 'string'}>
         <div class="sop-param-row">
-          <label>{props.spec.name}</label>
+          <label>{displayName()}</label>
           <input
             type="text"
             title={props.spec.name}

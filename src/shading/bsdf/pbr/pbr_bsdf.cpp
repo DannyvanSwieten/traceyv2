@@ -175,7 +175,7 @@ namespace tracey
         s.pdf = pdf_wi;
         return s;
     }
-    Sample sampleDiffuse(const Vec3 &N, const Vec3 &V, RNG &rng, const PBRMaterial &mat)
+    Sample sampleDiffuse(const Vec3 &N, const Vec3 & /*V*/, RNG &rng, const PBRMaterial &mat)
     {
         Sample s{};
         s.specular = false;

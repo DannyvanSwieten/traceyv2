@@ -31,6 +31,9 @@
 //   11 progParams        float4[]
 //   12 accumBuffer       float4[]  (width*height running mean, read-write)
 //   13 accel             instance_acceleration_structure
+//   14 emitters          float4[]  (4 per emissive tri — NEE)
+//   15..20 AOV layers    float4[]  (albedo/normal/depth/position/emission/id;
+//                                   written only when Uniforms.enableAovs)
 // Texture index map:
 //   0      outImage (write)
 //   1..N   scene textures (array<texture2d<float>, kMaxTextures>)
@@ -62,6 +65,10 @@ struct Uniforms {
     uint   width;
     uint   height;
     uint   emitterCount;  // reuses the host struct's former trailing pad (offset 92)
+    uint   enableAovs;    // 0/1 — gates the AOV-layer writes (offset 96)
+    uint   linearOutput;  // 0/1 — skip tonemap+gamma, emit linear (offset 100)
+    float  aperture;      // thin-lens radius (offset 104; 0 = pinhole)
+    float  focalDistance; // in-focus distance along the view dir (offset 108)
 };
 
 // ── RNG (bit-exact ports of ray_gen.glsl hash / pbr_lib.glsl nextRandom) ──
@@ -106,10 +113,39 @@ float3 sampleGGX(float r1, float r2, float roughness) {
     return float3(cos(phi) * sinTheta, sin(phi) * sinTheta, cosTheta);
 }
 
+// Anisotropic GGX half-vector sample in tangent space (x=T, y=B, z=N). At
+// aT==aB it reduces exactly to sampleGGX (azimuth → 2π r1, cosθ identical).
+float3 sampleGGXAniso(float r1, float r2, float aT, float aB) {
+    float phi = atan2(aB * sin(2.0 * PI * r1), aT * cos(2.0 * PI * r1));
+    float cosPhi = cos(phi), sinPhi = sin(phi);
+    float A = (cosPhi * cosPhi) / max(aT * aT, 1e-8) +
+              (sinPhi * sinPhi) / max(aB * aB, 1e-8);
+    float tanTheta2 = r2 / max((1.0 - r2) * A, 1e-8);
+    float cosTheta = 1.0 / sqrt(1.0 + tanTheta2);
+    float sinTheta = sqrt(max(0.0, 1.0 - cosTheta * cosTheta));
+    return float3(cosPhi * sinTheta, sinPhi * sinTheta, cosTheta);
+}
+
 void buildTangentFrame(float3 N, thread float3 &T, thread float3 &B) {
     float3 up = abs(N.y) < 0.999 ? float3(0, 1, 0) : float3(1, 0, 0);
     T = normalize(cross(up, N));
     B = cross(N, T);
+}
+
+// UV-aligned tangent (Lengyel), Gram-Schmidt orthonormalized against N. Falls
+// back to `fallbackT` for degenerate UVs. Sign of dPdu is irrelevant — the
+// anisotropic lobe is symmetric under T → -T.
+float3 computeUVTangent(float3 p0, float3 p1, float3 p2,
+                        float2 uv0, float2 uv1, float2 uv2,
+                        float3 N, float3 fallbackT) {
+    float3 e1 = p1 - p0, e2 = p2 - p0;
+    float2 d1 = uv1 - uv0, d2 = uv2 - uv0;
+    float det = d1.x * d2.y - d2.x * d1.y;
+    if (abs(det) < 1e-12) return fallbackT;
+    float3 Traw = e1 * d2.y - e2 * d1.y;
+    Traw = Traw - N * dot(N, Traw);
+    float l = length(Traw);
+    return l > 1e-8 ? Traw / l : fallbackT;
 }
 
 float3 tangentToWorld(float3 v, float3 N, float3 T, float3 B) {
@@ -140,9 +176,9 @@ float geometrySmith(float NdotV, float NdotL, float roughness) {
     return geometrySchlickGGX(NdotL, roughness) * geometrySchlickGGX(NdotV, roughness);
 }
 
-// ── Material fetch (pbr_lib.glsl, GPUMaterial as int[20]) ────────────────
+// ── Material fetch (pbr_lib.glsl, GPUMaterial as int[28]) ────────────────
 
-constant uint MATERIAL_STRIDE = 20;
+constant uint MATERIAL_STRIDE = 28;
 
 // GLSL dispatches over 4 bound sampler objects; MSL constexpr samplers give
 // us the same four combinations without binding anything.
@@ -226,6 +262,29 @@ float getMaterialIor(device const int *materials, uint instanceIndex) {
 }
 float getMaterialEmissiveStrength(device const int *materials, uint instanceIndex) {
     return as_type<float>(materials[instanceIndex * MATERIAL_STRIDE + 19u]);
+}
+// R3 advanced-BSDF lobe factors (offsets 20-23; see GPUMaterial).
+float getMaterialClearcoat(device const int *materials, uint i) {
+    return as_type<float>(materials[i * MATERIAL_STRIDE + 20u]);
+}
+float getMaterialClearcoatRoughness(device const int *materials, uint i) {
+    return as_type<float>(materials[i * MATERIAL_STRIDE + 21u]);
+}
+float getMaterialSheen(device const int *materials, uint i) {
+    return as_type<float>(materials[i * MATERIAL_STRIDE + 22u]);
+}
+float getMaterialAnisotropy(device const int *materials, uint i) {
+    return as_type<float>(materials[i * MATERIAL_STRIDE + 23u]);
+}
+// R3d subsurface: weight (24) + scatter-tint RGB (25-27).
+float getMaterialSubsurface(device const int *materials, uint i) {
+    return as_type<float>(materials[i * MATERIAL_STRIDE + 24u]);
+}
+float3 getMaterialSubsurfaceColor(device const int *materials, uint i) {
+    uint b = i * MATERIAL_STRIDE;
+    return float3(as_type<float>(materials[b + 25u]),
+                  as_type<float>(materials[b + 26u]),
+                  as_type<float>(materials[b + 27u]));
 }
 
 // ── Material VM (material_vm.glsl + op 35 from opcodes.hpp) ──────────────
@@ -373,39 +432,103 @@ float3 skyRadiance(device const float4 *lights, uint lightCount, float3 dir) {
     return mix(horizon, zenith, t);
 }
 
-// ── Megakernel ───────────────────────────────────────────────────────────
+// ── Motion-blur intersect dispatch ─────────────────────────────────────────
+// The static and motion paths use different intersector + acceleration-
+// structure types (the instance_motion tag changes both, including the kernel's
+// AS parameter type). These overloads pick the right intersect() per type so
+// the shared megakernel body stays type-agnostic; the per-ray shutter `time`
+// is ignored on the static path. MotionTraits maps an AS type to its
+// intersector type + a compile-time motion flag.
+struct HitFields {
+    intersection_type type;
+    uint instanceId;
+    uint primId;
+    float2 bary;
+    float dist;
+};
 
-kernel void pathtrace(
-    texture2d<float, access::write> outImage          [[texture(0)]],
-    array<texture2d<float>, kMaxTextures> sceneTex    [[texture(1)]],
-    constant Uniforms &U                              [[buffer(0)]],
-    device const float4 *lights                       [[buffer(1)]],
-    device const int *materials                       [[buffer(2)]],
-    device const uint2 *instanceData                  [[buffer(3)]],
-    device const float2 *uvs                          [[buffer(4)]],
-    device const float4 *vertexNormals                [[buffer(5)]],
-    device const packed_float3 *positions             [[buffer(6)]],
-    device const float4 *normalMats                   [[buffer(7)]],
-    device const uint4 *progCode                      [[buffer(8)]],
-    device const float4 *progConst                    [[buffer(9)]],
-    device const uint4 *progHeaders                   [[buffer(10)]],
-    device const float4 *progParams                   [[buffer(11)]],
-    device float4 *accumBuffer                        [[buffer(12)]],
-    instance_acceleration_structure accel             [[buffer(13)]],
-    device const float4 *emitters                     [[buffer(14)]],
-    uint2 gid                                         [[thread_position_in_grid]])
+inline HitFields doIntersect(thread intersector<instancing, triangle_data> &isect,
+                             instance_acceleration_structure accel, ray r, float) {
+    auto h = isect.intersect(r, accel);
+    return {h.type, h.instance_id, h.primitive_id, h.triangle_barycentric_coord, h.distance};
+}
+inline HitFields doIntersect(thread intersector<instancing, instance_motion, triangle_data> &isect,
+                             acceleration_structure<instancing, instance_motion> accel, ray r, float time) {
+    auto h = isect.intersect(r, accel, time);
+    return {h.type, h.instance_id, h.primitive_id, h.triangle_barycentric_coord, h.distance};
+}
+inline bool doOccluded(thread intersector<instancing, triangle_data> &isect,
+                       instance_acceleration_structure accel, ray r, float) {
+    return isect.intersect(r, accel).type != intersection_type::none;
+}
+inline bool doOccluded(thread intersector<instancing, instance_motion, triangle_data> &isect,
+                       acceleration_structure<instancing, instance_motion> accel, ray r, float time) {
+    return isect.intersect(r, accel, time).type != intersection_type::none;
+}
+
+template <typename Accel> struct MotionTraits;
+template <> struct MotionTraits<instance_acceleration_structure> {
+    using Isect = intersector<instancing, triangle_data>;
+    static constexpr constant bool motion = false;
+};
+template <> struct MotionTraits<acceleration_structure<instancing, instance_motion>> {
+    using Isect = intersector<instancing, instance_motion, triangle_data>;
+    static constexpr constant bool motion = true;
+};
+
+// ── Megakernel ───────────────────────────────────────────────────────────
+// Shared body for both the static `pathtrace` and motion `pathtrace_motion`
+// kernels (entry points below). Templated on the acceleration-structure type;
+// the intersector type + motion flag follow from MotionTraits.
+template <typename Accel>
+void pathtraceImpl(
+    texture2d<float, access::write> outImage,
+    array<texture2d<float>, kMaxTextures> sceneTex,
+    constant Uniforms &U,
+    device const float4 *lights,
+    device const int *materials,
+    device const uint2 *instanceData,
+    device const float2 *uvs,
+    device const float4 *vertexNormals,
+    device const packed_float3 *positions,
+    device const float4 *normalMats,
+    device const uint4 *progCode,
+    device const float4 *progConst,
+    device const uint4 *progHeaders,
+    device const float4 *progParams,
+    device float4 *accumBuffer,
+    Accel accel,
+    device const float4 *emitters,
+    device float4 *aovAlbedo,
+    device float4 *aovNormal,
+    device float4 *aovDepth,
+    device float4 *aovPosition,
+    device float4 *aovEmission,
+    device float4 *aovInstanceId,
+    uint2 gid)
 {
+    constexpr bool kMotion = MotionTraits<Accel>::motion;
     if (gid.x >= U.width || gid.y >= U.height) return;
     const uint pixelIdx = gid.y * U.width + gid.x;
 
     float3 mean = accumBuffer[pixelIdx].xyz;
+
+    // Running AOV means (parallel to `mean`), seeded from prior frames. Only
+    // touched when enableAovs — the buffers are 1-element dummies otherwise.
+    float4 aovAlbedoM = float4(0.0), aovNormalM = float4(0.0), aovDepthM = float4(0.0);
+    float4 aovPositionM = float4(0.0), aovEmissionM = float4(0.0), aovIdM = float4(0.0);
+    if (U.enableAovs) {
+        aovAlbedoM = aovAlbedo[pixelIdx];     aovNormalM = aovNormal[pixelIdx];
+        aovDepthM = aovDepth[pixelIdx];       aovPositionM = aovPosition[pixelIdx];
+        aovEmissionM = aovEmission[pixelIdx]; aovIdM = aovInstanceId[pixelIdx];
+    }
 
     const float width  = float(U.width);
     const float height = float(U.height);
     const float aspectRatio = width / height;
     const float tanHalfFov = tan((U.fovDegrees * PI / 180.0) / 2.0);
 
-    intersector<instancing, triangle_data> isect;
+    typename MotionTraits<Accel>::Isect isect;
     isect.force_opacity(forced_opacity::opaque);
     isect.accept_any_intersection(false);
 
@@ -422,23 +545,50 @@ kernel void pathtrace(
         ray r;
         r.origin = U.camPos;
         r.direction = normalize(U.camFwd + px * U.camRight + py * U.camUp);
+        // Thin-lens depth of field: jitter the origin on the aperture disk and
+        // re-aim through the focus point. Uses hashSeed (pure — does not touch
+        // the nextRandom bounce stream), so aperture==0 is bit-identical.
+        if (U.aperture > 0.0) {
+            const float lr = U.aperture * sqrt(hashSeed(seed + 2u));
+            const float lt = 2.0 * PI * hashSeed(seed + 3u);
+            const float2 lens = float2(lr * cos(lt), lr * sin(lt));
+            const float ft = U.focalDistance / dot(r.direction, U.camFwd);
+            const float3 focus = r.origin + r.direction * ft;
+            r.origin += lens.x * U.camRight + lens.y * U.camUp;
+            r.direction = normalize(focus - r.origin);
+        }
         r.min_distance = 0.01;
         r.max_distance = 1000.0;
+        // Motion blur: per-sample shutter time in [0,1), passed to every
+        // intersect of the path. hashSeed is pure → it never perturbs the
+        // nextRandom bounce stream, and the static path ignores it entirely.
+        const float sampleTime = kMotion ? hashSeed(seed + 4u) : 0.0;
 
         float3 color = float3(1.0);   // path throughput
         float3 accum = float3(0.0);   // emitted + NEE direct-light gathers
+        // Per-sample AOV values, captured at the first shaded hit (or the
+        // primary miss). Default = background (zero).
+        float4 aAlbedo = float4(0.0), aNormal = float4(0.0), aDepth = float4(0.0);
+        float4 aPos = float4(0.0), aEmis = float4(0.0), aId = float4(0.0);
+        bool capturedPrimary = false;
         // Count a surface's own emission on direct arrival only when emitter
         // NEE couldn't have sampled it (camera ray / post-specular bounce).
         bool countEmissionOnHit = true;
         bool alive = true;
 
         for (uint depth = 0u; depth <= U.maxDepth && alive; ++depth) {
-            intersection_result<instancing, triangle_data> hit = isect.intersect(r, accel);
+            HitFields hit = doIntersect(isect, accel, r, sampleTime);
 
             if (hit.type == intersection_type::none) {
                 // ── sky_miss.glsl ── radiance accumulates into `accum`;
                 // `color` is pure throughput.
-                accum += color * skyRadiance(lights, U.lightCount, r.direction);
+                const float3 sky = skyRadiance(lights, U.lightCount, r.direction);
+                // Primary miss: env colour is the background albedo guide.
+                if (U.enableAovs && !capturedPrimary) {
+                    aAlbedo = float4(sky, 1.0);
+                    capturedPrimary = true;
+                }
+                accum += color * sky;
                 alive = false;
                 break;
             }
@@ -449,13 +599,13 @@ kernel void pathtrace(
                 break;
             }
 
-            const uint instanceIdx = hit.instance_id;
-            const uint triIdx = hit.primitive_id;
-            const float2 bary = hit.triangle_barycentric_coord;
+            const uint instanceIdx = hit.instanceId;
+            const uint triIdx = hit.primId;
+            const float2 bary = hit.bary;
             const float u = bary.x;
             const float v = bary.y;
             const float w = 1.0 - u - v;
-            const float3 hitPos = r.origin + r.direction * hit.distance;
+            const float3 hitPos = r.origin + r.direction * hit.dist;
 
             const uint base = instanceData[instanceIdx].y + triIdx * 3u;
 
@@ -489,8 +639,18 @@ kernel void pathtrace(
 
             const float3 incomingDir = normalize(r.direction);
             const float3 V = -incomingDir;
-            const bool entering = dot(N_raw, V) >= 0.0;
-            const float3 N = entering ? N_raw : -N_raw;
+            const float NdotV_raw = dot(N_raw, V);
+            const bool entering = NdotV_raw >= 0.0;
+            // Robust shading normal (Schüssler 2017): when the interpolated
+            // normal bends past the silhouette (N_raw·V<0) the old code flipped
+            // it *inward* (N=-N_raw), killing sky GI / NEE → dark rim (badly
+            // amplified by clearcoat). Instead reflect it back to the view
+            // horizon — this keeps N·V>0 (no grazing specular spike) and keeps
+            // the surface lit. Front-facing hits (the common case) are untouched.
+            // Glass is two-sided and uses the raw normal flipped, locally below.
+            const float3 N = (NdotV_raw < 0.0)
+                                 ? normalize(N_raw - 2.0 * NdotV_raw * V)
+                                 : N_raw;
 
             // getHitUV
             const float2 uv = w * uvs[base + 0u] + u * uvs[base + 1u] + v * uvs[base + 2u];
@@ -533,6 +693,31 @@ kernel void pathtrace(
             const float ior = max(mat.ior, 1.0e-3);
             const float opacity = clamp(mat.alpha, 0.0, 1.0);
             const bool isGlass = transmission > 0.0 && metallic < 0.01;
+            // R3 clear coat: a clear dielectric (F0=0.04) GGX layer over the base.
+            const float clearcoat = clamp(getMaterialClearcoat(materials, instanceIdx), 0.0, 1.0);
+            const float clearcoatRoughness = getMaterialClearcoatRoughness(materials, instanceIdx);
+            // R3 sheen: grazing retroreflective term added to the diffuse NEE
+            // (fabric/velvet). Purely additive (0 = off), so no RNG draw and no
+            // change to existing renders.
+            const float sheen = max(getMaterialSheen(materials, instanceIdx), 0.0);
+            // R3d subsurface: wrap-diffusion weight + scatter tint. Blends the
+            // diffuse NEE toward a softened, color-tinted response that wraps
+            // light past the terminator (skin/wax). 0 = off (diffuse unchanged).
+            const float subsurface = clamp(getMaterialSubsurface(materials, instanceIdx), 0.0, 1.0);
+            const float3 subsurfaceColor = getMaterialSubsurfaceColor(materials, instanceIdx);
+            // R3 anisotropy: [-1,1] stretches the metallic GGX highlight along
+            // the UV tangent. Gated below (0 = isotropic; existing sampleGGX
+            // path is untouched, so non-aniso materials render identically).
+            const float anisotropy = clamp(getMaterialAnisotropy(materials, instanceIdx), -1.0, 1.0);
+            // UV-aligned tangent frame for the anisotropic lobe (computed only
+            // when needed; isotropic materials keep the arbitrary frame above).
+            float3 Taniso = T, Baniso = B;
+            if (anisotropy != 0.0) {
+                Taniso = computeUVTangent(p0, p1, p2,
+                                          uvs[base + 0u], uvs[base + 1u], uvs[base + 2u],
+                                          N, T);
+                Baniso = cross(N, Taniso);
+            }
 
             // Stochastic opacity: with probability (1-opacity) the surface is
             // absent for this sample — pass the ray straight through (no shade,
@@ -542,6 +727,17 @@ kernel void pathtrace(
                 r.origin = hitPos + incomingDir * 0.001;
                 r.direction = incomingDir;
                 continue;
+            }
+
+            // First shaded surface = primary visibility for AOVs.
+            if (U.enableAovs && !capturedPrimary) {
+                capturedPrimary = true;
+                aAlbedo = float4(albedo, 1.0);
+                aNormal = float4(N, 0.0);
+                aDepth  = float4(length(hitPos - U.camPos), 0.0, 0.0, 0.0);
+                aPos    = float4(hitPos, 1.0);
+                aEmis   = float4(emission, 1.0);
+                aId     = float4(float(instanceIdx + 1u), 0.0, 0.0, 0.0);
             }
 
             // Emitted radiance — counted on direct arrival only when emitter
@@ -586,8 +782,12 @@ kernel void pathtrace(
                         lightDist = 1.0e6;  // distant/sun: anything in the way occludes
                     }
 
-                    const float NdotLlight = max(dot(N, Ldir), 0.0);
-                    if (NdotLlight <= 0.0) continue;
+                    // Subsurface wrap extends the lit band past the terminator
+                    // by `subsurface`; at subsurface==0 this is the exact old
+                    // `dot(N,Ldir) <= 0` early-out (parity-safe).
+                    const float rawNdotL = dot(N, Ldir);
+                    if (rawNdotL <= -subsurface) continue;
+                    const float NdotLlight = max(rawNdotL, 0.0);
 
                     // Shadow ray: skip this light's contribution if blocked.
                     // Offset along N to avoid self-shadow acne; stop just short
@@ -597,10 +797,19 @@ kernel void pathtrace(
                     sray.direction = Ldir;
                     sray.min_distance = 0.001;
                     sray.max_distance = max(lightDist - 0.002, 0.002);
-                    if (isect.intersect(sray, accel).type != intersection_type::none) continue;
+                    if (doOccluded(isect, accel, sray, sampleTime)) continue;
 
                     const float3 Li = colorExtra.xyz * dirIntens.w * falloff;
-                    accum += color * diffuseBrdf * Li * NdotLlight;
+                    const float3 Hs = normalize(Ldir + V);
+                    const float sheenBrdf = sheen * pow(1.0 - max(dot(Ldir, Hs), 0.0), 5.0);
+                    // Wrap-diffusion: blend Lambertian with a softened, tinted
+                    // response. mix(...,0) == Lambertian, so subsurface==0 is a
+                    // no-op and the diffuse NEE stays bit-identical.
+                    const float wd = 1.0 + subsurface;
+                    const float wrapCos = saturate((rawNdotL + subsurface) / (wd * wd));
+                    const float3 sssResp = subsurfaceColor * (1.0 - metallic) * (1.0 / 3.14159265) * wrapCos;
+                    const float3 diffuseLobe = mix(diffuseBrdf * NdotLlight, sssResp, subsurface);
+                    accum += color * (diffuseLobe + sheenBrdf * NdotLlight) * Li;
                 }
             }
 
@@ -622,10 +831,12 @@ kernel void pathtrace(
                 const float dist2 = max(dot(toL, toL), 1e-6);
                 const float dist = sqrt(dist2);
                 const float3 wi = toL / dist;
-                const float NdotL = dot(N, wi);
+                const float rawNdotL = dot(N, wi);
                 float3 Ng = cross(e1.xyz - e0.xyz, e2.xyz - e0.xyz);
                 const float ngLen = length(Ng);
-                if (NdotL > 0.0 && ngLen > 1e-12) {
+                // subsurface wrap extends the band past the terminator; at
+                // subsurface==0 this is the exact old `rawNdotL > 0` guard.
+                if (rawNdotL > -subsurface && ngLen > 1e-12) {
                     Ng /= ngLen;
                     const float cosL = abs(dot(Ng, -wi));
                     if (cosL > 1e-4) {
@@ -634,9 +845,16 @@ kernel void pathtrace(
                         sray.direction = wi;
                         sray.min_distance = 0.001;
                         sray.max_distance = max(dist - 0.002, 0.002);
-                        if (isect.intersect(sray, accel).type == intersection_type::none) {
+                        if (!doOccluded(isect, accel, sray, sampleTime)) {
                             const float w = e0.w * float(ne) * cosL / dist2; // area*ne*cosL/dist²
-                            accum += color * diffuseBrdf * e3.xyz * NdotL * w;
+                            const float3 Hs = normalize(wi + V);
+                            const float sheenBrdf = sheen * pow(1.0 - max(dot(wi, Hs), 0.0), 5.0);
+                            const float NdotL = max(rawNdotL, 0.0);
+                            const float wd = 1.0 + subsurface;
+                            const float wrapCos = saturate((rawNdotL + subsurface) / (wd * wd));
+                            const float3 sssResp = subsurfaceColor * (1.0 - metallic) * (1.0 / 3.14159265) * wrapCos;
+                            const float3 diffuseLobe = mix(diffuseBrdf * NdotL, sssResp, subsurface);
+                            accum += color * (diffuseLobe + sheenBrdf * NdotL) * e3.xyz * w;
                         }
                     }
                 }
@@ -650,24 +868,52 @@ kernel void pathtrace(
             float3 throughput;
             const float NdotV = max(dot(N, V), 0.001);
 
-            if (isGlass) {
+            // Clear coat decision (gated on clearcoat>0 so non-coat materials
+            // draw no extra RNG and render identically). The coat is selected
+            // with probability Fc = clearcoat·F_schlick(0.04); because this
+            // integrator treats the selection probability as the blend weight
+            // (no divide-by-pdf), that automatically attenuates the base layer
+            // by (1-Fc) — energy-conserving.
+            bool coatBounce = false;
+            if (clearcoat > 0.0) {
+                const float fc0 = 0.04 + 0.96 * pow(clamp(1.0 - NdotV, 0.0, 1.0), 5.0);
+                if (nextRandom(seed) < clearcoat * fc0) coatBounce = true;
+            }
+
+            if (coatBounce) {
+                // White dielectric GGX coat at clearcoatRoughness.
+                const float ccR = clamp(clearcoatRoughness, 0.04, 1.0);
+                const float3 H_local = sampleGGX(r1, r2, ccR);
+                float3 H = normalize(tangentToWorld(H_local, N, T, B));
+                L = reflect(-V, H);
+                float NdotL = dot(L, N);
+                if (NdotL <= 0.0) { L = reflect(-V, N); NdotL = max(dot(L, N), 0.001); H = normalize(V + L); }
+                NdotL = max(NdotL, 0.001);
+                const float VdotH = max(dot(V, H), 0.001);
+                const float NdotH = max(dot(N, H), 0.001);
+                const float G = geometrySmith(NdotV, NdotL, ccR);
+                throughput = float3(G * VdotH / (NdotV * NdotH));
+            } else if (isGlass) {
                 // Dielectric: Fresnel chooses reflect vs refract. The glass
                 // tint is the surface baseColor applied to transmitted light
                 // (glTF KHR_transmission "thin" model). Depth-based volumetric
                 // absorption is a future add behind an attenuation param.
+                // Glass is two-sided — orient the raw normal to the ray (the
+                // old view-flipped normal; uses N_raw, not the bent shading N).
+                const float3 gN = entering ? N_raw : -N_raw;
                 const float etaI = entering ? 1.0 : ior;
                 const float etaT = entering ? ior : 1.0;
                 const float eta = etaI / etaT;
-                const float cosI = clamp(dot(N, V), 0.0, 1.0);
+                const float cosI = clamp(dot(gN, V), 0.0, 1.0);
                 const float F = fresnelDielectric(cosI, etaI, etaT);
 
                 if (r3 < F) {
-                    L = reflect(incomingDir, N);
+                    L = reflect(incomingDir, gN);
                     throughput = albedo;
                 } else {
-                    const float3 refracted = refract(incomingDir, N, eta);
+                    const float3 refracted = refract(incomingDir, gN, eta);
                     if (dot(refracted, refracted) < 1.0e-6) {
-                        L = reflect(incomingDir, N); // total internal reflection
+                        L = reflect(incomingDir, gN); // total internal reflection
                         throughput = albedo;
                     } else {
                         L = normalize(refracted);
@@ -676,8 +922,22 @@ kernel void pathtrace(
                     }
                 }
             } else if (r3 < metallic) {
-                const float3 H_local = sampleGGX(r1, r2, roughness);
-                float3 H = normalize(tangentToWorld(H_local, N, T, B));
+                // Anisotropy stretches the GGX highlight along the UV tangent.
+                // Gated: anisotropy==0 takes the exact isotropic path (same
+                // sample, same frame) so existing metal renders are unchanged.
+                float3 H;
+                if (anisotropy != 0.0) {
+                    const float alpha = roughness * roughness;
+                    const float aspect = sqrt(max(1.0 - 0.9 * abs(anisotropy), 1e-4));
+                    float aT = max(alpha / aspect, 1e-4);
+                    float aB = max(alpha * aspect, 1e-4);
+                    if (anisotropy < 0.0) { float tmp = aT; aT = aB; aB = tmp; }
+                    const float3 H_local = sampleGGXAniso(r1, r2, aT, aB);
+                    H = normalize(tangentToWorld(H_local, N, Taniso, Baniso));
+                } else {
+                    const float3 H_local = sampleGGX(r1, r2, roughness);
+                    H = normalize(tangentToWorld(H_local, N, T, B));
+                }
                 L = reflect(-V, H);
 
                 float NdotL = dot(L, N);
@@ -703,8 +963,8 @@ kernel void pathtrace(
 
             // Gate next-hit emission: diffuse bounces are covered by emitter
             // NEE above (don't double count); specular/glossy aren't, so they
-            // must still count emitter arrivals.
-            countEmissionOnHit = isGlass || (r3 < metallic);
+            // must still count emitter arrivals. The coat is specular too.
+            countEmissionOnHit = coatBounce || isGlass || (r3 < metallic);
 
             throughput = clamp(throughput, float3(0.0), float3(10.0));
             color *= throughput;
@@ -720,13 +980,97 @@ kernel void pathtrace(
         const float3 sampleColor = accum;
         const int n = (U.currentSample - 1) * int(U.samplesPerFrame) + int(s) + 1;
         mean = mean + (sampleColor - mean) / float(n);
+
+        if (U.enableAovs) {
+            const float fn = float(n);
+            aovAlbedoM   += (aAlbedo - aovAlbedoM)   / fn;
+            aovNormalM   += (aNormal - aovNormalM)   / fn;
+            aovDepthM    += (aDepth  - aovDepthM)    / fn;
+            aovPositionM += (aPos    - aovPositionM) / fn;
+            aovEmissionM += (aEmis   - aovEmissionM) / fn;
+            aovIdM       += (aId     - aovIdM)       / fn;
+        }
     }
 
     accumBuffer[pixelIdx] = float4(mean, 1.0);
+    if (U.enableAovs) {
+        aovAlbedo[pixelIdx]     = aovAlbedoM;   aovNormal[pixelIdx]     = aovNormalM;
+        aovDepth[pixelIdx]      = aovDepthM;    aovPosition[pixelIdx]   = aovPositionM;
+        aovEmission[pixelIdx]   = aovEmissionM; aovInstanceId[pixelIdx] = aovIdM;
+    }
 
     const float3 tonemapped = mean / (mean + float3(1.0));
     const float3 gammaCorrected = pow(tonemapped, float3(1.0 / 2.2));
-    outImage.write(float4(gammaCorrected, 1.0), gid);
+    // Linear output (EXR/denoise) skips tonemap+gamma; display stays tonemapped.
+    const float3 outRGB = U.linearOutput ? max(mean, float3(0.0)) : gammaCorrected;
+    outImage.write(float4(outRGB, 1.0), gid);
+}
+
+// Static entry point (no motion blur) — bit-identical to the pre-R4 kernel.
+kernel void pathtrace(
+    texture2d<float, access::write> outImage          [[texture(0)]],
+    array<texture2d<float>, kMaxTextures> sceneTex    [[texture(1)]],
+    constant Uniforms &U                              [[buffer(0)]],
+    device const float4 *lights                       [[buffer(1)]],
+    device const int *materials                       [[buffer(2)]],
+    device const uint2 *instanceData                  [[buffer(3)]],
+    device const float2 *uvs                          [[buffer(4)]],
+    device const float4 *vertexNormals                [[buffer(5)]],
+    device const packed_float3 *positions             [[buffer(6)]],
+    device const float4 *normalMats                   [[buffer(7)]],
+    device const uint4 *progCode                      [[buffer(8)]],
+    device const float4 *progConst                    [[buffer(9)]],
+    device const uint4 *progHeaders                   [[buffer(10)]],
+    device const float4 *progParams                   [[buffer(11)]],
+    device float4 *accumBuffer                        [[buffer(12)]],
+    instance_acceleration_structure accel             [[buffer(13)]],
+    device const float4 *emitters                     [[buffer(14)]],
+    device float4 *aovAlbedo                          [[buffer(15)]],
+    device float4 *aovNormal                          [[buffer(16)]],
+    device float4 *aovDepth                           [[buffer(17)]],
+    device float4 *aovPosition                        [[buffer(18)]],
+    device float4 *aovEmission                        [[buffer(19)]],
+    device float4 *aovInstanceId                      [[buffer(20)]],
+    uint2 gid                                         [[thread_position_in_grid]])
+{
+    pathtraceImpl(outImage, sceneTex, U, lights, materials, instanceData, uvs,
+                  vertexNormals, positions, normalMats, progCode, progConst,
+                  progHeaders, progParams, accumBuffer, accel, emitters, aovAlbedo,
+                  aovNormal, aovDepth, aovPosition, aovEmission, aovInstanceId, gid);
+}
+
+// Motion-blur entry point: the AS parameter is a hardware motion AS, which
+// selects the instance_motion intersector + the time-sampling intersect path.
+kernel void pathtrace_motion(
+    texture2d<float, access::write> outImage                    [[texture(0)]],
+    array<texture2d<float>, kMaxTextures> sceneTex             [[texture(1)]],
+    constant Uniforms &U                                       [[buffer(0)]],
+    device const float4 *lights                                [[buffer(1)]],
+    device const int *materials                                [[buffer(2)]],
+    device const uint2 *instanceData                           [[buffer(3)]],
+    device const float2 *uvs                                   [[buffer(4)]],
+    device const float4 *vertexNormals                         [[buffer(5)]],
+    device const packed_float3 *positions                      [[buffer(6)]],
+    device const float4 *normalMats                            [[buffer(7)]],
+    device const uint4 *progCode                               [[buffer(8)]],
+    device const float4 *progConst                             [[buffer(9)]],
+    device const uint4 *progHeaders                            [[buffer(10)]],
+    device const float4 *progParams                            [[buffer(11)]],
+    device float4 *accumBuffer                                 [[buffer(12)]],
+    acceleration_structure<instancing, instance_motion> accel  [[buffer(13)]],
+    device const float4 *emitters                              [[buffer(14)]],
+    device float4 *aovAlbedo                                   [[buffer(15)]],
+    device float4 *aovNormal                                   [[buffer(16)]],
+    device float4 *aovDepth                                    [[buffer(17)]],
+    device float4 *aovPosition                                 [[buffer(18)]],
+    device float4 *aovEmission                                 [[buffer(19)]],
+    device float4 *aovInstanceId                               [[buffer(20)]],
+    uint2 gid                                                  [[thread_position_in_grid]])
+{
+    pathtraceImpl(outImage, sceneTex, U, lights, materials, instanceData, uvs,
+                  vertexNormals, positions, normalMats, progCode, progConst,
+                  progHeaders, progParams, accumBuffer, accel, emitters, aovAlbedo,
+                  aovNormal, aovDepth, aovPosition, aovEmission, aovInstanceId, gid);
 }
 )MSL";
 } // namespace tracey

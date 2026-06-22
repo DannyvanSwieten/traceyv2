@@ -65,11 +65,42 @@ namespace tracey
             return {std::cos(phi) * sinTheta, std::sin(phi) * sinTheta, cosTheta};
         }
 
+        // Anisotropic GGX half-vector sample in tangent space (x=T, y=B, z=N);
+        // reduces exactly to sampleGGX at aT==aB. Mirrors the MSL backend.
+        glm::vec3 sampleGGXAniso(float r1, float r2, float aT, float aB)
+        {
+            const float phi = std::atan2(aB * std::sin(2.0f * kPi * r1),
+                                         aT * std::cos(2.0f * kPi * r1));
+            const float cosPhi = std::cos(phi), sinPhi = std::sin(phi);
+            const float A = (cosPhi * cosPhi) / std::max(aT * aT, 1e-8f) +
+                            (sinPhi * sinPhi) / std::max(aB * aB, 1e-8f);
+            const float tanTheta2 = r2 / std::max((1.0f - r2) * A, 1e-8f);
+            const float cosTheta = 1.0f / std::sqrt(1.0f + tanTheta2);
+            const float sinTheta = std::sqrt(std::max(0.0f, 1.0f - cosTheta * cosTheta));
+            return {cosPhi * sinTheta, sinPhi * sinTheta, cosTheta};
+        }
+
         void buildTangentFrame(const glm::vec3 &N, glm::vec3 &T, glm::vec3 &B)
         {
             const glm::vec3 up = std::abs(N.y) < 0.999f ? glm::vec3(0, 1, 0) : glm::vec3(1, 0, 0);
             T = glm::normalize(glm::cross(up, N));
             B = glm::cross(N, T);
+        }
+
+        // UV-aligned tangent (Lengyel), Gram-Schmidt against N; falls back to
+        // `fallbackT` for degenerate UVs. Mirrors the MSL backend.
+        glm::vec3 computeUVTangent(const glm::vec3 &p0, const glm::vec3 &p1, const glm::vec3 &p2,
+                                   const glm::vec2 &uv0, const glm::vec2 &uv1, const glm::vec2 &uv2,
+                                   const glm::vec3 &N, const glm::vec3 &fallbackT)
+        {
+            const glm::vec3 e1 = p1 - p0, e2 = p2 - p0;
+            const glm::vec2 d1 = uv1 - uv0, d2 = uv2 - uv0;
+            const float det = d1.x * d2.y - d2.x * d1.y;
+            if (std::abs(det) < 1e-12f) return fallbackT;
+            glm::vec3 Traw = e1 * d2.y - e2 * d1.y;
+            Traw = Traw - N * glm::dot(N, Traw);
+            const float l = glm::length(Traw);
+            return l > 1e-8f ? Traw / l : fallbackT;
         }
 
         glm::vec3 tangentToWorld(const glm::vec3 &v, const glm::vec3 &N,
@@ -281,6 +312,8 @@ namespace tracey
         m_accumulator.assign(pixelCount, glm::vec4(0.0f));
         const size_t pixelSize = m_config->hdrOutput ? 16 : 4;
         m_pixels.assign(pixelCount * pixelSize, 0);
+        if (m_config->enableAovs)
+            for (auto &a : m_aovs) a.assign(pixelCount, glm::vec4(0.0f));
     }
 
     void CpuPathTracerBackend::uploadMaterialPrograms(const MaterialProgramBuffer &programs)
@@ -307,9 +340,13 @@ namespace tracey
             m_blasPtrs.push_back(cpu);
         }
         m_instances = scene.instances;
+        m_instancesEnd = scene.instancesEnd;
+        m_hasMotion = scene.hasMotion && m_instancesEnd.size() == m_instances.size();
         m_tlas = std::make_unique<Tlas>(
             std::span<const Blas *>(m_blasPtrs.data(), m_blasPtrs.size()),
-            std::span<const Tlas::Instance>(m_instances.data(), m_instances.size()));
+            std::span<const Tlas::Instance>(m_instances.data(), m_instances.size()),
+            std::span<const Tlas::Instance>(m_instancesEnd.data(), m_instancesEnd.size()),
+            m_hasMotion, Tlas::Config{});
 
         m_lights = scene.lights;
         m_emitters = scene.emitters;
@@ -343,6 +380,16 @@ namespace tracey
             scene.normalBuffer->unmap();
         }
 
+        // Object-space positions, parallel to m_uvs/m_normals — used to derive
+        // UV-aligned tangents at the hit for the anisotropic GGX lobe.
+        m_positions.assign(std::max<uint32_t>(totalVertices, 1), glm::vec4(0.0f));
+        if (scene.positionBuffer && totalVertices > 0)
+        {
+            std::memcpy(m_positions.data(), scene.positionBuffer->mapForReading(),
+                        static_cast<size_t>(totalVertices) * sizeof(glm::vec4));
+            scene.positionBuffer->unmap();
+        }
+
         m_textures.clear();
         m_textures.reserve(scene.textureSources.size());
         for (const auto &src : scene.textureSources) m_textures.emplace_back(src);
@@ -356,14 +403,25 @@ namespace tracey
         const auto start = std::chrono::high_resolution_clock::now();
 
         bindScene(scene);
+
+        const uint32_t W = m_config->width;
+        const uint32_t H = m_config->height;
+        const size_t pixelCount = static_cast<size_t>(W) * H;
+
+        // AOV layers track the beauty accumulator: allocate lazily (config may
+        // have flipped enableAovs after initialize) and clear in lockstep.
+        const bool aovs = m_config->enableAovs;
+        if (aovs && m_aovs[0].size() != pixelCount)
+            for (auto &a : m_aovs) a.assign(pixelCount, glm::vec4(0.0f));
+
         if (clearAccumulation)
         {
             std::fill(m_accumulator.begin(), m_accumulator.end(), glm::vec4(0.0f));
+            if (aovs)
+                for (auto &a : m_aovs) std::fill(a.begin(), a.end(), glm::vec4(0.0f));
         }
 
         const ShaderInputsView in = readShaderInputs(*m_shaderInputs);
-        const uint32_t W = m_config->width;
-        const uint32_t H = m_config->height;
         const uint32_t samplesPerFrame = m_config->samplesPerFrame;
         const float aspectRatio = static_cast<float>(W) / static_cast<float>(H);
         const float tanHalfFov = std::tan((in.fov * kPi / 180.0f) / 2.0f);
@@ -376,8 +434,18 @@ namespace tracey
 
                 glm::vec3 mean = glm::vec3(m_accumulator[pixelIdx]);
 
+                // Running AOV means (parallel to `mean`), seeded from prior frames.
+                constexpr size_t kAovN = static_cast<size_t>(AovKind::Count);
+                glm::vec4 aovMean[kAovN];
+                if (aovs)
+                    for (size_t k = 0; k < kAovN; ++k) aovMean[k] = m_aovs[k][pixelIdx];
+
                 for (uint32_t s = 0; s < samplesPerFrame; ++s)
                 {
+                    // Per-sample AOV values, captured at the first shaded hit
+                    // (or the primary miss). Default = background (zero).
+                    glm::vec4 aovSample[kAovN] = {};
+                    bool capturedPrimary = false;
                     // ── ray_gen ──
                     const uint32_t globalSampleIdx =
                         static_cast<uint32_t>(in.currentSample - 1) * samplesPerFrame + s;
@@ -394,7 +462,26 @@ namespace tracey
                     ray.origin = in.cameraPosition;
                     ray.direction = glm::normalize(in.cameraForward + cx * in.cameraRight +
                                                    cy * in.cameraUp);
+                    // Thin-lens DOF (mirrors MSL; hashSeed is pure so aperture==0
+                    // is bit-identical and never disturbs the nextRandom stream).
+                    if (in.aperture > 0.0f)
+                    {
+                        const float lr = in.aperture * std::sqrt(hashSeed(seed + 2u));
+                        const float lt = 2.0f * kPi * hashSeed(seed + 3u);
+                        const glm::vec2 lens(lr * std::cos(lt), lr * std::sin(lt));
+                        const float ft =
+                            in.focalDistance / glm::dot(ray.direction, in.cameraForward);
+                        const glm::vec3 focus = ray.origin + ray.direction * ft;
+                        ray.origin += lens.x * in.cameraRight + lens.y * in.cameraUp;
+                        ray.direction = glm::normalize(focus - ray.origin);
+                    }
                     ray.invDirection = glm::vec3(1.0f) / ray.direction;
+                    // Motion blur: a per-sample shutter time in [0,1). The TLAS
+                    // interpolates instance poses by this; carried on every ray
+                    // of the path (incl. shadow rays) for a consistent shutter
+                    // instant. hashSeed is pure → no perturbation when static.
+                    const float sampleTime = m_hasMotion ? hashSeed(seed + 4u) : 0.0f;
+                    ray.time = sampleTime;
 
                     glm::vec3 color(1.0f);
                     glm::vec3 accum(0.0f);
@@ -412,7 +499,15 @@ namespace tracey
 
                         if (!hit)
                         {
-                            accum += color * skyRadiance(m_lights, in.lightCount, ray.direction);
+                            const glm::vec3 sky = skyRadiance(m_lights, in.lightCount, ray.direction);
+                            // Primary miss: the env colour is the albedo guide for
+                            // the background (helps the denoiser); other AOVs stay 0.
+                            if (aovs && !capturedPrimary)
+                            {
+                                aovSample[static_cast<size_t>(AovKind::Albedo)] = glm::vec4(sky, 1.0f);
+                                capturedPrimary = true;
+                            }
+                            accum += color * sky;
                             alive = false;
                             break;
                         }
@@ -452,8 +547,18 @@ namespace tracey
 
                         const glm::vec3 incomingDir = glm::normalize(ray.direction);
                         const glm::vec3 V = -incomingDir;
-                        const bool entering = glm::dot(N_raw, V) >= 0.0f;
-                        const glm::vec3 N = entering ? N_raw : -N_raw;
+                        const float NdotV_raw = glm::dot(N_raw, V);
+                        const bool entering = NdotV_raw >= 0.0f;
+                        // Robust shading normal (Schüssler 2017): when the
+                        // interpolated normal bends past the silhouette
+                        // (N_raw·V<0) the old code flipped it inward, killing sky
+                        // GI / NEE → dark rim (amplified by clearcoat). Reflect it
+                        // back to the view horizon instead — keeps N·V>0 (no
+                        // grazing specular spike) and the surface lit. Front faces
+                        // are untouched; glass flips the raw normal locally below.
+                        const glm::vec3 N = (NdotV_raw < 0.0f)
+                                                ? glm::normalize(N_raw - 2.0f * NdotV_raw * V)
+                                                : N_raw;
 
                         const glm::vec2 uv =
                             w * m_uvs[base + 0u] + u * m_uvs[base + 1u] + v * m_uvs[base + 2u];
@@ -511,6 +616,34 @@ namespace tracey
                         const float ior = std::max(mat.ior, 1.0e-3f);
                         const float opacity = glm::clamp(mat.alpha, 0.0f, 1.0f);
                         const bool isGlass = transmission > 0.0f && metallic < 0.01f;
+                        // R3 clear coat: a clear dielectric (F0=0.04) GGX layer over the base.
+                        const float clearcoat =
+                            glm::clamp(gm.clearcoatFactor, 0.0f, 1.0f);
+                        const float clearcoatRoughness = gm.clearcoatRoughnessFactor;
+                        // R3 sheen: grazing retroreflective term added to the
+                        // diffuse NEE. Purely additive (0 = off, no RNG draw).
+                        const float sheen = std::max(gm.sheenFactor, 0.0f);
+                        // R3d subsurface: wrap-diffusion weight + scatter tint
+                        // (mirrors the MSL backend; 0 = off, diffuse unchanged).
+                        const float subsurface = glm::clamp(gm.subsurfaceFactor, 0.0f, 1.0f);
+                        const glm::vec3 subsurfaceColor(gm.subsurfaceColorR,
+                                                        gm.subsurfaceColorG,
+                                                        gm.subsurfaceColorB);
+                        // R3 anisotropy: gated GGX stretch along the UV tangent
+                        // (mirrors MSL; 0 = isotropic, existing path untouched).
+                        const float anisotropy = glm::clamp(gm.anisotropyFactor, -1.0f, 1.0f);
+                        // UV-aligned tangent frame for the anisotropic lobe
+                        // (computed only when needed; mirrors the MSL backend).
+                        glm::vec3 Taniso = T, Baniso = B;
+                        if (anisotropy != 0.0f)
+                        {
+                            Taniso = computeUVTangent(
+                                glm::vec3(m_positions[base + 0u]),
+                                glm::vec3(m_positions[base + 1u]),
+                                glm::vec3(m_positions[base + 2u]),
+                                m_uvs[base + 0u], m_uvs[base + 1u], m_uvs[base + 2u], N, T);
+                            Baniso = glm::cross(N, Taniso);
+                        }
 
                         // Stochastic opacity: with prob (1-opacity) the surface
                         // is absent for this sample — pass the ray straight
@@ -521,6 +654,20 @@ namespace tracey
                             ray.direction = incomingDir;
                             ray.invDirection = glm::vec3(1.0f) / ray.direction;
                             continue;
+                        }
+
+                        // First shaded surface = primary visibility for AOVs.
+                        if (aovs && !capturedPrimary)
+                        {
+                            capturedPrimary = true;
+                            aovSample[static_cast<size_t>(AovKind::Albedo)] = glm::vec4(albedo, 1.0f);
+                            aovSample[static_cast<size_t>(AovKind::Normal)] = glm::vec4(N, 0.0f);
+                            aovSample[static_cast<size_t>(AovKind::Depth)] =
+                                glm::vec4(glm::length(hitPos - in.cameraPosition), 0.0f, 0.0f, 0.0f);
+                            aovSample[static_cast<size_t>(AovKind::Position)] = glm::vec4(hitPos, 1.0f);
+                            aovSample[static_cast<size_t>(AovKind::Emission)] = glm::vec4(emission, 1.0f);
+                            aovSample[static_cast<size_t>(AovKind::InstanceId)] =
+                                glm::vec4(static_cast<float>(instanceIdx + 1u), 0.0f, 0.0f, 0.0f);
                         }
 
                         // Emitted radiance — counted on direct arrival only when
@@ -572,21 +719,40 @@ namespace tracey
                                     lightDist = 1.0e6f;  // distant/sun
                                 }
 
-                                const float NdotLlight = std::max(glm::dot(N, Ldir), 0.0f);
-                                if (NdotLlight <= 0.0f) continue;
+                                // Subsurface wrap extends the lit band past the
+                                // terminator by `subsurface`; at subsurface==0
+                                // this is the exact old `dot(N,Ldir) <= 0`
+                                // early-out (parity-safe).
+                                const float rawNdotL = glm::dot(N, Ldir);
+                                if (rawNdotL <= -subsurface) continue;
+                                const float NdotLlight = std::max(rawNdotL, 0.0f);
 
                                 // Shadow ray: skip if the light is occluded.
                                 Ray sray;
                                 sray.origin = hitPos + N * 0.001f;
                                 sray.direction = Ldir;
                                 sray.invDirection = glm::vec3(1.0f) / sray.direction;
+                                sray.time = sampleTime;
                                 if (m_tlas->intersect(sray, 0.001f,
                                                       std::max(lightDist - 0.002f, 0.002f),
                                                       RAY_FLAG_NONE))
                                     continue;
 
                                 const glm::vec3 Li = glm::vec3(colorExtra) * dirIntens.w * falloff;
-                                accum += color * diffuseBrdf * Li * NdotLlight;
+                                const glm::vec3 Hs = glm::normalize(Ldir + V);
+                                const float sheenBrdf =
+                                    sheen * std::pow(1.0f - std::max(glm::dot(Ldir, Hs), 0.0f), 5.0f);
+                                // Wrap-diffusion: blend Lambertian with a softened,
+                                // tinted response. mix(...,0) == Lambertian, so
+                                // subsurface==0 keeps the diffuse NEE bit-identical.
+                                const float wd = 1.0f + subsurface;
+                                const float wrapCos = glm::clamp(
+                                    (rawNdotL + subsurface) / (wd * wd), 0.0f, 1.0f);
+                                const glm::vec3 sssResp = subsurfaceColor *
+                                    (1.0f - metallic) * (1.0f / 3.14159265f) * wrapCos;
+                                const glm::vec3 diffuseLobe =
+                                    glm::mix(diffuseBrdf * NdotLlight, sssResp, subsurface);
+                                accum += color * (diffuseLobe + sheenBrdf * NdotLlight) * Li;
                             }
                         }
 
@@ -611,10 +777,12 @@ namespace tracey
                             const float dist2 = std::max(glm::dot(toL, toL), 1e-6f);
                             const float dist = std::sqrt(dist2);
                             const glm::vec3 wi = toL / dist;
-                            const float NdotL = glm::dot(N, wi);
+                            const float rawNdotL = glm::dot(N, wi);
                             glm::vec3 Ng = glm::cross(E.p1 - E.p0, E.p2 - E.p0);
                             const float ngLen = glm::length(Ng);
-                            if (NdotL > 0.0f && ngLen > 1e-12f)
+                            // subsurface wrap extends the band past the terminator;
+                            // at subsurface==0 this is the exact old `rawNdotL > 0`.
+                            if (rawNdotL > -subsurface && ngLen > 1e-12f)
                             {
                                 Ng /= ngLen;
                                 const float cosL = std::abs(glm::dot(Ng, -wi));
@@ -624,12 +792,24 @@ namespace tracey
                                     sray.origin = hitPos + N * 0.001f;
                                     sray.direction = wi;
                                     sray.invDirection = glm::vec3(1.0f) / sray.direction;
+                                    sray.time = sampleTime;
                                     if (!m_tlas->intersect(sray, 0.001f, dist - 0.002f, RAY_FLAG_NONE))
                                     {
                                         // pdf_A = 1/(area * ne); to solid angle:
                                         // ×dist²/cosL. Estimator divides f·Le·NdotL by it.
                                         const float w = E.area * static_cast<float>(ne) * cosL / dist2;
-                                        accum += color * diffuseBrdf * E.emission * NdotL * w;
+                                        const glm::vec3 Hs = glm::normalize(wi + V);
+                                        const float sheenBrdf =
+                                            sheen * std::pow(1.0f - std::max(glm::dot(wi, Hs), 0.0f), 5.0f);
+                                        const float NdotL = std::max(rawNdotL, 0.0f);
+                                        const float wd = 1.0f + subsurface;
+                                        const float wrapCos = glm::clamp(
+                                            (rawNdotL + subsurface) / (wd * wd), 0.0f, 1.0f);
+                                        const glm::vec3 sssResp = subsurfaceColor *
+                                            (1.0f - metallic) * (1.0f / 3.14159265f) * wrapCos;
+                                        const glm::vec3 diffuseLobe =
+                                            glm::mix(diffuseBrdf * NdotL, sssResp, subsurface);
+                                        accum += color * (diffuseLobe + sheenBrdf * NdotL) * E.emission * w;
                                     }
                                 }
                             }
@@ -643,27 +823,63 @@ namespace tracey
                         glm::vec3 throughput;
                         const float NdotV = std::max(glm::dot(N, V), 0.001f);
 
-                        if (isGlass)
+                        // Clear coat decision (gated on clearcoat>0 so non-coat
+                        // materials draw no extra RNG and render identically).
+                        // Selection prob Fc = clearcoat·F_schlick(0.04); since
+                        // this integrator uses the selection prob as the blend
+                        // weight, the base is auto-attenuated by (1-Fc).
+                        bool coatBounce = false;
+                        if (clearcoat > 0.0f)
+                        {
+                            const float fc0 =
+                                0.04f + 0.96f * std::pow(glm::clamp(1.0f - NdotV, 0.0f, 1.0f), 5.0f);
+                            if (nextRandom(seed) < clearcoat * fc0) coatBounce = true;
+                        }
+
+                        if (coatBounce)
+                        {
+                            // White dielectric GGX coat at clearcoatRoughness.
+                            const float ccR = glm::clamp(clearcoatRoughness, 0.04f, 1.0f);
+                            const glm::vec3 H_local = sampleGGX(r1, r2, ccR);
+                            glm::vec3 Hv = glm::normalize(tangentToWorld(H_local, N, T, B));
+                            L = glm::reflect(-V, Hv);
+                            float NdotL = glm::dot(L, N);
+                            if (NdotL <= 0.0f)
+                            {
+                                L = glm::reflect(-V, N);
+                                NdotL = std::max(glm::dot(L, N), 0.001f);
+                                Hv = glm::normalize(V + L);
+                            }
+                            NdotL = std::max(NdotL, 0.001f);
+                            const float VdotH = std::max(glm::dot(V, Hv), 0.001f);
+                            const float NdotH = std::max(glm::dot(N, Hv), 0.001f);
+                            const float G = geometrySmith(NdotV, NdotL, ccR);
+                            throughput = glm::vec3(G * VdotH / (NdotV * NdotH));
+                        }
+                        else if (isGlass)
                         {
                             // Dielectric: glass tint is the surface baseColor on
                             // transmitted light (glTF KHR_transmission thin model).
+                            // Glass is two-sided — orient the raw normal to the
+                            // ray (old view-flipped normal; uses N_raw, not bent N).
+                            const glm::vec3 gN = entering ? N_raw : -N_raw;
                             const float etaI = entering ? 1.0f : ior;
                             const float etaT = entering ? ior : 1.0f;
                             const float eta = etaI / etaT;
-                            const float cosI = glm::clamp(glm::dot(N, V), 0.0f, 1.0f);
+                            const float cosI = glm::clamp(glm::dot(gN, V), 0.0f, 1.0f);
                             const float F = fresnelDielectric(cosI, etaI, etaT);
 
                             if (r3 < F)
                             {
-                                L = glm::reflect(incomingDir, N);
+                                L = glm::reflect(incomingDir, gN);
                                 throughput = albedo;
                             }
                             else
                             {
-                                const glm::vec3 refracted = glm::refract(incomingDir, N, eta);
+                                const glm::vec3 refracted = glm::refract(incomingDir, gN, eta);
                                 if (glm::dot(refracted, refracted) < 1.0e-6f)
                                 {
-                                    L = glm::reflect(incomingDir, N); // total internal reflection
+                                    L = glm::reflect(incomingDir, gN); // total internal reflection
                                     throughput = albedo;
                                 }
                                 else
@@ -676,8 +892,26 @@ namespace tracey
                         }
                         else if (r3 < metallic)
                         {
-                            const glm::vec3 H_local = sampleGGX(r1, r2, roughness);
-                            glm::vec3 Hv = glm::normalize(tangentToWorld(H_local, N, T, B));
+                            // Anisotropy stretches the GGX highlight along the UV
+                            // tangent. Gated: anisotropy==0 takes the exact
+                            // isotropic path so existing metal renders are unchanged.
+                            glm::vec3 Hv;
+                            if (anisotropy != 0.0f)
+                            {
+                                const float alpha = roughness * roughness;
+                                const float aspect =
+                                    std::sqrt(std::max(1.0f - 0.9f * std::abs(anisotropy), 1e-4f));
+                                float aT = std::max(alpha / aspect, 1e-4f);
+                                float aB = std::max(alpha * aspect, 1e-4f);
+                                if (anisotropy < 0.0f) std::swap(aT, aB);
+                                const glm::vec3 H_local = sampleGGXAniso(r1, r2, aT, aB);
+                                Hv = glm::normalize(tangentToWorld(H_local, N, Taniso, Baniso));
+                            }
+                            else
+                            {
+                                const glm::vec3 H_local = sampleGGX(r1, r2, roughness);
+                                Hv = glm::normalize(tangentToWorld(H_local, N, T, B));
+                            }
                             L = glm::reflect(-V, Hv);
 
                             float NdotL = glm::dot(L, N);
@@ -709,7 +943,7 @@ namespace tracey
                         // double-count it on arrival. Specular/glossy (glass,
                         // metal) bounces aren't sampled by the diffuse NEE, so
                         // their emitter arrivals must still count.
-                        countEmissionOnHit = isGlass || (r3 < metallic);
+                        countEmissionOnHit = coatBounce || isGlass || (r3 < metallic);
 
                         throughput = glm::clamp(throughput, glm::vec3(0.0f), glm::vec3(10.0f));
                         color *= throughput;
@@ -727,20 +961,31 @@ namespace tracey
                     const int n = (in.currentSample - 1) * static_cast<int>(samplesPerFrame) +
                                   static_cast<int>(s) + 1;
                     mean = mean + (sampleColor - mean) / static_cast<float>(n);
+
+                    if (aovs)
+                        for (size_t k = 0; k < kAovN; ++k)
+                            aovMean[k] += (aovSample[k] - aovMean[k]) / static_cast<float>(n);
                 }
 
                 m_accumulator[pixelIdx] = glm::vec4(mean, 1.0f);
+                if (aovs)
+                    for (size_t k = 0; k < kAovN; ++k) m_aovs[k][pixelIdx] = aovMean[k];
 
                 const glm::vec3 tonemapped = mean / (mean + glm::vec3(1.0f));
                 const glm::vec3 gammaCorrected =
                     glm::pow(tonemapped, glm::vec3(1.0f / 2.2f));
+                // Linear output (EXR/denoise) skips tonemap+gamma and writes
+                // raw radiance; display output stays tonemapped + gamma.
+                const glm::vec3 outRGB = m_config->linearOutput
+                                             ? glm::max(mean, glm::vec3(0.0f))
+                                             : gammaCorrected;
 
                 if (m_config->hdrOutput)
                 {
                     auto *out = reinterpret_cast<float *>(m_pixels.data()) + pixelIdx * 4;
-                    out[0] = gammaCorrected.r;
-                    out[1] = gammaCorrected.g;
-                    out[2] = gammaCorrected.b;
+                    out[0] = outRGB.r;
+                    out[1] = outRGB.g;
+                    out[2] = outRGB.b;
                     out[3] = 1.0f;
                 }
                 else
@@ -762,5 +1007,21 @@ namespace tracey
     {
         std::memcpy(dst, m_pixels.data(), m_pixels.size());
         return m_pixels.size();
+    }
+
+    bool CpuPathTracerBackend::aovsAvailable() const
+    {
+        return m_config && m_config->enableAovs;
+    }
+
+    size_t CpuPathTracerBackend::readbackAOV(AovKind aov, void *dst)
+    {
+        const size_t idx = static_cast<size_t>(aov);
+        if (!m_config || !m_config->enableAovs || idx >= m_aovs.size()) return 0;
+        const auto &buf = m_aovs[idx];
+        if (buf.empty()) return 0;
+        const size_t bytes = buf.size() * sizeof(glm::vec4);
+        std::memcpy(dst, buf.data(), bytes);
+        return bytes;
     }
 } // namespace tracey

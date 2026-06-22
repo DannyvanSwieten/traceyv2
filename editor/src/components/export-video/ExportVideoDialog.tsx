@@ -25,6 +25,8 @@ export const ExportVideoDialog: Component<ExportVideoDialogProps> = (props) => {
   const [width, setWidth] = createSignal(1280);
   const [height, setHeight] = createSignal(720);
   const [codec, setCodec] = createSignal<api.VideoCodec>('h264');
+  const [format, setFormat] = createSignal<'video' | 'exr'>('video');
+  const [denoise, setDenoise] = createSignal(true);
   const [errorMsg, setErrorMsg] = createSignal('');
   const [progressFrame, setProgressFrame] = createSignal(0);
   const [progressTotal, setProgressTotal] = createSignal(0);
@@ -40,6 +42,7 @@ export const ExportVideoDialog: Component<ExportVideoDialogProps> = (props) => {
     const tl = timeline();
     setStage('config');
     setPath('');
+    setFormat('video');
     setFrameStart(tl.frame_start);
     setFrameEnd(tl.frame_end);
     setFps(tl.fps);
@@ -101,10 +104,13 @@ export const ExportVideoDialog: Component<ExportVideoDialogProps> = (props) => {
 
   const browse = async () => {
     try {
+      const isExr = format() === 'exr';
       const picked = await api.saveFileDialog(
-        'Export Video',
-        'render.mov',
-        [{ description: 'QuickTime', extensions: ['mov'] }],
+        isExr ? 'Export EXR sequence' : 'Export Video',
+        isExr ? 'render.exr' : 'render.mov',
+        isExr
+          ? [{ description: 'OpenEXR', extensions: ['exr'] }]
+          : [{ description: 'QuickTime', extensions: ['mov'] }],
       );
       if (picked) setPath(picked);
     } catch (e) {
@@ -129,7 +135,7 @@ export const ExportVideoDialog: Component<ExportVideoDialogProps> = (props) => {
       setErrorMsg('Width and height must be >= 2');
       return;
     }
-    if ((width() & 1) || (height() & 1)) {
+    if (format() === 'video' && ((width() & 1) || (height() & 1))) {
       setErrorMsg('Width and height must be even (H.264 requirement)');
       return;
     }
@@ -153,6 +159,8 @@ export const ExportVideoDialog: Component<ExportVideoDialogProps> = (props) => {
         width: width(),
         height: height(),
         codec: codec(),
+        format: format(),
+        denoise: format() === 'exr' && denoise(),
       });
     } catch (e) {
       setErrorMsg(e instanceof Error ? e.message : String(e));
@@ -311,16 +319,44 @@ export const ExportVideoDialog: Component<ExportVideoDialogProps> = (props) => {
             </div>
 
             <div class="export-video-row">
-              <label>Codec</label>
+              <label>Format</label>
               <select
-                title="Video codec"
-                value={codec()}
-                onChange={(e) => setCodec(e.currentTarget.value as api.VideoCodec)}
+                title="Output format"
+                value={format()}
+                onChange={(e) => setFormat(e.currentTarget.value as 'video' | 'exr')}
               >
-                <option value="h264">H.264</option>
-                <option value="prores">ProRes 422</option>
+                <option value="video">Video (movie)</option>
+                <option value="exr">EXR sequence (linear + AOVs)</option>
               </select>
             </div>
+
+            <Show when={format() === 'video'}>
+              <div class="export-video-row">
+                <label>Codec</label>
+                <select
+                  title="Video codec"
+                  value={codec()}
+                  onChange={(e) => setCodec(e.currentTarget.value as api.VideoCodec)}
+                >
+                  <option value="h264">H.264</option>
+                  <option value="prores">ProRes 422</option>
+                </select>
+              </div>
+            </Show>
+
+            <Show when={format() === 'exr'}>
+              <div class="export-video-row">
+                <label>Denoise</label>
+                <label class="export-video-checkbox">
+                  <input
+                    type="checkbox"
+                    checked={denoise()}
+                    onChange={(e) => setDenoise(e.currentTarget.checked)}
+                  />
+                  <span>OIDN (albedo + normal guided)</span>
+                </label>
+              </div>
+            </Show>
 
             <Show when={errorMsg()}>
               <div class="export-video-error">{errorMsg()}</div>

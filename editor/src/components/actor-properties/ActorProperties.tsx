@@ -9,6 +9,7 @@ import {
 import { KeyframeDot } from '../keyframe-dot/KeyframeDot';
 import { NumberInput } from '../number-input/NumberInput';
 import { ColorSwatch } from '../color-swatch/ColorSwatch';
+import { MaterialOverride } from './MaterialOverride';
 import { sopGraph } from '../../stores/sops';
 import { findNodeRecursive } from '../../lib/sop_graph';
 import { autoKey, setKeyAtPlayhead } from '../../stores/timeline';
@@ -488,6 +489,11 @@ export const ActorProperties: Component<ActorPropertiesProps> = (props) => {
                 </div>
               </Show>
             </div>
+
+            {/* Inline per-object material override, edited here rather than on
+                the Object Output SOP node. Only shows for actors emitted by an
+                object_output SOP (the component self-gates on the source node). */}
+            <MaterialOverride nodeUid={actor().sop_node_uid} />
 
             <div class="property-section">
               <h4>Instances ({instances().length})</h4>

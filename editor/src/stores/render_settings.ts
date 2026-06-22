@@ -14,12 +14,15 @@ const [maxBouncesSignal, setMaxBouncesSignal] = createSignal(8);
 // [w, h]. [0, 0] = match viewport pixel size; otherwise the PT renders at
 // this fixed resolution and the viewport blit scales to fit.
 const [resolutionSignal, setResolutionSignal] = createSignal<[number, number]>([0, 0]);
+// Path-tracer backend: 'auto' | 'metal' (GPU) | 'cpu'.
+const [ptBackendSignal, setPtBackendSignal] = createSignal<api.PtBackend>('auto');
 
 export const ptPreviewEnabled = ptPreviewSignal;
 export const frameLocked = frameLockedSignal;
 export const maxSamples = maxSamplesSignal;
 export const maxBounces = maxBouncesSignal;
 export const renderResolution = resolutionSignal;
+export const ptBackend = ptBackendSignal;
 
 // Seed every signal from the engine so the toolbar reflects native state
 // (and any project-stored preference) before the user touches anything.
@@ -34,6 +37,9 @@ export function initRenderSettings(): void {
   api.getMaxBounces().then(setMaxBouncesSignal).catch(() => {});
   api.getPtRenderResolution()
     .then((r) => setResolutionSignal([r.width, r.height]))
+    .catch(() => {});
+  api.getPtBackend()
+    .then((b) => setPtBackendSignal(b as api.PtBackend))
     .catch(() => {});
 }
 
@@ -79,4 +85,15 @@ export function setRenderResolution(w: number, h: number): void {
   setResolutionSignal([w, h]);
   api.setPtRenderResolution(w, h).catch((e) =>
     console.warn('set_pt_render_resolution failed:', e));
+}
+
+// Optimistic set + push, rolled back on failure. Recreates the path tracer
+// engine-side and restarts accumulation on the chosen backend.
+export function setPtBackend(b: api.PtBackend): void {
+  const prev = ptBackendSignal();
+  setPtBackendSignal(b);
+  api.setPtBackend(b).catch((e) => {
+    console.warn('set_pt_backend failed:', e);
+    setPtBackendSignal(prev);
+  });
 }

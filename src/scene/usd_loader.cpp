@@ -1,0 +1,318 @@
+#include "usd_loader.hpp"
+
+#include <iostream>
+
+#ifdef TRACEY_HAS_USD
+
+#include "actor.hpp"
+#include "camera.hpp"
+#include "light.hpp"
+#include "material_instance.hpp"
+#include "scene_instance.hpp"
+#include "scene_object.hpp"
+#include "transform.hpp"
+
+#include <pxr/usd/usd/stage.h>
+#include <pxr/usd/usd/primRange.h>
+#include <pxr/usd/usdGeom/camera.h>
+#include <pxr/usd/usdGeom/mesh.h>
+#include <pxr/usd/usdGeom/xformable.h>
+#include <pxr/usd/usdGeom/primvarsAPI.h>
+#include <pxr/usd/usdLux/lightAPI.h>
+#include <pxr/usd/usdLux/distantLight.h>
+#include <pxr/usd/usdLux/sphereLight.h>
+#include <pxr/usd/usdLux/rectLight.h>
+#include <pxr/usd/usdLux/domeLight.h>
+#include <pxr/usd/usdShade/material.h>
+#include <pxr/usd/usdShade/materialBindingAPI.h>
+#include <pxr/usd/usdShade/shader.h>
+#include <pxr/base/gf/camera.h>
+#include <pxr/base/gf/matrix4d.h>
+#include <pxr/base/gf/vec2f.h>
+#include <pxr/base/gf/vec3f.h>
+#include <pxr/base/vt/array.h>
+
+#include <cmath>
+
+#define GLM_ENABLE_EXPERIMENTAL
+#include <glm/gtx/matrix_decompose.hpp>
+#include <glm/gtc/quaternion.hpp>
+
+#include <vector>
+
+PXR_NAMESPACE_USING_DIRECTIVE
+
+namespace tracey
+{
+    namespace
+    {
+        // USD GfMatrix4d is row-major / row-vector (p' = p·M); glm is
+        // column-major / column-vector (p' = M·p). Copying element-for-element
+        // with matching indices yields the transpose, which is exactly the
+        // convention flip we want (translation lands in glm's 4th column).
+        glm::mat4 toGlm(const GfMatrix4d &M)
+        {
+            glm::mat4 g(1.0f);
+            for (int i = 0; i < 4; ++i)
+                for (int j = 0; j < 4; ++j)
+                    g[i][j] = static_cast<float>(M[i][j]);
+            return g;
+        }
+
+        Transform transformFromMatrix(const glm::mat4 &m)
+        {
+            Transform t;
+            glm::vec3 scale, translation, skew;
+            glm::vec4 perspective;
+            glm::quat rotation;
+            if (glm::decompose(m, scale, rotation, translation, skew, perspective))
+            {
+                t.setPosition(translation);
+                t.setRotation(rotation);
+                t.setScale(scale);
+            }
+            return t;
+        }
+
+        // Map a prim's bound UsdPreviewSurface to a MaterialInstance. Reads
+        // constant input values/defaults; texture-connected inputs are a
+        // follow-up (the value/fallback is used until then).
+        MaterialInstance convertBoundMaterial(const UsdPrim &prim)
+        {
+            MaterialInstance m("pbr");
+            UsdShadeMaterial mat = UsdShadeMaterialBindingAPI(prim).ComputeBoundMaterial();
+            if (!mat) return m;
+            UsdShadeShader surface = mat.ComputeSurfaceSource();
+            if (!surface) return m;
+
+            auto getF = [&](const char *name, float def) {
+                float v = def;
+                if (UsdShadeInput in = surface.GetInput(TfToken(name))) in.Get(&v);
+                return v;
+            };
+            auto getC = [&](const char *name, const GfVec3f &def) {
+                GfVec3f v = def;
+                if (UsdShadeInput in = surface.GetInput(TfToken(name))) in.Get(&v);
+                return Vec3(v[0], v[1], v[2]);
+            };
+
+            m.setAlbedo(getC("diffuseColor", GfVec3f(0.8f, 0.8f, 0.8f)));
+            m.setMetallic(getF("metallic", 0.0f));
+            m.setRoughness(getF("roughness", 0.5f));
+            m.setFloat("ior", getF("ior", 1.5f));
+            m.setFloat("opacity", getF("opacity", 1.0f));
+            m.setEmission(getC("emissiveColor", GfVec3f(0.0f, 0.0f, 0.0f)));
+            m.setFloat("clearcoat", getF("clearcoat", 0.0f));
+            m.setFloat("clearcoatRoughness", getF("clearcoatRoughness", 0.0f));
+            return m;
+        }
+
+        // Map a UsdLux light prim (already known to be one of the supported
+        // types) to an engine Light. Common attrs come from UsdLuxLightAPI;
+        // per-type extents from the concrete schema. The actor transform the
+        // caller sets supplies position (origin) + direction (-Z), matching
+        // both USD's light convention and the SceneCompiler's encoding.
+        void convertLight(const UsdPrim &prim, Light &out)
+        {
+            UsdLuxLightAPI api(prim);
+            float intensity = 1.0f, exposure = 0.0f;
+            api.GetIntensityAttr().Get(&intensity);
+            api.GetExposureAttr().Get(&exposure);
+            out.intensity = intensity * std::pow(2.0f, exposure);
+            GfVec3f color(1.0f, 1.0f, 1.0f);
+            api.GetColorAttr().Get(&color);
+            out.color = Vec3(color[0], color[1], color[2]);
+
+            if (prim.IsA<UsdLuxDistantLight>())
+            {
+                out.type = LightType::Distant;
+            }
+            else if (prim.IsA<UsdLuxSphereLight>())
+            {
+                out.type = LightType::Point;
+                float r = 0.0f;
+                UsdLuxSphereLight(prim).GetRadiusAttr().Get(&r);
+                out.radius = r;
+            }
+            else if (prim.IsA<UsdLuxRectLight>())
+            {
+                out.type = LightType::Area;
+                float w = 1.0f, h = 1.0f;
+                UsdLuxRectLight rect(prim);
+                rect.GetWidthAttr().Get(&w);
+                rect.GetHeightAttr().Get(&h);
+                out.size = Vec2(w, h);
+            }
+            else // UsdLuxDomeLight
+            {
+                out.type = LightType::Dome;
+                SdfAssetPath tex;
+                if (UsdLuxDomeLight(prim).GetTextureFileAttr().Get(&tex) &&
+                    !tex.GetResolvedPath().empty())
+                    out.hdriPath = tex.GetResolvedPath();
+            }
+        }
+
+        bool isSupportedLight(const UsdPrim &prim)
+        {
+            return prim.IsA<UsdLuxDistantLight>() || prim.IsA<UsdLuxSphereLight>() ||
+                   prim.IsA<UsdLuxRectLight>() || prim.IsA<UsdLuxDomeLight>();
+        }
+
+        // Triangulate a UsdGeomMesh into a SceneObject. Returns false if the
+        // mesh has no usable geometry. Per-vertex normals + `st` only (face-
+        // varying primvars are a follow-up; the engine computes face normals
+        // and defaults UVs when absent).
+        bool convertMesh(const UsdGeomMesh &mesh, SceneObject &out)
+        {
+            VtArray<GfVec3f> points;
+            VtArray<int> faceCounts, faceIndices;
+            mesh.GetPointsAttr().Get(&points);
+            mesh.GetFaceVertexCountsAttr().Get(&faceCounts);
+            mesh.GetFaceVertexIndicesAttr().Get(&faceIndices);
+            if (points.empty() || faceCounts.empty() || faceIndices.empty()) return false;
+
+            std::vector<Vec3> positions(points.size());
+            for (size_t i = 0; i < points.size(); ++i)
+                positions[i] = Vec3(points[i][0], points[i][1], points[i][2]);
+
+            // Fan-triangulate each polygon over the shared point indices.
+            std::vector<uint32_t> indices;
+            size_t offset = 0;
+            for (int c : faceCounts)
+            {
+                if (c >= 3 && offset + c <= faceIndices.size())
+                {
+                    for (int k = 1; k + 1 < c; ++k)
+                    {
+                        indices.push_back(static_cast<uint32_t>(faceIndices[offset + 0]));
+                        indices.push_back(static_cast<uint32_t>(faceIndices[offset + k]));
+                        indices.push_back(static_cast<uint32_t>(faceIndices[offset + k + 1]));
+                    }
+                }
+                offset += static_cast<size_t>(c < 0 ? 0 : c);
+            }
+            if (indices.empty()) return false;
+
+            out.setPositions(std::move(positions));
+            out.setIndices(std::move(indices));
+
+            VtArray<GfVec3f> normals;
+            if (mesh.GetNormalsAttr().Get(&normals) && normals.size() == points.size())
+            {
+                std::vector<Vec3> n(normals.size());
+                for (size_t i = 0; i < normals.size(); ++i)
+                    n[i] = Vec3(normals[i][0], normals[i][1], normals[i][2]);
+                out.setNormals(std::move(n));
+            }
+
+            UsdGeomPrimvar st = UsdGeomPrimvarsAPI(mesh.GetPrim()).GetPrimvar(TfToken("st"));
+            if (st)
+            {
+                VtArray<GfVec2f> uvs;
+                if (st.Get(&uvs) && uvs.size() == points.size())
+                {
+                    std::vector<Vec2> u(uvs.size());
+                    for (size_t i = 0; i < uvs.size(); ++i)
+                        u[i] = Vec2(uvs[i][0], uvs[i][1]);
+                    out.setUvs(std::move(u));
+                }
+            }
+            return true;
+        }
+    }
+
+    bool UsdLoader::available() { return true; }
+
+    std::unique_ptr<Scene> UsdLoader::loadFromFile(const std::string &path)
+    {
+        UsdStageRefPtr stage = UsdStage::Open(path);
+        if (!stage)
+        {
+            std::cerr << "[usd] failed to open stage: " << path << std::endl;
+            return nullptr;
+        }
+
+        auto scene = std::make_unique<Scene>();
+        int meshes = 0, lights = 0;
+        bool gotCamera = false;
+        for (const UsdPrim &prim : stage->Traverse())
+        {
+            const glm::mat4 world = toGlm(
+                UsdGeomXformable(prim).ComputeLocalToWorldTransform(UsdTimeCode::Default()));
+
+            // First camera found becomes the scene camera.
+            if (!gotCamera && prim.IsA<UsdGeomCamera>())
+            {
+                Camera camera;
+                camera.setPosition(Vec3(world[3]));
+                glm::mat3 rot(world);
+                rot[0] = glm::normalize(rot[0]);
+                rot[1] = glm::normalize(rot[1]);
+                rot[2] = glm::normalize(rot[2]);
+                camera.setRotation(glm::quat_cast(rot));
+                const float vfov = static_cast<float>(
+                    UsdGeomCamera(prim).GetCamera(UsdTimeCode::Default())
+                        .GetFieldOfView(GfCamera::FOVVertical));
+                if (vfov > 0.0f) camera.setFov(vfov);
+                scene->setCamera(camera);
+                gotCamera = true;
+                continue;
+            }
+
+            // UsdLux light → an actor with a Light component + the prim's
+            // world transform (which supplies position + -Z direction).
+            if (isSupportedLight(prim))
+            {
+                Light light;
+                convertLight(prim, light);
+                Actor *actor = scene->createActor();
+                actor->setName(prim.GetPath().GetString());
+                actor->setTransform(transformFromMatrix(world));
+                actor->setLight(light);
+                ++lights;
+                continue;
+            }
+
+            UsdGeomMesh mesh(prim);
+            if (!mesh) continue;
+
+            auto obj = std::make_unique<SceneObject>();
+            if (!convertMesh(mesh, *obj)) continue;
+            const std::string name = prim.GetPath().GetString();
+            obj->setName(name);
+            scene->addObject(name, std::move(obj));
+
+            // One actor per mesh prim, world transform baked on (hierarchy
+            // preservation is a follow-up; this renders correctly today).
+            Actor *actor = scene->createActor();
+            actor->setName(name);
+            actor->setTransform(transformFromMatrix(world));
+
+            SceneInstance inst(name);
+            inst.setMaterial(convertBoundMaterial(prim));
+            actor->addInstance(std::move(inst));
+            ++meshes;
+        }
+
+        std::cout << "[usd] imported " << meshes << " mesh(es), " << lights << " light(s)"
+                  << (gotCamera ? ", 1 camera" : "") << " from " << path << std::endl;
+        return scene;
+    }
+}
+
+#else // !TRACEY_HAS_USD
+
+namespace tracey
+{
+    bool UsdLoader::available() { return false; }
+
+    std::unique_ptr<Scene> UsdLoader::loadFromFile(const std::string &path)
+    {
+        std::cerr << "[usd] build has no OpenUSD support; cannot load " << path
+                  << " (run scripts/bootstrap_deps.sh and rebuild)." << std::endl;
+        return nullptr;
+    }
+}
+
+#endif

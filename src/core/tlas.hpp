@@ -122,6 +122,13 @@ namespace tracey
 
         Tlas(std::span<const Blas *> blases, std::span<const Instance> instances);
         Tlas(std::span<const Blas *> blases, std::span<const Instance> instances, const Config &config);
+        // Motion-blur constructor: `instancesEnd` is the shutter-close pose for
+        // each instance (parallel to `instances`, the shutter-open pose). The
+        // BVH uses swept bounds (the union of both poses) and intersect()
+        // interpolates each instance transform by Ray::time. When hasMotion is
+        // false this behaves exactly like the static constructor.
+        Tlas(std::span<const Blas *> blases, std::span<const Instance> instances,
+             std::span<const Instance> instancesEnd, bool hasMotion, const Config &config);
 
         std::optional<Hit> intersect(const Ray &ray, float tMin, float tMax, RayFlags flags) const;
         const Instance &getInstance(uint32_t index) const
@@ -166,6 +173,10 @@ namespace tracey
         std::span<const Blas *> blases;
         std::span<const Instance> instances;
         std::vector<Transforms> instanceTransforms;
+        // R4 motion blur: shutter-close transforms (parallel to
+        // instanceTransforms). Only consulted when m_hasMotion is true.
+        std::vector<Transforms> instanceTransformsEnd;
+        bool m_hasMotion = false;
         std::vector<BVHNode> m_nodes;
         std::vector<uint32_t> m_instanceIndices;
         Config m_config;

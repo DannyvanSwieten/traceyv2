@@ -22,6 +22,9 @@ interface RenderPanelProps {
   // dimensions.
   resolution: () => [number, number];
   setResolution: (w: number, h: number) => void;
+  // Path-tracer backend: 'auto' | 'metal' (GPU) | 'cpu'.
+  ptBackend: () => string;
+  setPtBackend: (b: api.PtBackend) => void;
   onResetRender: () => void;
 }
 
@@ -71,6 +74,22 @@ export const RenderPanel: Component<RenderPanelProps> = (props) => {
 
       <section class="render-panel-section">
         <h4 class="render-panel-section-title">Path Tracer</h4>
+        <div class="render-panel-row">
+          <label class="render-panel-label" for="render-panel-backend">
+            Backend
+          </label>
+          <select
+            id="render-panel-backend"
+            class="render-panel-select"
+            title="GPU (Metal) is fast and the default; CPU is the portable reference (slower) — useful for debugging or backend parity."
+            value={props.ptBackend()}
+            onChange={(e) => props.setPtBackend(e.currentTarget.value as api.PtBackend)}
+          >
+            <option value="auto">Auto</option>
+            <option value="metal">GPU (Metal)</option>
+            <option value="cpu">CPU</option>
+          </select>
+        </div>
         <div class="render-panel-row">
           <label class="render-panel-label" for="render-panel-samples">
             Samples

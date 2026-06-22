@@ -17,6 +17,7 @@
 #include "scene/scene_loader.hpp"
 #include "scene/scene_compiler.hpp"
 #include "scene/gltf_loader.hpp"
+#include "scene/usd_loader.hpp"
 #include "scene/camera.hpp"
 #include "path_tracer/api/path_tracer.hpp"
 #include "path_tracer/api/backend_registry.hpp"
@@ -26,6 +27,7 @@
 
 #include <glm/glm.hpp>
 
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
@@ -111,6 +113,13 @@ int main(int argc, char *argv[])
     uint32_t bounces = 8;
     double minPsnr = 30.0;
     std::string outPrefix = "pt_compare";
+    float clearcoat = -1.0f;  // >=0 injects a clearcoat factor on all materials (R3 lobe test)
+    float sheen = -1.0f;      // >=0 injects a sheen factor on all materials (R3 lobe test)
+    float subsurface = -1.0f; // >=0 injects a subsurface factor on all materials (R3 lobe test)
+    float anisotropy = -2.0f; // >-2 injects an anisotropy factor [-1,1] on all materials (R3 lobe test)
+    float aperture = 0.0f;    // >0 enables thin-lens DOF (R4 lens parity test)
+    float focal = -1.0f;      // >0 overrides the focal distance (else camera default)
+    float motionDx = 0.0f;    // !=0 translates all instances by (dx,0,0) over the shutter (R4 motion parity test)
 
     for (int i = 1; i < argc; ++i)
     {
@@ -123,6 +132,13 @@ int main(int argc, char *argv[])
         else if (arg == "--size") size = static_cast<uint32_t>(std::stoul(next()));
         else if (arg == "--min-psnr") minPsnr = std::stod(next());
         else if (arg == "--out") outPrefix = next();
+        else if (arg == "--clearcoat") clearcoat = std::stof(next());
+        else if (arg == "--sheen") sheen = std::stof(next());
+        else if (arg == "--subsurface") subsurface = std::stof(next());
+        else if (arg == "--anisotropy") anisotropy = std::stof(next());
+        else if (arg == "--aperture") aperture = std::stof(next());
+        else if (arg == "--focal") focal = std::stof(next());
+        else if (arg == "--motion") motionDx = std::stof(next());
         else scenePath = arg;
     }
 
@@ -131,6 +147,11 @@ int main(int argc, char *argv[])
 
     std::unique_ptr<tracey::Scene> scene;
     const std::string ext = scenePath.extension().string();
+#ifdef TRACEY_HAS_USD
+    if (ext == ".usd" || ext == ".usda" || ext == ".usdc" || ext == ".usdz")
+        scene = tracey::UsdLoader::loadFromFile(scenePath.string());
+    else
+#endif
     if (ext == ".gltf" || ext == ".glb")
         scene = tracey::GltfLoader::loadFromFile(scenePath);
     else
@@ -141,6 +162,58 @@ int main(int argc, char *argv[])
 
     tracey::SceneCompiler::CompiledScene compiled =
         tracey::SceneCompiler::compile(device.get(), *scene);
+    if (clearcoat >= 0.0f)
+    {
+        // Force a clear coat on every material to validate the R3 coat lobe is
+        // lockstep across backends (both read the same compiled materials).
+        for (auto &m : compiled.materials)
+        {
+            m.clearcoatFactor = clearcoat;
+            m.clearcoatRoughnessFactor = 0.1f;
+        }
+        std::cout << "Injected clearcoat=" << clearcoat << " on "
+                  << compiled.materials.size() << " materials" << std::endl;
+    }
+    if (sheen >= 0.0f)
+    {
+        // Force sheen on every material to validate the R3 sheen lobe is
+        // lockstep across backends (both read the same compiled materials).
+        for (auto &m : compiled.materials)
+            m.sheenFactor = sheen;
+        std::cout << "Injected sheen=" << sheen << " on "
+                  << compiled.materials.size() << " materials" << std::endl;
+    }
+    if (subsurface >= 0.0f)
+    {
+        // Force subsurface on every material to validate the R3d wrap-diffusion
+        // lobe is lockstep across backends (scatter tint stays the default white).
+        for (auto &m : compiled.materials)
+            m.subsurfaceFactor = subsurface;
+        std::cout << "Injected subsurface=" << subsurface << " on "
+                  << compiled.materials.size() << " materials" << std::endl;
+    }
+    if (anisotropy > -2.0f)
+    {
+        // Force anisotropy + full metallic so the (gated) anisotropic GGX lobe
+        // actually runs — validates it is lockstep across backends.
+        for (auto &m : compiled.materials)
+        {
+            m.anisotropyFactor = anisotropy;
+            m.metallicFactor = 1.0f;
+        }
+        std::cout << "Injected anisotropy=" << anisotropy << " (metallic=1) on "
+                  << compiled.materials.size() << " materials" << std::endl;
+    }
+    if (motionDx != 0.0f)
+    {
+        // Translate every instance by (dx,0,0) over the shutter to validate the
+        // motion-blur path is lockstep across backends (CPU swept-BVH interp vs
+        // Metal hardware motion AS).
+        compiled.instancesEnd = compiled.instances;
+        for (auto &inst : compiled.instancesEnd) inst.transform[0][3] += motionDx;
+        compiled.hasMotion = true;
+        std::cout << "Motion: instances translated by dx=" << motionDx << " over shutter" << std::endl;
+    }
     std::cout << "Compiled: " << compiled.instances.size() << " instances, "
               << compiled.blases.size() << " BLASes, "
               << compiled.textures.size() << " textures, "
@@ -160,9 +233,24 @@ int main(int argc, char *argv[])
         programs.addProgram(tracey::compileShaderGraph(graph));
     }
 
-    const tracey::Camera camera = autoFitCamera(*scene);
+    tracey::Camera camera = autoFitCamera(*scene);
+    if (aperture > 0.0f)
+    {
+        // Validate the thin-lens DOF lobe is lockstep across backends.
+        camera.setAperture(aperture);
+        if (focal > 0.0f) camera.setFocalDistance(focal);
+        std::cout << "DOF: aperture=" << aperture
+                  << " focalDistance=" << camera.focalDistance() << std::endl;
+    }
 
-    auto renderWith = [&](const std::string &backendName) -> std::vector<float> {
+    constexpr size_t kAov = static_cast<size_t>(tracey::AovKind::Count);
+    struct RenderOut
+    {
+        std::vector<float> beauty;
+        std::array<std::vector<float>, kAov> aovs;
+    };
+
+    auto renderWith = [&](const std::string &backendName) -> RenderOut {
         tracey::PathTracerConfig config;
         config.width = size;
         config.height = size;
@@ -170,6 +258,7 @@ int main(int argc, char *argv[])
         config.useMaterialPrograms = true;
         config.samplesPerFrame = 1;
         config.maxBounces = bounces;
+        config.enableAovs = true;  // exercise + compare the AOV layers too
         config.backend = tracey::pathTracerBackendKindFromString(backendName);
 
         tracey::PathTracer tracer(device.get(), config);
@@ -181,15 +270,24 @@ int main(int argc, char *argv[])
             const bool want = (s == spp - 1);
             tracer.render(compiled, camera, clear, want);
         }
-        std::vector<float> pixels(static_cast<size_t>(size) * size * 4);
-        tracer.readback(pixels.data());
-        return pixels;
+        const size_t n4 = static_cast<size_t>(size) * size * 4;
+        RenderOut out;
+        out.beauty.resize(n4);
+        tracer.readback(out.beauty.data());
+        for (size_t k = 0; k < kAov; ++k)
+        {
+            out.aovs[k].resize(n4);
+            tracer.readbackAOV(static_cast<tracey::AovKind>(k), out.aovs[k].data());
+        }
+        return out;
     };
 
     std::cout << "Rendering with '" << backendA << "'..." << std::endl;
-    const std::vector<float> imgA = renderWith(backendA);
+    const RenderOut outA = renderWith(backendA);
     std::cout << "Rendering with '" << backendB << "'..." << std::endl;
-    const std::vector<float> imgB = renderWith(backendB);
+    const RenderOut outB = renderWith(backendB);
+    const std::vector<float> &imgA = outA.beauty;
+    const std::vector<float> &imgB = outB.beauty;
 
     // ── Compare ──
     double sumSq = 0.0;
@@ -228,9 +326,45 @@ int main(int argc, char *argv[])
     std::printf("Images: %s_a.ppm / %s_b.ppm / %s_diff.ppm\n",
                 outPrefix.c_str(), outPrefix.c_str(), outPrefix.c_str());
 
+    // ── AOV parity ──
+    // AOVs are first-hit (primary visibility) only, so the two backends should
+    // agree except at silhouette/edge pixels where the HW-RT vs BVH tie-break
+    // picks a different triangle (the same source as the beauty divergence).
+    // Gate the bounded denoiser guides (Albedo, Normal) on a loose mean-abs
+    // tolerance — a systematic AOV bug moves the mean; edge pixels don't.
+    static const char *kAovNames[kAov] = {"albedo", "normal", "depth",
+                                           "position", "emission", "instanceId"};
+    constexpr double kAovMeanTol = 0.02;
+    bool aovFail = false;
+    std::printf("AOV parity (mean |diff| / max |diff|):\n");
+    for (size_t k = 0; k < kAov; ++k)
+    {
+        double aSum = 0.0, aMax = 0.0;
+        for (size_t i = 0; i < pixelCount; ++i)
+            for (int c = 0; c < 4; ++c)
+            {
+                const double d = double(outA.aovs[k][i * 4 + c]) -
+                                 double(outB.aovs[k][i * 4 + c]);
+                aSum += std::abs(d);
+                aMax = std::max(aMax, std::abs(d));
+            }
+        const double aMean = aSum / (pixelCount * 4.0);
+        const bool gated = (k == size_t(tracey::AovKind::Albedo) ||
+                            k == size_t(tracey::AovKind::Normal));
+        const bool bad = gated && aMean > kAovMeanTol;
+        std::printf("  %-11s %.6f / %.4f%s\n", kAovNames[k], aMean, aMax,
+                    bad ? "  <-- FAIL" : "");
+        aovFail = aovFail || bad;
+    }
+
     if (psnr < minPsnr)
     {
         std::printf("FAIL: PSNR %.2f below threshold %.2f\n", psnr, minPsnr);
+        return 1;
+    }
+    if (aovFail)
+    {
+        std::printf("FAIL: AOV mean |diff| exceeded %.3f\n", kAovMeanTol);
         return 1;
     }
     std::printf("PASS\n");

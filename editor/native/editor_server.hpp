@@ -540,6 +540,13 @@ private:
         int width = 0;         // 0 = use current viewport (path tracer) resolution
         int height = 0;
         std::string codec;     // "h264" | "prores"
+        // Output mode. "video" (default) → AVFoundation movie via codec.
+        // "exr" → a multi-layer OpenEXR sequence (linear beauty + AOVs), one
+        // file per frame named "<path-stem>.NNNN.exr".
+        std::string format = "video";
+        // EXR only: run the OIDN denoiser on the beauty using the albedo +
+        // normal AOVs as guides before writing. Ignored without TRACEY_WITH_OIDN.
+        bool denoise = false;
     };
     std::atomic<bool> m_export_in_progress{false};
     std::atomic<bool> m_export_cancel{false};

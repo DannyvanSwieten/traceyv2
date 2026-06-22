@@ -19,7 +19,7 @@ namespace tracey {
 std::string VulkanSurfaceFactory::createSurface(
     VkInstance instance,
     void* nativeHandle,
-    void* nativeDisplay,
+    void* /*nativeDisplay*/,
     VkSurfaceKHR* surface
 ) {
     if (instance == VK_NULL_HANDLE) {

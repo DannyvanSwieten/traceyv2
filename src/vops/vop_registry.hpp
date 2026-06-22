@@ -32,7 +32,7 @@ namespace tracey
             double rangeMin = 0.0;
             double rangeMax = 0.0;
             double rangeStep = 0.0;
-            std::vector<std::string> options;
+            std::vector<std::string> options{};
         };
 
         struct CatalogEntry

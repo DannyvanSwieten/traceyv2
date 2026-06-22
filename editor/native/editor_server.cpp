@@ -7,6 +7,8 @@
 #include "video_exporter.hpp"
 
 #include "core/parallel.hpp"
+#include "io/denoiser.hpp"
+#include "io/exr_writer.hpp"
 #include "scene/actor.hpp"
 #include "scene/camera.hpp"
 #include "scene/gltf_loader.hpp"
@@ -556,6 +558,12 @@ uint64_t actor_structural_sig(const tracey::sops::EmittedActor &a) {
         sig_mix(h, &a.ovTransmission, sizeof(a.ovTransmission));
         sig_mix(h, &a.ovIor, sizeof(a.ovIor));
         sig_mix(h, &a.ovOpacity, sizeof(a.ovOpacity));
+        sig_mix(h, &a.ovClearcoat, sizeof(a.ovClearcoat));
+        sig_mix(h, &a.ovClearcoatRoughness, sizeof(a.ovClearcoatRoughness));
+        sig_mix(h, &a.ovSheen, sizeof(a.ovSheen));
+        sig_mix(h, &a.ovSubsurface, sizeof(a.ovSubsurface));
+        sig_mix(h, &a.ovSubsurfaceColor, sizeof(a.ovSubsurfaceColor));
+        sig_mix(h, &a.ovAnisotropy, sizeof(a.ovAnisotropy));
     }
     // Instance-group count + per-instance tints are INTENTIONALLY NOT
     // folded in here. A particle sim spawning/dying entries every cook
@@ -640,6 +648,12 @@ static uint64_t emitted_signature(const std::vector<tracey::sops::EmittedActor>&
             mix(&a.ovTransmission, sizeof(a.ovTransmission));
             mix(&a.ovIor, sizeof(a.ovIor));
             mix(&a.ovOpacity, sizeof(a.ovOpacity));
+            mix(&a.ovClearcoat, sizeof(a.ovClearcoat));
+            mix(&a.ovClearcoatRoughness, sizeof(a.ovClearcoatRoughness));
+            mix(&a.ovSheen, sizeof(a.ovSheen));
+            mix(&a.ovSubsurface, sizeof(a.ovSubsurface));
+            mix(&a.ovSubsurfaceColor, sizeof(a.ovSubsurfaceColor));
+            mix(&a.ovAnisotropy, sizeof(a.ovAnisotropy));
         }
         // Geometry digest — defer to geometry_dedup_hash so a VOP that
         // writes Cd / N / uv (point or vertex class) flips this
@@ -1204,6 +1218,12 @@ void EditorServer::apply_emitted(std::vector<tracey::sops::EmittedActor>&& emitt
             mat.setFloat("transmission", ea.ovTransmission);
             mat.setFloat("ior", ea.ovIor);
             mat.setFloat("opacity", ea.ovOpacity);
+            mat.setFloat("clearcoat", ea.ovClearcoat);
+            mat.setFloat("clearcoatRoughness", ea.ovClearcoatRoughness);
+            mat.setFloat("sheen", ea.ovSheen);
+            mat.setFloat("subsurface", ea.ovSubsurface);
+            mat.setVec3("subsurfaceColor", ea.ovSubsurfaceColor);
+            mat.setFloat("anisotropy", ea.ovAnisotropy);
         }
 
         if (!ea.instances.empty()) {
@@ -1867,6 +1887,8 @@ void EditorServer::export_video_loop(VideoExportRequest req) {
     bool resolution_changed = false;
     uint32_t saved_max_bounces = 0;
     bool bounces_changed = false;
+    const bool exr = (req.format == "exr");
+    bool export_aovs_changed = false;
     {
         std::lock_guard<std::mutex> lock(m_mutex);
         if (!m_engine || !m_engine->path_tracer_ready() ||
@@ -1904,6 +1926,12 @@ void EditorServer::export_video_loop(VideoExportRequest req) {
             m_engine->set_max_bounces(static_cast<uint32_t>(req.max_bounces));
             bounces_changed = true;
         }
+
+        // EXR mode: switch the PT into AOV + linear-beauty output (recreates it).
+        if (exr && !m_engine->export_aovs()) {
+            m_engine->set_export_aovs(true);
+            export_aovs_changed = true;
+        }
     }
     if (width == 0 || height == 0) {
         broadcast_event({{"event", "video_export_error"},
@@ -1913,8 +1941,11 @@ void EditorServer::export_video_loop(VideoExportRequest req) {
     }
 
     auto restore_engine_state = [&]() {
-        if (!resolution_changed && !bounces_changed) return;
+        if (!resolution_changed && !bounces_changed && !export_aovs_changed) return;
         std::lock_guard<std::mutex> lock(m_mutex);
+        if (export_aovs_changed) {
+            m_engine->set_export_aovs(false);
+        }
         if (resolution_changed) {
             m_engine->set_resolutions(saved_raster_w, saved_raster_h,
                                       saved_pt_w, saved_pt_h);
@@ -1931,17 +1962,36 @@ void EditorServer::export_video_loop(VideoExportRequest req) {
     };
 
     VideoExporter exporter;
-    const auto codec = (req.codec == "prores")
-        ? VideoExporter::Codec::ProRes422
-        : VideoExporter::Codec::H264;
-    if (!exporter.begin(req.path, width, height,
-                        static_cast<uint32_t>(std::lround(req.fps)), codec)) {
-        broadcast_event({{"event", "video_export_error"},
-                         {"message", exporter.last_error()}});
-        restore_engine_state();
-        m_export_in_progress.store(false);
-        return;
+    if (!exr) {
+        const auto codec = (req.codec == "prores")
+            ? VideoExporter::Codec::ProRes422
+            : VideoExporter::Codec::H264;
+        if (!exporter.begin(req.path, width, height,
+                            static_cast<uint32_t>(std::lround(req.fps)), codec)) {
+            broadcast_event({{"event", "video_export_error"},
+                             {"message", exporter.last_error()}});
+            restore_engine_state();
+            m_export_in_progress.store(false);
+            return;
+        }
     }
+
+    // Per-frame EXR sequence path: "<dir>/<stem>.NNNN.exr".
+    const std::filesystem::path exr_base(req.path);
+    auto exr_frame_path = [&](int frame) -> std::string {
+        char num[16];
+        std::snprintf(num, sizeof(num), "%04d", frame);
+        return (exr_base.parent_path() /
+                (exr_base.stem().string() + "." + num + ".exr")).string();
+    };
+    // Pull the first N interleaved channels out of a readback's RGBA32F plane.
+    const size_t pixel_count = static_cast<size_t>(width) * height;
+    auto take_n = [&](const float *rgba, int n) {
+        std::vector<float> out(pixel_count * static_cast<size_t>(n));
+        for (size_t p = 0; p < pixel_count; ++p)
+            for (int c = 0; c < n; ++c) out[p * n + c] = rgba[p * 4 + c];
+        return out;
+    };
 
     using clock = std::chrono::steady_clock;
     const auto t0 = clock::now();
@@ -1971,6 +2021,10 @@ void EditorServer::export_video_loop(VideoExportRequest req) {
         const double frame_time = (req.fps > 0.0) ? (f - 1) / req.fps : 0.0;
         const int frame_index = f - req.frame_start;  // 0-based for the writer
 
+        // A render dispatch can throw (e.g. a Metal command-buffer error); on a
+        // worker thread that would terminate the whole app. Catch it, report it
+        // as an export error, and stop cleanly.
+        try {
         // Step 1: seek + cook + accumulate samples — all under m_mutex.
         {
             std::lock_guard<std::mutex> lock(m_mutex);
@@ -1983,31 +2037,119 @@ void EditorServer::export_video_loop(VideoExportRequest req) {
             }
             apply_animation_at(frame_time);
 
+            // R4 motion blur: build shutter-close instance poses so moving
+            // objects blur. Evaluate the animation at frame_time + shutter·(1/fps),
+            // snapshot those instances as instancesEnd, then restore the start
+            // pose and stamp a fresh revision so the path-tracer backend rebuilds
+            // with the hardware/swept motion AS. Rigid per-instance (keyed TRS)
+            // motion only; camera + deformation blur are follow-ups.
+            const float shutter = m_engine->scene().camera().shutter();
+            if (shutter > 0.0f && m_engine->compiled_scene_ready()) {
+                const double dt = static_cast<double>(shutter) / std::max(req.fps, 1e-6);
+                apply_animation_at(frame_time + dt);
+                m_engine->compile_scene();
+                std::vector<tracey::Tlas::Instance> endInstances;
+                if (auto snap = m_engine->compiled_scene_snapshot())
+                    endInstances = snap->instances;
+                apply_animation_at(frame_time);   // restore the shutter-open pose
+                m_engine->compile_scene();
+                m_engine->set_motion_end_instances(std::move(endInstances));
+            }
+
             for (int s = 0; s < req.samples_per_frame; ++s) {
                 if (m_export_cancel.load()) break;
                 const bool clear = (s == 0);
-                m_engine->render_frame(clear);
+                // Only the final sample needs the readback blit (beauty comes
+                // back via the readback buffer); earlier samples skip it. AOVs
+                // read from their own shared buffers, so they don't need it.
+                const bool last = (s == req.samples_per_frame - 1);
+                m_engine->render_frame(clear, /*want_pixels=*/last);
             }
         }
 
         if (m_export_cancel.load()) break;
 
-        // Step 2: pull the accumulated pixels back and append. We re-take the
-        // lock to read the path tracer state coherently, then drop it across
-        // the (potentially blocking) AVAssetWriter call so command handlers
-        // can answer e.g. an export_video_cancel from the dialog.
-        std::vector<uint8_t> pixels;
-        {
-            std::lock_guard<std::mutex> lock(m_mutex);
-            const size_t bytes = static_cast<size_t>(width) * height * 4;
-            pixels.resize(bytes);
-            m_engine->path_tracer()->readback(pixels.data());
-        }
+        // Step 2: pull the accumulated frame back and write it. Read under the
+        // lock for a coherent PT state, then drop the lock for the file write
+        // so command handlers can still answer e.g. export_video_cancel.
+        if (exr) {
+            // Linear beauty (readback() is linear/float in export-AOV mode) +
+            // each AOV layer (RGBA32F), assembled into one multi-layer EXR.
+            std::vector<float> beauty(pixel_count * 4);
+            std::vector<float> albedo(pixel_count * 4), normalAov(pixel_count * 4);
+            std::vector<float> depth(pixel_count * 4), position(pixel_count * 4);
+            std::vector<float> emission(pixel_count * 4), instanceId(pixel_count * 4);
+            {
+                std::lock_guard<std::mutex> lock(m_mutex);
+                auto *pt = m_engine->path_tracer();
+                pt->readback(reinterpret_cast<uint8_t *>(beauty.data()));
+                pt->readbackAOV(tracey::AovKind::Albedo, albedo.data());
+                pt->readbackAOV(tracey::AovKind::Normal, normalAov.data());
+                pt->readbackAOV(tracey::AovKind::Depth, depth.data());
+                pt->readbackAOV(tracey::AovKind::Position, position.data());
+                pt->readbackAOV(tracey::AovKind::Emission, emission.data());
+                pt->readbackAOV(tracey::AovKind::InstanceId, instanceId.data());
+            }
+            // Optional OIDN denoise of the linear beauty, guided by albedo +
+            // normal. On failure (or no denoiser built) fall back to the raw
+            // beauty so the export still completes.
+            std::vector<float> denoised;
+            const float *beautySrc = beauty.data();
+            if (req.denoise && tracey::denoiserAvailable()) {
+                denoised.resize(pixel_count * 4);
+                std::string derr;
+                if (tracey::denoiseImage(static_cast<int>(width), static_cast<int>(height),
+                                         beauty.data(), albedo.data(), normalAov.data(),
+                                         denoised.data(), &derr)) {
+                    beautySrc = denoised.data();
+                } else {
+                    std::fprintf(stderr, "[export] denoise failed: %s\n", derr.c_str());
+                }
+            }
+            const auto bRGB = take_n(beautySrc, 3);
+            const auto aRGB = take_n(albedo.data(), 3);
+            const auto nXYZ = take_n(normalAov.data(), 3);
+            const auto pXYZ = take_n(position.data(), 3);
+            const auto eRGB = take_n(emission.data(), 3);
+            const auto zR = take_n(depth.data(), 1);
+            const auto idR = take_n(instanceId.data(), 1);
+            const std::vector<tracey::ExrLayer> layers = {
+                {"", 3, bRGB.data()},
+                {"albedo", 3, aRGB.data()},
+                {"N", 3, nXYZ.data()},
+                {"P", 3, pXYZ.data()},
+                {"emission", 3, eRGB.data()},
+                {"Z", 1, zR.data()},
+                {"id", 1, idR.data()},
+            };
+            std::string exr_err;
+            if (!tracey::writeMultiLayerExr(exr_frame_path(f), static_cast<int>(width),
+                                            static_cast<int>(height), layers, &exr_err)) {
+                broadcast_event({{"event", "video_export_error"},
+                                 {"message", "EXR write failed: " + exr_err}});
+                success = false;
+                break;
+            }
+        } else {
+            std::vector<uint8_t> pixels;
+            {
+                std::lock_guard<std::mutex> lock(m_mutex);
+                const size_t bytes = static_cast<size_t>(width) * height * 4;
+                pixels.resize(bytes);
+                m_engine->path_tracer()->readback(pixels.data());
+            }
 
-        if (!exporter.append_frame(pixels.data(),
-                                   static_cast<uint32_t>(frame_index))) {
+            if (!exporter.append_frame(pixels.data(),
+                                       static_cast<uint32_t>(frame_index))) {
+                broadcast_event({{"event", "video_export_error"},
+                                 {"message", exporter.last_error()}});
+                success = false;
+                break;
+            }
+        }
+        } catch (const std::exception &e) {
             broadcast_event({{"event", "video_export_error"},
-                             {"message", exporter.last_error()}});
+                             {"message", std::string("render failed: ") + e.what()}});
             success = false;
             break;
         }
@@ -2021,7 +2163,7 @@ void EditorServer::export_video_loop(VideoExportRequest req) {
     }
 
     const bool cancelled = m_export_cancel.load();
-    const bool finished_ok = exporter.finish(cancelled || !success);
+    const bool finished_ok = exr ? true : exporter.finish(cancelled || !success);
 
     // Restore PT resolution + camera aspect for the live viewport before we
     // hand control back. Done before the playhead restore so the next

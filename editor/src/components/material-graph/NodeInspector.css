@@ -97,6 +97,34 @@
   border-color: #5a8;
 }
 
+/* Ranged scalar input: slider + a compact numeric readout. */
+.inspector-slider-row {
+  display: grid;
+  grid-template-columns: 1fr 60px;
+  gap: 6px;
+  align-items: center;
+}
+.inspector-slider {
+  width: 100%;
+  margin: 0;
+  accent-color: #5a8;
+}
+.inspector-slider-readout {
+  background: #2a2a2a;
+  border: 1px solid #333;
+  border-radius: 3px;
+  padding: 4px 6px;
+  color: #ddd;
+  font: 12px ui-monospace, SFMono-Regular, Menlo, monospace;
+  width: 100%;
+  box-sizing: border-box;
+  text-align: right;
+}
+.inspector-slider-readout:focus {
+  outline: none;
+  border-color: #5a8;
+}
+
 /* Native colour picker. Sized so it spans the same row width as the
    Vec4 editor's four cells, keeping the inspector layout uniform. */
 .inspector-color {

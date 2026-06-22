@@ -27,6 +27,8 @@ namespace tracey
         uint32_t maxDepth = 8;
         int32_t currentSample = 1;
         uint32_t lightCount = 0;
+        float aperture = 0.0f;       // thin-lens radius (0 = pinhole)
+        float focalDistance = 5.0f;  // in-focus distance along the view dir
     };
 
     inline ShaderInputsView readShaderInputs(const ShaderInputsBuffer &inputs)
@@ -46,6 +48,8 @@ namespace tracey
         std::memcpy(&out.maxDepth, bytes + 80, sizeof(uint32_t));
         std::memcpy(&out.currentSample, bytes + 84, sizeof(int32_t));
         std::memcpy(&out.lightCount, bytes + 88, sizeof(uint32_t));
+        std::memcpy(&out.aperture, bytes + 92, sizeof(float));
+        std::memcpy(&out.focalDistance, bytes + 96, sizeof(float));
         inputs.buffer()->unmap();
         return out;
     }

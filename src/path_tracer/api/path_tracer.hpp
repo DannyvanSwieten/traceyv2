@@ -28,6 +28,17 @@ namespace tracey
         uint32_t samplesPerFrame = 16;
         uint32_t maxBounces = 8;
 
+        // When true the integrator emits AOV layers (albedo/normal/depth/
+        // position/emission/instance-id) alongside the beauty image. Off for
+        // the interactive viewport (avoids extra buffers + bandwidth); the
+        // export / denoise paths turn it on. See AovKind in path_tracer_backend.hpp.
+        bool enableAovs = false;
+
+        // When true the final beauty write skips tonemap + gamma and emits
+        // LINEAR radiance — what an EXR film output / the denoiser wants. The
+        // viewport leaves this false for a display-ready tonemapped image.
+        bool linearOutput = false;
+
         // If true, the pipeline binds the four MaterialProgram SSBOs and the
         // hit shader is expected to be the uber-VM hit. Defaults to false so
         // legacy hit shaders keep working unchanged.
@@ -85,6 +96,14 @@ namespace tracey
         /// @return Size of data copied in bytes
         size_t readback(void *outData);
 
+        /// True when the backend computed AOV layers for the latest render
+        /// (requires config.enableAovs). See AovKind.
+        bool aovsAvailable() const;
+
+        /// Read back one AOV layer (RGBA32F, width*height*4 floats). Returns
+        /// bytes written, or 0 if AOVs are unavailable.
+        size_t readbackAOV(AovKind aov, void *outData);
+
         /// Get shader inputs buffer for advanced use cases
         /// Allows direct manipulation of shader uniforms beyond camera parameters
         ShaderInputsBuffer *shaderInputs() { return m_shaderInputs.get(); }
@@ -92,6 +111,11 @@ namespace tracey
         /// Get current resolution
         uint32_t width() const { return m_config.width; }
         uint32_t height() const { return m_config.height; }
+
+        /// True when the output/readback is RGBA32F (16 bytes/px) vs RGBA8 (4).
+        /// The export path forces this on (linear AOV output) independently of
+        /// the caller's own hdr setting, so readback sizing must consult it.
+        bool hdrOutput() const { return m_config.hdrOutput; }
 
         /// Get total accumulated sample count (render iterations * samples per frame)
         uint32_t sampleCount() const { return m_sampleCount * m_config.samplesPerFrame; }

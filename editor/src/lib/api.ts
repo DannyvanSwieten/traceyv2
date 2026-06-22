@@ -35,6 +35,13 @@ export interface Camera {
   near_plane: number;
   far_plane: number;
   aspect_ratio: number;
+  // Thin-lens depth of field (R4). aperture=0 → pinhole (no DOF). Optional so
+  // scenes/cameras saved before R4 still parse.
+  aperture?: number;
+  focal_distance?: number;
+  // Motion-blur shutter as a fraction of the frame interval (0 = off). Applied
+  // on sequence/EXR export — moving objects blur over [t, t+shutter/fps].
+  shutter?: number;
 }
 
 export interface Actor {
@@ -290,6 +297,12 @@ export const getCurrentSamples = () => send<number>('get_current_samples');
 export const getMaxBounces = () => send<number>('get_max_bounces');
 export const setMaxBounces = (bounces: number) =>
   send<null>('set_max_bounces', { bounces });
+// Path-tracer backend: 'auto' | 'metal' (GPU) | 'cpu'. Switching recreates the
+// path tracer and restarts accumulation.
+export type PtBackend = 'auto' | 'metal' | 'cpu';
+export const getPtBackend = () => send<string>('get_pt_backend');
+export const setPtBackend = (backend: PtBackend) =>
+  send<null>('set_pt_backend', { backend });
 
 // Toggle the rasterizer's antialiased point-sprite overlay (drawn on top of
 // the triangle pass in the main view). PiP path-tracer view is unaffected.
@@ -522,6 +535,39 @@ export interface GltfPeekResult {
 export const peekGltf = (path: string) =>
   send<GltfPeekResult>('peek_gltf', { path });
 
+// ─── MaterialX import ──────────────────────────────────────────────────────
+// Read a .mtlx and map its standard_surface materials onto the engine BSDF.
+// `params` are keyed EXACTLY by the object_output SOP's override-param names,
+// so the inspector writes them straight onto the selected Object Output node
+// (reusing the inline-override path — preserves clearcoat/sheen/subsurface/
+// anisotropy). Errors (no MaterialX support / no surface material) reject.
+
+export interface MaterialXImportParams {
+  override_material: boolean;
+  base_color: [number, number, number];
+  metallic: number;
+  roughness: number;
+  transmission: number;
+  ior: number;
+  emission: [number, number, number];
+  emission_strength: number;
+  opacity: number;
+  clearcoat: number;
+  clearcoat_roughness: number;
+  sheen: number;
+  subsurface: number;
+  subsurface_color: [number, number, number];
+  anisotropy: number;
+}
+
+export interface MaterialXMaterial {
+  name: string;
+  params: MaterialXImportParams;
+}
+
+export const readMaterialXMaterials = (path: string) =>
+  send<MaterialXMaterial[]>('read_materialx_material', { path });
+
 // ─── Video export ──────────────────────────────────────────────────────────
 // Drives an offline render at the timeline frame range. The native worker
 // broadcasts `video_export_progress`, `video_export_done`, and
@@ -541,6 +587,13 @@ export interface VideoExportRequest {
   width: number;
   height: number;
   codec: VideoCodec;
+  // 'video' (default) → AVFoundation movie via codec. 'exr' → a multi-layer
+  // OpenEXR sequence (linear beauty + albedo/normal/depth/position/emission/id
+  // AOVs), one file per frame named "<path-stem>.NNNN.exr".
+  format?: 'video' | 'exr';
+  // EXR only: run the OIDN denoiser (albedo + normal guided) on the beauty
+  // before writing. Ignored if the engine wasn't built with OIDN.
+  denoise?: boolean;
 }
 
 export const exportVideoStart = (req: VideoExportRequest) =>

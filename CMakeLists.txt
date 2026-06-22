@@ -1,8 +1,28 @@
 cmake_minimum_required(VERSION 3.16)
-project(Raytracer LANGUAGES CXX)
+project(Raytracer LANGUAGES C CXX)
+
+# Default to an optimized build. Without this, a bare `cmake -S . -B build`
+# (or an IDE that doesn't pass one) configures with an EMPTY/Debug build type
+# = -O0, which makes the path tracer ~13x slower. Single-config generators
+# only; multi-config (Xcode/VS) pick per-build. Override with -DCMAKE_BUILD_TYPE=Debug.
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type (Debug/Release/RelWithDebInfo)" FORCE)
+    message(STATUS "No build type set; defaulting to Release (-O3 -DNDEBUG)")
+endif()
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# Native CPU tuning for optimized configs only (Debug stays portable + fast to
+# build). Applies to every target below, so it must precede the add_library/
+# add_executable calls. NOTE: ThinLTO was evaluated here and removed — it added
+# per-launch relink time for no measurable runtime gain, because the hot
+# intersect/shading code is already header-`inline` (nothing left to inline
+# cross-TU) and Apple clang's arm64 default already targets the host CPU.
+if(APPLE)
+    add_compile_options(
+        $<$<CONFIG:Release>:-mcpu=native> $<$<CONFIG:RelWithDebInfo>:-mcpu=native>)
+endif()
 
 if(NOT TARGET glm::glm-header-only)
     add_subdirectory(deps/glm)
@@ -69,10 +89,18 @@ add_library(tracey
     src/scene/blas_cache.cpp
     src/scene/gltf_loader.hpp
     src/scene/gltf_loader.cpp
+    src/scene/materialx_loader.hpp
+    src/scene/materialx_loader.cpp
     src/scene/scene_exporter.hpp
     src/scene/scene_exporter.cpp
     src/scene/camera.hpp
     src/scene/camera.cpp
+
+    src/io/exr_writer.hpp
+    src/io/exr_writer.cpp
+    src/io/denoiser.hpp
+    src/io/denoiser.cpp
+    deps/tinyexr/miniz.c
 
     src/rendering/data_structure.hpp
     src/rendering/data_structure.cpp
@@ -346,7 +374,92 @@ target_include_directories(tracey
     ${CMAKE_CURRENT_SOURCE_DIR}/deps/tinygltf
     ${CMAKE_CURRENT_SOURCE_DIR}/deps/stb
     ${CMAKE_CURRENT_SOURCE_DIR}/deps/earcut
+    ${CMAKE_CURRENT_SOURCE_DIR}/deps/tinyexr
 )
+
+# ─── Intel Open Image Denoise (optional, R2) ─────────────────────────────────
+# Heavy prebuilt dependency (ships its own dylibs + a CMake config package).
+# Defaults ON when the prebuilt is vendored under deps/oidn, OFF otherwise so
+# the core build never hard-depends on it. The denoiser code in src/io/
+# denoiser.cpp guards on TRACEY_HAS_OIDN and stubs out cleanly when absent.
+set(TRACEY_OIDN_DIR "${CMAKE_CURRENT_SOURCE_DIR}/deps/oidn")
+set(TRACEY_OIDN_LIBDIR "${TRACEY_OIDN_DIR}/lib" CACHE INTERNAL "OIDN dylib dir for rpath")
+if(EXISTS "${TRACEY_OIDN_DIR}/include/OpenImageDenoise/oidn.h")
+    set(_tracey_oidn_default ON)
+else()
+    set(_tracey_oidn_default OFF)
+endif()
+option(TRACEY_WITH_OIDN "Build with the Intel Open Image Denoise denoiser" ${_tracey_oidn_default})
+if(TRACEY_WITH_OIDN)
+    # Search the vendored prefix (deps/oidn); config-mode locates the versioned
+    # lib/cmake/OpenImageDenoise-*/ dir, so the bootstrap script's pinned
+    # version isn't duplicated here.
+    find_package(OpenImageDenoise 2 CONFIG REQUIRED
+        PATHS "${TRACEY_OIDN_DIR}" NO_DEFAULT_PATH)
+    target_link_libraries(tracey PUBLIC OpenImageDenoise)
+    target_compile_definitions(tracey PUBLIC TRACEY_HAS_OIDN=1)
+    message(STATUS "OIDN denoiser: enabled (${TRACEY_OIDN_LIBDIR})")
+endif()
+
+# ─── MaterialX (optional, R3f) ───────────────────────────────────────────────
+# Built from source (Core+Format+stdlib) by scripts/bootstrap_deps.sh into
+# deps/materialx. We use only the document/XML API to parse .mtlx and compile
+# node graphs onto our own material VM — not MaterialX's shader codegen.
+# Defaults ON when vendored, OFF otherwise; src/scene/materialx_loader.cpp
+# guards on TRACEY_HAS_MATERIALX and stubs out when absent.
+set(TRACEY_MATERIALX_DIR "${CMAKE_CURRENT_SOURCE_DIR}/deps/materialx")
+if(EXISTS "${TRACEY_MATERIALX_DIR}/include/MaterialXCore/Document.h")
+    set(_tracey_mtlx_default ON)
+else()
+    set(_tracey_mtlx_default OFF)
+endif()
+option(TRACEY_WITH_MATERIALX "Build with MaterialX (.mtlx) material import" ${_tracey_mtlx_default})
+if(TRACEY_WITH_MATERIALX)
+    find_package(MaterialX CONFIG REQUIRED
+        PATHS "${TRACEY_MATERIALX_DIR}" NO_DEFAULT_PATH)
+    target_link_libraries(tracey PUBLIC MaterialXCore MaterialXFormat)
+    target_compile_definitions(tracey PUBLIC
+        TRACEY_HAS_MATERIALX=1
+        # Runtime location of the standard data libraries (stdlib/pbrlib/bxdf),
+        # needed to resolve standard_surface nodedefs + input defaults.
+        TRACEY_MATERIALX_LIBRARIES_DIR="${TRACEY_MATERIALX_DIR}/libraries")
+    message(STATUS "MaterialX import: enabled (${TRACEY_MATERIALX_DIR})")
+endif()
+
+# ─── OpenUSD (optional, U0 — gate for Track 2) ───────────────────────────────
+# USD core (tf/sdf/usd/usdGeom) built from source by scripts/bootstrap_deps.sh
+# into deps/usd. The gate for USD import/export + a future Hydra delegate.
+# Defaults ON when vendored, OFF otherwise; USD-gated code (src/scene/usd_*)
+# guards on TRACEY_HAS_USD and stubs out when absent, so the core build never
+# hard-depends on this very heavy dependency.
+set(TRACEY_USD_DIR "${CMAKE_CURRENT_SOURCE_DIR}/deps/usd")
+if(EXISTS "${TRACEY_USD_DIR}/include/pxr/pxr.h")
+    set(_tracey_usd_default ON)
+else()
+    set(_tracey_usd_default OFF)
+endif()
+option(TRACEY_WITH_USD "Build with OpenUSD (USD scene import/export)" ${_tracey_usd_default})
+if(TRACEY_WITH_USD)
+    # Make the pxr imported targets (usd / usdGeom / sdf / tf / …) available to
+    # subdirectories. We deliberately do NOT link USD into the core `tracey`
+    # lib: USD ships *shared* libs, so that would force a USD rpath onto every
+    # tracey-linking binary. Instead, only the targets that need USD link it
+    # (currently usd_smoke; a future tracey_usd module / the editor when the
+    # UsdLoader lands). The flag + TRACEY_USD_LIBDIR are read in examples/.
+    find_package(pxr CONFIG REQUIRED PATHS "${TRACEY_USD_DIR}" NO_DEFAULT_PATH)
+    set(TRACEY_USD_LIBDIR "${TRACEY_USD_DIR}/lib" CACHE INTERNAL "USD dylib dir for rpath")
+
+    # tracey_usd: the only library that links OpenUSD. The public header
+    # (usd_loader.hpp) is USD-free (returns a tracey::Scene), so consumers
+    # include it freely; only this .cpp pulls pxr. Layered tracey <- tracey_usd.
+    add_library(tracey_usd
+        src/scene/usd_loader.hpp
+        src/scene/usd_loader.cpp)
+    target_link_libraries(tracey_usd PUBLIC tracey)
+    target_link_libraries(tracey_usd PRIVATE usd usdGeom usdShade usdLux glm::glm)
+    target_compile_definitions(tracey_usd PRIVATE TRACEY_HAS_USD=1)
+    message(STATUS "OpenUSD: enabled (${TRACEY_USD_DIR})")
+endif()
 
 # Additional libraries needed when using pkg-config on Unix/Linux/macOS
 if(PKG_CONFIG_FOUND)

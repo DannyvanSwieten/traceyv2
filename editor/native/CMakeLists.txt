@@ -59,6 +59,10 @@ if(APPLE)
         "-framework AVFoundation"
     )
 
+    set(TRACEY_EDITOR_RPATH "/usr/local/lib")
+    if(TRACEY_WITH_OIDN)
+        list(APPEND TRACEY_EDITOR_RPATH "${TRACEY_OIDN_LIBDIR}")
+    endif()
     set_target_properties(tracey_editor PROPERTIES
         MACOSX_BUNDLE TRUE
         MACOSX_BUNDLE_BUNDLE_NAME "Tracey Editor"
@@ -66,8 +70,8 @@ if(APPLE)
         MACOSX_BUNDLE_SHORT_VERSION_STRING "1.0"
         MACOSX_BUNDLE_GUI_IDENTIFIER "com.tracey.editor"
         MACOSX_RPATH ON
-        BUILD_RPATH "/usr/local/lib"
-        INSTALL_RPATH "/usr/local/lib")
+        BUILD_RPATH "${TRACEY_EDITOR_RPATH}"
+        INSTALL_RPATH "${TRACEY_EDITOR_RPATH}")
 
     if(EXISTS "${TRACEY_EDITOR_FRONTEND_DIR}/package.json")
         add_custom_command(TARGET tracey_editor POST_BUILD

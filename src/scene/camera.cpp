@@ -16,16 +16,8 @@ namespace tracey
         float cameraDistance = sceneRadius * 2.5f;
         Vec3 cameraPosition = sceneCenter + Vec3(0.0f, sceneRadius * 0.5f, cameraDistance);
 
-        // Look at scene center
-        Vec3 cameraForward = glm::normalize(sceneCenter - cameraPosition);
-
-        // Compute camera basis vectors
+        // Look-at rotation toward the scene centre.
         Vec3 worldUp(0.0f, 1.0f, 0.0f);
-        Vec3 cameraRight = glm::normalize(glm::cross(cameraForward, worldUp));
-        Vec3 cameraUp = glm::cross(cameraRight, cameraForward);
-
-        // Compute rotation from forward direction
-        // Create a lookAt rotation
         Mat4 lookAtMatrix = glm::lookAt(cameraPosition, sceneCenter, worldUp);
         Quaternion rotation = glm::quat_cast(glm::inverse(lookAtMatrix));
 

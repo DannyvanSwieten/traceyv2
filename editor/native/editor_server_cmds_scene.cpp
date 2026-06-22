@@ -265,6 +265,9 @@ std::optional<std::string> EditorServer::handle_scene_commands(
         }
         if (cmd == "set_camera") {
             m_engine->scene().setCamera(camera_from_json(req.at("camera")));
+            // Camera param changes (pose / fov / DOF) invalidate the
+            // path-tracer accumulation — restart it next frame.
+            m_clear_next_frame = true;
             return ok_response_null();
         }
         if (cmd == "get_camera") {

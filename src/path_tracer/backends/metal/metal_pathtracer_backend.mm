@@ -55,6 +55,8 @@ namespace tracey
             uint32_t maxDepth;
             int32_t currentSample;
             uint32_t lightCount;
+            float aperture;       // thin-lens radius (0 = pinhole)
+            float focalDistance;  // in-focus distance along the view dir
         };
 
         ShaderInputsView readShaderInputs(const ShaderInputsBuffer &inputs)
@@ -74,6 +76,8 @@ namespace tracey
             std::memcpy(&out.maxDepth, bytes + 80, sizeof(uint32_t));
             std::memcpy(&out.currentSample, bytes + 84, sizeof(int32_t));
             std::memcpy(&out.lightCount, bytes + 88, sizeof(uint32_t));
+            std::memcpy(&out.aperture, bytes + 92, sizeof(float));
+            std::memcpy(&out.focalDistance, bytes + 96, sizeof(float));
             inputs.buffer()->unmap();
             return out;
         }
@@ -99,6 +103,10 @@ namespace tracey
             uint32_t width;
             uint32_t height;
             uint32_t emitterCount;  // was _pad4 — emissive-triangle count for NEE
+            uint32_t enableAovs;    // 0/1 — gates the AOV-layer writes (offset 96)
+            uint32_t linearOutput;  // 0/1 — skip tonemap+gamma, emit linear (offset 100)
+            float aperture;         // thin-lens radius (offset 104; 0 = pinhole)
+            float focalDistance;    // in-focus distance (offset 108)
         };
 
         id<MTLBuffer> makeSharedBuffer(id<MTLDevice> device, const void *data, size_t bytes)
@@ -129,9 +137,19 @@ namespace tracey
         id<MTLDevice> device = nil;
         id<MTLCommandQueue> queue = nil;
         id<MTLComputePipelineState> pathtracePipeline = nil;
+        // R4 motion blur: the pathtrace_motion entry point, dispatched against
+        // the hardware motion AS. sceneHasMotion (set at scene build) selects it.
+        id<MTLComputePipelineState> pathtracePipelineMotion = nil;
+        bool sceneHasMotion = false;
 
         // Accumulator: float4 per pixel, running mean (resolve.glsl).
         id<MTLBuffer> accumBuffer = nil;
+        // AOV layers (RGBA32F running mean per pixel), bound at indices 15..20.
+        // Allocated full-size only when config.enableAovs; otherwise 16-byte
+        // dummies so the kernel's bound args stay valid (writes are gated by
+        // Uniforms.enableAovs). Shared storage so readbackAOV reads .contents.
+        static constexpr size_t kAovCount = static_cast<size_t>(AovKind::Count);
+        id<MTLBuffer> aovBuffers[kAovCount] = {};
 
         // Readback target (wantReadback / export path).
         id<MTLBuffer> readbackBuffer = nil;
@@ -341,6 +359,59 @@ namespace tracey
                 idesc.instanceDescriptorBuffer = instanceDescriptors;
                 idesc.instanceDescriptorBufferOffset = 0;
                 idesc.instanceDescriptorStride = sizeof(MTLAccelerationStructureInstanceDescriptor);
+
+                // R4 motion blur: rebuild as a hardware motion AS — two matrix
+                // keyframes per instance (shutter-open/-close), interpolated by
+                // the per-ray time the pathtrace_motion kernel passes to
+                // intersect(). Matrix keyframes interpolate linearly, matching
+                // the CPU TLAS. The motion AS is consumed by the instance_motion
+                // intersector in pathtrace_motion.
+                const bool motion = scene.hasMotion &&
+                                    scene.instancesEnd.size() == instanceCount &&
+                                    instanceCount > 0;
+                sceneHasMotion = motion;
+                id<MTLBuffer> motionXfBuf = nil;       // keep alive until build
+                id<MTLBuffer> motionDescBuf = nil;
+                if (motion)
+                {
+                    auto fill = [](MTLPackedFloat4x3 &m, const Tlas::Instance &inst) {
+                        for (int c = 0; c < 4; ++c)
+                            m.columns[c] = MTLPackedFloat3Make(
+                                inst.transform[0][c], inst.transform[1][c], inst.transform[2][c]);
+                    };
+                    std::vector<MTLPackedFloat4x3> motionXf(instanceCount * 2);
+                    std::vector<MTLAccelerationStructureMotionInstanceDescriptor> mdescs(instanceCount);
+                    for (size_t i = 0; i < instanceCount; ++i)
+                    {
+                        fill(motionXf[i * 2 + 0], scene.instances[i]);
+                        fill(motionXf[i * 2 + 1], scene.instancesEnd[i]);
+                        MTLAccelerationStructureMotionInstanceDescriptor &d = mdescs[i];
+                        d.options = MTLAccelerationStructureInstanceOptionDisableTriangleCulling |
+                                    MTLAccelerationStructureInstanceOptionOpaque;
+                        d.mask = 0xFFu;
+                        d.intersectionFunctionTableOffset = 0;
+                        d.accelerationStructureIndex =
+                            static_cast<uint32_t>(scene.instances[i].blasAddress);
+                        d.motionTransformsStartIndex = static_cast<uint32_t>(i * 2);
+                        d.motionTransformsCount = 2;
+                        d.motionStartBorderMode = MTLMotionBorderModeClamp;
+                        d.motionEndBorderMode = MTLMotionBorderModeClamp;
+                        d.motionStartTime = 0.0f;
+                        d.motionEndTime = 1.0f;
+                    }
+                    motionXfBuf = makeSharedBuffer(device, motionXf.data(),
+                                                   motionXf.size() * sizeof(MTLPackedFloat4x3));
+                    motionDescBuf = makeSharedBuffer(
+                        device, mdescs.data(),
+                        mdescs.size() * sizeof(MTLAccelerationStructureMotionInstanceDescriptor));
+                    idesc.instanceDescriptorType = MTLAccelerationStructureInstanceDescriptorTypeMotion;
+                    idesc.motionTransformBuffer = motionXfBuf;
+                    idesc.motionTransformBufferOffset = 0;
+                    idesc.motionTransformCount = static_cast<NSUInteger>(instanceCount * 2);
+                    idesc.instanceDescriptorBuffer = motionDescBuf;
+                    idesc.instanceDescriptorStride =
+                        sizeof(MTLAccelerationStructureMotionInstanceDescriptor);
+                }
                 instanceAccel = buildAccelerationStructure(idesc);
             }
 
@@ -497,13 +568,21 @@ namespace tracey
             throw std::runtime_error(std::string("MetalRT shader compile failed: ") +
                                      error.localizedDescription.UTF8String);
         }
-        id<MTLFunction> fn = [lib newFunctionWithName:@"pathtrace"];
-        impl.pathtracePipeline = [impl.device newComputePipelineStateWithFunction:fn error:&error];
-        if (!impl.pathtracePipeline)
-        {
-            throw std::runtime_error(std::string("MetalRT pipeline creation failed: ") +
-                                     error.localizedDescription.UTF8String);
-        }
+        auto makePipeline = [&](NSString *name) -> id<MTLComputePipelineState> {
+            id<MTLFunction> f = [lib newFunctionWithName:name];
+            if (!f)
+                throw std::runtime_error(std::string("MetalRT function not found: ") +
+                                         name.UTF8String);
+            NSError *pe = nil;
+            id<MTLComputePipelineState> p =
+                [impl.device newComputePipelineStateWithFunction:f error:&pe];
+            if (!p)
+                throw std::runtime_error(std::string("MetalRT pipeline creation failed: ") +
+                                         pe.localizedDescription.UTF8String);
+            return p;
+        };
+        impl.pathtracePipeline = makePipeline(@"pathtrace");
+        impl.pathtracePipelineMotion = makePipeline(@"pathtrace_motion");
 
         const size_t pixelCount = static_cast<size_t>(impl.config->width) * impl.config->height;
         impl.accumBuffer = [impl.device newBufferWithLength:pixelCount * 16
@@ -513,6 +592,15 @@ namespace tracey
         impl.readbackBytes = pixelCount * pixelSize;
         impl.readbackBuffer = [impl.device newBufferWithLength:impl.readbackBytes
                                                        options:MTLResourceStorageModeShared];
+
+        // AOV layers: full-size + shared when enabled, else 16-byte dummies so
+        // the always-bound kernel args stay valid (writes gated by enableAovs).
+        for (auto &b : impl.aovBuffers)
+            b = impl.config->enableAovs
+                    ? [impl.device newBufferWithLength:pixelCount * 16
+                                               options:MTLResourceStorageModeShared]
+                    : [impl.device newBufferWithLength:16
+                                               options:MTLResourceStorageModeShared];
 
         // 1×1 white dummy for unused texture-array slots.
         MTLTextureDescriptor *td = [MTLTextureDescriptor
@@ -597,6 +685,10 @@ namespace tracey
             U.width = impl.config->width;
             U.height = impl.config->height;
             U.emitterCount = impl.emitterCount;
+            U.enableAovs = impl.config->enableAovs ? 1u : 0u;
+            U.linearOutput = impl.config->linearOutput ? 1u : 0u;
+            U.aperture = inputs.aperture;
+            U.focalDistance = inputs.focalDistance;
 
             id<MTLCommandBuffer> cmd = [impl.queue commandBuffer];
 
@@ -606,11 +698,15 @@ namespace tracey
                 [blit fillBuffer:impl.accumBuffer
                            range:NSMakeRange(0, impl.accumBuffer.length)
                            value:0];
+                if (impl.config->enableAovs)
+                    for (id<MTLBuffer> a : impl.aovBuffers)
+                        [blit fillBuffer:a range:NSMakeRange(0, a.length) value:0];
                 [blit endEncoding];
             }
 
             id<MTLComputeCommandEncoder> enc = [cmd computeCommandEncoder];
-            [enc setComputePipelineState:impl.pathtracePipeline];
+            [enc setComputePipelineState:(impl.sceneHasMotion ? impl.pathtracePipelineMotion
+                                                              : impl.pathtracePipeline)];
             [enc setTexture:impl.outputTexture atIndex:0];
             // Texture array slots 1..kMax: scene textures then dummy fill.
             for (NSUInteger i = 0; i < kMetalRTMaxTextures; ++i)
@@ -635,6 +731,8 @@ namespace tracey
             [enc setBuffer:impl.accumBuffer offset:0 atIndex:12];
             [enc setAccelerationStructure:impl.instanceAccel atBufferIndex:13];
             [enc setBuffer:impl.emittersBuf offset:0 atIndex:14];
+            for (NSUInteger i = 0; i < Impl::kAovCount; ++i)
+                [enc setBuffer:impl.aovBuffers[i] offset:0 atIndex:15 + i];
             // The instance AS references the primitive ASes indirectly —
             // mark them resident for the dispatch.
             for (id<MTLAccelerationStructure> blas in impl.primitiveList)
@@ -682,6 +780,24 @@ namespace tracey
         auto &impl = *m_impl;
         std::memcpy(dst, impl.readbackBuffer.contents, impl.readbackBytes);
         return impl.readbackBytes;
+    }
+
+    bool MetalPathTracerBackend::aovsAvailable() const
+    {
+        return m_impl->config && m_impl->config->enableAovs;
+    }
+
+    size_t MetalPathTracerBackend::readbackAOV(AovKind aov, void *dst)
+    {
+        auto &impl = *m_impl;
+        const size_t idx = static_cast<size_t>(aov);
+        if (!impl.config || !impl.config->enableAovs || idx >= Impl::kAovCount) return 0;
+        id<MTLBuffer> buf = impl.aovBuffers[idx];
+        if (!buf) return 0;
+        const size_t bytes = static_cast<size_t>(impl.config->width) *
+                             impl.config->height * 16;  // RGBA32F
+        std::memcpy(dst, buf.contents, bytes);
+        return bytes;
     }
 
     bool metalRTBackendSupported(Device *device)

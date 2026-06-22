@@ -32,6 +32,9 @@ namespace tracey
             case Op::LoadInputRoughness:  return "LoadInputRoughness";
             case Op::LoadInputEmission:   return "LoadInputEmission";
             case Op::LoadInputNormal:     return "LoadInputNormal";
+            case Op::LoadInputTransmission: return "LoadInputTransmission";
+            case Op::LoadInputIor:        return "LoadInputIor";
+            case Op::LoadInputOpacity:    return "LoadInputOpacity";
             case Op::Add:                 return "Add";
             case Op::Sub:                 return "Sub";
             case Op::Mul:                 return "Mul";

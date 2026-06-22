@@ -318,6 +318,19 @@ namespace tracey
         if (auto o = material.getFloat("opacity")) gpuMat.baseColorA = *o;
         if (auto es = material.getFloat("emissionStrength")) gpuMat.emissiveStrength = *es;
 
+        // R3 advanced-BSDF lobe factors (0 = off → unchanged look).
+        if (auto v = material.getFloat("clearcoat")) gpuMat.clearcoatFactor = *v;
+        if (auto v = material.getFloat("clearcoatRoughness")) gpuMat.clearcoatRoughnessFactor = *v;
+        if (auto v = material.getFloat("sheen")) gpuMat.sheenFactor = *v;
+        if (auto v = material.getFloat("anisotropy")) gpuMat.anisotropyFactor = *v;
+        if (auto v = material.getFloat("subsurface")) gpuMat.subsurfaceFactor = *v;
+        if (auto c = material.getVec3("subsurfaceColor"))
+        {
+            gpuMat.subsurfaceColorR = c->x;
+            gpuMat.subsurfaceColorG = c->y;
+            gpuMat.subsurfaceColorB = c->z;
+        }
+
         return gpuMat;
     }
     SceneCompiler::ObjectData SceneCompiler::compileObject(Device *device, const SceneObject &obj,
@@ -419,7 +432,7 @@ namespace tracey
         return data;
     }
 
-    Mat4 SceneCompiler::computeWorldTransform(const Scene &scene, const Actor &actor)
+    Mat4 SceneCompiler::computeWorldTransform(const Scene & /*scene*/, const Actor &actor)
     {
         // For now, just return the actor's local transform
         // TODO: Implement full hierarchy traversal if needed
@@ -499,6 +512,11 @@ namespace tracey
         // flat shading.
         std::vector<Vec4> allNormals;
         bool anyObjectHasNormals = false;
+
+        // Positions concatenated parallel to UVs/normals (Vec3 → Vec4 for the
+        // 16-byte std430 stride). Consumed by the CPU path tracer to rebuild a
+        // hit triangle's object-space vertices for UV-aligned tangents.
+        std::vector<Vec4> allPositions;
 
         for (const auto &[name, objPtr] : objects)
         {
@@ -649,6 +667,23 @@ namespace tracey
                 // existed). Keeps per-instance offset arithmetic valid.
                 allNormals.insert(allNormals.end(), entry->vertexCount, Vec4(0.0f));
             }
+
+            // Positions concatenated parallel to UVs/normals. Read from the
+            // BLAS cache's packed-Vec3 vertex buffer; pad with zeros if absent
+            // so the per-instance base offset stays valid for every backend.
+            if (entry->vertexBuffer && entry->vertexCount > 0)
+            {
+                const Vec3 *src =
+                    static_cast<const Vec3 *>(entry->vertexBuffer->mapForReading());
+                allPositions.reserve(allPositions.size() + entry->vertexCount);
+                for (size_t k = 0; k < entry->vertexCount; ++k)
+                    allPositions.emplace_back(src[k].x, src[k].y, src[k].z, 0.0f);
+                entry->vertexBuffer->unmap();
+            }
+            else
+            {
+                allPositions.insert(allPositions.end(), entry->vertexCount, Vec4(0.0f));
+            }
         }
 
         // In raster-only mode result.blases is empty by design (entries are
@@ -691,6 +726,18 @@ namespace tracey
             std::copy(allNormals.begin(), allNormals.end(), mapped);
             result.normalBuffer->flush();
             result.hasNormals = anyObjectHasNormals;
+        }
+
+        // Position buffer parallel to UVs/normals — feeds the CPU backend's
+        // UV-tangent derivation. Created whenever any geometry exists.
+        if (!allPositions.empty())
+        {
+            const size_t bytes = allPositions.size() * sizeof(Vec4);
+            result.positionBuffer = std::unique_ptr<Buffer>(
+                device->createBuffer(static_cast<uint32_t>(bytes), BufferUsage::StorageBuffer));
+            auto *mapped = static_cast<Vec4 *>(result.positionBuffer->mapForWriting());
+            std::copy(allPositions.begin(), allPositions.end(), mapped);
+            result.positionBuffer->flush();
         }
 
         // Step 2: Flatten scene and create instances with materials
@@ -1023,6 +1070,11 @@ namespace tracey
                 std::cout << "  Nodes per triangle: " << nodesPerTri << std::endl;
             }
         }
+
+        // R4 motion blur: default the shutter-close poses to the shutter-open
+        // ones (no motion). The sequence renderer overwrites instancesEnd +
+        // sets hasMotion when it recompiles at t + shutter.
+        result.instancesEnd = result.instances;
 
         return result;
     }

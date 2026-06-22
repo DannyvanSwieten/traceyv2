@@ -356,6 +356,12 @@ namespace tracey
                         a.ovTransmission    = node->paramFloat("transmission", 0.0f);
                         a.ovIor             = node->paramFloat("ior", 1.5f);
                         a.ovOpacity         = node->paramFloat("opacity", 1.0f);
+                        a.ovClearcoat          = node->paramFloat("clearcoat", 0.0f);
+                        a.ovClearcoatRoughness = node->paramFloat("clearcoat_roughness", 0.0f);
+                        a.ovSheen              = node->paramFloat("sheen", 0.0f);
+                        a.ovSubsurface         = node->paramFloat("subsurface", 0.0f);
+                        a.ovSubsurfaceColor    = node->paramVec3("subsurface_color", Vec3(1.0f));
+                        a.ovAnisotropy         = node->paramFloat("anisotropy", 0.0f);
                     }
                     if (!inputs.empty() && inputs[0])
                         a.geometry = std::make_shared<const Geometry>(*inputs[0]);

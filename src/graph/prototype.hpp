@@ -19,6 +19,6 @@ namespace tracey
     private:
         std::string m_name;
         std::string m_description;
-        size_t m_version = 0;
+        [[maybe_unused]] size_t m_version = 0;
     };
 }

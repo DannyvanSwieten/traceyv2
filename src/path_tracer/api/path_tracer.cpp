@@ -83,6 +83,10 @@ namespace tracey
         // SSBO is always bound; this gates iteration so lightCount = 0 means
         // "skip NEE entirely".
         m_shaderInputsLayout.addMember({"lightCount",     "uint",  0, false, 0});
+        // Thin-lens DOF (R4). aperture=0 → pinhole (no DOF); these tail floats
+        // land at std140 offsets 92/96 (mirrored in ShaderInputsView).
+        m_shaderInputsLayout.addMember({"aperture",       "float", 0, false, 0});
+        m_shaderInputsLayout.addMember({"focalDistance",  "float", 0, false, 0});
 
         m_shaderInputs = std::make_unique<ShaderInputsBuffer>(m_device, m_shaderInputsLayout);
     }
@@ -97,6 +101,8 @@ namespace tracey
         m_shaderInputs->setInt("currentSample", m_sampleCount + 1);
         m_shaderInputs->setUint("maxDepth", m_config.maxBounces);
         m_shaderInputs->setUint("lightCount", lightCount);
+        m_shaderInputs->setFloat("aperture", camera.aperture());
+        m_shaderInputs->setFloat("focalDistance", camera.focalDistance());
         m_shaderInputs->upload();
     }
 
@@ -151,6 +157,16 @@ namespace tracey
     size_t PathTracer::readback(void *outData)
     {
         return m_backend->readback(outData);
+    }
+
+    bool PathTracer::aovsAvailable() const
+    {
+        return m_backend->aovsAvailable();
+    }
+
+    size_t PathTracer::readbackAOV(AovKind aov, void *outData)
+    {
+        return m_backend->readbackAOV(aov, outData);
     }
 
     void PathTracer::setMaterialPrograms(const MaterialProgramBuffer &programs)

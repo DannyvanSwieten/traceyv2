@@ -3,7 +3,12 @@
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "gltf_loader.hpp"
 #include "camera.hpp"
+// tinygltf pulls in stb_image_write here; its aggregate initialisers trip
+// -Wmissing-field-initializers. Silence that vendored-header noise locally.
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wmissing-field-initializers"
 #include <tiny_gltf.h>
+#pragma clang diagnostic pop
 #include <glm/gtx/matrix_decompose.hpp>
 #include <iostream>
 #include <unordered_map>
@@ -332,6 +337,29 @@ namespace tracey
                 material.setFloat("ior", v);
             if (getExtFloat("KHR_materials_emissive_strength", "emissiveStrength", v))
                 material.setFloat("emissionStrength", v);
+            if (getExtFloat("KHR_materials_clearcoat", "clearcoatFactor", v))
+                material.setFloat("clearcoat", v);
+            if (getExtFloat("KHR_materials_clearcoat", "clearcoatRoughnessFactor", v))
+                material.setFloat("clearcoatRoughness", v);
+            // KHR_materials_anisotropy: map strength → our signed [-1,1] scalar.
+            // anisotropyRotation is dropped (our tangent is UV-fixed; honoring
+            // it would need a separate tangent-rotation parameter).
+            if (getExtFloat("KHR_materials_anisotropy", "anisotropyStrength", v))
+                material.setFloat("anisotropy", v);
+            // KHR_materials_sheen: sheenColorFactor is an RGB array; our sheen
+            // lobe is a scalar (white) weight, so collapse to the max component.
+            {
+                auto it = gltfMat.extensions.find("KHR_materials_sheen");
+                if (it != gltfMat.extensions.end() && it->second.Has("sheenColorFactor"))
+                {
+                    const auto &arr = it->second.Get("sheenColorFactor");
+                    float sheen = 0.0f;
+                    for (int i = 0; i < arr.ArrayLen(); ++i)
+                        sheen = std::max(sheen,
+                                         static_cast<float>(arr.Get(i).GetNumberAsDouble()));
+                    if (sheen > 0.0f) material.setFloat("sheen", sheen);
+                }
+            }
             // alphaMode BLEND → use baseColor alpha as opacity (MASK is a hard
             // cutout we approximate the same way; OPAQUE leaves opacity at 1).
             if (gltfMat.alphaMode == "BLEND" || gltfMat.alphaMode == "MASK")

@@ -9,26 +9,43 @@ namespace tracey
     {
     }
 
-    Tlas::Tlas(std::span<const Blas *> blases, std::span<const Instance> instances, const Config &config) : blases(blases),
-                                                                                                            instances(instances),
-                                                                                                            m_config(config)
+    Tlas::Tlas(std::span<const Blas *> blases, std::span<const Instance> instances, const Config &config)
+        : Tlas(blases, instances, instances, false, config)
     {
+    }
+
+    namespace
+    {
+        // Row-major 3×4 Instance transform → column-major 4×4 object→world.
+        Mat4 instanceToWorld(const Tlas::Instance &instance)
+        {
+            return Mat4(
+                instance.transform[0][0], instance.transform[1][0], instance.transform[2][0], 0.0f,
+                instance.transform[0][1], instance.transform[1][1], instance.transform[2][1], 0.0f,
+                instance.transform[0][2], instance.transform[1][2], instance.transform[2][2], 0.0f,
+                instance.transform[0][3], instance.transform[1][3], instance.transform[2][3], 1.0f);
+        }
+    }
+
+    Tlas::Tlas(std::span<const Blas *> blases, std::span<const Instance> instances,
+               std::span<const Instance> instancesEnd, bool hasMotion, const Config &config)
+        : blases(blases), instances(instances), m_hasMotion(hasMotion), m_config(config)
+    {
+        // hasMotion requires a parallel end-pose array; fall back to static if
+        // the caller didn't supply matching counts.
+        if (m_hasMotion && instancesEnd.size() != instances.size())
+            m_hasMotion = false;
+
         // Prepare instance references with world-space AABBs
         std::vector<InstanceRef> instanceRefs(instances.size());
 
         for (size_t i = 0; i < instances.size(); ++i)
         {
             const auto &instance = instances[i];
-            // Precompute inverse transforms for each instance
+            // Precompute inverse transforms for each instance (shutter-open).
+            const Mat4 toWorldMat = instanceToWorld(instance);
             Transforms transforms;
-            // first turn the 3x4 row-major into a 4x4 matrix
-            Mat4 toWorldMat(
-                instance.transform[0][0], instance.transform[1][0], instance.transform[2][0], 0.0f,
-                instance.transform[0][1], instance.transform[1][1], instance.transform[2][1], 0.0f,
-                instance.transform[0][2], instance.transform[1][2], instance.transform[2][2], 0.0f,
-                instance.transform[0][3], instance.transform[1][3], instance.transform[2][3], 1.0f);
             transforms.toWorld = toWorldMat;
-            // Invert the toWorldMat to get toObject
             transforms.toObject = glm::inverse(toWorldMat);
             instanceTransforms.push_back(transforms);
 
@@ -37,8 +54,23 @@ namespace tracey
             const Blas &blas = *blases[blasIndex];
             const auto [localMin, localMax] = blas.getBounds();
 
-            // Transform BLAS bounds to world space
-            const auto [worldMin, worldMax] = transformAABB(toWorldMat, localMin, localMax);
+            // Transform BLAS bounds to world space (shutter-open pose).
+            auto [worldMin, worldMax] = transformAABB(toWorldMat, localMin, localMax);
+
+            // Motion: cache the shutter-close transform and grow the instance
+            // AABB to the swept union so traversal never misses it mid-shutter.
+            if (m_hasMotion)
+            {
+                const Mat4 endToWorld = instanceToWorld(instancesEnd[i]);
+                Transforms endXf;
+                endXf.toWorld = endToWorld;
+                endXf.toObject = glm::inverse(endToWorld);
+                instanceTransformsEnd.push_back(endXf);
+
+                const auto [endMin, endMax] = transformAABB(endToWorld, localMin, localMax);
+                worldMin = glm::min(worldMin, endMin);
+                worldMax = glm::max(worldMax, endMax);
+            }
 
             instanceRefs[i].index = static_cast<uint32_t>(i);
             instanceRefs[i].bMin = worldMin;
@@ -280,51 +312,119 @@ namespace tracey
         std::optional<Hit> closestHit = std::nullopt;
         float closestT = tMax;
 
-        for (size_t instanceIndex = 0; instanceIndex < instances.size(); ++instanceIndex)
-        {
-            const auto &instance = instances[instanceIndex];
-            const uint32_t blasIndex = static_cast<uint32_t>(instance.blasAddress);
-            const Blas &blas = *blases[blasIndex];
-            const auto [min, max] = blas.getBounds();
+        if (m_nodes.empty())
+            return closestHit;
 
-            const auto [worldMin, worldMax] = transformAABB(instanceTransforms[instanceIndex].toWorld, min, max);
-            float tEnter, tExit;
-            if (!intersectAABB(ray, worldMin, worldMax, tMin, closestT, tEnter, tExit))
-                continue; // Ray misses the instance's bounds
-
-            // Transform the ray into the instance's local space (use precomputed inverse)
+        // Per-instance Blas test, factored out of the BVH walk. Transforms the
+        // ray into the instance's local space (precomputed inverse), intersects
+        // the Blas, and folds a closer world-space hit into closestHit.
+        const auto testInstance = [&](uint32_t instanceIndex) {
+            const Blas &blas = *blases[static_cast<uint32_t>(instances[instanceIndex].blasAddress)];
             const auto &xf = instanceTransforms[instanceIndex];
-            // const float (*toObject)[4] = xf.toObject;
-            // const float (*toWorld)[4] = xf.toWorld;
 
-            Vec3 localRayDirection = transformVector(xf.toObject, ray.direction);
-            Vec3 localRayInvDirection = 1.0f / localRayDirection;
-            Vec3 localRayOrigin = transformPoint(xf.toObject, ray.origin);
+            // Motion blur: linearly interpolate the object→world matrix between
+            // the shutter-open and -close poses at the ray's shutter time, then
+            // invert per-ray. Element-wise matrix lerp matches Metal's matrix
+            // motion-keyframe interpolation so the two backends stay in lockstep.
+            Mat4 toObjectM = xf.toObject;
+            Mat4 toWorldM = xf.toWorld;
+            if (m_hasMotion)
+            {
+                const float t = ray.time;
+                toWorldM = xf.toWorld * (1.0f - t) + instanceTransformsEnd[instanceIndex].toWorld * t;
+                toObjectM = glm::inverse(toWorldM);
+            }
 
-            Ray localRay{localRayOrigin, localRayDirection, localRayInvDirection};
+            const Vec3 localRayDirection = transformVector(toObjectM, ray.direction);
+            const Vec3 localRayInvDirection = 1.0f / localRayDirection;
+            const Vec3 localRayOrigin = transformPoint(toObjectM, ray.origin);
+            const Ray localRay{localRayOrigin, localRayDirection, localRayInvDirection};
 
-            // Intersect in local space with generous bounds; we'll convert to world-space t for comparison.
             if (const auto hitOpt = blas.intersect(localRay, 0.0f, 1e30f, flags); hitOpt)
             {
-                // Compute hit position in local space and transform back to world space.
                 const Vec3 localHitPos = localRay.origin + localRay.direction * hitOpt->t;
-                const Vec3 worldHitPos = transformPoint(xf.toWorld, localHitPos);
-
-                // Convert to world-space t (ray.direction is expected to be normalized in the renderer).
+                const Vec3 worldHitPos = transformPoint(toWorldM, localHitPos);
+                // World-space t (ray.direction is normalized in the renderer).
                 const float tWorld = glm::dot(worldHitPos - ray.origin, ray.direction);
-
-                // Apply world-space tMin/tMax and closest-hit test.
                 if (tWorld >= tMin && tWorld < closestT)
                 {
                     closestHit = hitOpt;
                     closestT = tWorld;
-
-                    closestHit->instanceId = static_cast<uint32_t>(instanceIndex);
+                    closestHit->instanceId = instanceIndex;
                     closestHit->position = worldHitPos;
                     closestHit->t = tWorld;
+                    return true;
+                }
+            }
+            return false;
+        };
 
-                    if (flags & RAY_FLAG_TERMINATE_ON_FIRST_HIT)
-                        break;
+        // Stack-based traversal of the instance BVH (m_nodes). Node bounds are
+        // world-space instance AABBs cached at build time, so there's no per-ray
+        // AABB transform (the old code linearly scanned every instance and
+        // recomputed one each ray — O(instances) per ray). Mirrors Blas::intersect.
+        struct StackEntry { uint32_t nodeIndex; float tNear; };
+        StackEntry stack[64];
+        int stackTop = 0;
+
+        // Test the root once; children are AABB-tested when pushed, so popped
+        // nodes only do a cheap tNear cull (no second intersectAABB).
+        {
+            float rEnter, rExit;
+            if (!intersectAABB(ray, m_nodes[0].boundsMin, m_nodes[0].boundsMax,
+                               tMin, closestT, rEnter, rExit))
+                return closestHit;
+            stack[stackTop++] = {0u, rEnter};
+        }
+
+        while (stackTop > 0)
+        {
+            const StackEntry entry = stack[--stackTop];
+            if (entry.tNear >= closestT)
+                continue;
+            const BVHNode &node = m_nodes[entry.nodeIndex];
+
+            const uint32_t primCount = node.primCountAndType & 0xFFFFFFu;
+            if (primCount > 0)
+            {
+                // Leaf: test each referenced instance.
+                for (uint32_t k = 0; k < primCount; ++k)
+                {
+                    const uint32_t instanceIndex = m_instanceIndices[node.firstChildOrPrim + k];
+                    if (testInstance(instanceIndex) && (flags & RAY_FLAG_TERMINATE_ON_FIRST_HIT))
+                        return closestHit;
+                }
+            }
+            else
+            {
+                // Interior: push the farther child first so the nearer one is
+                // popped and processed first (front-to-back, tighter closestT).
+                const uint32_t left = node.firstChildOrPrim;
+                const uint32_t right = left + 1u;
+                float tEnterL, tExitL, tEnterR, tExitR;
+                const bool hitL = intersectAABB(ray, m_nodes[left].boundsMin, m_nodes[left].boundsMax,
+                                                tMin, closestT, tEnterL, tExitL);
+                const bool hitR = intersectAABB(ray, m_nodes[right].boundsMin, m_nodes[right].boundsMax,
+                                                tMin, closestT, tEnterR, tExitR);
+                if (hitL && hitR)
+                {
+                    uint32_t firstChild = left, secondChild = right;
+                    float tFirst = tEnterL, tSecond = tEnterR;
+                    if (tSecond < tFirst)
+                    {
+                        std::swap(firstChild, secondChild);
+                        std::swap(tFirst, tSecond);
+                    }
+                    if (tSecond < closestT) stack[stackTop++] = {secondChild, tSecond};
+                    if (tFirst < closestT) stack[stackTop++] = {firstChild, tFirst};
+                }
+                else if (hitL && tEnterL < closestT)
+                {
+                    stack[stackTop++] = {left, tEnterL};
+                }
+                else if (hitR && tEnterR < closestT)
+                {
+                    stack[stackTop++] = {right, tEnterR};
                 }
             }
         }

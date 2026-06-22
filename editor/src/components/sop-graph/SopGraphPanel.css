@@ -175,6 +175,34 @@
   gap: 4px;
 }
 
+/* Colour swatch for colour-typed vec3 params (base_color / emission / …),
+   shown above the RGB fields. The native color input is restyled so the
+   chosen colour fills the whole bar (no webkit wrapper padding / inner
+   border framing it), reading as a clean swatch even for black/dark values. */
+.sop-param-color {
+  width: 100%;
+  height: 22px;
+  padding: 0;
+  margin-bottom: 2px;
+  border: 1px solid #3a3a3a;
+  border-radius: 3px;
+  background: none;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+}
+.sop-param-color::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+.sop-param-color::-webkit-color-swatch {
+  border: none;
+  border-radius: 2px;
+}
+.sop-param-color:focus {
+  outline: 1px solid #5a8;
+  border-color: #5a8;
+}
+
 /* One vec3 component: number input + its keyframe diamond side by side.
  * The input flexes; the diamond keeps its intrinsic size. */
 .sop-param-vec3-cell {

@@ -43,6 +43,25 @@ function inputEditorType(node: Node, portIdx: number): EditorType {
   return 'vec4';
 }
 
+// Known numeric ranges for MaterialOutput's scalar inputs, so the inspector
+// renders a slider (with a numeric readout) instead of a bare field — the
+// same affordance the SOP inspector gives ranged params. Null → plain field.
+interface FloatRange { min: number; max: number; step: number }
+function materialFloatRange(node: Node, portIdx: number): FloatRange | null {
+  if (node.kind !== 'MaterialOutput') return null;
+  switch (MATERIAL_OUTPUT_PORTS[portIdx]) {
+    case 'Metallic':
+    case 'Roughness':
+    case 'Alpha':
+    case 'Transmission':
+      return { min: 0, max: 1, step: 0.01 };
+    case 'IOR':
+      return { min: 1, max: 3, step: 0.01 };
+    default:
+      return null;
+  }
+}
+
 // Float editor that adapts to the Vec4Editor signature: reads `.x`, writes
 // `[v, v, v, v]` so the splatted value is identical regardless of which
 // lane downstream picks up.
@@ -64,6 +83,36 @@ const FloatEditor: Component<ScalarEditorProps> = (props) => {
             onCommit={(v) => props.onChange([v, v, v, v] as Vec4Tuple)}
           />
         </label>
+      </div>
+    </div>
+  );
+};
+
+// Slider + numeric readout for a ranged scalar input. Same splat semantics as
+// FloatEditor (reads `.x`, writes `[v,v,v,v]`).
+const SliderEditor: Component<ScalarEditorProps & FloatRange> = (props) => {
+  const set = (v: number) => props.onChange([v, v, v, v] as Vec4Tuple);
+  return (
+    <div class="inspector-vec4">
+      <div class="inspector-row-label">{props.label}</div>
+      <div class="inspector-slider-row">
+        <input
+          type="range"
+          class="inspector-slider"
+          aria-label={props.label}
+          min={props.min}
+          max={props.max}
+          step={props.step}
+          value={props.value()[0]}
+          onInput={(e) => set(parseFloat(e.currentTarget.value) || 0)}
+        />
+        <NumberInput
+          class="inspector-slider-readout"
+          step={props.step}
+          title={`${props.label} (value)`}
+          value={() => props.value()[0]}
+          onCommit={set}
+        />
       </div>
     </div>
   );
@@ -292,6 +341,7 @@ const InputDefaultRow: Component<{ node: Node; portIdx: number }> = (props) => {
   const onChange = (next: Vec4Tuple) =>
     setInputDefault(props.node.uid, props.portIdx, next);
   const kind = () => inputEditorType(props.node, props.portIdx);
+  const range = () => materialFloatRange(props.node, props.portIdx);
   return (
     <Show
       when={kind() === 'color'}
@@ -300,7 +350,23 @@ const InputDefaultRow: Component<{ node: Node; portIdx: number }> = (props) => {
           when={kind() === 'float'}
           fallback={<Vec4Editor label={label()} value={stored} onChange={onChange} />}
         >
-          <FloatEditor label={label()} value={stored} onChange={onChange} />
+          {/* Ranged scalars (Metallic/Roughness/Alpha/Transmission/IOR) get a
+              slider; any other float keeps the bare numeric field. */}
+          <Show
+            when={range()}
+            fallback={<FloatEditor label={label()} value={stored} onChange={onChange} />}
+          >
+            {(r) => (
+              <SliderEditor
+                label={label()}
+                value={stored}
+                onChange={onChange}
+                min={r().min}
+                max={r().max}
+                step={r().step}
+              />
+            )}
+          </Show>
         </Show>
       }
     >

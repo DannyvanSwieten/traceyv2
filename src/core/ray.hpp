@@ -8,6 +8,10 @@ namespace tracey
         Vec3 origin;
         Vec3 direction;
         Vec3 invDirection;
+        // Shutter time in [0,1) for motion blur. The TLAS interpolates each
+        // instance's transform between its shutter-open and shutter-close pose
+        // at this time. Defaults to 0 so static rays are unaffected.
+        float time = 0.0f;
     };
 
     using RayFlags = size_t;

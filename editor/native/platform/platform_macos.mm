@@ -10,6 +10,13 @@
 #include <atomic>
 #include <cstdio>
 
+// This platform shim deliberately uses a handful of APIs deprecated in recent
+// macOS SDKs (CVDisplayLink, WKWebView.javaScriptEnabled, NSSavePanel.
+// allowedFileTypes). They still function and the replacements (NSView display
+// links / UTType content types) are a larger, riskier refactor than warrants
+// doing inline — silence the deprecation noise for this TU.
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+
 @interface TraceyNSWindow : NSWindow
 @property(nonatomic, assign) bool* closeFlag;
 @property(nonatomic, assign) WKWebView* editorWebView;

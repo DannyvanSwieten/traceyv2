@@ -1,12 +1,10 @@
 #include "trace.hpp"
 #include "../core/tlas.hpp"
 #include <thread>
-#include <chrono>
 namespace tracey
 {
     void traceRays(const UVec2 &resolution, uint32_t tileSize, uint32_t iteration, const RaytracerCallback &callback, const Tlas &tlas)
     {
-        auto startTime = std::chrono::high_resolution_clock::now();
         const size_t numThreads = std::thread::hardware_concurrency();
         std::vector<std::thread> threads;
         threads.reserve(numThreads);

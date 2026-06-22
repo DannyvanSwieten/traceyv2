@@ -137,6 +137,12 @@ namespace tracey
             float ovTransmission = 0.0f;
             float ovIor = 1.5f;
             float ovOpacity = 1.0f;
+            float ovClearcoat = 0.0f;
+            float ovClearcoatRoughness = 0.0f;
+            float ovSheen = 0.0f;
+            float ovSubsurface = 0.0f;
+            Vec3 ovSubsurfaceColor{1.0f, 1.0f, 1.0f};
+            float ovAnisotropy = 0.0f;
         };
 
         // Abstract base for all SOP nodes.

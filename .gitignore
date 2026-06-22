@@ -2,6 +2,11 @@
 build/
 build-*/
 
+# Heavy prebuilt deps fetched by scripts/bootstrap_deps.sh (not committed)
+deps/oidn/
+deps/materialx/
+deps/usd/
+
 # Rust target dirs (kept in case examples or external consumers add Cargo)
 target/
 

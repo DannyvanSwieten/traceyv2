@@ -29,6 +29,23 @@ namespace tracey
         void setAspectRatio(float aspect) { m_aspectRatio = aspect; }
         float aspectRatio() const { return m_aspectRatio; }
 
+        // Thin-lens depth of field (R4). `aperture` is the lens radius in world
+        // units (0 = pinhole, no DOF — the default keeps every prior render
+        // bit-identical). `focalDistance` is the distance along the view
+        // direction at which the scene is in perfect focus.
+        void setAperture(float aperture) { m_aperture = aperture; }
+        float aperture() const { return m_aperture; }
+        void setFocalDistance(float dist) { m_focalDistance = dist; }
+        float focalDistance() const { return m_focalDistance; }
+
+        // Motion-blur shutter (R4) as a fraction of the frame interval the
+        // shutter stays open (0 = instant, no motion blur — the default keeps
+        // prior renders identical). The sequence renderer evaluates the scene
+        // at t and t + shutter·frameInterval to obtain per-instance start/end
+        // poses; the integrator samples a per-ray time within that window.
+        void setShutter(float shutter) { m_shutter = shutter; }
+        float shutter() const { return m_shutter; }
+
         // Computed directions
         Vec3 forward() const
         {
@@ -67,5 +84,8 @@ namespace tracey
         float m_nearPlane = 0.01f;
         float m_farPlane = 1000.0f;
         float m_aspectRatio = 1.0f;
+        float m_aperture = 0.0f;        // lens radius (0 = pinhole)
+        float m_focalDistance = 5.0f;   // in-focus distance along the view dir
+        float m_shutter = 0.0f;         // shutter-open fraction (0 = no motion blur)
     };
 }

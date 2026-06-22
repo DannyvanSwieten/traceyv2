@@ -35,7 +35,10 @@ void RenderEngine::initialize_path_tracer() {
     tracey::PathTracerConfig pt_config;
     pt_config.width = m_pt_width;
     pt_config.height = m_pt_height;
-    pt_config.hdrOutput = m_config.hdr_output;
+    // EXR-export mode needs a float output to hold linear radiance + emits AOVs.
+    pt_config.hdrOutput = m_config.hdr_output || m_config.export_aovs;
+    pt_config.enableAovs = m_config.export_aovs;
+    pt_config.linearOutput = m_config.export_aovs;
     // One sample per render_tick. Accumulation stops once max_samples is
     // reached (enforced in EditorServer::render_tick).
     pt_config.samplesPerFrame = 1;
@@ -168,6 +171,17 @@ void RenderEngine::compile_scene() {
         m_path_tracer && !m_compiled_scene->materialPrograms.headers().empty()) {
         m_path_tracer->setMaterialPrograms(m_compiled_scene->materialPrograms);
     }
+}
+
+void RenderEngine::set_motion_end_instances(
+    std::vector<tracey::Tlas::Instance> endInstances) {
+    if (!m_compiled_scene || endInstances.empty() ||
+        endInstances.size() != m_compiled_scene->instances.size()) {
+        return;
+    }
+    m_compiled_scene->instancesEnd = std::move(endInstances);
+    m_compiled_scene->hasMotion = true;
+    m_compiled_scene->revision = tracey::SceneCompiler::nextSceneRevision();
 }
 
 void RenderEngine::set_show_points(bool v) {
@@ -383,7 +397,10 @@ RenderResult RenderEngine::render_frame(bool clear_accumulation, bool want_pixel
     {
         const uint32_t width = m_pt_width;
         const uint32_t height = m_pt_height;
-        const size_t bytes_per_pixel = m_config.hdr_output ? 16 : 4;
+        // Size from the PT's actual output format — the EXR export forces it to
+        // float (16 bpp) regardless of m_config.hdr_output, and a mismatch here
+        // overruns the readback buffer.
+        const size_t bytes_per_pixel = m_path_tracer->hdrOutput() ? 16 : 4;
         RenderResult result;
         result.width = width;
         result.height = height;
@@ -410,12 +427,45 @@ RenderResult RenderEngine::render_frame(bool clear_accumulation, bool want_pixel
     result.render_time_ms = render_time_ms;
     if (want_pixels)
     {
-        const size_t bytes_per_pixel = m_config.hdr_output ? 16 : 4;
+        // Size from the PT's actual output format (the EXR export forces float
+        // output independently of m_config.hdr_output) — a mismatch overruns
+        // result.pixels in path_tracer->readback().
+        const size_t bytes_per_pixel = m_path_tracer->hdrOutput() ? 16 : 4;
         const size_t buffer_size = static_cast<size_t>(width) * height * bytes_per_pixel;
         result.pixels.resize(buffer_size);
         m_path_tracer->readback(result.pixels.data());
     }
     return result;
+}
+
+void RenderEngine::set_export_aovs(bool v) {
+    if (m_config.export_aovs == v) return;
+    m_config.export_aovs = v;
+    // Recreate the PT so the output image (now float), accumulator, and AOV
+    // buffers rebuild; re-push the material programs (the fresh backend starts
+    // empty — same reasoning as set_resolutions()).
+    if (m_path_tracer) {
+        m_path_tracer.reset();
+        initialize_path_tracer();
+        if (m_compiled_scene && !m_compiled_scene->materialPrograms.headers().empty()) {
+            m_path_tracer->setMaterialPrograms(m_compiled_scene->materialPrograms);
+        }
+    }
+}
+
+void RenderEngine::set_pt_backend(const std::string& backend) {
+    if (m_config.pt_backend == backend) return;
+    m_config.pt_backend = backend;
+    // Recreate the PT against the new backend; the façade picks output
+    // resources per the backend's outputKind (Metal IOSurface vs CPU pixels).
+    // Re-push material programs (the fresh backend starts empty).
+    if (m_path_tracer) {
+        m_path_tracer.reset();
+        initialize_path_tracer();
+        if (m_compiled_scene && !m_compiled_scene->materialPrograms.headers().empty()) {
+            m_path_tracer->setMaterialPrograms(m_compiled_scene->materialPrograms);
+        }
+    }
 }
 
 void RenderEngine::set_resolution(uint32_t width, uint32_t height) {

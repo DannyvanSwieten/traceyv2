@@ -35,6 +35,12 @@ namespace tracey
                     declareParam(Parameter::makeFloat("transmission", 0.0f));
                     declareParam(Parameter::makeFloat("ior", 1.5f));
                     declareParam(Parameter::makeFloat("opacity", 1.0f));
+                    declareParam(Parameter::makeFloat("clearcoat", 0.0f));
+                    declareParam(Parameter::makeFloat("clearcoat_roughness", 0.0f));
+                    declareParam(Parameter::makeFloat("sheen", 0.0f));
+                    declareParam(Parameter::makeFloat("subsurface", 0.0f));
+                    declareParam(Parameter::makeVec3("subsurface_color", Vec3(1.0f)));
+                    declareParam(Parameter::makeFloat("anisotropy", 0.0f));
                 }
 
                 std::string kind() const override { return "object_output"; }
@@ -73,7 +79,13 @@ namespace tracey
                      {"emission_strength",     ParamType::Float,  "1.0", 0.0, 100.0, 0.1},
                      {"transmission",          ParamType::Float,  "0.0", 0.0, 1.0, 0.01},
                      {"ior",                   ParamType::Float,  "1.5", 1.0, 3.0, 0.01},
-                     {"opacity",               ParamType::Float,  "1.0", 0.0, 1.0, 0.01}}},
+                     {"opacity",               ParamType::Float,  "1.0", 0.0, 1.0, 0.01},
+                     {"clearcoat",             ParamType::Float,  "0.0", 0.0, 1.0, 0.01},
+                     {"clearcoat_roughness",   ParamType::Float,  "0.0", 0.0, 1.0, 0.01},
+                     {"sheen",                 ParamType::Float,  "0.0", 0.0, 1.0, 0.01},
+                     {"subsurface",            ParamType::Float,  "0.0", 0.0, 1.0, 0.01},
+                     {"subsurface_color",      ParamType::Vec3,   "[1, 1, 1]"},
+                     {"anisotropy",            ParamType::Float,  "0.0", -1.0, 1.0, 0.01}}},
                 [](size_t uid) -> std::unique_ptr<SopNode> {
                     return std::make_unique<ObjectOutputSop>(uid);
                 });

@@ -99,20 +99,27 @@ namespace tracey
         };
         StackEntry stack[64];
         int stackTop = 0;
-        stack[stackTop++] = {0, 0.0f};
+
+        // Test the root once; children are AABB-tested when pushed, so popped
+        // nodes only do a cheap tNear-vs-closestT cull (no second intersectAABB).
+        // This halves the AABB tests vs testing both at push and at pop —
+        // intersectAABB is the hottest function in the CPU tracer.
+        {
+            float rEnter, rExit;
+            if (!intersectAABB(ray, m_nodes[0].boundsMin, m_nodes[0].boundsMax,
+                               tMin, closestT, rEnter, rExit))
+                return std::nullopt;
+            stack[stackTop++] = {0, rEnter};
+        }
 
         while (stackTop > 0)
         {
-            StackEntry entry = stack[--stackTop];
-            const BVHNode &node = m_nodes[entry.nodeIndex];
-
-            float nodeEnter, nodeExit;
-            if (!intersectAABB(ray, node.boundsMin, node.boundsMax,
-                               tMin, closestT, nodeEnter, nodeExit) ||
-                nodeEnter > closestT)
-            {
+            const StackEntry entry = stack[--stackTop];
+            // closestT may have tightened since this node was pushed → cull
+            // without re-testing the box (it was valid when pushed).
+            if (entry.tNear >= closestT)
                 continue;
-            }
+            const BVHNode &node = m_nodes[entry.nodeIndex];
 
             const auto primCount = node.primCountAndType & 0xFFFFFF;
             if (primCount > 0)

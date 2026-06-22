@@ -1,0 +1,107 @@
+.mat-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #ccc;
+  margin-bottom: 8px;
+  cursor: pointer;
+}
+.mat-toggle input {
+  cursor: pointer;
+}
+
+.mat-hint {
+  font-size: 11px;
+  color: #777;
+  line-height: 1.4;
+}
+
+.mat-import {
+  width: 100%;
+  padding: 5px 0;
+  margin-bottom: 8px;
+  background: #2c2c2c;
+  border: 1px solid #3a3a3a;
+  color: #ddd;
+  border-radius: 3px;
+  font: 11px system-ui, -apple-system, sans-serif;
+  cursor: pointer;
+}
+.mat-import:hover {
+  background: #383838;
+  border-color: #4a4a4a;
+}
+
+/* Sub-group header inside the material override (Base / Specular / …). */
+.mat-group {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #888;
+  margin: 12px 0 6px;
+}
+.mat-group:first-of-type {
+  margin-top: 4px;
+}
+
+.mat-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.mat-label {
+  flex: 0 0 84px;
+  font-size: 11px;
+  color: #999;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mat-slider-group {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 1fr 56px;
+  gap: 6px;
+  align-items: center;
+}
+.mat-slider {
+  width: 100%;
+  margin: 0;
+  accent-color: #5a8;
+}
+.mat-readout {
+  background: #1a1a1a;
+  border: 1px solid #3a3a3a;
+  color: #eee;
+  padding: 3px 5px;
+  font: 11px ui-monospace, SFMono-Regular, Menlo, monospace;
+  border-radius: 2px;
+  width: 100%;
+  box-sizing: border-box;
+  text-align: right;
+}
+.mat-readout:focus {
+  outline: 1px solid #5a8;
+  border-color: #5a8;
+}
+.mat-readout-wide {
+  flex: 1;
+  background: #1a1a1a;
+  border: 1px solid #3a3a3a;
+  color: #eee;
+  padding: 3px 5px;
+  font: 11px ui-monospace, SFMono-Regular, Menlo, monospace;
+  border-radius: 2px;
+  box-sizing: border-box;
+  text-align: right;
+}
+
+/* Color swatch sized to match the slider track height. */
+.mat-swatch {
+  flex: 1;
+  height: 22px;
+}

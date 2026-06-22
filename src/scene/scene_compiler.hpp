@@ -57,8 +57,27 @@ namespace tracey
         float transmissionFactor = 0.0f; // offset 17 (was _pad3)
         float iorFactor = 1.5f;          // offset 18 (was _pad4)
         float emissiveStrength = 1.0f;   // offset 19 (was _pad5)
+
+        // R3 advanced-BSDF lobe factors, read directly by the integrator's uber
+        // surface (0 = lobe off, so these defaults preserve the prior look).
+        // The MSL kernel reads them by fixed offset (20-23) via as_type<float>,
+        // so this order must stay in lockstep with MATERIAL_STRIDE and the
+        // getMaterial* accessors in pathtrace_msl.hpp.
+        float clearcoatFactor = 0.0f;          // offset 20 — clear-coat weight
+        float clearcoatRoughnessFactor = 0.0f; // offset 21 — coat GGX roughness
+        float sheenFactor = 0.0f;              // offset 22 — retroreflective sheen weight
+        float anisotropyFactor = 0.0f;         // offset 23 — [-1,1] GGX anisotropy
+
+        // R3d subsurface: wrap-diffusion approximation. subsurfaceFactor blends
+        // the diffuse NEE toward a softened response that wraps light past the
+        // terminator; subsurfaceColor is the scatter tint (skin/wax/marble).
+        // 0 = off (diffuse NEE unchanged). Offsets 24-27, read by fixed offset.
+        float subsurfaceFactor = 0.0f;         // offset 24 — subsurface weight
+        float subsurfaceColorR = 1.0f;         // offset 25 — scatter tint R
+        float subsurfaceColorG = 1.0f;         // offset 26 — scatter tint G
+        float subsurfaceColorB = 1.0f;         // offset 27 — scatter tint B
     };
-    static_assert(sizeof(GPUMaterial) == 80, "GPUMaterial must be 80 bytes");
+    static_assert(sizeof(GPUMaterial) == 112, "GPUMaterial must be 112 bytes");
 
     // GPU light record consumed by the rasterizer's PBR pass AND the path
     // tracer's NEE / miss shaders. Five vec4s chosen so the std430 stride
@@ -157,8 +176,24 @@ namespace tracey
             std::unique_ptr<Buffer> normalBuffer;
             bool hasNormals = false;
 
+            // Per-vertex position buffer (vec3-in-vec4 per vertex, parallel to
+            // UVs/normals and indexed by the same per-instance offset). The CPU
+            // path tracer reads it to reconstruct a hit triangle's object-space
+            // vertices for UV-aligned tangent derivation (anisotropic GGX). The
+            // Metal backend already binds an equivalent concatenated positions
+            // buffer for its hit shader, so both index by the same `base`.
+            std::unique_ptr<Buffer> positionBuffer;
+
             // Instance data for reference
             std::vector<Tlas::Instance> instances;
+
+            // R4 motion blur: shutter-close pose for each instance, parallel to
+            // `instances` (the shutter-open pose). Equal to `instances` when
+            // there's no motion; `hasMotion` gates the blur so static scenes
+            // stay bit-identical. Populated by the sequence renderer, which
+            // re-evaluates the scene at t + shutter and recompiles the TLAS.
+            std::vector<Tlas::Instance> instancesEnd;
+            bool hasMotion = false;
 
             // Per-instance material program lookup and UV base offset.
             // instanceProgramIndex[i] is the GPU programId (= index into

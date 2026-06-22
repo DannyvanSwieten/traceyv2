@@ -4,7 +4,7 @@
 // the rest of the app never hand-rolls its own getAllActors → setActors
 // sequence (the source of the historical drift between callbacks).
 
-import { createSignal } from 'solid-js';
+import { batch, createSignal } from 'solid-js';
 import * as api from '../lib/api';
 import type { Actor } from '../components/scene-hierarchy/SceneHierarchy';
 import { findNodeRecursive } from '../lib/sop_graph';
@@ -29,7 +29,26 @@ export function selectedActor(): Actor | null {
 // console warning so a failing refresh says which flow it broke.
 export async function refreshActors(context = 'refresh'): Promise<void> {
   try {
-    setActorsSignal(await api.getAllActors());
+    // Capture the selected actor's source SOP node before refreshing — a
+    // recook can reassign actor uids (e.g. a material-override edit changes
+    // the actor signature → teardown + recreate with a fresh uid). The
+    // sop_node_uid IS stable across cooks, so we use it to re-bind the
+    // selection and keep the inspector open on the same object.
+    const prevId = selectedActorIdSignal();
+    const prevSop =
+      prevId !== null
+        ? actorsSignal().find((a) => a.id === prevId)?.sop_node_uid ?? null
+        : null;
+
+    const next = await api.getAllActors();
+
+    batch(() => {
+      if (prevId !== null && prevSop != null && !next.some((a) => a.id === prevId)) {
+        const rebound = next.find((a) => a.sop_node_uid === prevSop);
+        if (rebound) setSelectedActorIdSignal(rebound.id);
+      }
+      setActorsSignal(next);
+    });
   } catch (e) {
     console.warn(`actor ${context} failed:`, e);
   }

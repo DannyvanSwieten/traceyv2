@@ -1,4 +1,4 @@
-import { Component, Accessor, For } from 'solid-js';
+import { Component, Accessor, For, createSignal, onMount } from 'solid-js';
 import * as api from '../../lib/api';
 import { NumberInput } from '../number-input/NumberInput';
 import './CameraControls.css';
@@ -31,6 +31,32 @@ export const CameraControls: Component<CameraControlsProps> = (props) => {
     const newPos = { ...props.position() };
     newPos[axis] = numValue;
     props.onPositionChange(newPos);
+  };
+
+  // Thin-lens depth of field (R4). Local mirror of the camera's aperture /
+  // focal distance, seeded from the server and written back via set_camera
+  // (which restarts the path-tracer accumulation). aperture 0 = pinhole.
+  const [aperture, setAperture] = createSignal(0);
+  const [focalDistance, setFocalDistance] = createSignal(5);
+  // Motion-blur shutter (R4) — fraction of the frame interval; applied on export.
+  const [shutter, setShutter] = createSignal(0);
+  onMount(async () => {
+    try {
+      const cam = await api.getCamera();
+      setAperture(cam.aperture ?? 0);
+      setFocalDistance(cam.focal_distance ?? 5);
+      setShutter(cam.shutter ?? 0);
+    } catch { /* ignore */ }
+  });
+  const commitDof = async (
+    next: { aperture?: number; focal_distance?: number; shutter?: number },
+  ) => {
+    try {
+      const cam = await api.getCamera();
+      await api.setCamera({ ...cam, ...next });
+    } catch (e) {
+      console.warn('set_camera (lens/shutter) failed:', e);
+    }
   };
 
   const applyPreset = async (view: api.CameraView) => {
@@ -68,7 +94,7 @@ export const CameraControls: Component<CameraControlsProps> = (props) => {
         <For each={['x', 'y', 'z'] as const}>
           {(axis) => (
             <div class="camera-input-row">
-              <label>{axis.toUpperCase()}</label>
+              <label class="axis">{axis.toUpperCase()}</label>
               <NumberInput
                 step={0.1}
                 title={`Camera ${axis.toUpperCase()}`}
@@ -78,6 +104,55 @@ export const CameraControls: Component<CameraControlsProps> = (props) => {
             </div>
           )}
         </For>
+      </div>
+      <h4>Depth of Field</h4>
+      <div class="camera-inputs">
+        <div class="camera-input-row">
+          <label title="Lens radius — 0 disables DOF (pinhole)">Aperture</label>
+          <NumberInput
+            step={0.01}
+            min={0}
+            title="Aperture (lens radius; 0 = pinhole)"
+            value={() => aperture()}
+            onCommit={(v) => {
+              const a = Math.max(0, v);
+              setAperture(a);
+              void commitDof({ aperture: a });
+            }}
+          />
+        </div>
+        <div class="camera-input-row">
+          <label title="Distance at which the scene is in perfect focus">Focal Dist</label>
+          <NumberInput
+            step={0.1}
+            min={0}
+            title="Focal distance (in-focus depth along the view direction)"
+            value={() => focalDistance()}
+            onCommit={(v) => {
+              const f = Math.max(0, v);
+              setFocalDistance(f);
+              void commitDof({ focal_distance: f });
+            }}
+          />
+        </div>
+      </div>
+      <h4>Motion Blur</h4>
+      <div class="camera-inputs">
+        <div class="camera-input-row">
+          <label title="Shutter open fraction of the frame interval — 0 disables motion blur. Applied on sequence/EXR export.">Shutter</label>
+          <NumberInput
+            step={0.05}
+            min={0}
+            max={1}
+            title="Shutter (fraction of a frame; 0 = off). Blurs moving objects on export."
+            value={() => shutter()}
+            onCommit={(v) => {
+              const s = Math.max(0, Math.min(1, v));
+              setShutter(s);
+              void commitDof({ shutter: s });
+            }}
+          />
+        </div>
       </div>
     </div>
   );

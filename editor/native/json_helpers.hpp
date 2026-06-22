@@ -56,6 +56,9 @@ inline nlohmann::json camera_to_json(const tracey::Camera& c) {
         {"near_plane", c.nearPlane()},
         {"far_plane", c.farPlane()},
         {"aspect_ratio", c.aspectRatio()},
+        {"aperture", c.aperture()},
+        {"focal_distance", c.focalDistance()},
+        {"shutter", c.shutter()},
     };
 }
 
@@ -67,6 +70,10 @@ inline tracey::Camera camera_from_json(const nlohmann::json& j) {
     c.setNearPlane(j.at("near_plane").get<float>());
     c.setFarPlane(j.at("far_plane").get<float>());
     c.setAspectRatio(j.at("aspect_ratio").get<float>());
+    // DOF — default to 0 (pinhole) so scenes saved before R4 still load.
+    c.setAperture(j.value("aperture", 0.0f));
+    c.setFocalDistance(j.value("focal_distance", 5.0f));
+    c.setShutter(j.value("shutter", 0.0f));
     return c;
 }
 

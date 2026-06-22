@@ -19,7 +19,7 @@ namespace tracey
         }
     }
 
-    CpuImage2D::CpuImage2D(uint32_t width, uint32_t height, ImageFormat format) : m_width(width), m_height(height), m_format(format)
+    CpuImage2D::CpuImage2D(uint32_t width, uint32_t height, ImageFormat format) : m_format(format), m_width(width), m_height(height)
     {
         bytesPerPixel = getBytesPerPixel(format);
         m_data = static_cast<char *>(std::malloc(width * height * bytesPerPixel));
@@ -30,7 +30,7 @@ namespace tracey
     }
 
     CpuImage2D::CpuImage2D(uint32_t width, uint32_t height, ImageFormat format, const void *data, size_t dataSize)
-        : m_width(width), m_height(height), m_format(format)
+        : m_format(format), m_width(width), m_height(height)
     {
         bytesPerPixel = getBytesPerPixel(format);
         m_data = static_cast<char *>(std::malloc(width * height * bytesPerPixel));
@@ -56,6 +56,9 @@ namespace tracey
         char *pixelPtr = m_data + pixelOffset * bytesPerPixel;
         switch (m_format)
         {
+        // Srgb shares the 8-bit RGBA byte layout with Unorm here; the colour
+        // space is an interpretation concern, not a storage one.
+        case ImageFormat::R8G8B8A8Srgb:
         case ImageFormat::R8G8B8A8Unorm:
         {
             uint8_t r = static_cast<uint8_t>(glm::clamp(value.r * 255.0f, 0.0f, 255.0f));

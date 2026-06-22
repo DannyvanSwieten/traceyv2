@@ -15,6 +15,7 @@ import { currentGraph, selectedNode, setParam, setParamKeyframe } from '../../st
 import { openVopEditor } from '../../stores/vops';
 import { autoKey, timeline } from '../../stores/timeline';
 import * as api from '../../lib/api';
+import { humanizeParamName } from '../../lib/param_label';
 import { NumberInput } from '../number-input/NumberInput';
 import { KeyframeDot } from '../keyframe-dot/KeyframeDot';
 
@@ -43,11 +44,30 @@ export const SopNodeInspector: Component = () => {
   // (range / options) so a promoted "frequency" slider stays a slider
   // on the host SOP. The host emits these alongside each promotion in
   // `extra.promotions` — see attribute_vop_sop.cpp serializeExtraJson().
+  // Material params on object_output are now edited in the Object Properties
+  // panel (MaterialOverride), not on the SOP node — so we hide them here. The
+  // node keeps them as the cook's source of truth; only the SOP-inspector UI
+  // is filtered. Object Output keeps its name/transform params.
+  const MATERIAL_OVERRIDE_PARAMS = new Set([
+    'override_material', 'base_color', 'metallic', 'roughness', 'emission',
+    'emission_strength', 'transmission', 'ior', 'opacity', 'clearcoat',
+    'clearcoat_roughness', 'sheen', 'subsurface', 'subsurface_color',
+    'anisotropy', 'material_library_name',
+  ]);
+
   const renderedParams = createMemo<ParamSpec[]>(() => {
     const n = node();
     if (!n) return [];
-    const fromCatalog = entry()?.params ?? [];
+    let fromCatalog = entry()?.params ?? [];
+    if (n.kind === 'object_output') {
+      fromCatalog = fromCatalog.filter((p) => !MATERIAL_OVERRIDE_PARAMS.has(p.name));
+    }
     const known = new Set(fromCatalog.map((p) => p.name));
+    // Keep the filtered material params out of the "extra live params" pass
+    // below too (they still exist on the node, just not in `fromCatalog`).
+    if (n.kind === 'object_output') {
+      for (const name of MATERIAL_OVERRIDE_PARAMS) known.add(name);
+    }
     // Index promotions by host param name so we can pull range / options
     // when synthesising the extra ParamSpec.
     type Promo = {
@@ -163,6 +183,8 @@ interface ParamRowProps {
 
 const ParamRow: Component<ParamRowProps> = (props) => {
   const cur = () => props.node.params[props.spec.name];
+  // Human-readable label; the raw name still drives lookups + hover titles.
+  const displayName = () => humanizeParamName(props.spec.name);
 
   // patch(v) writes the new value into the SOP graph store. When auto-key
   // is on it also writes a keyframe at the current playhead for the changed
@@ -257,6 +279,30 @@ const ParamRow: Component<ParamRowProps> = (props) => {
     patch({ type: 'vec3', value: cv }, i);
   };
 
+  // Colour-typed vec3 params (base_color / emission / subsurface_color / any
+  // *_color) get a swatch picker above the RGB fields. Direct linear↔8-bit
+  // mapping, matching the material-graph colour editor — lossy at the bottom
+  // of the range but fine for material defaults; the RGB fields stay for
+  // precise / out-of-[0,1] (e.g. HDR emission) entry + keyframing.
+  const isColorParam = () => {
+    const n = props.spec.name;
+    return n === 'base_color' || n === 'emission' || n === 'color' ||
+           n.endsWith('_color') || n.endsWith('Color');
+  };
+  const clamp01 = (x: number) => Math.max(0, Math.min(1, x));
+  const vec3ToHex = (v: [number, number, number]) => {
+    const c = (x: number) => Math.round(clamp01(x) * 255).toString(16).padStart(2, '0');
+    return `#${c(v[0])}${c(v[1])}${c(v[2])}`;
+  };
+  const setColorFromHex = (hex: string) => {
+    const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex);
+    if (!m) return;
+    patch({
+      type: 'vec3',
+      value: [parseInt(m[1], 16) / 255, parseInt(m[2], 16) / 255, parseInt(m[3], 16) / 255],
+    });
+  };
+
   return (
     <Switch>
       <Match when={props.spec.type === 'float'}>
@@ -264,7 +310,7 @@ const ParamRow: Component<ParamRowProps> = (props) => {
           when={(() => { const r = range(); return r && r.min !== r.max ? r : null; })()}
           fallback={
             <div class="sop-param-row">
-              <label>{props.spec.name}</label>
+              <label>{displayName()}</label>
               <NumberInput
                 step={0.01}
                 title={props.spec.name}
@@ -280,7 +326,7 @@ const ParamRow: Component<ParamRowProps> = (props) => {
             const step = r().step > 0 ? r().step : (r().max - r().min) / 200;
             return (
               <div class="sop-param-row sop-param-slider-row">
-                <label>{props.spec.name}</label>
+                <label>{displayName()}</label>
                 <div class="sop-param-slider-group">
                   <input
                     type="range"
@@ -318,7 +364,7 @@ const ParamRow: Component<ParamRowProps> = (props) => {
               when={(() => { const r = range(); return r && r.min !== r.max ? r : null; })()}
               fallback={
                 <div class="sop-param-row">
-                  <label>{props.spec.name}</label>
+                  <label>{displayName()}</label>
                   <NumberInput
                     step={1}
                     decimals={0}
@@ -335,7 +381,7 @@ const ParamRow: Component<ParamRowProps> = (props) => {
                 const step = r().step > 0 ? r().step : 1;
                 return (
                   <div class="sop-param-row sop-param-slider-row">
-                    <label>{props.spec.name}</label>
+                    <label>{displayName()}</label>
                     <div class="sop-param-slider-group">
                       <input
                         type="range"
@@ -368,7 +414,7 @@ const ParamRow: Component<ParamRowProps> = (props) => {
         >
           {(opts) => (
             <div class="sop-param-row">
-              <label>{props.spec.name}</label>
+              <label>{displayName()}</label>
               <select
                 title={props.spec.name}
                 value={String(intValue())}
@@ -388,7 +434,7 @@ const ParamRow: Component<ParamRowProps> = (props) => {
 
       <Match when={props.spec.type === 'bool'}>
         <div class="sop-param-row">
-          <label>{props.spec.name}</label>
+          <label>{displayName()}</label>
           <input
             type="checkbox"
             title={props.spec.name}
@@ -402,7 +448,16 @@ const ParamRow: Component<ParamRowProps> = (props) => {
 
       <Match when={props.spec.type === 'vec3'}>
         <div class="sop-param-row sop-param-vec3">
-          <label>{props.spec.name}</label>
+          <label>{displayName()}</label>
+          <Show when={isColorParam()}>
+            <input
+              type="color"
+              class="sop-param-color"
+              title={`${props.spec.name} (color picker)`}
+              value={vec3ToHex(vec3Value())}
+              onInput={(e) => setColorFromHex(e.currentTarget.value)}
+            />
+          </Show>
           <div class="sop-param-vec3-fields">
             <div class="sop-param-vec3-cell">
               <NumberInput step={0.01} title={`${props.spec.name}.x`}
@@ -432,7 +487,7 @@ const ParamRow: Component<ParamRowProps> = (props) => {
           when={(() => { const o = options(); return o && o.length > 0 ? o : null; })()}
           fallback={
             <div class="sop-param-row">
-              <label>{props.spec.name}</label>
+              <label>{displayName()}</label>
               <input
                 type="text"
                 title={props.spec.name}
@@ -445,7 +500,7 @@ const ParamRow: Component<ParamRowProps> = (props) => {
         >
           {(opts) => (
             <div class="sop-param-row">
-              <label>{props.spec.name}</label>
+              <label>{displayName()}</label>
               <select
                 title={props.spec.name}
                 value={stringValue()}

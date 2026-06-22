@@ -21,7 +21,7 @@ namespace tracey
     //         set = new CpuDescriptorSet(layout);
     //     }
     // }
-    Buffer *CpuComputeDevice::createBuffer(uint32_t size, BufferUsage usageFlags)
+    Buffer *CpuComputeDevice::createBuffer(uint32_t size, BufferUsage /*usageFlags*/)
     {
         return new CpuBuffer(size);
     }

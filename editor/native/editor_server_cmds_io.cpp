@@ -535,8 +535,12 @@ std::optional<std::string> EditorServer::handle_io_commands(
             exp.width            = req.value("width", 0);
             exp.height           = req.value("height", 0);
             exp.codec            = req.value("codec", std::string{"h264"});
+            exp.format           = req.value("format", std::string{"video"});
+            exp.denoise          = req.value("denoise", false);
 
             if (exp.path.empty()) return err_response("Missing output path");
+            if (exp.format != "video" && exp.format != "exr")
+                return err_response("Unsupported format: " + exp.format);
             if (exp.frame_end < exp.frame_start)
                 return err_response("frame_end must be >= frame_start");
             if (exp.samples_per_frame < 1)
@@ -546,12 +550,14 @@ std::optional<std::string> EditorServer::handle_io_commands(
             if (exp.fps <= 0.0) return err_response("fps must be > 0");
             if (exp.width < 0 || exp.height < 0)
                 return err_response("width/height must be >= 0");
-            // Even dimensions are required by H.264; ProRes is more forgiving
-            // but we enforce the same rule for predictability.
-            if (exp.width > 0 && (exp.width & 1))
-                return err_response("width must be even");
-            if (exp.height > 0 && (exp.height & 1))
-                return err_response("height must be even");
+            // Even dimensions are an H.264 constraint (movie export only); the
+            // EXR sequence has no such requirement.
+            if (exp.format == "video") {
+                if (exp.width > 0 && (exp.width & 1))
+                    return err_response("width must be even");
+                if (exp.height > 0 && (exp.height & 1))
+                    return err_response("height must be even");
+            }
 
             // Reap a previous worker that finished but wasn't joined yet.
             if (m_export_thread.joinable()) m_export_thread.join();

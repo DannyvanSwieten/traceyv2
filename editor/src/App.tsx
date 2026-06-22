@@ -49,12 +49,14 @@ import {
   maxSamples,
   maxBounces,
   renderResolution,
+  ptBackend,
   initRenderSettings,
   setPtPreview,
   setFrameLocked,
   setMaxSamples,
   setMaxBounces,
   setRenderResolution,
+  setPtBackend,
 } from './stores/render_settings';
 import { buildSubnetsFromGltf } from './lib/gltf_import';
 import { fetchCatalog as fetchSopCatalog } from './lib/sop_graph';
@@ -857,6 +859,8 @@ const App: Component = () => {
               setMaxBounces={setMaxBounces}
               resolution={renderResolution}
               setResolution={setRenderResolution}
+              ptBackend={ptBackend}
+              setPtBackend={setPtBackend}
               onResetRender={() => {
                 api.resetPtAccumulator().catch(() => {});
               }}
@@ -876,10 +880,14 @@ const App: Component = () => {
             actors={actors}
             onTransformChange={handleTransformChange}
           />
-          <CameraControls
-            position={cameraPosition}
-            onPositionChange={setCameraPosition}
-          />
+          {/* Camera controls only when nothing is selected — when an actor is
+              selected the panel shows that actor's properties instead. */}
+          <Show when={selectedActorId() === null}>
+            <CameraControls
+              position={cameraPosition}
+              onPositionChange={setCameraPosition}
+            />
+          </Show>
           {/* Path-tracer settings (max samples, max bounces, resolution)
               live in the Render workspace's WorkspaceBar so the user
               sees them only when the PT is the active focus, not in

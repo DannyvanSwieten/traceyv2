@@ -5,6 +5,8 @@
 
 #include "editor_server_cmds_common.hpp"
 
+#include "scene/materialx_loader.hpp"
+
 namespace tracey_editor {
 
 std::optional<std::string> EditorServer::handle_material_commands(
@@ -211,6 +213,58 @@ std::optional<std::string> EditorServer::handle_material_commands(
                 m_clear_next_frame = true;
             }
             return ok_response_null();
+        }
+
+        // ── MaterialX import ──
+        // Read a .mtlx and map its standard_surface materials onto the engine
+        // BSDF, returning each as a flat set of params keyed EXACTLY by the
+        // object_output SOP's override-param names. The frontend writes the
+        // chosen material's params straight onto the selected Object Output
+        // node (override_material=true), so the import reuses the verified
+        // inline-override → GPUMaterial path and preserves every lobe
+        // (clearcoat / sheen / subsurface / anisotropy). Read-only: the
+        // frontend owns the SOP graph and posts the edit via set_sop_graph.
+        if (cmd == "read_materialx_material") {
+            const auto path = req.at("path").get<std::string>();
+            if (!tracey::MaterialXLoader::available()) {
+                return err_response("this build has no MaterialX support "
+                                    "(run scripts/bootstrap_deps.sh and rebuild)");
+            }
+            auto mats = tracey::MaterialXLoader::loadMaterials(path);
+            if (mats.empty()) {
+                return err_response("no standard_surface materials found in file");
+            }
+            json arr = json::array();
+            for (const auto& nm : mats) {
+                const auto& m = nm.material;
+                auto vec3 = [&](const char* key, json def) -> json {
+                    if (auto v = m.getVec3(key)) return json::array({v->x, v->y, v->z});
+                    return def;
+                };
+                auto flt = [&](const char* key, float def) -> float {
+                    if (auto v = m.getFloat(key)) return *v;
+                    return def;
+                };
+                json params = {
+                    {"override_material",   true},
+                    {"base_color",          vec3("albedo", json::array({0.8, 0.8, 0.8}))},
+                    {"metallic",            flt("metallic", 0.0f)},
+                    {"roughness",           flt("roughness", 0.5f)},
+                    {"transmission",        flt("transmission", 0.0f)},
+                    {"ior",                 flt("ior", 1.5f)},
+                    {"emission",            vec3("emission", json::array({0.0, 0.0, 0.0}))},
+                    {"emission_strength",   flt("emissionStrength", 1.0f)},
+                    {"opacity",             flt("opacity", 1.0f)},
+                    {"clearcoat",           flt("clearcoat", 0.0f)},
+                    {"clearcoat_roughness", flt("clearcoatRoughness", 0.0f)},
+                    {"sheen",               flt("sheen", 0.0f)},
+                    {"subsurface",          flt("subsurface", 0.0f)},
+                    {"subsurface_color",    vec3("subsurfaceColor", json::array({1.0, 1.0, 1.0}))},
+                    {"anisotropy",          flt("anisotropy", 0.0f)},
+                };
+                arr.push_back({{"name", nm.name}, {"params", std::move(params)}});
+            }
+            return ok_response(arr);
         }
 
     return std::nullopt;

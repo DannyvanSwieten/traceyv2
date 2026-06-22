@@ -24,6 +24,23 @@ namespace tracey
         Cpu,      // native CPU fallback
     };
 
+    // Render-pass outputs (AOVs) the integrator can emit alongside the beauty
+    // image, captured on the first shaded surface hit (primary visibility) and
+    // averaged across samples like the beauty mean. Each layer is stored as
+    // RGBA32F per pixel — scalar AOVs (Depth, InstanceId) occupy the R channel.
+    // Enabled via PathTracerConfig::enableAovs; consumed by the OIDN denoiser
+    // (Albedo + Normal guides) and the multi-layer EXR sequence export.
+    enum class AovKind : uint32_t
+    {
+        Albedo = 0,
+        Normal,
+        Depth,
+        Position,
+        Emission,
+        InstanceId,
+        Count,
+    };
+
     // Who owns the presentable output image, and in what form the backend
     // delivers pixels. Decides which InitParams resources the façade creates.
     enum class PathTracerOutputKind
@@ -83,6 +100,15 @@ namespace tracey
         // as cpuOutputPixels) into `dst`. Only meaningful after a dispatch
         // with wantReadback=true. Returns the number of bytes written.
         virtual size_t readback(void *dst) = 0;
+
+        // True when the backend produced AOV layers for the latest dispatch
+        // (only when config.enableAovs). Base backends emit none.
+        virtual bool aovsAvailable() const { return false; }
+
+        // Copy one AOV layer (RGBA32F, width*height*4 floats, tightly packed)
+        // for the latest dispatch into `dst`. Returns bytes written, or 0 when
+        // the AOV is unavailable. Default: no AOVs.
+        virtual size_t readbackAOV(AovKind /*aov*/, void * /*dst*/) { return 0; }
 
         // Build pipeline, descriptors, command buffer. Called once at PathTracer
         // construction time.

@@ -359,7 +359,7 @@ namespace tracey
         m_frameSync.clear();
     }
 
-    bool VulkanPresenter::present(VulkanImage2D *sourceImage, bool waitForRender)
+    bool VulkanPresenter::present(VulkanImage2D *sourceImage, bool /*waitForRender*/)
     {
         // Whole-present lock — covers swapchain acquire, command-pool
         // alloc, record, queue submit + present. See vulkan_queue_sync.hpp.
@@ -462,7 +462,7 @@ namespace tracey
     bool VulkanPresenter::presentToRegion(VulkanImage2D *sourceImage,
                                          int32_t dstX, int32_t dstY,
                                          uint32_t dstWidth, uint32_t dstHeight,
-                                         bool waitForRender)
+                                         bool /*waitForRender*/)
     {
         // Whole-present lock — see vulkan_queue_sync.hpp.
         std::lock_guard<std::mutex> gpuLock(vulkanQueueMutex());

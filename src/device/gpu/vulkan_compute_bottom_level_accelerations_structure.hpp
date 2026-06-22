@@ -25,7 +25,7 @@ namespace tracey
         const Blas *cpuBlas() const override { return m_blas ? &*m_blas : nullptr; }
 
     private:
-        VulkanComputeDevice &m_device;
+        [[maybe_unused]] VulkanComputeDevice &m_device;
         std::optional<Blas> m_blas;
     };
 }
