@@ -445,6 +445,12 @@ void RenderEngine::set_export_aovs(bool v) {
     // buffers rebuild; re-push the material programs (the fresh backend starts
     // empty — same reasoning as set_resolutions()).
     if (m_path_tracer) {
+        // Drain all in-flight GPU work before freeing the old path tracer's
+        // images. The editor's viewport presenter blits the PT output image
+        // (Metal↔Vulkan interop) asynchronously; destroying it while that blit
+        // is still executing is use-after-free → device loss. Tab switches that
+        // resize the PT used to crash exactly here on big scenes.
+        if (m_device) m_device->waitIdle();
         m_path_tracer.reset();
         initialize_path_tracer();
         if (m_compiled_scene && !m_compiled_scene->materialPrograms.headers().empty()) {
@@ -460,6 +466,12 @@ void RenderEngine::set_pt_backend(const std::string& backend) {
     // resources per the backend's outputKind (Metal IOSurface vs CPU pixels).
     // Re-push material programs (the fresh backend starts empty).
     if (m_path_tracer) {
+        // Drain all in-flight GPU work before freeing the old path tracer's
+        // images. The editor's viewport presenter blits the PT output image
+        // (Metal↔Vulkan interop) asynchronously; destroying it while that blit
+        // is still executing is use-after-free → device loss. Tab switches that
+        // resize the PT used to crash exactly here on big scenes.
+        if (m_device) m_device->waitIdle();
         m_path_tracer.reset();
         initialize_path_tracer();
         if (m_compiled_scene && !m_compiled_scene->materialPrograms.headers().empty()) {
@@ -500,6 +512,12 @@ void RenderEngine::set_resolutions(uint32_t raster_w, uint32_t raster_h,
         // every surface renders as garbage (blown-out white) until the next
         // compile_scene. Switching to the Render workspace collapses the
         // dopesheet, which resizes the viewport and trips exactly this path.
+        // Drain all in-flight GPU work before freeing the old path tracer's
+        // images. The editor's viewport presenter blits the PT output image
+        // (Metal↔Vulkan interop) asynchronously; destroying it while that blit
+        // is still executing is use-after-free → device loss. Tab switches that
+        // resize the PT used to crash exactly here on big scenes.
+        if (m_device) m_device->waitIdle();
         m_path_tracer.reset();
         initialize_path_tracer();
         if (m_compiled_scene && !m_compiled_scene->materialPrograms.headers().empty()) {
@@ -507,6 +525,7 @@ void RenderEngine::set_resolutions(uint32_t raster_w, uint32_t raster_h,
         }
     }
     if (raster_changed && m_rasterizer) {
+        if (m_device) m_device->waitIdle(); // same hazard as the PT above
         m_rasterizer.reset();
         initialize_rasterizer();
     }

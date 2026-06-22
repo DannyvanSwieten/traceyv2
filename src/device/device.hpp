@@ -101,6 +101,15 @@ namespace tracey
         // (e.g. maxPerStageResources on Vulkan/MoltenVK, where the entire
         // compute pipeline's resource count must fit).
         virtual uint32_t maxBindlessTextures() const = 0;
+
+        // Block until ALL GPU work submitted to this device has completed.
+        // Call before destroying/recreating GPU resources that an in-flight
+        // command buffer may still reference — e.g. recreating the path tracer
+        // on a resolution change while the viewport presenter's blit of the old
+        // output image is still executing on the GPU. Destroying the image then
+        // is use-after-free → "vkDestroyImage ... in use" → device loss. No-op
+        // on devices with no async GPU queue (CPU).
+        virtual void waitIdle() {}
     };
 
     Device *createDevice(DeviceType type, DeviceBackend backend);

@@ -21,6 +21,7 @@ namespace tracey
         BottomLevelAccelerationStructure *createBottomLevelAccelerationStructure(const Buffer *positions, uint32_t positionCount, uint32_t positionStride, const Buffer *indices, uint32_t indexCount, const BVHConfig &bvhConfig = {}) override;
         TopLevelAccelerationStructure *createTopLevelAccelerationStructure(std::span<const BottomLevelAccelerationStructure *> blases, std::span<const Tlas::Instance> instances) override;
         uint32_t maxBindlessTextures() const override;
+        void waitIdle() override;
 
         int findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties);
         uint32_t queueFamilyIndex() const { return m_vulkanContext.computeQueueFamilyIndex(); }

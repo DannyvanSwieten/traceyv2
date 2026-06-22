@@ -175,6 +175,16 @@ namespace tracey
         return std::min(budget, props.limits.maxPerStageDescriptorSampledImages);
     }
 
+    void VulkanComputeDevice::waitIdle()
+    {
+        // Device-wide drain: completes every queue (the compute/path-tracer
+        // queue AND the editor presenter's graphics queue, which share this
+        // VkDevice). Callers use this before tearing down GPU resources that
+        // an in-flight command buffer might still reference.
+        if (m_vulkanContext.device() != VK_NULL_HANDLE)
+            vkDeviceWaitIdle(m_vulkanContext.device());
+    }
+
     int VulkanComputeDevice::findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties)
     {
         VkPhysicalDeviceMemoryProperties memProperties;

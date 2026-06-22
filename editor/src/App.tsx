@@ -275,6 +275,9 @@ const App: Component = () => {
       // truly stuck cook. Then verify the actor list actually grew — empty
       // imports show as "blank viewport" which is the symptom we're
       // diagnosing.
+      // Generous timeout: a large asset (the Pixar Kitchen Set is 1788 meshes)
+      // can take tens of seconds to cook + build BLASes. 3s false-alarmed on it.
+      const LOAD_TIMEOUT_MS = 120000;
       const sawSceneChanged = await new Promise<boolean>((resolve) => {
         let done = false;
         const timer = setTimeout(() => {
@@ -282,7 +285,7 @@ const App: Component = () => {
           done = true;
           unlisten();
           resolve(false);
-        }, 3000);
+        }, LOAD_TIMEOUT_MS);
         const unlisten = api.listen('scene_changed', () => {
           if (done) return;
           done = true;
@@ -293,8 +296,8 @@ const App: Component = () => {
       });
 
       if (!sawSceneChanged) {
-        console.error('Load timed out — no scene_changed within 3s for', asset.path);
-        showToast('Load timed out — the engine did not finish cooking within 3 seconds.', {
+        console.error('Load timed out — no scene_changed for', asset.path);
+        showToast('Load timed out — the engine did not finish cooking in time.', {
           kind: 'error',
           detail: asset.path,
         });
