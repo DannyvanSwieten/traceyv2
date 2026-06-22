@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <utility>
 #include <vector>
@@ -223,6 +224,17 @@ private:
     std::unique_ptr<tracey::Scene> m_scene;
     std::unique_ptr<tracey::PathTracer> m_path_tracer;
     std::unique_ptr<tracey::Rasterizer> m_rasterizer;
+    // Serializes the render worker thread's GPU work (render_rasterizer_with)
+    // against any operation that recreates or rebuilds GPU resources
+    // (set_resolutions, compile_scene, set_pt_backend). Vulkan requires external
+    // synchronization for object lifetime: without this, the worker thread can
+    // be binding/submitting/mapping buffers and command pools while the main
+    // thread (a resolution switch, a cook-apply) frees and recreates them —
+    // producing vkFreeCommandBuffers / vkUnmapMemory THREADING ERRORs and
+    // use-after-free. These mutators run rarely and the worker's render is
+    // short, so the brief mutual exclusion is cheap. (Not recursive: verified
+    // none of the guarded methods call another guarded method.)
+    std::mutex m_gpu_mutex;
     // shared_ptr so the render worker thread can hold a snapshot of the
     // current scene (via shared_ptr copy) while the main thread swaps in
     // a freshly compiled scene from apply_emitted. Once all snapshots

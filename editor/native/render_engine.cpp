@@ -131,6 +131,9 @@ void RenderEngine::set_material_parameter(uint32_t program_id, uint32_t param_id
 }
 
 void RenderEngine::compile_scene() {
+    // Exclude the render worker thread while we rebuild GPU buffers/BLAS — see
+    // m_gpu_mutex. The worker holds this for the duration of a rasterizer pass.
+    std::lock_guard<std::mutex> gpu_lk(m_gpu_mutex);
     // Empty scene (e.g. SOP graph has no ObjectOutput wired yet, or fresh
     // launch before the first import): SceneCompiler::compile would throw on
     // no-geometry, so we install an empty CompiledScene instead of resetting
@@ -224,6 +227,9 @@ double RenderEngine::render_rasterizer_with(
     const tracey::SceneCompiler::CompiledScene &scene,
     const tracey::Camera &camera)
 {
+    // The render worker thread's only GPU op. Held against set_resolutions /
+    // compile_scene / set_pt_backend so resources can't be freed mid-render.
+    std::lock_guard<std::mutex> gpu_lk(m_gpu_mutex);
     if (!m_rasterizer) return 0.0;
     return m_rasterizer->render(scene, camera);
 }
@@ -461,6 +467,9 @@ void RenderEngine::set_export_aovs(bool v) {
 
 void RenderEngine::set_pt_backend(const std::string& backend) {
     if (m_config.pt_backend == backend) return;
+    // Recreates the path tracer (frees its GPU resources) — exclude the render
+    // worker thread. See m_gpu_mutex.
+    std::lock_guard<std::mutex> gpu_lk(m_gpu_mutex);
     m_config.pt_backend = backend;
     // Recreate the PT against the new backend; the façade picks output
     // resources per the backend's outputKind (Metal IOSurface vs CPU pixels).
@@ -488,6 +497,11 @@ void RenderEngine::set_resolution(uint32_t width, uint32_t height) {
 void RenderEngine::set_resolutions(uint32_t raster_w, uint32_t raster_h,
                                    uint32_t pt_w, uint32_t pt_h) {
     if (raster_w == 0 || raster_h == 0) return;
+    // Recreates the path tracer AND the rasterizer (frees their command pools,
+    // images and buffers). The render worker thread must not be mid-render on
+    // them — see m_gpu_mutex. (Reached only via the plural overload; the
+    // singular set_resolution delegates here, so this is the one lock point.)
+    std::lock_guard<std::mutex> gpu_lk(m_gpu_mutex);
     if (pt_w == 0) pt_w = raster_w;
     if (pt_h == 0) pt_h = raster_h;
 
