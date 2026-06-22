@@ -134,6 +134,12 @@ void RenderEngine::compile_scene() {
     // Unique lock: rebuilding GPU buffers/BLAS must exclude both render workers
     // (rasterizer + PT) for its whole duration — see m_gpu_mutex.
     std::unique_lock<std::shared_mutex> gpu_lk(m_gpu_mutex);
+    // Advance the scene generation: this compile may evictUntouched() buffers
+    // that outstanding render snapshots still point at. Bumped under the unique
+    // lock so a worker that later checks it (under the shared lock) reliably
+    // sees the new value and skips its now-stale snapshot. release-store pairs
+    // with the workers' acquire-load.
+    m_scene_generation.fetch_add(1, std::memory_order_release);
     // Empty scene (e.g. SOP graph has no ObjectOutput wired yet, or fresh
     // launch before the first import): SceneCompiler::compile would throw on
     // no-geometry, so we install an empty CompiledScene instead of resetting
@@ -225,11 +231,17 @@ void RenderEngine::render_rasterizer() {
 
 double RenderEngine::render_rasterizer_with(
     const tracey::SceneCompiler::CompiledScene &scene,
-    const tracey::Camera &camera)
+    const tracey::Camera &camera,
+    uint64_t expectedGeneration)
 {
     // Shared lock: rasterizer + PT renders read resources concurrently; only
     // set_resolutions / compile_scene / set_pt_backend (unique) exclude us.
     std::shared_lock<std::shared_mutex> gpu_lk(m_gpu_mutex);
+    // Stale-snapshot guard: a compile_scene() since the snapshot was taken may
+    // have evicted the BlasCache buffers `scene` still points at. Checked under
+    // the shared lock — mutually exclusive with the compile's generation bump.
+    if (m_scene_generation.load(std::memory_order_acquire) != expectedGeneration)
+        return 0.0;
     if (!m_rasterizer) return 0.0;
     return m_rasterizer->render(scene, camera);
 }
@@ -237,12 +249,16 @@ double RenderEngine::render_rasterizer_with(
 double RenderEngine::render_path_tracer_with(
     const tracey::SceneCompiler::CompiledScene &scene,
     const tracey::Camera &camera,
-    bool clear)
+    bool clear,
+    uint64_t expectedGeneration)
 {
     // Shared lock: see render_rasterizer_with. Excluded only by GPU-resource
     // recreation (set_resolutions / set_pt_backend) and scene rebuilds
     // (compile_scene), so the PT can't trace against freed buffers/BLAS.
     std::shared_lock<std::shared_mutex> gpu_lk(m_gpu_mutex);
+    // Same stale-snapshot guard as the rasterizer path.
+    if (m_scene_generation.load(std::memory_order_acquire) != expectedGeneration)
+        return 0.0;
     if (!m_path_tracer || !m_compiled_scene) return 0.0;
     // Nothing to trace — the rasterizer still shows the ground/overlays.
     if (m_compiled_scene->instances.empty()) return 0.0;

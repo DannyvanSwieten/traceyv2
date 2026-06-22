@@ -7,6 +7,7 @@
 #include "rendering/rasterizer.hpp"
 #include "device/device.hpp"
 
+#include <atomic>
 #include <cstdint>
 #include <filesystem>
 #include <memory>
@@ -140,20 +141,38 @@ public:
     // Used by the render worker thread so the live scene swap doesn't
     // race the in-flight render. Returns the wall-clock render time in
     // milliseconds, or 0 if there's nothing to render.
+    // `expectedGeneration` is the scene_generation() captured when the snapshot
+    // was taken. If a compile_scene has happened since (generation advanced),
+    // the snapshot's raw Buffer*/BLAS pointers may dangle — evictUntouched()
+    // frees cache entries for geometry no longer in the scene — so we skip the
+    // render rather than bind freed buffers. Checked under the shared GPU lock,
+    // mutually exclusive with the compile that bumps the generation.
     double render_rasterizer_with(
         const tracey::SceneCompiler::CompiledScene &scene,
-        const tracey::Camera &camera);
+        const tracey::Camera &camera,
+        uint64_t expectedGeneration);
 
     // Accumulate ONE path-tracer sample against an explicit scene snapshot +
     // camera, into the PT's own output image/accumulator (no readback — the
     // live viewport composites outputImage() straight off the GPU). Used by the
     // PT worker thread so the CPU backend's synchronous per-sample compute runs
     // off the main thread. `clear` resets the Welford accumulator first.
+    // `expectedGeneration`: same stale-snapshot guard as render_rasterizer_with.
     // Returns the sample wall-clock in ms, or 0 if there's nothing to trace.
     double render_path_tracer_with(
         const tracey::SceneCompiler::CompiledScene &scene,
         const tracey::Camera &camera,
-        bool clear);
+        bool clear,
+        uint64_t expectedGeneration);
+
+    // Monotonic counter bumped by every compile_scene(). A render snapshot
+    // captures this; the render workers compare it to skip stale snapshots whose
+    // BlasCache buffers may have been evicted. Read by render_tick under m_mutex
+    // (consistent with compile, which runs under m_mutex) and by the workers
+    // under the shared GPU lock (consistent with compile's unique lock).
+    uint64_t scene_generation() const {
+        return m_scene_generation.load(std::memory_order_acquire);
+    }
 
     // Rebuild ONLY the TLAS from the current scene's actor transforms.
     // Keeps the BLAS cache, material buffer, UV buffer, and per-instance
@@ -251,6 +270,9 @@ private:
     // short, so the exclusion is cheap. (No method takes both lock kinds, and no
     // guarded method calls another, so there's no recursive-acquire deadlock.)
     std::shared_mutex m_gpu_mutex;
+    // Bumped on every compile_scene() (under m_gpu_mutex's unique lock). See
+    // scene_generation() — the stale-snapshot guard for the render workers.
+    std::atomic<uint64_t> m_scene_generation{0};
     // shared_ptr so the render worker thread can hold a snapshot of the
     // current scene (via shared_ptr copy) while the main thread swaps in
     // a freshly compiled scene from apply_emitted. Once all snapshots

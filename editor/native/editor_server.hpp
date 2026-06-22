@@ -237,6 +237,9 @@ private:
         // thread mid-render.
         std::shared_ptr<const tracey::SceneCompiler::CompiledScene> scene;
         tracey::Camera camera;
+        // scene_generation() at snapshot time — the worker skips the render if
+        // the engine has recompiled since (the snapshot's buffers may be freed).
+        uint64_t generation = 0;
     };
 
     std::thread             m_render_thread;
@@ -277,6 +280,9 @@ private:
         // scene edited, bounce/backend changed). OR-ed across coalesced
         // requests so a clear is never dropped by latest-wins overwrite.
         bool clear = false;
+        // scene_generation() at snapshot time — stale-snapshot guard (see
+        // RenderRequest::generation).
+        uint64_t generation = 0;
     };
 
     std::thread             m_pt_thread;

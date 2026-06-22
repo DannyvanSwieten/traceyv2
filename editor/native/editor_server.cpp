@@ -1777,7 +1777,7 @@ void EditorServer::render_thread_main() {
 
         try {
             const double ms = m_engine->render_rasterizer_with(
-                *request.scene, request.camera);
+                *request.scene, request.camera, request.generation);
             m_worker_raster_ms.store(ms, std::memory_order_relaxed);
             m_render_frames_completed.fetch_add(1, std::memory_order_release);
         } catch (const std::exception& e) {
@@ -1821,7 +1821,7 @@ void EditorServer::pt_render_thread_main() {
 
         try {
             const double ms = m_engine->render_path_tracer_with(
-                *request.scene, request.camera, request.clear);
+                *request.scene, request.camera, request.clear, request.generation);
             m_pt_sample_ms.store(ms, std::memory_order_relaxed);
             m_pt_frames_completed.fetch_add(1, std::memory_order_release);
         } catch (const std::exception& e) {
@@ -2941,6 +2941,10 @@ void EditorServer::render_tick() {
     }
 
     const bool has_geometry = m_engine->has_renderable_geometry();
+    // Once the PT worker has accumulated at least one sample its output image is
+    // valid to present. Used both to gate the rasterizer (below) and to choose
+    // what to present (further down).
+    const bool pt_ready = m_pt_frames_completed.load(std::memory_order_acquire) > 0;
     try {
         // Only consume the pending clear when the PT actually dispatches —
         // otherwise a clear request raised while preview is off (camera
@@ -2959,11 +2963,22 @@ void EditorServer::render_tick() {
         // we overwrite it. That matches the live-viewport expectation —
         // we always want the freshest snapshot, not a backlog of stale
         // ones.
-        if (m_engine->compiled_scene_ready() && m_engine->scene().hasCamera())
+        //
+        // In the Render workspace the PT renders fullscreen and the rasterizer
+        // output is never presented — so once the PT has produced its first
+        // sample we stop running the rasterizer entirely (it would just burn
+        // CPU/GPU and contend for the shared GPU lock with the PT worker). We
+        // keep it alive only until that first sample, as the present fallback
+        // while a slow (CPU) PT computes sample 0.
+        const bool raster_needed =
+            !(m_pt_preview_enabled && m_pt_fullscreen && pt_ready);
+        if (raster_needed && m_engine->compiled_scene_ready() &&
+            m_engine->scene().hasCamera())
         {
             RenderRequest req;
             req.scene = m_engine->compiled_scene_snapshot();
             req.camera = m_engine->scene().camera();
+            req.generation = m_engine->scene_generation();
             {
                 std::lock_guard<std::mutex> rlk(m_render_mutex);
                 m_pending_render_request = std::move(req);
@@ -2996,6 +3011,7 @@ void EditorServer::render_tick() {
             req.scene = m_engine->compiled_scene_snapshot();
             req.camera = m_engine->scene().camera();
             req.clear = clear;
+            req.generation = m_engine->scene_generation();
             {
                 std::lock_guard<std::mutex> plk(m_pt_mutex);
                 if (m_pending_pt_request && m_pending_pt_request->clear)
@@ -3027,14 +3043,10 @@ void EditorServer::render_tick() {
         // doesn't need raster at all, so it stays reachable.
         const bool raster_ready =
             m_render_frames_completed.load(std::memory_order_acquire) > 0;
-        // The PT worker likewise may not have accumulated its first sample yet
-        // (the CPU backend can take a while). Until it has, present the
-        // rasterized scene so the viewport shows the geometry immediately
-        // instead of an uninitialised PT image. Once true it stays true, so a
-        // finished accumulation (max samples reached) keeps being re-presented
-        // every tick without re-rendering — we just re-blit the retained image.
-        const bool pt_ready =
-            m_pt_frames_completed.load(std::memory_order_acquire) > 0;
+        // pt_ready (computed above): once the PT worker has its first sample we
+        // present its output; before that we fall back to the rasterizer. Once
+        // true it stays true, so a finished accumulation (max samples) keeps
+        // being re-presented every tick without re-rendering.
         const auto t0 = clock::now();
         bool presented = false;
         // A present can throw on a recoverable swapchain condition (the surface
