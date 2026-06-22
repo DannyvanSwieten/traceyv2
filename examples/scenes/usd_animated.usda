@@ -1,0 +1,51 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    upAxis = "Y"
+    metersPerUnit = 1
+    timeCodesPerSecond = 24
+    startTimeCode = 0
+    endTimeCode = 24
+)
+
+def Xform "World"
+{
+    def Mesh "Cube" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        float3[] extent = [(-1, -1, -1), (1, 1, 1)]
+        int[] faceVertexCounts = [4, 4, 4, 4, 4, 4]
+        int[] faceVertexIndices = [0, 3, 2, 1, 4, 5, 6, 7, 0, 4, 7, 3, 1, 2, 6, 5, 3, 7, 6, 2, 0, 1, 5, 4]
+        point3f[] points = [(-1, -1, -1), (1, -1, -1), (1, 1, -1), (-1, 1, -1), (-1, -1, 1), (1, -1, 1), (1, 1, 1), (-1, 1, 1)]
+        rel material:binding = </World/Materials/RedMat>
+        uniform token subdivisionScheme = "none"
+        double3 xformOp:translate.timeSamples = {
+            0: (0, 0, 0),
+            12: (3, 2, 0),
+            24: (6, 0, 0),
+        }
+        float xformOp:rotateZ.timeSamples = {
+            0: 0,
+            24: 90,
+        }
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateZ"]
+    }
+
+    def Scope "Materials"
+    {
+        def Material "RedMat"
+        {
+            token outputs:surface.connect = </World/Materials/RedMat/Surface.outputs:surface>
+
+            def Shader "Surface"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (0.2, 0.5, 0.95)
+                float inputs:metallic = 0
+                float inputs:roughness = 0.4
+                token outputs:surface
+            }
+        }
+    }
+}
