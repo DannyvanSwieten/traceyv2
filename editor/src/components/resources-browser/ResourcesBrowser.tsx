@@ -1,4 +1,4 @@
-import { Component, For, Show, createSignal, createEffect, createMemo, Accessor } from 'solid-js';
+import { Component, For, Show, createSignal, createEffect, createMemo, onMount, onCleanup, Accessor } from 'solid-js';
 import * as api from '../../lib/api';
 import { ImportedAsset } from '../../stores/assets';
 import { cookProfile, NodeCookTimingRow } from '../../stores/cook_profiler';
@@ -11,6 +11,53 @@ import './ResourcesBrowser.css';
 function fmtCount(n: number): string {
   return new Intl.NumberFormat('en-US').format(Math.round(n));
 }
+
+// Cache of texture id → data: URL, so re-renders + tab switches don't refetch a
+// thumbnail we already pulled. Module-level: shared across all browser instances
+// for the session.
+const thumbCache = new Map<string, string>();
+
+// Texture thumbnail that fetches its image only once it scrolls into view, so a
+// scene with hundreds/thousands of textures doesn't transfer every image up
+// front. The fetched data: URL is cached by id. Falls back to the 🖼️ glyph
+// while pending or on error.
+const LazyTextureThumb: Component<{ id: string }> = (props) => {
+  const [src, setSrc] = createSignal<string | null>(thumbCache.get(props.id) ?? null);
+  const [failed, setFailed] = createSignal(false);
+  let el: HTMLDivElement | undefined;
+
+  onMount(() => {
+    if (src()) return; // already cached
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (!entries[0]?.isIntersecting) return;
+        io.disconnect();
+        api
+          .getTextureData(props.id)
+          .then((d) => {
+            const url = `data:${d.mime_type};base64,${d.base64}`;
+            thumbCache.set(props.id, url);
+            setSrc(url);
+          })
+          .catch(() => setFailed(true));
+      },
+      { rootMargin: '150px' } // start loading a little before it's visible
+    );
+    if (el) io.observe(el);
+    onCleanup(() => io.disconnect());
+  });
+
+  return (
+    <div class="resource-thumb" ref={el}>
+      <Show when={src()} fallback={<span class="resource-thumb-glyph">🖼️</span>}>
+        <img class="resource-thumb-img" src={src()!} alt="" decoding="async" />
+      </Show>
+      <Show when={failed()}>
+        <span class="resource-thumb-glyph">🖼️</span>
+      </Show>
+    </div>
+  );
+};
 
 type MeshInfo = api.MeshInfo;
 type TextureInfo = api.TextureInfo;
@@ -34,6 +81,13 @@ export const ResourcesBrowser: Component<ResourcesBrowserProps> = (props) => {
   const [meshes, setMeshes] = createSignal<MeshInfo[]>([]);
   const [textures, setTextures] = createSignal<TextureInfo[]>([]);
   const [isLoading, setIsLoading] = createSignal(false);
+  // Free-text filter, applied to the active tab's items. Essential once a scene
+  // brings in hundreds/thousands of meshes + textures (e.g. Kitchen Set).
+  const [search, setSearch] = createSignal('');
+  const matches = (s: string) => s.toLowerCase().includes(search().trim().toLowerCase());
+  const filteredAssets = createMemo(() => props.assets().filter((a) => matches(a.name)));
+  const filteredMeshes = createMemo(() => meshes().filter((m) => matches(m.name || '')));
+  const filteredTextures = createMemo(() => textures().filter((t) => matches(t.id)));
 
   // Per-node cook timings from the most recent cook, sorted by ms desc.
   // Rows expose their source uid so a future "click to focus the offender
@@ -103,6 +157,27 @@ export const ResourcesBrowser: Component<ResourcesBrowserProps> = (props) => {
             Profiler{cookProfile() ? ` (${cookProfile()!.totalMs.toFixed(1)}ms)` : ''}
           </button>
         </div>
+        <Show when={activeTab() !== 'profiler'}>
+          <div class="resources-search">
+            <input
+              type="search"
+              class="resources-search-input"
+              placeholder="Filter…"
+              value={search()}
+              onInput={(e) => setSearch(e.currentTarget.value)}
+            />
+            <Show when={search()}>
+              <button
+                type="button"
+                class="resources-search-clear"
+                title="Clear filter"
+                onClick={() => setSearch('')}
+              >
+                ×
+              </button>
+            </Show>
+          </div>
+        </Show>
       </div>
       <div class="resources-content">
         <Show when={activeTab() === 'scenes'}>
@@ -115,7 +190,7 @@ export const ResourcesBrowser: Component<ResourcesBrowserProps> = (props) => {
             }
           >
             <div class="resources-grid">
-              <For each={props.assets()}>
+              <For each={filteredAssets()}>
                 {(asset) => (
                   <div
                     class="resource-item"
@@ -166,7 +241,7 @@ export const ResourcesBrowser: Component<ResourcesBrowserProps> = (props) => {
               }
             >
               <div class="resources-grid">
-                <For each={meshes()}>
+                <For each={filteredMeshes()}>
                   {(mesh) => (
                     <div class="resource-item resource-item--mesh" title={mesh.name}>
                       <div class="resource-icon">🔺</div>
@@ -193,13 +268,16 @@ export const ResourcesBrowser: Component<ResourcesBrowserProps> = (props) => {
               }
             >
               <div class="resources-grid">
-                <For each={textures()}>
+                <For each={filteredTextures()}>
                   {(texture) => (
-                    <div class="resource-item resource-item--texture" title={texture.id}>
-                      <div class="resource-icon">🖼️</div>
+                    <div
+                      class="resource-item resource-item--texture"
+                      title={`${texture.id}\n${texture.width}×${texture.height} · ${texture.mime_type}`}
+                    >
+                      <LazyTextureThumb id={texture.id} />
                       <div class="resource-name">{texture.id}</div>
                       <div class="resource-stats">
-                        {texture.width}x{texture.height}
+                        {texture.width}×{texture.height}
                       </div>
                     </div>
                   )}

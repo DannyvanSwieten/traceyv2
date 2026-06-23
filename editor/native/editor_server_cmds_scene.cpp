@@ -441,6 +441,21 @@ std::optional<std::string> EditorServer::handle_scene_commands(
                 arr.push_back(texture_info_to_json(id, tex));
             return ok_response(arr);
         }
+        if (cmd == "get_texture_data") {
+            // Base64 of the texture's ENCODED bytes (PNG/JPEG as stored) + its
+            // MIME type, so the WebView can render it directly as a data: URL —
+            // no native decode/resize. The Resources browser fetches this lazily
+            // (only for thumbnails scrolled into view) so a 1000-texture scene
+            // doesn't transfer every image up front.
+            const auto id = req.at("id").get<std::string>();
+            const auto* tex = m_engine->scene().getEmbeddedTexture(id);
+            if (!tex) return err_response("Texture not found: " + id);
+            if (tex->data.empty()) return err_response("Texture has no data: " + id);
+            return ok_response(json{
+                {"mime_type", tex->mimeType.empty() ? std::string("image/png") : tex->mimeType},
+                {"base64", base64_encode(tex->data.data(), tex->data.size())},
+            });
+        }
 
     return std::nullopt;
 }

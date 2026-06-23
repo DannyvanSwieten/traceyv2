@@ -291,6 +291,13 @@ export const getTextureIds = () => send<string[]>('get_texture_ids');
 export const getTextureInfo = (id: string) => send<TextureInfo>('get_texture_info', { id });
 export const getAllTextures = () => send<TextureInfo[]>('get_all_textures');
 
+// Encoded texture bytes (PNG/JPEG as stored) + MIME, base64, for rendering a
+// thumbnail as a data: URL. Fetched lazily per visible thumbnail — don't call
+// this for every texture up front on a large scene.
+export interface TextureData { mime_type: string; base64: string; }
+export const getTextureData = (id: string) =>
+  send<TextureData>('get_texture_data', { id });
+
 // ─── Rendering ─────────────────────────────────────────────────────────────
 
 export const renderFrame = (camera: Camera, clearAccumulation: boolean) =>

@@ -180,6 +180,67 @@
   color: #dcdcaa;
 }
 
+/* ── Search / filter ───────────────────────────────────────────────────── */
+/* Sits at the right edge of the tab bar; filters the active tab's items. */
+.resources-search {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0 8px;
+}
+.resources-search-input {
+  width: 150px;
+  background: #1c1c1c;
+  border: 1px solid #3a3a3a;
+  border-radius: 3px;
+  color: #ddd;
+  font: 11px system-ui, -apple-system, sans-serif;
+  padding: 3px 6px;
+  outline: none;
+}
+.resources-search-input:focus {
+  border-color: #0e639c;
+}
+.resources-search-clear {
+  width: 16px;
+  height: 16px;
+  border: none;
+  background: transparent;
+  color: #858585;
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+}
+.resources-search-clear:hover {
+  color: #fff;
+}
+
+/* ── Texture thumbnails ────────────────────────────────────────────────── */
+/* Replaces the 🖼️ glyph on texture cards with the actual image, fetched
+ * lazily (see LazyTextureThumb). Fixed square so the grid stays tidy. */
+.resource-thumb {
+  width: 56px;
+  height: 56px;
+  margin-bottom: 4px;
+  border-radius: 3px;
+  background: #1a1a1a;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+.resource-thumb-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.resource-thumb-glyph {
+  font-size: 22px;
+  opacity: 0.45;
+}
+
 /* ── Profiler tab ──────────────────────────────────────────────────────── */
 /* Shows per-node cook timings from the most recent cook, sorted by ms desc.
  * Layout is a 4-column grid: a slim bar (% of total cook time), the

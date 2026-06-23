@@ -163,6 +163,33 @@ inline json texture_info_to_json(const std::string& id, const tracey::EmbeddedTe
     };
 }
 
+// Standard base64 of an arbitrary byte span. Used to ship binary blobs (texture
+// bytes, render pixels) to the WebView as one compact string instead of a JSON
+// byte array (which is ~7× larger and slow to parse).
+inline std::string base64_encode(const unsigned char* data, size_t n) {
+    static const char tab[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string out;
+    out.reserve(((n + 2) / 3) * 4);
+    size_t i = 0;
+    for (; i + 3 <= n; i += 3) {
+        uint32_t v = (uint32_t(data[i]) << 16) | (uint32_t(data[i + 1]) << 8) | uint32_t(data[i + 2]);
+        out += tab[(v >> 18) & 0x3F];
+        out += tab[(v >> 12) & 0x3F];
+        out += tab[(v >> 6) & 0x3F];
+        out += tab[v & 0x3F];
+    }
+    if (i < n) {
+        uint32_t v = uint32_t(data[i]) << 16;
+        if (i + 1 < n) v |= uint32_t(data[i + 1]) << 8;
+        out += tab[(v >> 18) & 0x3F];
+        out += tab[(v >> 12) & 0x3F];
+        out += (i + 1 < n) ? tab[(v >> 6) & 0x3F] : '=';
+        out += '=';
+    }
+    return out;
+}
+
 inline std::string ok_response(const json& data) {
     return json{{"ok", true}, {"data", data}}.dump();
 }
