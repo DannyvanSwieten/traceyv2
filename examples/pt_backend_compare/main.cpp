@@ -33,6 +33,7 @@
 #include <glm/gtc/quaternion.hpp>  // angleAxis for the --sun direction
 
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
@@ -315,12 +316,17 @@ int main(int argc, char *argv[])
         tracey::PathTracer tracer(device.get(), config);
         tracer.setMaterialPrograms(programs);
 
+        const auto t0 = std::chrono::high_resolution_clock::now();
         for (uint32_t s = 0; s < spp; ++s)
         {
             const bool clear = (s == 0);
             const bool want = (s == spp - 1);
             tracer.render(compiled, camera, clear, want);
         }
+        const auto t1 = std::chrono::high_resolution_clock::now();
+        const double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+        std::printf("  [%s] %u spp in %.1f ms (%.2f ms/spp)\n",
+                    backendName.c_str(), spp, ms, ms / std::max(spp, 1u));
         const size_t n4 = static_cast<size_t>(size) * size * 4;
         RenderOut out;
         out.beauty.resize(n4);
