@@ -126,6 +126,7 @@ int main(int argc, char *argv[])
     float focal = -1.0f;      // >0 overrides the focal distance (else camera default)
     float motionDx = 0.0f;    // !=0 translates all instances by (dx,0,0) over the shutter (R4 motion parity test)
     float sunIntensity = 0.0f; // >0 injects a Distant (sun) light — analytic-NEE + shadow-ray parity test
+    float domeIntensity = 0.0f; // >0 injects a Dome (environment) light — matches the editor's default
 
     for (int i = 1; i < argc; ++i)
     {
@@ -146,6 +147,7 @@ int main(int argc, char *argv[])
         else if (arg == "--focal") focal = std::stof(next());
         else if (arg == "--motion") motionDx = std::stof(next());
         else if (arg == "--sun") sunIntensity = std::stof(next());
+        else if (arg == "--dome") domeIntensity = std::stof(next());
         else scenePath = arg;
     }
 
@@ -191,6 +193,19 @@ int main(int argc, char *argv[])
         light.intensity = sunIntensity;
         sun->setLight(light);
         std::cout << "Injected Distant sun (intensity " << sunIntensity << ")\n";
+    }
+
+    // Inject a Dome (environment) light — the editor's default. Transform-
+    // independent; the procedural sky gradient drives the miss shader.
+    if (domeIntensity > 0.0f)
+    {
+        auto *dome = scene->createActor();
+        dome->setName("CompareDome");
+        tracey::Light light;
+        light.type = tracey::LightType::Dome;
+        light.intensity = domeIntensity;
+        dome->setLight(light);
+        std::cout << "Injected Dome (intensity " << domeIntensity << ")\n";
     }
 
     std::unique_ptr<tracey::Device> device(
