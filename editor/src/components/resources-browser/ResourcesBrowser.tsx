@@ -128,6 +128,7 @@ export const ResourcesBrowser: Component<ResourcesBrowserProps> = (props) => {
       <div class="resources-header">
         <div class="resources-tabs">
           <button
+            type="button"
             class="resources-tab"
             classList={{ 'resources-tab--active': activeTab() === 'scenes' }}
             onClick={() => setActiveTab('scenes')}
@@ -135,6 +136,7 @@ export const ResourcesBrowser: Component<ResourcesBrowserProps> = (props) => {
             Scenes ({props.assets().length})
           </button>
           <button
+            type="button"
             class="resources-tab"
             classList={{ 'resources-tab--active': activeTab() === 'meshes' }}
             onClick={() => setActiveTab('meshes')}
@@ -142,6 +144,7 @@ export const ResourcesBrowser: Component<ResourcesBrowserProps> = (props) => {
             Meshes ({meshes().length})
           </button>
           <button
+            type="button"
             class="resources-tab"
             classList={{ 'resources-tab--active': activeTab() === 'textures' }}
             onClick={() => setActiveTab('textures')}
@@ -149,6 +152,7 @@ export const ResourcesBrowser: Component<ResourcesBrowserProps> = (props) => {
             Textures ({textures().length})
           </button>
           <button
+            type="button"
             class="resources-tab"
             classList={{ 'resources-tab--active': activeTab() === 'profiler' }}
             onClick={() => setActiveTab('profiler')}
@@ -189,6 +193,7 @@ export const ResourcesBrowser: Component<ResourcesBrowserProps> = (props) => {
               </div>
             }
           >
+            <Show when={filteredAssets().length > 0} fallback={<div class="resources-empty">No scenes match the filter.</div>}>
             <div class="resources-grid">
               <For each={filteredAssets()}>
                 {(asset) => (
@@ -204,6 +209,7 @@ export const ResourcesBrowser: Component<ResourcesBrowserProps> = (props) => {
                     <div class="resource-icon">📦</div>
                     <div class="resource-name">{asset.name}</div>
                     <button
+                      type="button"
                       class="resource-load"
                       onClick={(e) => {
                         e.stopPropagation();
@@ -214,6 +220,7 @@ export const ResourcesBrowser: Component<ResourcesBrowserProps> = (props) => {
                       Load
                     </button>
                     <button
+                      type="button"
                       class="resource-remove"
                       onClick={(e) => {
                         e.stopPropagation();
@@ -227,6 +234,7 @@ export const ResourcesBrowser: Component<ResourcesBrowserProps> = (props) => {
                 )}
               </For>
             </div>
+            </Show>
           </Show>
         </Show>
 
@@ -240,6 +248,7 @@ export const ResourcesBrowser: Component<ResourcesBrowserProps> = (props) => {
                 </div>
               }
             >
+              <Show when={filteredMeshes().length > 0} fallback={<div class="resources-empty">No meshes match the filter.</div>}>
               <div class="resources-grid">
                 <For each={filteredMeshes()}>
                   {(mesh) => (
@@ -253,6 +262,7 @@ export const ResourcesBrowser: Component<ResourcesBrowserProps> = (props) => {
                   )}
                 </For>
               </div>
+              </Show>
             </Show>
           </Show>
         </Show>
@@ -267,6 +277,7 @@ export const ResourcesBrowser: Component<ResourcesBrowserProps> = (props) => {
                 </div>
               }
             >
+              <Show when={filteredTextures().length > 0} fallback={<div class="resources-empty">No textures match the filter.</div>}>
               <div class="resources-grid">
                 <For each={filteredTextures()}>
                   {(texture) => (
@@ -283,6 +294,7 @@ export const ResourcesBrowser: Component<ResourcesBrowserProps> = (props) => {
                   )}
                 </For>
               </div>
+              </Show>
             </Show>
           </Show>
         </Show>
