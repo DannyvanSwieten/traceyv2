@@ -17,6 +17,81 @@
 // doing inline — silence the deprecation noise for this TU.
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
 
+// WKWebView subclass that accepts dragged 3D-asset files (glTF / USD) anywhere
+// over the editor and forwards their real filesystem paths to the frontend as a
+// "menu-drop-import" broadcast — the same channel File→Import uses. We intercept
+// at the native layer (rather than HTML5 drop) because the WebView's File object
+// hides the on-disk path, and USD needs it to resolve textures / sublayers
+// relative to the file. Non-asset drags fall through to WKWebView's defaults.
+@interface TraceyWebView : WKWebView
+@end
+
+@implementation TraceyWebView
+
+static BOOL traceyIsSupportedAsset(NSURL* url) {
+    static NSSet<NSString*>* exts = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        exts = [NSSet setWithArray:@[ @"gltf", @"glb", @"usd", @"usda", @"usdc", @"usdz" ]];
+    });
+    return url && [exts containsObject:url.pathExtension.lowercaseString];
+}
+
+- (instancetype)initWithFrame:(NSRect)frame configuration:(WKWebViewConfiguration*)configuration {
+    self = [super initWithFrame:frame configuration:configuration];
+    if (self) [self registerForDraggedTypes:@[ NSPasteboardTypeFileURL ]];
+    return self;
+}
+
+- (NSArray<NSURL*>*)traceySupportedURLs:(id<NSDraggingInfo>)sender {
+    NSArray* urls = [[sender draggingPasteboard]
+        readObjectsForClasses:@[ [NSURL class] ]
+                      options:@{ NSPasteboardURLReadingFileURLsOnlyKey : @YES }];
+    NSMutableArray<NSURL*>* out = [NSMutableArray array];
+    for (NSURL* u in urls)
+        if (traceyIsSupportedAsset(u)) [out addObject:u];
+    return out;
+}
+
+- (NSDragOperation)draggingEntered:(id<NSDraggingInfo>)sender {
+    if ([self traceySupportedURLs:sender].count > 0) return NSDragOperationCopy;
+    return [super draggingEntered:sender];
+}
+
+- (NSDragOperation)draggingUpdated:(id<NSDraggingInfo>)sender {
+    if ([self traceySupportedURLs:sender].count > 0) return NSDragOperationCopy;
+    return [super draggingUpdated:sender];
+}
+
+- (BOOL)prepareForDragOperation:(id<NSDraggingInfo>)sender {
+    if ([self traceySupportedURLs:sender].count > 0) return YES;
+    return [super prepareForDragOperation:sender];
+}
+
+- (BOOL)performDragOperation:(id<NSDraggingInfo>)sender {
+    NSArray<NSURL*>* urls = [self traceySupportedURLs:sender];
+    if (urls.count == 0) return [super performDragOperation:sender];
+    NSMutableArray<NSString*>* paths = [NSMutableArray array];
+    for (NSURL* u in urls) [paths addObject:u.path];
+    NSData* msgData = [NSJSONSerialization
+        dataWithJSONObject:@{ @"event" : @"menu-drop-import", @"paths" : paths }
+                   options:0
+                     error:nil];
+    if (!msgData) return YES;
+    NSString* msgStr = [[NSString alloc] initWithData:msgData encoding:NSUTF8StringEncoding];
+    // JS-escape the message JSON as a string literal for __traceyBroadcast(...).
+    NSData* litData = [NSJSONSerialization dataWithJSONObject:msgStr
+                                                     options:NSJSONWritingFragmentsAllowed
+                                                       error:nil];
+    NSString* lit = [[NSString alloc] initWithData:litData encoding:NSUTF8StringEncoding];
+    NSString* js = [NSString
+        stringWithFormat:@"if(window.__traceyBroadcast) window.__traceyBroadcast(%@)", lit];
+    [self evaluateJavaScript:js completionHandler:nil];
+    return YES;
+}
+
+@end
+
 @interface TraceyNSWindow : NSWindow
 @property(nonatomic, assign) bool* closeFlag;
 @property(nonatomic, assign) WKWebView* editorWebView;
@@ -566,7 +641,7 @@ struct MacEditorWindow : EditorWindow {
                                 forMainFrameOnly:YES];
         [config.userContentController addUserScript:script];
 
-        webview = [[WKWebView alloc] initWithFrame:content.bounds configuration:config];
+        webview = [[TraceyWebView alloc] initWithFrame:content.bounds configuration:config];
         webview.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
         msg_handler.webView = webview;
         window.editorWebView = webview;

@@ -196,6 +196,7 @@ const App: Component = () => {
   let viewportRef: ViewportHandle | undefined;
 
   let unlistenImport: (() => void) | undefined;
+  let unlistenDropImport: (() => void) | undefined;
   let unlistenExport: (() => void) | undefined;
   let unlistenExportGltf: (() => void) | undefined;
   let unlistenExportGlb: (() => void) | undefined;
@@ -624,6 +625,21 @@ const App: Component = () => {
     initRenderSettings();
 
     unlistenImport = api.listen('menu-import', () => handleImport());
+    // Drag a glTF/USD file onto the editor → register it in the Resources browser
+    // (same as File→Import). The native side (TraceyWebView) resolves the real
+    // filesystem paths and broadcasts them here.
+    unlistenDropImport = api.listen('menu-drop-import', (msg) => {
+      const paths = (Array.isArray(msg.paths) ? msg.paths : []).filter(
+        (p): p is string => typeof p === 'string'
+      );
+      if (paths.length === 0) return;
+      for (const p of paths) addAsset(p);
+      const names = paths.map((p) => p.split(/[/\\]/).pop() ?? p);
+      showToast(`Imported ${paths.length} asset${paths.length > 1 ? 's' : ''}`, {
+        kind: 'success',
+        detail: `${names.join(', ')} — load from Resources`,
+      });
+    });
     unlistenExport = api.listen('menu-export', () => {
       // File → Export… (Cmd+E) opens the video export dialog.
       setExportVideoOpen(true);
@@ -665,6 +681,7 @@ const App: Component = () => {
 
   onCleanup(() => {
     unlistenImport?.();
+    unlistenDropImport?.();
     unlistenExport?.();
     unlistenExportGltf?.();
     unlistenExportGlb?.();
