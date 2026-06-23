@@ -204,21 +204,10 @@ export const ResourcesBrowser: Component<ResourcesBrowserProps> = (props) => {
                         props.currentAssetPath() === asset.path,
                     }}
                     onDblClick={() => props.onAssetLoad(asset)}
-                    title={`${asset.path}\nDouble-click or press Load to drop the hierarchy into the SOP graph.`}
+                    title={`${asset.path}\nDouble-click to drop the hierarchy into the SOP graph.`}
                   >
                     <div class="resource-icon">📦</div>
                     <div class="resource-name">{asset.name}</div>
-                    <button
-                      type="button"
-                      class="resource-load"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        props.onAssetLoad(asset);
-                      }}
-                      title="Load — add a subnet hierarchy mirroring this glTF to the SOP graph"
-                    >
-                      Load
-                    </button>
                     <button
                       type="button"
                       class="resource-remove"

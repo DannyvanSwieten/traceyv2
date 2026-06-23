@@ -138,34 +138,6 @@
   color: #ffffff;
 }
 
-/* Sits next to the remove button (top-right). Hidden until hover so the
- * card stays uncluttered when scanning the browser. */
-.resource-load {
-  position: absolute;
-  top: 2px;
-  right: 22px;
-  height: 16px;
-  padding: 0 6px;
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  background: rgba(14, 99, 156, 0.85);
-  color: #ffffff;
-  border-radius: 2px;
-  cursor: pointer;
-  font: 10px system-ui, -apple-system, sans-serif;
-  line-height: 14px;
-  display: none;
-  align-items: center;
-  justify-content: center;
-}
-
-.resource-item:hover .resource-load {
-  display: flex;
-}
-
-.resource-load:hover {
-  background: rgba(14, 130, 200, 0.95);
-}
-
 .resource-stats {
   font-size: 9px;
   color: #858585;
