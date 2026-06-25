@@ -160,19 +160,11 @@ const App: Component = () => {
   // FK posing: the joint picked in the viewport (skeleton overlay) + its current
   // local-rotation override (euler degrees). Set by the native joint_selected
   // event; cleared when the actor selection changes.
+  // FK posing: the picked joint + the gltf_import node that owns its skeleton.
+  // The JointInspector reads/writes that node's pose_overrides param through the
+  // graph (so edits are undoable). Cleared when the actor selection changes.
   const [selectedJoint, setSelectedJoint] =
-    createSignal<{ joint: number; rotation: [number, number, number] } | null>(null);
-  // Commit one axis of the picked joint's local rotation → native re-skin.
-  const setJointAxis = (axis: number, value: number) => {
-    const sj = selectedJoint();
-    const aid = selectedActorId();
-    if (!sj || aid == null) return;
-    const rotation: [number, number, number] = [...sj.rotation];
-    rotation[axis] = value;
-    setSelectedJoint({ ...sj, rotation });
-    api.setJointPose(aid, sj.joint, rotation).catch((e) =>
-      console.warn('set_joint_pose failed:', e));
-  };
+    createSignal<{ joint: number; importNode: number } | null>(null);
   // Material dock visibility lives in the materials store so the
   // actor-inspector's "New Material" flow can open it without prop
   // drilling. App just reads the signal for layout decisions.
@@ -694,10 +686,9 @@ const App: Component = () => {
     // Viewport joint pick (skeleton overlay) → open the FK joint inspector on
     // the picked joint, seeded with its current override rotation.
     unlistenJointSelected = api.listen('joint_selected', (msg) => {
-      const r = Array.isArray(msg.rotation) ? msg.rotation : [0, 0, 0];
       setSelectedJoint({
         joint: typeof msg.joint === 'number' ? msg.joint : 0,
-        rotation: [Number(r[0]) || 0, Number(r[1]) || 0, Number(r[2]) || 0],
+        importNode: typeof msg.import_node === 'number' ? msg.import_node : 0,
       });
     });
 
@@ -981,8 +972,7 @@ const App: Component = () => {
             {(sj) => (
               <JointInspector
                 joint={() => sj().joint}
-                rotation={() => sj().rotation}
-                onRotate={setJointAxis}
+                importNode={() => sj().importNode}
               />
             )}
           </Show>

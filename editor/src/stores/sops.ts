@@ -538,6 +538,47 @@ export function setParam(uid: number, paramName: string, value: ParamValue): voi
   schedulePush();
 }
 
+// Recursively rebuild the graph, applying `fn` to the node with `uid` wherever
+// it lives (root or any subnet). Used by path-independent edits like FK joint
+// posing, where the target gltf_import node is inside a per-glTF-node subnet
+// that isn't the currently-open path.
+function updateNodeByUid(
+  g: SopGraph,
+  uid: number,
+  fn: (n: SopNode) => SopNode,
+): SopGraph {
+  return {
+    ...g,
+    nodes: g.nodes.map((n) => {
+      if (n.uid === uid) return fn(n);
+      if (n.subgraph) return { ...n, subgraph: updateNodeByUid(n.subgraph, uid, fn) };
+      return n;
+    }),
+  };
+}
+
+// Like setParam, but targets a node by uid ANYWHERE in the graph tree (not the
+// current path). Goes through schedulePush, so the edit is undoable and re-cooks
+// like any other param edit. Used for FK joint posing (the gltf_import node sits
+// in a subnet); the same path makes posing undoable and keyframable.
+export function setParamByUid(uid: number, paramName: string, value: ParamValue): void {
+  setGraphInternal((g) =>
+    updateNodeByUid(g, uid, (n) => {
+      const prev = n.params[paramName];
+      const channels =
+        prev && prev.type !== 'string' && prev.channels !== undefined
+          ? prev.channels
+          : undefined;
+      const next: ParamValue =
+        channels !== undefined && value.type !== 'string'
+          ? { ...value, channels }
+          : value;
+      return { ...n, params: { ...n.params, [paramName]: next } };
+    }),
+  );
+  schedulePush();
+}
+
 // Upsert a keyframe directly into the LOCAL graph (and schedule a push),
 // rather than via the param_set_keyframe IPC. Used by auto-key on inspector
 // param edits: those edits also call setParam(), which schedules a full
