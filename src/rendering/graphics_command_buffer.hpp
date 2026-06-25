@@ -50,6 +50,14 @@ namespace tracey
         /// No-op if the pipeline wasn't configured with gizmo shaders.
         virtual void bindGizmoPipeline(GraphicsPipeline* pipeline) = 0;
 
+        /// Bind the optional "guides" pipeline (composition guides in NDC).
+        /// No-op if the pipeline wasn't configured with guides shaders.
+        virtual void bindGuidesPipeline(GraphicsPipeline* pipeline) = 0;
+
+        /// Bind the optional "bones" pipeline (skeleton overlay line list).
+        /// No-op if the pipeline wasn't configured with bones shaders.
+        virtual void bindBonesPipeline(GraphicsPipeline* pipeline) = 0;
+
         /// Bind vertex buffer
         /// @param buffer Vertex buffer containing interleaved vertex data
         /// @param offset Byte offset into the buffer

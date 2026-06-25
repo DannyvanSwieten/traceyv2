@@ -58,10 +58,11 @@ std::optional<std::string> EditorServer::handle_scene_commands(
             actor->setTransform(xform);
             actor->setLight(light);
 
-            // Re-compile so the renderer's lightBuffer picks up the new
-            // entry on the next frame. Cheap relative to a SOP cook —
-            // light gather is the last pass and walks a tiny list.
-            if (m_engine->path_tracer_ready()) m_engine->compile_scene();
+            // Refresh ONLY the light buffer in place — adding a light changes no
+            // geometry, so a full compile_scene() (which re-uploads every vertex
+            // buffer + rebuilds the TLAS) would needlessly freeze the UI on large
+            // scenes like Kitchen Set.
+            if (m_engine->path_tracer_ready()) m_engine->update_lights();
             m_clear_next_frame = true;
             if (m_broadcast) m_broadcast(R"({"event":"scene_changed"})");
             return ok_response(actor->getUid());
@@ -102,10 +103,17 @@ std::optional<std::string> EditorServer::handle_scene_commands(
             const uint64_t id = req.at("actor_id").get<uint64_t>();
             auto* a = m_engine->scene().getActor(id);
             if (!a) return ok_response(false);
+            // A light-only actor (no geometry instances — e.g. a create_light
+            // sun/dome) can refresh lights in place; anything carrying geometry
+            // needs the full recompile so its instances/TLAS are rebuilt.
+            const bool lightOnly = a->hasLight() && a->instances().empty();
             m_engine->scene().removeActor(static_cast<size_t>(id));
             if (m_selected_actor_id && *m_selected_actor_id == id)
                 m_selected_actor_id.reset();
-            if (m_engine->path_tracer_ready()) m_engine->compile_scene();
+            if (m_engine->path_tracer_ready()) {
+                if (lightOnly) m_engine->update_lights();
+                else m_engine->compile_scene();
+            }
             m_clear_next_frame = true;
             if (m_broadcast) m_broadcast(R"({"event":"scene_changed"})");
             return ok_response(true);
@@ -146,7 +154,8 @@ std::optional<std::string> EditorServer::handle_scene_commands(
             if (req.contains("hdri_path")) light.hdriPath = req.at("hdri_path").get<std::string>();
             a->setLight(light);
 
-            if (m_engine->path_tracer_ready()) m_engine->compile_scene();
+            // Light-only edit → in-place light refresh (no geometry recompile).
+            if (m_engine->path_tracer_ready()) m_engine->update_lights();
             m_clear_next_frame = true;
             if (m_broadcast) m_broadcast(R"({"event":"scene_changed"})");
             return ok_response(true);
@@ -306,41 +315,37 @@ std::optional<std::string> EditorServer::handle_scene_commands(
             return ok_response(camera_to_json(m_engine->scene().camera()));
         }
         if (cmd == "select_actor") {
-            // Frontend hands us the active selection so the orbital camera
-            // pivot tracks it. `actor_id` may be null on deselect.
-            const auto& idField = req.at("actor_id");
-            if (idField.is_null()) {
-                m_selected_actor_id.reset();
-            } else {
-                const uint64_t id = idField.get<uint64_t>();
-                m_selected_actor_id = id;
-                // Find the actor's world position via flatten() so any parent
-                // chain transforms apply, then snap the pivot to it. We keep
-                // current yaw/pitch/distance so the camera "swings" to the new
-                // pivot rather than teleporting the user.
-                for (const auto& node : m_engine->scene().flatten()) {
-                    if (!node.actor || node.actor->getUid() != id) continue;
-                    const glm::vec4 origin = node.worldTransform * glm::vec4(0, 0, 0, 1);
-                    m_orbit_pivot_x = origin.x;
-                    m_orbit_pivot_y = origin.y;
-                    m_orbit_pivot_z = origin.z;
-                    // Recompose the camera so the pivot change is applied
-                    // immediately, not on the next mouse delta.
-                    if (m_engine->scene().hasCamera() && m_orbit_initialized) {
-                        tracey::Camera cam = m_engine->scene().camera();
-                        glm::quat qyaw   = glm::angleAxis(m_orbit_yaw,   glm::vec3(0, 1, 0));
-                        glm::quat qpitch = glm::angleAxis(m_orbit_pitch, glm::vec3(1, 0, 0));
-                        glm::quat rotation = qyaw * qpitch;
-                        glm::vec3 forward = rotation * glm::vec3(0, 0, -1);
-                        glm::vec3 pivot{m_orbit_pivot_x, m_orbit_pivot_y, m_orbit_pivot_z};
-                        cam.setPosition(pivot - forward * m_orbit_distance);
-                        cam.setRotation(rotation);
-                        m_engine->scene().setCamera(cam);
-                        m_clear_next_frame = true;
-                    }
-                    break;
-                }
+            // Record the selection ONLY — never move the camera. Selecting used
+            // to snap the orbit pivot to the actor's transform origin, but that's
+            // (0,0,0) for imported / instanced geometry (placement lives in the
+            // INSTANCE transforms, not the actor transform), so every selection
+            // swung the camera to the world origin. Framing is now an explicit
+            // action (F / Shift+F / the Frame buttons). Not touching the camera
+            // also means selecting doesn't reset the path-tracer accumulation.
+            // Prefer the stable SOP-node id when the frontend supplies it. A
+            // deforming actor (skinned mesh, animated geometry) is torn down
+            // and recreated with a NEW uid every frame during playback, so the
+            // frontend's cached actor_id can be a dead uid. sop_node_uid is
+            // stable across cooks, so we map it to the CURRENT live actor —
+            // keeping selection (and the skeleton overlay keyed off it) valid.
+            std::optional<uint64_t> resolved;
+            auto sopIt = req.find("sop_node_uid");
+            if (sopIt != req.end() && !sopIt->is_null()) {
+                const size_t sopUid = sopIt->get<size_t>();
+                auto it = m_sop_node_to_actor.find(sopUid);
+                if (it != m_sop_node_to_actor.end()) resolved = it->second;
             }
+            std::optional<uint64_t> newSel;
+            if (resolved) {
+                newSel = resolved;
+            } else {
+                const auto& idField = req.at("actor_id");
+                if (!idField.is_null()) newSel = idField.get<uint64_t>();
+            }
+            // Changing which actor is selected drops any joint selection (the
+            // joint index belongs to the previous actor's skeleton).
+            if (newSel != m_selected_actor_id) m_selected_joint = -1;
+            m_selected_actor_id = newSel;
             return ok_response_null();
         }
         if (cmd == "set_camera_view") {
@@ -376,24 +381,38 @@ std::optional<std::string> EditorServer::handle_scene_commands(
             }
             // If the orbital state was never primed (e.g. no user input yet
             // since launch), seed pivot at origin + a sensible default
-            // distance so the preset actually frames something.
+            // distance so the preset actually frames something — and snap the
+            // smoothed pose to it so the very first preset doesn't glide in from
+            // a stale default (later presets glide, handled by the tick).
             if (!m_orbit_initialized) {
                 m_orbit_pivot_x = m_orbit_pivot_y = m_orbit_pivot_z = 0.0f;
                 if (m_orbit_distance <= 0.0f) m_orbit_distance = 8.0f;
                 m_orbit_initialized = true;
+                m_orbit_smooth_yaw = m_orbit_yaw;
+                m_orbit_smooth_pitch = m_orbit_pitch;
+                m_orbit_smooth_distance = m_orbit_distance;
+                m_orbit_smooth_pivot_x = m_orbit_pivot_x;
+                m_orbit_smooth_pivot_y = m_orbit_pivot_y;
+                m_orbit_smooth_pivot_z = m_orbit_pivot_z;
             }
-            if (m_engine->scene().hasCamera()) {
-                tracey::Camera cam = m_engine->scene().camera();
-                glm::quat qyaw   = glm::angleAxis(m_orbit_yaw,   glm::vec3(0, 1, 0));
-                glm::quat qpitch = glm::angleAxis(m_orbit_pitch, glm::vec3(1, 0, 0));
-                glm::quat rotation = qyaw * qpitch;
-                glm::vec3 forward = rotation * glm::vec3(0, 0, -1);
-                glm::vec3 pivot{m_orbit_pivot_x, m_orbit_pivot_y, m_orbit_pivot_z};
-                cam.setPosition(pivot - forward * m_orbit_distance);
-                cam.setRotation(rotation);
-                m_engine->scene().setCamera(cam);
-                m_clear_next_frame = true;
+            // Don't recompose the camera here: moving only the TARGET lets
+            // update_camera_from_input() ease the camera there over a few frames
+            // (a smooth glide instead of a teleport). The tick clears + re-renders
+            // while it animates.
+            m_clear_next_frame = true;
+            return ok_response_null();
+        }
+        if (cmd == "frame_view") {
+            // Frame the selection (selected=true → falls back to the whole scene
+            // if nothing is selected) or the whole scene. Raises the same one-shot
+            // the F / Shift+F keys use, so the camera GLIDES to fit via the render
+            // tick — identical behaviour to the keyboard shortcut.
+            const bool selected = req.value("selected", true);
+            if (m_window) {
+                if (selected) m_window->input().frame_selected = true;
+                else m_window->input().frame_all = true;
             }
+            m_clear_next_frame = true;
             return ok_response_null();
         }
         // ── Scene resource queries ──

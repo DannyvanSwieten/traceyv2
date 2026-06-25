@@ -1,4 +1,4 @@
-import { Component, Accessor, For, createSignal, onMount } from 'solid-js';
+import { Component, Accessor, For, createSignal, onMount, onCleanup } from 'solid-js';
 import * as api from '../../lib/api';
 import { NumberInput } from '../number-input/NumberInput';
 import './CameraControls.css';
@@ -26,6 +26,18 @@ const VIEW_PRESETS: { label: string; view: api.CameraView; hint: string }[] = [
   { label: 'Persp',   view: 'persp',   hint: '3/4 perspective onto origin' },
 ];
 
+// Lens focal length ↔ vertical field of view. The camera stores a *vertical*
+// FOV in degrees (the path-tracer ray-gen uses tanHalfFov directly for the
+// vertical axis); filmmakers think in mm. Convert against a full-frame sensor
+// height (24mm) so the numbers match real-world full-frame lenses.
+const SENSOR_H_MM = 24;
+const fovToMm = (fovDeg: number) =>
+  SENSOR_H_MM / (2 * Math.tan(((fovDeg * Math.PI) / 180) / 2));
+const mmToFov = (mm: number) =>
+  ((2 * Math.atan(SENSOR_H_MM / (2 * mm))) * 180) / Math.PI;
+// Common cine/photo primes: wide → tele.
+const LENS_PRESETS = [16, 24, 35, 50, 85, 135];
+
 export const CameraControls: Component<CameraControlsProps> = (props) => {
   const setAxis = (axis: 'x' | 'y' | 'z', numValue: number) => {
     const newPos = { ...props.position() };
@@ -40,13 +52,23 @@ export const CameraControls: Component<CameraControlsProps> = (props) => {
   const [focalDistance, setFocalDistance] = createSignal(5);
   // Motion-blur shutter (R4) — fraction of the frame interval; applied on export.
   const [shutter, setShutter] = createSignal(0);
-  onMount(async () => {
+  // Lens focal length (mm), derived from / written back to the camera's FOV.
+  const [focalMm, setFocalMm] = createSignal(fovToMm(45));
+  const loadCamera = async () => {
     try {
       const cam = await api.getCamera();
       setAperture(cam.aperture ?? 0);
       setFocalDistance(cam.focal_distance ?? 5);
       setShutter(cam.shutter ?? 0);
+      setFocalMm(fovToMm(cam.fov ?? 45));
     } catch { /* ignore */ }
+  };
+  onMount(() => {
+    void loadCamera();
+    // Re-sync when native changes the camera (e.g. Shift+click pull-focus sets
+    // the focal distance) so the DOF fields don't go stale.
+    const unlisten = api.listen('camera_changed', () => void loadCamera());
+    onCleanup(unlisten);
   });
   const commitDof = async (
     next: { aperture?: number; focal_distance?: number; shutter?: number },
@@ -57,6 +79,20 @@ export const CameraControls: Component<CameraControlsProps> = (props) => {
     } catch (e) {
       console.warn('set_camera (lens/shutter) failed:', e);
     }
+  };
+
+  // Set the lens focal length (mm) → camera vertical FOV. Restarts accumulation.
+  const setLens = (mm: number) => {
+    const m = Math.max(1, mm);
+    setFocalMm(m);
+    void (async () => {
+      try {
+        const cam = await api.getCamera();
+        await api.setCamera({ ...cam, fov: mmToFov(m) });
+      } catch (e) {
+        console.warn('set_camera (lens) failed:', e);
+      }
+    })();
   };
 
   const applyPreset = async (view: api.CameraView) => {
@@ -90,6 +126,24 @@ export const CameraControls: Component<CameraControlsProps> = (props) => {
           )}
         </For>
       </div>
+      <div class="camera-frame-actions">
+        <button
+          type="button"
+          class="camera-frame-button"
+          title="Frame the selected object — or the whole scene if nothing is selected (key: F)"
+          onClick={() => void api.frameView(true)}
+        >
+          ⊡ Frame Selected
+        </button>
+        <button
+          type="button"
+          class="camera-frame-button"
+          title="Frame the whole scene (key: Shift+F)"
+          onClick={() => void api.frameView(false)}
+        >
+          ⌂ Frame All
+        </button>
+      </div>
       <div class="camera-inputs">
         <For each={['x', 'y', 'z'] as const}>
           {(axis) => (
@@ -104,6 +158,34 @@ export const CameraControls: Component<CameraControlsProps> = (props) => {
             </div>
           )}
         </For>
+      </div>
+      <h4>Lens</h4>
+      <div class="camera-view-presets lens-presets">
+        <For each={LENS_PRESETS}>
+          {(mm) => (
+            <button
+              type="button"
+              class="camera-view-preset"
+              classList={{ active: Math.round(focalMm()) === mm }}
+              title={`${mm}mm (full-frame equivalent)`}
+              onClick={() => setLens(mm)}
+            >
+              {mm}
+            </button>
+          )}
+        </For>
+      </div>
+      <div class="camera-inputs">
+        <div class="camera-input-row">
+          <label title="Focal length in mm (full-frame equivalent). Sets the camera's vertical field of view.">Focal (mm)</label>
+          <NumberInput
+            step={1}
+            min={1}
+            title="Focal length (mm, full-frame equivalent)"
+            value={() => Math.round(focalMm() * 10) / 10}
+            onCommit={(v) => setLens(v)}
+          />
+        </div>
       </div>
       <h4>Depth of Field</h4>
       <div class="camera-inputs">

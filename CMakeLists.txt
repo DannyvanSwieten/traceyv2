@@ -77,6 +77,8 @@ add_library(tracey
     src/scene/scene.cpp
     src/scene/scene_object.hpp
     src/scene/scene_object.cpp
+    src/scene/skeleton.hpp
+    src/scene/skeleton.cpp
     src/scene/material_instance.hpp
     src/scene/material_instance.cpp
     src/scene/scene_instance.hpp

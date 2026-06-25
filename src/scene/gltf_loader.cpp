@@ -3,12 +3,15 @@
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "gltf_loader.hpp"
 #include "camera.hpp"
+#include "skeleton.hpp"
+#include "scene_object.hpp"
 // tinygltf pulls in stb_image_write here; its aggregate initialisers trip
 // -Wmissing-field-initializers. Silence that vendored-header noise locally.
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wmissing-field-initializers"
 #include <tiny_gltf.h>
 #pragma clang diagnostic pop
+#include <glm/glm.hpp>
 #include <glm/gtx/matrix_decompose.hpp>
 #include <iostream>
 #include <unordered_map>
@@ -122,6 +125,238 @@ namespace tracey
                 result.push_back(index);
             }
             return result;
+        }
+
+        // ── Skinning / animation accessor helpers ───────────────────────────
+
+        // FLOAT VEC4 accessor — WEIGHTS_0 and animation rotation output.
+        std::vector<Vec4> extractVec4Accessor(const tinygltf::Model &model, int accessorIndex)
+        {
+            std::vector<Vec4> result;
+            if (accessorIndex < 0)
+                return result;
+            const auto &accessor = model.accessors[accessorIndex];
+            if (accessor.componentType != TINYGLTF_COMPONENT_TYPE_FLOAT || accessor.bufferView < 0)
+                return result; // v1: float weights/rotations only
+            const auto &bufferView = model.bufferViews[accessor.bufferView];
+            const auto &buffer = model.buffers[bufferView.buffer];
+            const size_t byteStride = bufferView.byteStride ? bufferView.byteStride : sizeof(float) * 4;
+            const unsigned char *data = buffer.data.data() + bufferView.byteOffset + accessor.byteOffset;
+            result.reserve(accessor.count);
+            for (size_t i = 0; i < accessor.count; ++i)
+            {
+                const float *p = reinterpret_cast<const float *>(data + i * byteStride);
+                result.emplace_back(p[0], p[1], p[2], p[3]);
+            }
+            return result;
+        }
+
+        // JOINTS_0 (VEC4 of unsigned byte/short/int) → Vec4 of float-packed ids.
+        std::vector<Vec4> extractJointsVec4(const tinygltf::Model &model, int accessorIndex)
+        {
+            std::vector<Vec4> result;
+            if (accessorIndex < 0)
+                return result;
+            const auto &accessor = model.accessors[accessorIndex];
+            if (accessor.bufferView < 0)
+                return result;
+            const auto &bufferView = model.bufferViews[accessor.bufferView];
+            const auto &buffer = model.buffers[bufferView.buffer];
+            const size_t compSize =
+                (accessor.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE)  ? 1
+                : (accessor.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT) ? 2
+                                                                                     : 4;
+            const size_t byteStride = bufferView.byteStride ? bufferView.byteStride : compSize * 4;
+            const unsigned char *data = buffer.data.data() + bufferView.byteOffset + accessor.byteOffset;
+            result.reserve(accessor.count);
+            for (size_t i = 0; i < accessor.count; ++i)
+            {
+                const unsigned char *p = data + i * byteStride;
+                Vec4 j(0.0f);
+                for (int c = 0; c < 4; ++c)
+                {
+                    uint32_t idx = 0;
+                    switch (accessor.componentType)
+                    {
+                    case TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE:
+                        idx = p[c];
+                        break;
+                    case TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT:
+                        idx = reinterpret_cast<const uint16_t *>(p)[c];
+                        break;
+                    case TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT:
+                        idx = reinterpret_cast<const uint32_t *>(p)[c];
+                        break;
+                    default:
+                        break;
+                    }
+                    j[c] = static_cast<float>(idx);
+                }
+                result.push_back(j);
+            }
+            return result;
+        }
+
+        // FLOAT MAT4 accessor — inverseBindMatrices (column-major, like glm).
+        std::vector<Mat4> extractMat4Accessor(const tinygltf::Model &model, int accessorIndex)
+        {
+            std::vector<Mat4> result;
+            if (accessorIndex < 0)
+                return result;
+            const auto &accessor = model.accessors[accessorIndex];
+            if (accessor.componentType != TINYGLTF_COMPONENT_TYPE_FLOAT || accessor.bufferView < 0)
+                return result;
+            const auto &bufferView = model.bufferViews[accessor.bufferView];
+            const auto &buffer = model.buffers[bufferView.buffer];
+            const size_t byteStride = bufferView.byteStride ? bufferView.byteStride : sizeof(float) * 16;
+            const unsigned char *data = buffer.data.data() + bufferView.byteOffset + accessor.byteOffset;
+            result.reserve(accessor.count);
+            for (size_t i = 0; i < accessor.count; ++i)
+            {
+                const float *p = reinterpret_cast<const float *>(data + i * byteStride);
+                Mat4 m(1.0f);
+                for (int col = 0; col < 4; ++col)
+                    for (int row = 0; row < 4; ++row)
+                        m[col][row] = p[col * 4 + row];
+                result.push_back(m);
+            }
+            return result;
+        }
+
+        // FLOAT SCALAR accessor — animation sampler input (keyframe times).
+        std::vector<float> extractScalarFloat(const tinygltf::Model &model, int accessorIndex)
+        {
+            std::vector<float> result;
+            if (accessorIndex < 0)
+                return result;
+            const auto &accessor = model.accessors[accessorIndex];
+            if (accessor.componentType != TINYGLTF_COMPONENT_TYPE_FLOAT || accessor.bufferView < 0)
+                return result;
+            const auto &bufferView = model.bufferViews[accessor.bufferView];
+            const auto &buffer = model.buffers[bufferView.buffer];
+            const size_t byteStride = bufferView.byteStride ? bufferView.byteStride : sizeof(float);
+            const unsigned char *data = buffer.data.data() + bufferView.byteOffset + accessor.byteOffset;
+            result.reserve(accessor.count);
+            for (size_t i = 0; i < accessor.count; ++i)
+                result.push_back(*reinterpret_cast<const float *>(data + i * byteStride));
+            return result;
+        }
+
+        // A node's bind-pose local transform as TRS (glTF stores either a
+        // matrix or T/R/S components; rotation quat is xyzw → glm wxyz).
+        void nodeLocalTRS(const tinygltf::Node &node, Vec3 &t, glm::quat &r, Vec3 &s)
+        {
+            t = Vec3(0.0f);
+            r = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+            s = Vec3(1.0f);
+            if (node.matrix.size() == 16)
+            {
+                Mat4 m(1.0f);
+                for (int col = 0; col < 4; ++col)
+                    for (int row = 0; row < 4; ++row)
+                        m[col][row] = static_cast<float>(node.matrix[col * 4 + row]);
+                Vec3 skew;
+                Vec4 persp;
+                glm::quat q;
+                glm::decompose(m, s, q, t, skew, persp);
+                r = q;
+                return;
+            }
+            if (node.translation.size() == 3)
+                t = Vec3(static_cast<float>(node.translation[0]),
+                         static_cast<float>(node.translation[1]),
+                         static_cast<float>(node.translation[2]));
+            if (node.scale.size() == 3)
+                s = Vec3(static_cast<float>(node.scale[0]),
+                         static_cast<float>(node.scale[1]),
+                         static_cast<float>(node.scale[2]));
+            if (node.rotation.size() == 4)
+                r = glm::quat(static_cast<float>(node.rotation[3]),  // w
+                              static_cast<float>(node.rotation[0]),  // x
+                              static_cast<float>(node.rotation[1]),  // y
+                              static_cast<float>(node.rotation[2])); // z
+        }
+
+        // Build one Skeleton per glTF skin. All skeletons share the full node
+        // hierarchy (bind-pose local TRS + parents) and the converted animation
+        // clips; each carries its own joint list + inverse-bind matrices.
+        std::unordered_map<int, std::shared_ptr<const Skeleton>>
+        buildSkeletons(const tinygltf::Model &model)
+        {
+            std::unordered_map<int, std::shared_ptr<const Skeleton>> out;
+            if (model.skins.empty())
+                return out;
+
+            const size_t nodeCount = model.nodes.size();
+            std::vector<SkelNode> nodes(nodeCount);
+            for (size_t i = 0; i < nodeCount; ++i)
+                nodeLocalTRS(model.nodes[i], nodes[i].t, nodes[i].r, nodes[i].s);
+            for (size_t i = 0; i < nodeCount; ++i)
+                for (int child : model.nodes[i].children)
+                    if (child >= 0 && static_cast<size_t>(child) < nodeCount)
+                        nodes[child].parent = static_cast<int>(i);
+
+            // Convert animations once (channels target node indices, shared
+            // across skins). CUBICSPLINE samplers carry 3× values per key;
+            // the size mismatch below drops them (v1 supports LINEAR/STEP).
+            std::vector<AnimationClip> clips;
+            for (const auto &anim : model.animations)
+            {
+                AnimationClip clip;
+                clip.name = anim.name;
+                for (const auto &chan : anim.channels)
+                {
+                    if (chan.sampler < 0 || chan.sampler >= static_cast<int>(anim.samplers.size()))
+                        continue;
+                    if (chan.target_node < 0)
+                        continue;
+                    AnimChannel ac;
+                    ac.node = chan.target_node;
+                    if (chan.target_path == "translation")
+                        ac.path = AnimChannel::Path::Translation;
+                    else if (chan.target_path == "rotation")
+                        ac.path = AnimChannel::Path::Rotation;
+                    else if (chan.target_path == "scale")
+                        ac.path = AnimChannel::Path::Scale;
+                    else
+                        continue; // skip "weights" (morph) for v1
+                    const auto &samp = anim.samplers[chan.sampler];
+                    ac.times = extractScalarFloat(model, samp.input);
+                    if (ac.path == AnimChannel::Path::Rotation)
+                    {
+                        ac.values = extractVec4Accessor(model, samp.output);
+                    }
+                    else
+                    {
+                        const auto v3 = extractVec3Accessor(model, samp.output);
+                        ac.values.reserve(v3.size());
+                        for (const auto &v : v3)
+                            ac.values.emplace_back(v.x, v.y, v.z, 0.0f);
+                    }
+                    ac.step = (samp.interpolation == "STEP");
+                    if (ac.times.empty() || ac.times.size() != ac.values.size())
+                        continue;
+                    clip.duration = std::max(clip.duration, ac.times.back());
+                    clip.channels.push_back(std::move(ac));
+                }
+                if (!clip.channels.empty())
+                    clips.push_back(std::move(clip));
+            }
+
+            for (size_t si = 0; si < model.skins.size(); ++si)
+            {
+                const auto &skin = model.skins[si];
+                auto skel = std::make_shared<Skeleton>();
+                skel->nodes = nodes;
+                skel->clips = clips;
+                skel->joints.assign(skin.joints.begin(), skin.joints.end());
+                skel->inverseBind = extractMat4Accessor(model, skin.inverseBindMatrices);
+                // Inverse-bind matrices are optional in glTF (omitted → identity).
+                if (skel->inverseBind.size() < skel->joints.size())
+                    skel->inverseBind.resize(skel->joints.size(), Mat4(1.0f));
+                out[static_cast<int>(si)] = std::move(skel);
+            }
+            return out;
         }
 
         // Helper to get texture URI from GLTF texture index
@@ -490,18 +725,37 @@ namespace tracey
                 }
             }
 
+            // Skinning attributes (the skeleton itself is attached later in
+            // loadFromFile, once skins are parsed). Kept index-parallel to
+            // positions through the same expansion below.
+            std::vector<Vec4> joints, weights;
+            {
+                auto jIt = primitive.attributes.find("JOINTS_0");
+                if (jIt != primitive.attributes.end())
+                    joints = extractJointsVec4(model, jIt->second);
+                auto wIt = primitive.attributes.find("WEIGHTS_0");
+                if (wIt != primitive.attributes.end())
+                    weights = extractVec4Accessor(model, wIt->second);
+            }
+
             // If we have indices, expand to triangle list
             if (!indices.empty())
             {
                 std::vector<Vec3> expandedPositions;
                 std::vector<Vec3> expandedNormals;
                 std::vector<Vec2> expandedTexCoords;
+                std::vector<Vec4> expandedJoints;
+                std::vector<Vec4> expandedWeights;
 
                 expandedPositions.reserve(indices.size());
                 if (!normals.empty())
                     expandedNormals.reserve(indices.size());
                 if (!texCoords.empty())
                     expandedTexCoords.reserve(indices.size());
+                if (!joints.empty())
+                    expandedJoints.reserve(indices.size());
+                if (!weights.empty())
+                    expandedWeights.reserve(indices.size());
 
                 for (uint32_t idx : indices)
                 {
@@ -517,6 +771,14 @@ namespace tracey
                     {
                         expandedTexCoords.push_back(texCoords[idx]);
                     }
+                    if (!joints.empty() && idx < joints.size())
+                    {
+                        expandedJoints.push_back(joints[idx]);
+                    }
+                    if (!weights.empty() && idx < weights.size())
+                    {
+                        expandedWeights.push_back(weights[idx]);
+                    }
                 }
 
                 obj.setPositions(std::move(expandedPositions));
@@ -524,6 +786,10 @@ namespace tracey
                     obj.setNormals(std::move(expandedNormals));
                 if (!expandedTexCoords.empty())
                     obj.setUvs(std::move(expandedTexCoords));
+                if (!expandedJoints.empty())
+                    obj.setJointIndices(std::move(expandedJoints));
+                if (!expandedWeights.empty())
+                    obj.setJointWeights(std::move(expandedWeights));
             }
             else
             {
@@ -532,6 +798,10 @@ namespace tracey
                     obj.setNormals(std::move(normals));
                 if (!texCoords.empty())
                     obj.setUvs(std::move(texCoords));
+                if (!joints.empty())
+                    obj.setJointIndices(std::move(joints));
+                if (!weights.empty())
+                    obj.setJointWeights(std::move(weights));
             }
 
             return obj;
@@ -737,6 +1007,43 @@ namespace tracey
         }
 
         std::cout << "Loaded " << scene->objects().size() << " mesh primitives from GLTF" << std::endl;
+
+        // Skinning pass: build one Skeleton per skin and attach it to the
+        // SceneObjects of every skinned mesh (node.skin + node.mesh). The
+        // skinning deformer downstream reads (joints, weights, skeleton, time)
+        // straight off the SceneObject. Skipped entirely when the asset has no
+        // skins — non-character imports pay nothing.
+        if (!model.skins.empty())
+        {
+            auto skeletons = buildSkeletons(model);
+            for (size_t ni = 0; ni < model.nodes.size(); ++ni)
+            {
+                const auto &node = model.nodes[ni];
+                if (node.skin < 0 || node.mesh < 0 ||
+                    node.mesh >= static_cast<int>(model.meshes.size()))
+                    continue;
+                auto sit = skeletons.find(node.skin);
+                if (sit == skeletons.end())
+                    continue;
+                // Express skinning in this mesh node's local space — the engine
+                // actor for the node already carries its world transform, so
+                // baking world-space positions would double-transform it.
+                const Mat4 shift = glm::inverse(sit->second->nodeBindWorld(static_cast<int>(ni)));
+                const auto &mesh = model.meshes[node.mesh];
+                for (size_t primIdx = 0; primIdx < mesh.primitives.size(); ++primIdx)
+                {
+                    const int primKey = node.mesh * 1000 + static_cast<int>(primIdx);
+                    auto it = meshToObjectName.find(primKey);
+                    if (it == meshToObjectName.end())
+                        continue;
+                    if (auto *obj = scene->getObject(it->second))
+                    {
+                        obj->setSkeleton(sit->second);
+                        obj->setSkinBindShift(shift);
+                    }
+                }
+            }
+        }
 
         // Second pass: Process scene hierarchy
         if (!model.scenes.empty())

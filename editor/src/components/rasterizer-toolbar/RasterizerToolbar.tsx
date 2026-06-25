@@ -26,6 +26,8 @@ export const RasterizerToolbar: Component<RasterizerToolbarProps> = (props) => {
   const [showPoints, setShowPoints] = createSignal(false);
   const [showEdges, setShowEdges] = createSignal(false);
   const [showGround, setShowGround] = createSignal(false);
+  // Composition guides bitmask: bit 0 = thirds, bit 1 = safe areas.
+  const [guides, setGuides] = createSignal(0);
   // Background color in `#rrggbb` form so it can drive the native
   // <input type="color"> directly. Linear-space values from the
   // engine get encoded for the picker; sRGB conversion is deliberately
@@ -60,15 +62,17 @@ export const RasterizerToolbar: Component<RasterizerToolbarProps> = (props) => {
 
   onMount(async () => {
     try {
-      const [points, edges, ground, bg] = await Promise.all([
+      const [points, edges, ground, guideMask, bg] = await Promise.all([
         api.getShowPoints().catch(() => false),
         api.getShowEdges().catch(() => false),
         api.getShowGround().catch(() => false),
+        api.getCompositionGuides().catch(() => 0),
         api.getBackgroundColor().catch(() => [0.2, 0.3, 0.4, 1.0] as [number, number, number, number]),
       ]);
       setShowPoints(points);
       setShowEdges(edges);
       setShowGround(ground);
+      setGuides(guideMask);
       setBgHex(floatToHex(bg[0], bg[1], bg[2]));
     } catch (e) {
       console.warn('rasterizer-toolbar: initial fetch failed', e);
@@ -85,6 +89,21 @@ export const RasterizerToolbar: Component<RasterizerToolbarProps> = (props) => {
       props.onSettingsChange?.();
     } catch (e) {
       console.warn('set_background_color failed:', e);
+    }
+  };
+
+  // Composition-guide bit toggle. Flips one bit of the guides bitmask and
+  // pushes the whole mask to the native side. Reverts the UI on failure.
+  const toggleGuide = async (bit: number, label: string): Promise<void> => {
+    const prev = guides();
+    const next = prev ^ bit;
+    setGuides(next);
+    try {
+      await api.setCompositionGuides(next);
+      props.onSettingsChange?.();
+    } catch (e) {
+      console.warn(`set ${label} failed:`, e);
+      setGuides(prev);
     }
   };
 
@@ -110,6 +129,27 @@ export const RasterizerToolbar: Component<RasterizerToolbarProps> = (props) => {
 
   return (
     <div class="rasterizer-toolbar">
+      {/* Framing — always visible (not gated on `ready()`), since it's the most
+          reached navigation action. ⌂ frames the whole scene; Frame Sel frames
+          the selection (or all if nothing's selected). The camera glides there
+          via the render tick. Mirror the F / Shift+F keyboard shortcuts. */}
+      <button
+        type="button"
+        class="rasterizer-toolbar-button"
+        title="Frame the whole scene — Shift+F"
+        onClick={() => void api.frameView(false)}
+      >
+        ⌂ Frame
+      </button>
+      <button
+        type="button"
+        class="rasterizer-toolbar-button"
+        title="Frame the selected object (or the whole scene if nothing is selected) — F"
+        onClick={() => void api.frameView(true)}
+      >
+        Frame Sel
+      </button>
+      <span class="rasterizer-toolbar-sep" aria-hidden="true" />
       <Show when={ready()}>
         <button
           type="button"
@@ -137,6 +177,27 @@ export const RasterizerToolbar: Component<RasterizerToolbarProps> = (props) => {
           onClick={() => toggle(showGround(), setShowGround, api.setShowGround, 'show_ground')}
         >
           Ground
+        </button>
+        <span class="rasterizer-toolbar-sep" aria-hidden="true" />
+        {/* Composition guides — framing aids for shot composition. Overlay
+            both the rasterizer and the path-traced view (drawn in NDC). */}
+        <button
+          type="button"
+          class="rasterizer-toolbar-button"
+          classList={{ 'rasterizer-toolbar-button--active': (guides() & 1) !== 0 }}
+          title="Rule-of-thirds grid overlay"
+          onClick={() => toggleGuide(1, 'guides_thirds')}
+        >
+          Thirds
+        </button>
+        <button
+          type="button"
+          class="rasterizer-toolbar-button"
+          classList={{ 'rasterizer-toolbar-button--active': (guides() & 2) !== 0 }}
+          title="Safe-area guides (action-safe 90% + title-safe 80%)"
+          onClick={() => toggleGuide(2, 'guides_safe')}
+        >
+          Safe
         </button>
         {/* Vertical separator between toggle group and color group —
             cheap visual cue that these are different categories of

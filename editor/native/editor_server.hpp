@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -19,6 +20,7 @@
 #include "render_engine.hpp"
 #include "viewport_renderer.hpp"
 #include "scene/camera.hpp"    // tracey::Camera (held by value in RenderRequest)
+#include "scene/skeleton.hpp"  // tracey::Skeleton (per-actor skeleton overlay)
 #include "sops/sop_node.hpp"   // tracey::sops::EmittedActor (used in cook-result slot)
 #include "sops/sop_graph.hpp"  // tracey::sops::NodeCookTiming
 #include "sops/cook_cache.hpp"
@@ -111,19 +113,40 @@ private:
     uint32_t m_viewport_pixel_h = 0;
     bool m_viewport_active = false;
 
-    // Orbital camera state. The viewport navigation tumbles/pans/dollies
-    // around `m_orbit_pivot_*`; the Camera's position and rotation are derived
-    // from this state each frame the user navigates.
+    // Orbital camera state. The `m_orbit_*` fields are the navigation TARGET;
+    // the `m_orbit_smooth_*` fields are the actually-rendered pose, which eases
+    // toward the target each tick. Direct manipulation (drag/fly) snaps smooth =
+    // target for 1:1 feel; "jump" actions (view presets, focus/frame) move only
+    // the target so the camera GLIDES there instead of teleporting. The Camera's
+    // position/rotation are composed from the smoothed state.
     float m_orbit_yaw = 0.0f;
     float m_orbit_pitch = 0.0f;
     float m_orbit_distance = 5.0f;
     float m_orbit_pivot_x = 0.0f;
     float m_orbit_pivot_y = 0.0f;
     float m_orbit_pivot_z = 0.0f;
+    float m_orbit_smooth_yaw = 0.0f;
+    float m_orbit_smooth_pitch = 0.0f;
+    float m_orbit_smooth_distance = 5.0f;
+    float m_orbit_smooth_pivot_x = 0.0f;
+    float m_orbit_smooth_pivot_y = 0.0f;
+    float m_orbit_smooth_pivot_z = 0.0f;
     bool m_orbit_initialized = false;
-    // Currently-selected actor; pivot follows this actor's world position
-    // when selection changes.
+    // LMB click-vs-drag for click-to-select: a click (pointer path under a small
+    // dead-zone) selects the actor under the cursor; anything longer tumbles.
+    // m_lmb_drag_px accumulates pointer path length since the press.
+    bool m_lmb_was_down = false;
+    float m_lmb_drag_px = 0.0f;
+    // Currently-selected actor (drives the viewport selection highlight).
     std::optional<uint64_t> m_selected_actor_id;
+    // Picked joint index within the selected actor's skeleton (-1 = none).
+    // Cleared whenever the actor selection changes. Drives the bone highlight.
+    int m_selected_joint = -1;
+    // FK pose overrides per actor: joint index → euler rotation (degrees),
+    // applied on top of the clip/bind pose. The editor-side mirror of the
+    // gltf_import `pose_overrides` param (which is the persistent source of
+    // truth); drives the bone overlay. Written by the set_joint_pose command.
+    std::unordered_map<uint64_t, std::map<int, glm::vec3>> m_joint_poses;
 
     // Per-SOP-source-node display flag, applied to the emitted actor in
     // apply_emitted so visibility survives a re-cook. Keyed by SOP source
@@ -339,6 +362,20 @@ private:
     // instances) see m_emitted_actor_to_actor below.
     std::unordered_map<size_t, uint64_t> m_sop_node_to_actor;
 
+    // Per-actor skinning data for the skeleton overlay (P2). Populated in
+    // apply_emitted from the actor's glTF source (skeleton + mesh-local bind
+    // shift); consulted by update_bone_overlay for the selected actor at the
+    // current playhead. Keyed by live actor uid; rebuilt each cook apply.
+    struct ActorSkeleton {
+        std::shared_ptr<const tracey::Skeleton> skeleton;
+        glm::mat4 bindShift{1.0f};
+        // uid of the gltf_import SOP node that owns this skeleton — the node
+        // whose `pose_overrides` param the FK joint-pose UI writes, and which
+        // the bone overlay reads to pose the bones in step with the mesh.
+        size_t gltfImportNode = 0;
+    };
+    std::unordered_map<uint64_t, ActorSkeleton> m_actor_skeletons;
+
     // Map from composite (sourceNodeUid, instanceIndex) → actor uid. Stores
     // every emitted actor, including the N instance actors that share a
     // sourceNodeUid coming out of the `instance` SOP. apply_emitted's
@@ -413,6 +450,16 @@ private:
     // Apply a previously-cooked emitted-actor list to the live scene + path
     // tracer. Mutex must be held; main-thread only.
     void apply_emitted(std::vector<tracey::sops::EmittedActor>&& emitted);
+
+    // Recompute the selected actor's skeleton-overlay bone segments at the
+    // current playhead and push them to the rasterizer (empty when nothing
+    // skinned is selected). Called each render_tick after apply_animation_at.
+    void update_bone_overlay();
+
+    // World-space joint pivot positions for the selected skinned actor at the
+    // current playhead (empty if none). Optionally fills per-joint parent-joint
+    // indices. Shared by the overlay draw and joint picking.
+    std::vector<glm::vec3> selected_joint_world_positions(std::vector<int>* outParents);
 
     // ── Async SOP cook worker ──
     // Cooking can be slow (e.g. large glTF imports); doing it on the message
@@ -516,6 +563,11 @@ private:
     // cook output forces a real apply. Reset on every cook that miss-applies
     // (or never matched).
     uint64_t m_last_emitted_signature = 0;
+    // Signature of just the hierarchy-visible fields (actor list/names/tree/
+    // light flags) from the last apply. Gates the scene_changed broadcast so
+    // per-frame animation recooks (geometry/transform only) don't rebuild the
+    // hierarchy UI every frame. See apply_emitted.
+    uint64_t m_last_hierarchy_sig = 0;
     bool m_has_applied_once = false;
 
     // Per-actor delta tracking. `structural_sig` covers everything that
@@ -529,6 +581,10 @@ private:
     struct ActorSig {
         uint64_t transform_sig = 0;
         uint64_t structural_sig = 0;
+        // Structural sig WITHOUT the geometry digest. identity equal +
+        // structural differing == a pure geometry deform (skinned/animated
+        // mesh) → apply_emitted swaps geometry in place, keeping the uid.
+        uint64_t identity_sig = 0;
     };
     // Keyed by `make_actor_key(sourceNodeUid, instanceIndex)` so the
     // `instance` SOP (which emits N actors sharing one sourceNodeUid) can

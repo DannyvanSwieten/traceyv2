@@ -69,6 +69,10 @@ namespace tracey
         pipelineConfig.groundFragmentShader = m_config.groundFragmentShader;
         pipelineConfig.gizmoVertexShader = m_config.gizmoVertexShader;
         pipelineConfig.gizmoFragmentShader = m_config.gizmoFragmentShader;
+        pipelineConfig.guidesVertexShader = m_config.guidesVertexShader;
+        pipelineConfig.guidesFragmentShader = m_config.guidesFragmentShader;
+        pipelineConfig.bonesVertexShader = m_config.bonesVertexShader;
+        pipelineConfig.bonesFragmentShader = m_config.bonesFragmentShader;
         pipelineConfig.colorFormat = m_config.colorFormat;
         pipelineConfig.useDepthBuffer = m_config.useDepthBuffer;
         pipelineConfig.depthTestEnable = m_config.depthTestEnable;
@@ -554,6 +558,74 @@ namespace tracey
                 m_commandBuffer->pushConstants(&pc, sizeof(pc), 0);
                 // 6 vertices: three axis lines (2 verts each).
                 m_commandBuffer->draw(6, 1, 0, 0);
+                m_commandBuffer->bindPipeline(m_pipeline.get());
+            }
+        }
+
+        // Composition guides (rule-of-thirds / safe-area) — drawn dead last in
+        // NDC, on top of everything (geometry + PT composite), alpha-blended.
+        // The vertex shader emits the lines procedurally from gl_VertexIndex;
+        // we only push the guide kind and issue the matching vertex count.
+        // mvp is unused by the guides shader (positions are already in NDC).
+        if (m_guidesMode != 0)
+        {
+            auto* vkPipeline = static_cast<VulkanGraphicsPipeline*>(m_pipeline.get());
+            if (vkPipeline->hasGuidesPipeline())
+            {
+                m_commandBuffer->bindGuidesPipeline(m_pipeline.get());
+                struct PushConstants {
+                    glm::mat4 mvp;
+                    glm::vec4 baseColor;
+                } pc;
+                pc.mvp = glm::mat4(1.0f);
+                if (m_guidesMode & 1) // rule of thirds: 4 lines
+                {
+                    pc.baseColor = glm::vec4(1.0f, 0.0f, 0.0f, 0.0f);
+                    m_commandBuffer->pushConstants(&pc, sizeof(pc), 0);
+                    m_commandBuffer->draw(8, 1, 0, 0);
+                }
+                if (m_guidesMode & 2) // safe areas: action + title rects, 8 lines
+                {
+                    pc.baseColor = glm::vec4(2.0f, 0.0f, 0.0f, 0.0f);
+                    m_commandBuffer->pushConstants(&pc, sizeof(pc), 0);
+                    m_commandBuffer->draw(16, 1, 0, 0);
+                }
+                m_commandBuffer->bindPipeline(m_pipeline.get());
+            }
+        }
+
+        // Skeleton overlay + picked-joint highlight — world-space LINE_LISTs
+        // drawn last with the depth-test-OFF bones pipeline so they read on top
+        // of the skinned mesh. The editor pushes the posed endpoints each frame;
+        // here we upload them to transient vertex buffers and draw, the skeleton
+        // in its color then the highlight in a distinct one.
+        if (!m_boneSegments.empty() || !m_boneHighlight.empty())
+        {
+            auto* vkPipeline = static_cast<VulkanGraphicsPipeline*>(m_pipeline.get());
+            if (vkPipeline->hasBonesPipeline())
+            {
+                m_commandBuffer->bindBonesPipeline(m_pipeline.get());
+                struct PushConstants {
+                    glm::mat4 mvp;
+                    glm::vec4 baseColor;
+                } pc;
+                pc.mvp = m_projectionMatrix * m_viewMatrix;
+                auto drawSet = [&](const std::vector<glm::vec3>& segs, const glm::vec3& col) {
+                    if (segs.empty()) return;
+                    const size_t bytes = segs.size() * sizeof(glm::vec3);
+                    auto buf = std::unique_ptr<Buffer>(
+                        m_device->createBuffer(bytes, BufferUsage::VertexBuffer));
+                    std::memcpy(buf->mapForWriting(), segs.data(), bytes);
+                    pc.baseColor = glm::vec4(col, 1.0f);
+                    m_commandBuffer->pushConstants(&pc, sizeof(pc), 0);
+                    m_commandBuffer->bindVertexBuffer(buf.get(), 0);
+                    m_commandBuffer->draw(static_cast<uint32_t>(segs.size()), 1, 0, 0);
+                    // Keep alive until the GPU drains this dispatch (render()
+                    // fences before returning); cleared next render.
+                    m_transientInstanceBuffers.push_back(std::move(buf));
+                };
+                drawSet(m_boneSegments, m_boneColor);
+                drawSet(m_boneHighlight, m_boneHighlightColor);
                 m_commandBuffer->bindPipeline(m_pipeline.get());
             }
         }

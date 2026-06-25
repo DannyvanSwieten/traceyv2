@@ -155,6 +155,15 @@ std::optional<std::string> EditorServer::handle_render_commands(
             m_engine->set_gizmo_visible(req.at("value").get<bool>());
             return ok_response_null();
         }
+        if (cmd == "get_composition_guides") {
+            return ok_response(m_engine->composition_guides());
+        }
+        if (cmd == "set_composition_guides") {
+            // Bitmask: 0 off, 1 thirds, 2 safe areas, 3 both. Rasterizer-only
+            // overlay; the PT composite is unaffected, so no accumulation reset.
+            m_engine->set_composition_guides(req.at("value").get<int>());
+            return ok_response_null();
+        }
         if (cmd == "set_viewport_grab_active") {
             const bool v = req.at("value").get<bool>();
             m_viewport_grab_active = v;

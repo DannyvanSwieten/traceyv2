@@ -286,12 +286,24 @@ static BOOL traceyIsSupportedAsset(NSURL* url) {
     [self handleKey:event pressed:NO];
 }
 - (BOOL)performKeyEquivalent:(NSEvent*)event {
-    if (event.keyCode == 49) {
+    if (event.keyCode == 49) {  // Space → timeline play/pause (JS owns it)
         [self forwardKeyEventToWebView:event];
         return YES;
     }
-    [self handleKey:event pressed:(event.type == NSEventTypeKeyDown)];
-    return YES;
+    // performKeyEquivalent fires for key-DOWNs regardless of focus and has NO
+    // matching key-UP. So ONLY claim edge-triggered one-shots here (framing).
+    // Held movement keys (WASD/QE) must flow through keyDown:/keyUp: instead —
+    // claiming them here means their key-up is never delivered, leaving the key
+    // stuck "down" and the camera flying to infinity. They require viewport
+    // focus (a click), which keyDown: already gates on.
+    switch (event.keyCode) {
+    case 3:    // F / Shift+F — frame selected / all
+    case 115:  // Home — frame all
+        [self handleKey:event pressed:YES];
+        return YES;
+    default:
+        return NO;  // WASD/QE etc. → handled by keyDown:/keyUp: when focused
+    }
 }
 
 // Dispatch a synthetic KeyboardEvent on `window` so the App's top-level
@@ -325,6 +337,17 @@ static BOOL traceyIsSupportedAsset(NSURL* url) {
     case 2:  _inputState->key_d = pressed; break;
     case 12: _inputState->key_q = pressed; break;
     case 14: _inputState->key_e = pressed; break;
+    // One-shot framing (edge-triggered; the render tick clears the flag):
+    //   F        → frame the selection (or the whole scene if nothing's selected)
+    //   Shift+F  → frame the whole scene   (Mac-friendly; laptops have no Home key)
+    //   Home     → frame the whole scene   (external keyboards)
+    case 3:  // F
+        if (pressed) {
+            if (event.modifierFlags & NSEventModifierFlagShift) _inputState->frame_all = true;
+            else _inputState->frame_selected = true;
+        }
+        break;
+    case 115: if (pressed) _inputState->frame_all = true; break;       // Home
     default: break;
     }
 }
@@ -332,6 +355,7 @@ static BOOL traceyIsSupportedAsset(NSURL* url) {
 - (void)flagsChanged:(NSEvent*)event {
     if (!_inputState) return;
     _inputState->key_shift = (event.modifierFlags & NSEventModifierFlagShift) != 0;
+    _inputState->key_alt = (event.modifierFlags & NSEventModifierFlagOption) != 0;
 }
 
 @end

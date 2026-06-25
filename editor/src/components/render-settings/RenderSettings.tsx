@@ -11,7 +11,7 @@ export const RenderSettings: Component<RenderSettingsProps> = (props) => {
   // edges, ground) moved to a dedicated sub-toolbar under the main
   // toolbar so they're always reachable regardless of which workspace
   // is active — see RasterizerToolbar.tsx.
-  const [maxSamples, setMaxSamplesSignal] = createSignal(1024);
+  const [maxSamples, setMaxSamplesSignal] = createSignal(16);
   const [maxBounces, setMaxBounces] = createSignal(8);
   const [isLoading, setIsLoading] = createSignal(true);
 
@@ -61,9 +61,9 @@ export const RenderSettings: Component<RenderSettingsProps> = (props) => {
               <input
                 id="max-samples"
                 type="range"
-                min="16"
+                min="1"
                 max="8192"
-                step="16"
+                step="1"
                 value={maxSamples()}
                 onInput={(e) => handleMaxSamplesChange(parseInt(e.currentTarget.value))}
               />

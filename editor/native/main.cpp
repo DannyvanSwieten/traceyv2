@@ -86,7 +86,7 @@ int main(int /*argc*/, char** /*argv*/) {
     // into; the linear running mean lives in the accumulator. We blit
     // outputImage directly to the swapchain — no CPU tonemap needed.
     config.hdr_output = false;
-    config.max_samples = 1024;
+    config.max_samples = 16;
     config.max_bounces = 8;
 
     std::printf("Shader dir: %s\n", config.shader_dir.string().c_str());

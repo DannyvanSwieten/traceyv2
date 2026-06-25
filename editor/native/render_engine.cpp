@@ -3,10 +3,15 @@
 #include "path_tracer/api/backend_registry.hpp"
 
 #include "core/parallel.hpp"
+#include "core/ray.hpp"
+#include "core/hit.hpp"
+#include "device/bottom_level_acceleration_structure.hpp"
 #include "scene/scene_object.hpp"
 #include "graph/graphs/shader_graph/compiler.hpp"
 #include "graph/graphs/shader_graph/serialization.hpp"
 
+#include <cmath>
+#include <span>
 #include <stdexcept>
 
 namespace tracey_editor {
@@ -101,6 +106,10 @@ void RenderEngine::initialize_rasterizer() {
     cfg.groundFragmentShader = m_config.shader_dir / "rasterizer" / "ground.frag.spv";
     cfg.gizmoVertexShader    = m_config.shader_dir / "rasterizer" / "gizmo.vert.spv";
     cfg.gizmoFragmentShader  = m_config.shader_dir / "rasterizer" / "gizmo.frag.spv";
+    cfg.guidesVertexShader   = m_config.shader_dir / "rasterizer" / "guides.vert.spv";
+    cfg.guidesFragmentShader = m_config.shader_dir / "rasterizer" / "guides.frag.spv";
+    cfg.bonesVertexShader    = m_config.shader_dir / "rasterizer" / "bones.vert.spv";
+    cfg.bonesFragmentShader  = m_config.shader_dir / "rasterizer" / "gizmo.frag.spv"; // flat vColor
     cfg.useDepthBuffer = true;
     cfg.depthTestEnable = true;
     cfg.cullBackFaces = false;  // SOP-cooked geometry can have either winding
@@ -110,6 +119,7 @@ void RenderEngine::initialize_rasterizer() {
     m_rasterizer->setShowPoints(m_show_points);
     m_rasterizer->setShowEdges(m_show_edges);
     m_rasterizer->setShowGround(m_show_ground);
+    m_rasterizer->setCompositionGuides(m_guides_mode);
     // Apply the persisted background colour. The rasterizer's
     // ctor-default matches m_bg_* so this is a no-op on first launch;
     // when the user has set a custom colour and then we recreate the
@@ -185,6 +195,89 @@ void RenderEngine::compile_scene() {
     }
 }
 
+void RenderEngine::update_lights() {
+    if (!m_path_tracer || !m_compiled_scene) return;
+    // Unique GPU lock: render workers read m_compiled_scene under the shared
+    // lock, so we exclude them while swapping the light buffer in place (the
+    // same hazard refresh_instances guards against). Only the small light buffer
+    // is rebuilt — geometry buffers, BLAS and TLAS are untouched — so this is
+    // milliseconds even on Kitchen Set, where a full compile_scene re-uploads
+    // every vertex buffer and rebuilds the TLAS (the UI freeze on a light edit).
+    std::unique_lock<std::shared_mutex> gpu_lk(m_gpu_mutex);
+    auto ld = tracey::SceneCompiler::compileLights(m_device.get(), *m_scene);
+    m_compiled_scene->lights = std::move(ld.lights);
+    m_compiled_scene->lightCount = ld.lightCount;
+    m_compiled_scene->lightBuffer = std::move(ld.lightBuffer);
+    // Bump the generation so a snapshot captured before the swap is skipped, and
+    // the revision so the path-tracer backends re-read lights next dispatch.
+    m_scene_generation.fetch_add(1, std::memory_order_release);
+    m_compiled_scene->revision = tracey::SceneCompiler::nextSceneRevision();
+}
+
+bool RenderEngine::update_material_programs() {
+    if (!m_path_tracer || !m_compiled_scene) return false;
+    // Unique GPU lock: setMaterialPrograms re-uploads the backend's program
+    // buffer, which a render worker reads mid-trace — exclude them during the
+    // swap (same hazard as update_lights). Re-aggregate with identical IDs so the
+    // instanceProgramIndex compile() baked stays valid; only the bytecode changes.
+    std::unique_lock<std::shared_mutex> gpu_lk(m_gpu_mutex);
+    auto progs = tracey::SceneCompiler::compileMaterialPrograms(*m_scene);
+    // Keep the compiled scene consistent (a later PT recreate re-pushes this).
+    m_compiled_scene->materialPrograms = progs.programs;
+    // Push to the backend out-of-band (no revision bump → no geometry re-bind).
+    m_path_tracer->setMaterialPrograms(m_compiled_scene->materialPrograms);
+    return true;
+}
+
+std::optional<RenderEngine::PickResult> RenderEngine::pick(float ndcX, float ndcY) {
+    if (!m_compiled_scene || !m_scene->hasCamera()) return std::nullopt;
+    if (m_compiled_scene->instances.empty()) return std::nullopt;
+
+    // (Re)build the pick TLAS when the scene changed. It borrows the compiled
+    // scene's CPU BLAS data (kept alive by m_compiled_scene). If any BLAS lacks
+    // CPU data (raster-only compile), picking is unavailable.
+    if (!m_pick_tlas || m_pick_tlas_revision != m_compiled_scene->revision) {
+        m_pick_tlas_revision = m_compiled_scene->revision;
+        m_pick_blas_ptrs.clear();
+        m_pick_blas_ptrs.reserve(m_compiled_scene->blases.size());
+        bool ok = true;
+        for (const auto* blas : m_compiled_scene->blases) {
+            const tracey::Blas* cpu = blas ? blas->cpuBlas() : nullptr;
+            if (!cpu) { ok = false; break; }
+            m_pick_blas_ptrs.push_back(cpu);
+        }
+        if (!ok || m_pick_blas_ptrs.empty()) { m_pick_tlas.reset(); return std::nullopt; }
+        m_pick_tlas = std::make_unique<tracey::Tlas>(
+            std::span<const tracey::Blas*>(m_pick_blas_ptrs.data(), m_pick_blas_ptrs.size()),
+            std::span<const tracey::Tlas::Instance>(m_compiled_scene->instances.data(),
+                                                    m_compiled_scene->instances.size()));
+    }
+    if (!m_pick_tlas) return std::nullopt;
+
+    // Camera ray through the NDC point — mirrors the path tracer's ray-gen
+    // (vertical FOV; x scaled by aspect).
+    const tracey::Camera cam = m_scene->camera();
+    const float tanHalf = std::tan(glm::radians(cam.fov()) * 0.5f);
+    const glm::vec3 dir = glm::normalize(cam.forward()
+        + ndcX * tanHalf * cam.aspectRatio() * cam.right()
+        + ndcY * tanHalf * cam.up());
+    tracey::Ray ray;
+    ray.origin = cam.position();
+    ray.direction = dir;
+    ray.invDirection = glm::vec3(1.0f) / dir;
+    ray.time = 0.0f;
+
+    const auto hit = m_pick_tlas->intersect(ray, 0.001f, 1.0e6f, tracey::RAY_FLAG_NONE);
+    if (!hit) return std::nullopt;
+    PickResult r;
+    r.point = hit->position;
+    r.distance = hit->t;
+    r.actorUid = (hit->instanceId < m_compiled_scene->instanceToActorUid.size())
+                     ? m_compiled_scene->instanceToActorUid[hit->instanceId]
+                     : 0u;
+    return r;
+}
+
 void RenderEngine::set_motion_end_instances(
     std::vector<tracey::Tlas::Instance> endInstances) {
     if (!m_compiled_scene || endInstances.empty() ||
@@ -209,6 +302,19 @@ void RenderEngine::set_show_edges(bool v) {
 void RenderEngine::set_show_ground(bool v) {
     m_show_ground = v;
     if (m_rasterizer) m_rasterizer->setShowGround(v);
+}
+
+void RenderEngine::set_composition_guides(int mode) {
+    m_guides_mode = mode;
+    if (m_rasterizer) m_rasterizer->setCompositionGuides(mode);
+}
+
+void RenderEngine::set_bone_segments(std::vector<glm::vec3> segments) {
+    if (m_rasterizer) m_rasterizer->setBoneSegments(std::move(segments));
+}
+
+void RenderEngine::set_bone_highlight(std::vector<glm::vec3> segments) {
+    if (m_rasterizer) m_rasterizer->setBoneHighlight(std::move(segments));
 }
 
 void RenderEngine::set_gizmo_visible(bool v) {

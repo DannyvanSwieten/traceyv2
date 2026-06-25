@@ -138,6 +138,24 @@ namespace tracey
         m_currentPipeline = pipeline;
     }
 
+    void VulkanGraphicsCommandBuffer::bindGuidesPipeline(GraphicsPipeline* pipeline)
+    {
+        auto* vkPipeline = static_cast<VulkanGraphicsPipeline*>(pipeline);
+        if (!vkPipeline->hasGuidesPipeline()) return;
+        vkCmdBindPipeline(m_commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                          vkPipeline->vkGuidesPipeline());
+        m_currentPipeline = pipeline;
+    }
+
+    void VulkanGraphicsCommandBuffer::bindBonesPipeline(GraphicsPipeline* pipeline)
+    {
+        auto* vkPipeline = static_cast<VulkanGraphicsPipeline*>(pipeline);
+        if (!vkPipeline->hasBonesPipeline()) return;
+        vkCmdBindPipeline(m_commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                          vkPipeline->vkBonesPipeline());
+        m_currentPipeline = pipeline;
+    }
+
     void VulkanGraphicsCommandBuffer::bindVertexBuffer(const Buffer* buffer, uint32_t offset)
     {
         auto* vkBuffer = static_cast<const VulkanBuffer*>(buffer);

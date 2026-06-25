@@ -12,10 +12,13 @@
 #include <filesystem>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <shared_mutex>
 #include <string>
 #include <utility>
 #include <vector>
+
+#include <glm/glm.hpp>
 
 namespace tracey_editor {
 
@@ -28,7 +31,7 @@ struct RenderConfig {
     // render_tick and stops when sampleCount() reaches this value, leaving
     // the accumulator on screen. Reset to 0 happens automatically on camera
     // / scene / settings changes via m_clear_next_frame.
-    uint32_t max_samples = 1024;
+    uint32_t max_samples = 16;
     uint32_t max_bounces = 8;
     // Path tracer backend: "auto" | "wavefront" | "metal" | "vulkan_rt" |
     // "cpu". Overridable at launch via the TRACEY_PT_BACKEND env var.
@@ -67,6 +70,26 @@ public:
 
     void compile_scene();
 
+    // Refresh ONLY the analytic lights, in place, without recompiling geometry.
+    // A light edit (add / delete / tweak) changes no vertices, buffers, or BLAS/
+    // TLAS, so a full compile_scene() — which re-aggregates and re-uploads every
+    // geometry buffer and rebuilds the TLAS — needlessly freezes the UI on large
+    // scenes. This rebuilds just the small light buffer under the GPU lock (no
+    // worker reads mid-swap) and bumps the generation + revision so backends pick
+    // up the new lights on their next dispatch. Mirrors the refresh_instances
+    // in-place pattern. No-op if there's no compiled scene yet.
+    void update_lights();
+
+    // Refresh ONLY the material-program bytecode, in place, for a shader-graph
+    // edit. Such an edit changes program *bytecode* but not which program each
+    // instance uses (assignments are unchanged) — so the instanceProgramIndex /
+    // TLAS / geometry compile() baked stay valid, and we just re-aggregate the
+    // program buffer (with identical IDs) and re-upload it to the backend. No
+    // geometry recompile, no revision bump (the program buffer is pushed
+    // out-of-band via setMaterialPrograms), so no UI freeze. Returns false (and
+    // does nothing) if there's no compiled scene / path tracer yet.
+    bool update_material_programs();
+
     // R4 motion blur: attach shutter-close instance poses (parallel to the
     // live compiled scene's `instances`) and bump the revision so the
     // path-tracer backend rebuilds with the motion AS. No-op when the counts
@@ -82,6 +105,28 @@ public:
     // callers (smoke tests, scene_renderer example) keep working.
     bool build_acceleration_structures() const { return m_build_acceleration_structures; }
     void set_build_acceleration_structures(bool v) { m_build_acceleration_structures = v; }
+    // Fence: block until no async render worker is mid-render, by briefly taking
+    // the GPU lock exclusively (worker renders hold it shared). The still/video
+    // export path calls this after raising m_export_in_progress so it can
+    // reconfigure and render the shared path tracer with no live-preview worker
+    // racing on the same backend's buffers.
+    void wait_render_idle() { std::unique_lock<std::shared_mutex> lk(m_gpu_mutex); }
+
+    // Result of a viewport ray-cast.
+    struct PickResult {
+        glm::vec3 point;     // world-space hit position
+        float distance;      // hit distance along the ray (for DOF focus-pull)
+        uint64_t actorUid;   // source actor of the hit instance (for click-select)
+    };
+    // Cast a ray from the camera through a viewport point (NDC: x,y in [-1,1],
+    // y up) and return the nearest scene hit, or nullopt on a miss / no geometry
+    // / raster-only compile with no CPU BVH. Backs zoom-to-cursor,
+    // click-to-select and click-to-focus. Uses a CPU pick-TLAS built lazily from
+    // the compiled scene's CPU BLASes and rebuilt when the scene revision
+    // changes — so it works regardless of which render backend is live.
+    // Main-thread only (shares the engine's single-threaded command path).
+    std::optional<PickResult> pick(float ndcX, float ndcY);
+
     // `want_pixels` controls whether the GPU output is copied back to
     // CPU into RenderResult::pixels. The live viewport composites
     // path_tracer()->outputImage() directly from the GPU and passes
@@ -235,6 +280,18 @@ public:
     bool show_ground() const { return m_show_ground; }
     void set_show_ground(bool v);
 
+    // Composition-guides overlay (bitmask: 0 off, 1 thirds, 2 safe areas,
+    // 3 both). Drawn in NDC over geometry + the PT composite.
+    int composition_guides() const { return m_guides_mode; }
+    void set_composition_guides(int mode);
+
+    // Skeleton overlay (P2): world-space bone endpoint pairs for the selected
+    // skinned actor. Empty clears the overlay. Forwarded to the rasterizer.
+    void set_bone_segments(std::vector<glm::vec3> segments);
+    // Picked-joint highlight: a marker (endpoint pairs) drawn in a distinct
+    // color over the skeleton. Empty clears it.
+    void set_bone_highlight(std::vector<glm::vec3> segments);
+
     // Translate-gizmo overlay (three colored world-axis lines anchored at
     // the selected actor). The selection state lives on the editor side;
     // this just exposes "where + visible".
@@ -265,6 +322,7 @@ private:
     bool m_show_points = false;
     bool m_show_edges = false;
     bool m_show_ground = true;
+    int m_guides_mode = 0;  // composition guides bitmask (0 = off)
     bool m_build_acceleration_structures = true;
     float m_bg_r = 0.2f;
     float m_bg_g = 0.3f;
@@ -302,6 +360,14 @@ private:
     // recook with unchanged geometry doesn't rebuild BVHs or re-upload
     // vertex data. Cleared by clear_blas_cache().
     std::unique_ptr<tracey::BlasCache> m_blas_cache;
+
+    // CPU pick-TLAS for viewport ray-casts (pick_point). Built lazily from the
+    // compiled scene's CPU BLASes + instances and rebuilt when the scene
+    // revision changes. m_pick_blas_ptrs holds the observer pointers the TLAS
+    // borrows; the BLAS data itself is kept alive by m_compiled_scene.
+    std::unique_ptr<tracey::Tlas> m_pick_tlas;
+    std::vector<const tracey::Blas*> m_pick_blas_ptrs;
+    uint64_t m_pick_tlas_revision = ~0ull;
 
     // Raw JSON for the active material graph. Empty until first set or first
     // initialise (which seeds a passthrough). Source of truth across IPC.

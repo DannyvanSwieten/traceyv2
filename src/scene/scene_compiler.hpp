@@ -156,6 +156,11 @@ namespace tracey
             std::vector<uint32_t> instanceToMaterialIndex;
             std::vector<GPUMaterial> materials;
 
+            // Source actor UID per TLAS instance (parallel to `instances`). Lets
+            // a viewport ray-cast (pick) resolve a hit instanceId back to the
+            // actor it came from, for click-to-select.
+            std::vector<uint64_t> instanceToActorUid;
+
             // Textures (sampled images)
             std::vector<std::unique_ptr<Image2D>> textures;
             std::unordered_map<std::string, size_t> texturePathToIndex;
@@ -285,6 +290,40 @@ namespace tracey
         static CompiledScene compile(Device *device, const Scene &scene,
                                      const BVHConfig &bvhConfig, BlasCache *cache,
                                      bool buildAccelerationStructures);
+
+        // Analytic-light data: the GPULight list + its uploaded buffer. Factored
+        // out of compile() so an editor light edit (add / delete / tweak) can
+        // refresh lighting IN PLACE — rebuilding only this small buffer — instead
+        // of recompiling all geometry (which re-aggregates + re-uploads every
+        // vertex buffer and rebuilds the TLAS, freezing the UI on large scenes).
+        // Does NOT touch emitters: those derive from emissive geometry, which a
+        // light edit never changes.
+        struct LightData
+        {
+            std::vector<GPULight> lights;
+            uint32_t lightCount = 0;
+            std::unique_ptr<Buffer> lightBuffer;
+        };
+        static LightData compileLights(Device *device, const Scene &scene);
+
+        // Material-program aggregation result: the program buffer (program 0 =
+        // passthrough, then each unique shader graph in first-encounter order) and
+        // a graph-JSON → {programId, rasterizer preview albedo} map. Factored out
+        // of compile()'s instance loop so an in-place shader-graph edit refresh can
+        // rebuild the program buffer with IDENTICAL program IDs — which is what
+        // keeps the instanceProgramIndex compile() baked still valid (the edit
+        // changes bytecode, not which program each instance uses).
+        struct ActorMaterialEntry
+        {
+            uint32_t programId = 0;
+            std::optional<Vec3> previewAlbedo;
+        };
+        struct MaterialProgramData
+        {
+            MaterialProgramBuffer programs;
+            std::unordered_map<std::string, ActorMaterialEntry> graphToEntry;
+        };
+        static MaterialProgramData compileMaterialPrograms(const Scene &scene);
 
     private:
         struct ObjectData

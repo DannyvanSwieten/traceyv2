@@ -6,6 +6,7 @@ import { ResourcesBrowser } from './components/resources-browser/ResourcesBrowse
 import { RasterizerToolbar } from './components/rasterizer-toolbar/RasterizerToolbar';
 import { RenderPanel } from './components/render-panel/RenderPanel';
 import { CameraControls } from './components/camera-controls/CameraControls';
+import { JointInspector } from './components/joint-inspector/JointInspector';
 import { ActorProperties, Transform } from './components/actor-properties/ActorProperties';
 import { MaterialGraphEditor } from './components/material-graph/MaterialGraphEditor';
 import { SopGraphEditor } from './components/sop-graph/SopGraphEditor';
@@ -114,7 +115,15 @@ const App: Component = () => {
   // pivots around the selected actor. Fire-and-forget; selection state lives
   // on the frontend.
   createEffect(() => {
-    api.selectActor(selectedActorId()).catch((err) => {
+    const id = selectedActorId();
+    // Also send the actor's stable SOP-node id: a deforming actor (skinned
+    // mesh) is recreated with a fresh uid every frame during playback, so the
+    // cached `id` can be a dead uid. Native maps the sop id to the current
+    // live actor, keeping selection (and the skeleton overlay) valid.
+    const sop = id !== null
+      ? actors().find((a) => a.id === id)?.sop_node_uid ?? null
+      : null;
+    api.selectActor(id, sop).catch((err) => {
       console.warn('select_actor failed:', err);
     });
   });
@@ -142,6 +151,28 @@ const App: Component = () => {
     y: 0,
     z: 3,
   });
+  // Camera/view controls live in a collapsible viewport overlay (top-left), not
+  // in the right Properties panel — so they never compete with actor properties.
+  // Open by default: the section is pinned at the bottom of the left panel
+  // (flex-shrink:0) so it's always reachable, and starting expanded means the
+  // controls are visible on launch rather than hidden behind a thin toggle.
+  const [cameraOverlayOpen, setCameraOverlayOpen] = createSignal(true);
+  // FK posing: the joint picked in the viewport (skeleton overlay) + its current
+  // local-rotation override (euler degrees). Set by the native joint_selected
+  // event; cleared when the actor selection changes.
+  const [selectedJoint, setSelectedJoint] =
+    createSignal<{ joint: number; rotation: [number, number, number] } | null>(null);
+  // Commit one axis of the picked joint's local rotation → native re-skin.
+  const setJointAxis = (axis: number, value: number) => {
+    const sj = selectedJoint();
+    const aid = selectedActorId();
+    if (!sj || aid == null) return;
+    const rotation: [number, number, number] = [...sj.rotation];
+    rotation[axis] = value;
+    setSelectedJoint({ ...sj, rotation });
+    api.setJointPose(aid, sj.joint, rotation).catch((e) =>
+      console.warn('set_joint_pose failed:', e));
+  };
   // Material dock visibility lives in the materials store so the
   // actor-inspector's "New Material" flow can open it without prop
   // drilling. App just reads the signal for layout decisions.
@@ -367,6 +398,8 @@ const App: Component = () => {
   let unlistenSaveScene: (() => void) | undefined;
   let unlistenSaveSceneAs: (() => void) | undefined;
   let unlistenSceneChanged: (() => void) | undefined;
+  let unlistenActorSelected: (() => void) | undefined;
+  let unlistenJointSelected: (() => void) | undefined;
   let uninstallAppInput: (() => void) | undefined;
 
   // Last path the user opened from or saved to. Cmd+S writes to this
@@ -650,6 +683,23 @@ const App: Component = () => {
     unlistenOpenScene = api.listen('menu-open-scene', () => handleOpenScene());
     unlistenSaveScene = api.listen('menu-save-scene', () => handleSaveScene());
     unlistenSaveSceneAs = api.listen('menu-save-scene-as', () => handleSaveSceneAs());
+    // Viewport click-to-select happens natively (LMB click in the Metal view);
+    // mirror it into the UI selection so the hierarchy highlights + the inspector
+    // follows. actor_id is null on a click into empty space (deselect).
+    unlistenActorSelected = api.listen('actor_selected', (msg) => {
+      setSelectedActorId(typeof msg.actor_id === 'number' ? msg.actor_id : null);
+      // Changing the actor selection drops any picked joint.
+      setSelectedJoint(null);
+    });
+    // Viewport joint pick (skeleton overlay) → open the FK joint inspector on
+    // the picked joint, seeded with its current override rotation.
+    unlistenJointSelected = api.listen('joint_selected', (msg) => {
+      const r = Array.isArray(msg.rotation) ? msg.rotation : [0, 0, 0];
+      setSelectedJoint({
+        joint: typeof msg.joint === 'number' ? msg.joint : 0,
+        rotation: [Number(r[0]) || 0, Number(r[1]) || 0, Number(r[2]) || 0],
+      });
+    });
 
     // Keep the scene hierarchy live across cooks (rAF-coalesced
     // scene_changed → refreshActors, see stores/actors.ts).
@@ -690,6 +740,8 @@ const App: Component = () => {
     unlistenSaveScene?.();
     unlistenSaveSceneAs?.();
     unlistenSceneChanged?.();
+    unlistenActorSelected?.();
+    unlistenJointSelected?.();
     uninstallAppInput?.();
   });
 
@@ -903,6 +955,37 @@ const App: Component = () => {
             }}
             isLoading={() => false}
           />
+          {/* Camera & view controls — docked in the LEFT panel (off the right
+              Properties panel so they never compete with actor properties),
+              collapsible. A true ON-viewport overlay isn't possible from the DOM:
+              the viewport is a native Metal layer composited ABOVE the WebView,
+              so any DOM floats behind it — that would need a native gizmo. */}
+          <div class="left-camera-section">
+            <button
+              type="button"
+              class="left-camera-toggle"
+              onClick={() => setCameraOverlayOpen((v) => !v)}
+            >
+              {cameraOverlayOpen() ? '▾' : '▸'} Camera &amp; View
+            </button>
+            <Show when={cameraOverlayOpen()}>
+              <CameraControls
+                position={cameraPosition}
+                onPositionChange={setCameraPosition}
+              />
+            </Show>
+          </div>
+          {/* FK joint posing — appears when a skeleton joint is picked in the
+              viewport. Editing a rotation re-skins the character live. */}
+          <Show when={selectedJoint()}>
+            {(sj) => (
+              <JointInspector
+                joint={() => sj().joint}
+                rotation={() => sj().rotation}
+                onRotate={setJointAxis}
+              />
+            )}
+          </Show>
         </div>
 
         <Splitter
@@ -1042,14 +1125,9 @@ const App: Component = () => {
             actors={actors}
             onTransformChange={handleTransformChange}
           />
-          {/* Camera controls only when nothing is selected — when an actor is
-              selected the panel shows that actor's properties instead. */}
-          <Show when={selectedActorId() === null}>
-            <CameraControls
-              position={cameraPosition}
-              onPositionChange={setCameraPosition}
-            />
-          </Show>
+          {/* Camera controls do NOT live in this panel — they'd compete with
+              actor properties. View presets / framing live on the viewport
+              sub-toolbar; lens (DOF) lives with the render settings. */}
           {/* Path-tracer settings (max samples, max bounces, resolution)
               live in the Render workspace's WorkspaceBar so the user
               sees them only when the PT is the active focus, not in

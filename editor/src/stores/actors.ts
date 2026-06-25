@@ -54,22 +54,25 @@ export async function refreshActors(context = 'refresh'): Promise<void> {
   }
 }
 
-// Keep the hierarchy live: every SOP cook re-emits actors and the server
-// broadcasts `scene_changed`. Coalesce bursts with rAF — a particle sim
-// ticking at ~60Hz fires 60 events per second, but the hierarchy only
-// changes when the user edits the graph; one trailing fetch per animation
-// frame keeps the UI in sync without hammering the IPC bridge.
+// Keep the hierarchy live: the server broadcasts `scene_changed` only when
+// the actor list/tree actually changes (it gates out per-frame geometry /
+// transform recooks). But a SOP that genuinely spawns/kills distinct actors
+// every frame (a particle source emitting separate objects) still fires a
+// burst. Throttle to a leading-edge tick every FLUSH_MS so the hierarchy
+// settles a few times a second instead of 60 — calm, still responsive, and
+// eventually consistent (a final change always schedules one more flush).
+const SCENE_CHANGED_FLUSH_MS = 100;
 export function attachSceneChangedListener(): () => void {
-  let pendingRaf: number | null = null;
+  let pending: ReturnType<typeof setTimeout> | null = null;
   const unlisten = api.listen('scene_changed', () => {
-    if (pendingRaf !== null) return;
-    pendingRaf = requestAnimationFrame(() => {
-      pendingRaf = null;
+    if (pending !== null) return; // a flush is already scheduled
+    pending = setTimeout(() => {
+      pending = null;
       void refreshActors('refresh after scene_changed');
-    });
+    }, SCENE_CHANGED_FLUSH_MS);
   });
   return () => {
-    if (pendingRaf !== null) cancelAnimationFrame(pendingRaf);
+    if (pending !== null) clearTimeout(pending);
     unlisten();
   };
 }

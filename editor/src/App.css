@@ -82,6 +82,41 @@
   z-index: 10;
 }
 
+/* Camera & view controls — a collapsible section docked at the bottom of the
+   LEFT panel (under the Scene Hierarchy). Off the right Properties panel so it
+   never competes with actor properties. */
+.left-camera-section {
+  border-top: 1px solid #3c3c3c;
+  margin-top: 8px;
+  padding-top: 6px;
+  /* Pinned at the bottom of the left panel — never shrinks, so the toggle
+     (and the controls when open) stay visible regardless of how long the
+     scene hierarchy above it gets. */
+  flex-shrink: 0;
+}
+.left-camera-toggle {
+  width: 100%;
+  text-align: left;
+  padding: 4px 2px;
+  background: transparent;
+  border: none;
+  color: #cccccc;
+  font: 600 12px system-ui, -apple-system, sans-serif;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  cursor: pointer;
+}
+.left-camera-toggle:hover {
+  color: #ffffff;
+}
+/* CameraControls carries its own top divider/margin meant for the right panel;
+   neutralize it here since the toggle header already separates the section. */
+.left-camera-section .camera-controls {
+  border-top: none;
+  margin-top: 0;
+  padding-top: 4px;
+}
+
 .viewport-cook-spinner {
   width: 12px;
   height: 12px;

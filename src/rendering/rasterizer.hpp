@@ -49,6 +49,16 @@ namespace tracey
         std::filesystem::path gizmoVertexShader;
         std::filesystem::path gizmoFragmentShader;
 
+        // Optional composition-guides overlay (rule-of-thirds / safe-area
+        // lines in NDC). Toggled at runtime via setCompositionGuides.
+        std::filesystem::path guidesVertexShader;
+        std::filesystem::path guidesFragmentShader;
+
+        // Optional skeleton overlay (world-space bone line list). Fed at
+        // runtime via setBoneSegments.
+        std::filesystem::path bonesVertexShader;
+        std::filesystem::path bonesFragmentShader;
+
         // Rendering options
         bool useDepthBuffer = true;
         bool depthTestEnable = true;
@@ -126,6 +136,26 @@ namespace tracey
         void setGizmoLength(float L) { m_gizmoLength = L; }
         float gizmoLength() const { return m_gizmoLength; }
 
+        /// Composition-guide overlay drawn in NDC over everything (geometry
+        /// and the PT composite). Bitmask: 0 = off, 1 = rule of thirds,
+        /// 2 = safe areas (action 90% + title 80%), 3 = both. No-op if the
+        /// guides pipeline wasn't configured at construction.
+        void setCompositionGuides(int mode) { m_guidesMode = mode; }
+        int compositionGuides() const { return m_guidesMode; }
+
+        /// Skeleton overlay: world-space bone segments as endpoint pairs
+        /// (segments[2k], segments[2k+1] are the ends of bone k). Drawn over
+        /// everything (depth-test off) in the given color. Empty = nothing
+        /// drawn. No-op if the bones pipeline wasn't configured.
+        void setBoneSegments(std::vector<Vec3> segments) { m_boneSegments = std::move(segments); }
+        void setBoneColor(const Vec3 &c) { m_boneColor = c; }
+        const std::vector<Vec3> &boneSegments() const { return m_boneSegments; }
+
+        /// Highlight overlay drawn with the same bones pipeline but a distinct
+        /// color (e.g. a marker at the picked joint). Same endpoint-pair format.
+        void setBoneHighlight(std::vector<Vec3> segments) { m_boneHighlight = std::move(segments); }
+        void setBoneHighlightColor(const Vec3 &c) { m_boneHighlightColor = c; }
+
         /// Viewport background. Used as the render pass's clear color before
         /// any geometry / ground draws. Default is a muted blue-grey so a
         /// fresh scene looks like a viewport rather than the path tracer's
@@ -177,6 +207,16 @@ namespace tracey
         bool m_gizmoVisible = false;
         Vec3 m_gizmoAnchor{0.0f, 0.0f, 0.0f};
         float m_gizmoLength = 1.0f;
+
+        // Composition-guides bitmask (see setCompositionGuides). 0 = off.
+        int m_guidesMode = 0;
+
+        // Skeleton overlay: world-space bone endpoint pairs + line color.
+        std::vector<Vec3> m_boneSegments;
+        Vec3 m_boneColor{0.2f, 0.85f, 1.0f};
+        // Picked-joint highlight (same pipeline, distinct color).
+        std::vector<Vec3> m_boneHighlight;
+        Vec3 m_boneHighlightColor{1.0f, 0.85f, 0.1f};
 
         // Mutable clear color. Defaults match the original hardcoded
         // values so existing scenes look identical at first launch.

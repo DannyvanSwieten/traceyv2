@@ -2,6 +2,11 @@
   margin-top: 8px;
   overflow-y: auto;
   flex: 1;
+  /* Allow the list to shrink below its content height and scroll internally,
+     instead of expanding and pushing the camera section (a sibling in the
+     left panel) past the panel's scroll fold. Without this, a long actor
+     list hides the Camera & View controls entirely. */
+  min-height: 0;
 }
 
 .hierarchy-empty {

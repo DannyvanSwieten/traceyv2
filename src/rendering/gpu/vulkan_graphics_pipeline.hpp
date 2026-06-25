@@ -33,10 +33,14 @@ namespace tracey
         VkPipeline vkLinesPipeline() const { return m_linesPipeline; }
         VkPipeline vkGroundPipeline() const { return m_groundPipeline; }
         VkPipeline vkGizmoPipeline() const { return m_gizmoPipeline; }
+        VkPipeline vkGuidesPipeline() const { return m_guidesPipeline; }
+        VkPipeline vkBonesPipeline() const { return m_bonesPipeline; }
         bool hasPointsPipeline() const { return m_pointsPipeline != VK_NULL_HANDLE; }
         bool hasLinesPipeline() const { return m_linesPipeline != VK_NULL_HANDLE; }
         bool hasGroundPipeline() const { return m_groundPipeline != VK_NULL_HANDLE; }
         bool hasGizmoPipeline() const { return m_gizmoPipeline != VK_NULL_HANDLE; }
+        bool hasGuidesPipeline() const { return m_guidesPipeline != VK_NULL_HANDLE; }
+        bool hasBonesPipeline() const { return m_bonesPipeline != VK_NULL_HANDLE; }
         VkPipelineLayout vkPipelineLayout() const { return m_pipelineLayout; }
         // Descriptor-set layout exposed so the Rasterizer can allocate its
         // own per-frame descriptor set (binding 0 = lights SSBO). Sharing
@@ -69,6 +73,12 @@ namespace tracey
         // the vertex shader, LINE_LIST topology, depth-test OFF so the
         // gizmo always reads on top of geometry).
         void createGizmoPipeline();
+        // Optional sibling pipeline drawing composition guides (thirds /
+        // safe-area lines) in NDC. LINE_LIST, depth-test OFF, alpha-blended.
+        void createGuidesPipeline();
+        // Optional sibling pipeline drawing a skeleton overlay: world-space
+        // LINE_LIST from a Vec3 vertex buffer, MVP-transformed, depth-test OFF.
+        void createBonesPipeline();
 
         VulkanComputeDevice& m_device;
         GraphicsPipelineConfig m_config;
@@ -81,6 +91,8 @@ namespace tracey
         VkPipeline m_linesPipeline = VK_NULL_HANDLE;
         VkPipeline m_groundPipeline = VK_NULL_HANDLE;
         VkPipeline m_gizmoPipeline = VK_NULL_HANDLE;
+        VkPipeline m_guidesPipeline = VK_NULL_HANDLE;
+        VkPipeline m_bonesPipeline = VK_NULL_HANDLE;
         VkPipelineLayout m_pipelineLayout = VK_NULL_HANDLE;
         VkDescriptorSetLayout m_descriptorSetLayout = VK_NULL_HANDLE;
         VkFramebuffer m_framebuffer = VK_NULL_HANDLE;

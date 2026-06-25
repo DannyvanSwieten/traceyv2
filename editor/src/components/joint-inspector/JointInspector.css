@@ -1,0 +1,28 @@
+.joint-inspector {
+  border-top: 1px solid #3c3c3c;
+  margin-top: 8px;
+  padding-top: 6px;
+  flex-shrink: 0;
+}
+.joint-inspector h4 {
+  margin: 0 0 6px;
+  font: 600 12px system-ui, -apple-system, sans-serif;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #ffcc55; /* matches the picked-joint highlight color */
+}
+.joint-inspector-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.joint-inspector-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.joint-inspector-row .axis {
+  width: 44px;
+  font: 11px system-ui, -apple-system, sans-serif;
+  color: #cccccc;
+}

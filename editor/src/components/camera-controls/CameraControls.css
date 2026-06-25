@@ -28,6 +28,10 @@
   margin-bottom: 12px;
 }
 
+.lens-presets {
+  grid-template-columns: repeat(3, 1fr);
+}
+
 .camera-view-preset {
   padding: 5px 0;
   background: #2c2c2c;
@@ -38,6 +42,34 @@
   cursor: pointer;
 }
 .camera-view-preset:hover {
+  background: #383838;
+  border-color: #4a4a4a;
+}
+.camera-view-preset.active {
+  background: #3a4a5a;
+  border-color: #5a7a9a;
+  color: #fff;
+}
+
+/* Framing actions ("home"): glide the camera to fit the selection / whole
+   scene. Two equal columns so they read as a paired action row under the
+   angle presets. */
+.camera-frame-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  margin-bottom: 12px;
+}
+.camera-frame-button {
+  padding: 6px 0;
+  background: #2c2c2c;
+  border: 1px solid #3a3a3a;
+  color: #ddd;
+  border-radius: 3px;
+  font: 11px system-ui, -apple-system, sans-serif;
+  cursor: pointer;
+}
+.camera-frame-button:hover {
   background: #383838;
   border-color: #4a4a4a;
 }

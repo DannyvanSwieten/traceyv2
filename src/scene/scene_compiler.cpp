@@ -466,6 +466,136 @@ namespace tracey
         return ++counter;
     }
 
+    // Build the analytic-light list + its GPU buffer from the scene. Identical to
+    // the gather that used to be inline in compile() — kept in one place so a full
+    // compile and an in-place light refresh produce byte-identical light data.
+    SceneCompiler::LightData SceneCompiler::compileLights(Device *device, const Scene &scene)
+    {
+        LightData out;
+
+        // Walk the flattened hierarchy so light actors inherit parent transforms
+        // exactly as geometry actors do. Hidden actors still emit light (the
+        // Houdini display-flag analogue is geometry visibility, not emission).
+        const std::vector<SceneNode> sceneNodes = scene.flatten();
+        for (const auto &node : sceneNodes)
+        {
+            const Actor *actor = node.actor;
+            if (!actor->hasLight()) continue;
+
+            const Light *l = actor->light();
+            const Mat4 &xform = node.worldTransform;
+
+            GPULight gpu;
+            const Vec3 pos = transformPoint(xform, Vec3(0.0f, 0.0f, 0.0f));
+            const Vec3 dir = transformVector(xform, Vec3(0.0f, 0.0f, -1.0f));
+
+            gpu.positionAndType[0] = pos.x;
+            gpu.positionAndType[1] = pos.y;
+            gpu.positionAndType[2] = pos.z;
+            gpu.positionAndType[3] = static_cast<float>(static_cast<int>(l->type));
+
+            gpu.directionAndIntensity[0] = dir.x;
+            gpu.directionAndIntensity[1] = dir.y;
+            gpu.directionAndIntensity[2] = dir.z;
+            gpu.directionAndIntensity[3] = l->intensity;
+
+            gpu.colorAndExtraX[0] = l->color.x;
+            gpu.colorAndExtraX[1] = l->color.y;
+            gpu.colorAndExtraX[2] = l->color.z;
+            gpu.colorAndExtraX[3] =
+                (l->type == LightType::Point) ? l->radius :
+                (l->type == LightType::Area)  ? l->size.x : 0.0f;
+
+            gpu.skyColorAndExtraY[0] = l->skyColor.x;
+            gpu.skyColorAndExtraY[1] = l->skyColor.y;
+            gpu.skyColorAndExtraY[2] = l->skyColor.z;
+            gpu.skyColorAndExtraY[3] =
+                (l->type == LightType::Area) ? l->size.y : 0.0f;
+
+            gpu.horizonColorAndFlags[0] = l->horizonColor.x;
+            gpu.horizonColorAndFlags[1] = l->horizonColor.y;
+            gpu.horizonColorAndFlags[2] = l->horizonColor.z;
+            gpu.horizonColorAndFlags[3] = 0.0f; // reserved flag bits
+
+            gpu.groundColorAndPad[0] = l->groundColor.x;
+            gpu.groundColorAndPad[1] = l->groundColor.y;
+            gpu.groundColorAndPad[2] = l->groundColor.z;
+            gpu.groundColorAndPad[3] = 0.0f;
+
+            out.lights.push_back(gpu);
+        }
+
+        out.lightCount = static_cast<uint32_t>(out.lights.size());
+
+        // Always upload at least one slot — Vulkan binds need a non-null SSBO;
+        // the shader skips iteration when lightCount == 0.
+        const size_t lightSlots = out.lights.empty() ? 1 : out.lights.size();
+        const size_t bytes = lightSlots * sizeof(GPULight);
+        out.lightBuffer = std::unique_ptr<Buffer>(
+            device->createBuffer(static_cast<uint32_t>(bytes), BufferUsage::StorageBuffer));
+        auto *mapped = static_cast<GPULight *>(out.lightBuffer->mapForWriting());
+        if (out.lights.empty())
+        {
+            GPULight dummy{};
+            std::memcpy(mapped, &dummy, sizeof(GPULight));
+        }
+        else
+        {
+            std::memcpy(mapped, out.lights.data(), bytes);
+        }
+        out.lightBuffer->flush();
+        return out;
+    }
+
+    // Aggregate material programs from the scene's visible actors. MUST match the
+    // order/visibility/dedup that compile()'s instance loop relies on (it looks up
+    // this map for per-instance program IDs), so this is the single source for
+    // program-ID assignment.
+    SceneCompiler::MaterialProgramData SceneCompiler::compileMaterialPrograms(const Scene &scene)
+    {
+        MaterialProgramData out;
+        out.programs.addProgram(makePassthroughProgram()); // program 0 = passthrough
+
+        // Visibility cascades down the hierarchy (an actor renders only if it and
+        // every ancestor is visible). Hidden actors contribute no program.
+        auto effectivelyVisible = [&scene](const Actor *a) -> bool {
+            for (const Actor *cur = a; cur != nullptr;)
+            {
+                if (!cur->visible()) return false;
+                if (!cur->hasParent()) break;
+                cur = scene.getActor(cur->parent());
+            }
+            return true;
+        };
+
+        const std::vector<SceneNode> sceneNodes = scene.flatten();
+        for (const auto &node : sceneNodes)
+        {
+            const Actor *actor = node.actor;
+            if (!effectivelyVisible(actor)) continue;
+            const std::string &graphJson = actor->materialGraphJson();
+            if (graphJson.empty()) continue;
+            if (out.graphToEntry.count(graphJson)) continue; // dedupe identical graphs
+            try
+            {
+                auto graph = deserializeShaderGraph(graphJson);
+                if (graph)
+                {
+                    MaterialProgram program = compileShaderGraph(*graph);
+                    const uint32_t id = out.programs.addProgram(program);
+                    out.graphToEntry.emplace(graphJson,
+                        ActorMaterialEntry{id, extractGraphPreviewAlbedo(*graph)});
+                }
+            }
+            catch (const std::exception &e)
+            {
+                std::cerr << "SceneCompiler::compileMaterialPrograms: failed to compile "
+                             "actor graph: " << e.what() << " -- using passthrough" << std::endl;
+            }
+        }
+        return out;
+    }
+
     SceneCompiler::CompiledScene SceneCompiler::compile(Device *device, const Scene &scene,
                                                         const BVHConfig &bvhConfig, BlasCache *cache,
                                                         bool buildAccelerationStructures)
@@ -751,22 +881,16 @@ namespace tracey
         auto sceneNodes = scene.flatten();
         uint32_t materialIndex = 0;
 
-        // Material program aggregation: program 0 is always the passthrough
-        // (used by any actor without an attached graph). Subsequent programs
-        // are added on first encounter of a unique graph JSON. The lookup
-        // table keyed by JSON string lets us dedupe across actors.
-        result.materialPrograms.addProgram(makePassthroughProgram());
-        // Each entry pairs the programId (consumed by the path tracer)
-        // with an optional viewport preview color extracted from the
-        // graph's WriteAlbedo output. The rasterizer can't run the full
-        // material program, so the preview color is its fallback when
-        // the SceneObject's own material doesn't carry an albedo. See
-        // extractGraphPreviewAlbedo above for the resolution rules.
-        struct ActorMaterialEntry {
-            uint32_t programId = 0;
-            std::optional<Vec3> previewAlbedo;
-        };
-        std::unordered_map<std::string, ActorMaterialEntry> graphJsonToEntry;
+        // Material programs are aggregated up front by compileMaterialPrograms
+        // (program 0 = passthrough, then each unique graph in first-encounter
+        // order). That single source is also used by the in-place shader-graph
+        // edit refresh, so the program IDs the instance loop bakes into
+        // instanceProgramIndex stay valid across such edits. The loop below just
+        // looks up each actor's program (+ rasterizer preview albedo) here.
+        MaterialProgramData matProgs = compileMaterialPrograms(scene);
+        result.materialPrograms = std::move(matProgs.programs);
+        const std::unordered_map<std::string, ActorMaterialEntry> &graphJsonToEntry =
+            matProgs.graphToEntry;
 
         // Effective visibility CASCADES down the hierarchy: an actor renders
         // only if it AND every ancestor is visible. Hiding a group/subnet thus
@@ -793,8 +917,9 @@ namespace tracey
             // list.
             if (!effectivelyVisible(actor)) continue;
 
-            // Resolve this actor's program id once -- all instances under the
-            // actor share it. Empty graph -> passthrough at index 0.
+            // Resolve this actor's program id from the pre-aggregated map -- all
+            // instances under the actor share it. Empty graph (or one that failed
+            // to compile, so it never made it into the map) -> passthrough at 0.
             uint32_t actorProgramId = 0;
             std::optional<Vec3> actorPreviewAlbedo;
             const std::string &graphJson = actor->materialGraphJson();
@@ -805,27 +930,6 @@ namespace tracey
                 {
                     actorProgramId = cached->second.programId;
                     actorPreviewAlbedo = cached->second.previewAlbedo;
-                }
-                else
-                {
-                    try
-                    {
-                        auto graph = deserializeShaderGraph(graphJson);
-                        if (graph)
-                        {
-                            MaterialProgram program = compileShaderGraph(*graph);
-                            actorProgramId = result.materialPrograms.addProgram(program);
-                            actorPreviewAlbedo = extractGraphPreviewAlbedo(*graph);
-                            graphJsonToEntry.emplace(graphJson,
-                                ActorMaterialEntry{actorProgramId, actorPreviewAlbedo});
-                        }
-                    }
-                    catch (const std::exception &e)
-                    {
-                        std::cerr << "SceneCompiler: failed to compile actor graph: "
-                                  << e.what() << " -- using passthrough" << std::endl;
-                        actorProgramId = 0;
-                    }
                 }
             }
 
@@ -861,6 +965,7 @@ namespace tracey
                 result.instanceToMaterialIndex.push_back(materialIndex);
                 result.instanceProgramIndex.push_back(actorProgramId);
                 result.instanceUvOffset.push_back(blasUvStart[blasIndex]);
+                result.instanceToActorUid.push_back(static_cast<uint64_t>(actor->getUid()));
 
                 // Convert material and load textures
                 GPUMaterial gpuMat = convertMaterial(device, result, scene, sceneInstance.material());
@@ -921,86 +1026,14 @@ namespace tracey
             }
         }
 
-        // Light gather: walk the same SceneNode list so light actors inherit
-        // parent transforms identically to geometry actors. Hidden actors
-        // still emit lights — the Houdini display-flag analogue is geometry
-        // visibility, not emission. The lightBuffer is always allocated
-        // (at least one zero entry) so the wavefront descriptor set always
-        // has a valid SSBO to bind; lightCount = 0 gates the NEE loop.
-        for (const auto &node : sceneNodes)
+        // Analytic lights + the always-present light buffer. Factored into
+        // compileLights() so an in-place editor light edit reuses the exact same
+        // build (emitters above are geometry-derived and stay as computed).
         {
-            const Actor *actor = node.actor;
-            if (!actor->hasLight()) continue;
-
-            const Light *l = actor->light();
-            const Mat4 &xform = node.worldTransform;
-
-            GPULight gpu;
-            const Vec3 pos = transformPoint(xform, Vec3(0.0f, 0.0f, 0.0f));
-            const Vec3 dir = transformVector(xform, Vec3(0.0f, 0.0f, -1.0f));
-
-            gpu.positionAndType[0] = pos.x;
-            gpu.positionAndType[1] = pos.y;
-            gpu.positionAndType[2] = pos.z;
-            gpu.positionAndType[3] = static_cast<float>(static_cast<int>(l->type));
-
-            gpu.directionAndIntensity[0] = dir.x;
-            gpu.directionAndIntensity[1] = dir.y;
-            gpu.directionAndIntensity[2] = dir.z;
-            gpu.directionAndIntensity[3] = l->intensity;
-
-            // Slot 2 packs the colour multiplier alongside one of the
-            // per-type scalars in .w: Point→radius, Area→sizeX, otherwise
-            // zero. Reading code branches on positionAndType.w (LightType).
-            gpu.colorAndExtraX[0] = l->color.x;
-            gpu.colorAndExtraX[1] = l->color.y;
-            gpu.colorAndExtraX[2] = l->color.z;
-            gpu.colorAndExtraX[3] =
-                (l->type == LightType::Point) ? l->radius :
-                (l->type == LightType::Area)  ? l->size.x : 0.0f;
-
-            // Dome gradient (skyColor / horizonColor / groundColor). For
-            // non-Dome lights these slots stay zero and the shader's Dome
-            // pass skips them via positionAndType.w; the cost is one branch
-            // per fragment, dwarfed by the BRDF.
-            gpu.skyColorAndExtraY[0] = l->skyColor.x;
-            gpu.skyColorAndExtraY[1] = l->skyColor.y;
-            gpu.skyColorAndExtraY[2] = l->skyColor.z;
-            gpu.skyColorAndExtraY[3] =
-                (l->type == LightType::Area) ? l->size.y : 0.0f;
-
-            gpu.horizonColorAndFlags[0] = l->horizonColor.x;
-            gpu.horizonColorAndFlags[1] = l->horizonColor.y;
-            gpu.horizonColorAndFlags[2] = l->horizonColor.z;
-            gpu.horizonColorAndFlags[3] = 0.0f;  // reserved flag bits
-
-            gpu.groundColorAndPad[0] = l->groundColor.x;
-            gpu.groundColorAndPad[1] = l->groundColor.y;
-            gpu.groundColorAndPad[2] = l->groundColor.z;
-            gpu.groundColorAndPad[3] = 0.0f;
-
-            result.lights.push_back(gpu);
-        }
-
-        result.lightCount = static_cast<uint32_t>(result.lights.size());
-        {
-            // Always upload at least one light slot — Vulkan binds need a
-            // non-null SSBO; the shader skips iteration when lightCount == 0.
-            const size_t lightSlots = result.lights.empty() ? 1 : result.lights.size();
-            const size_t bytes = lightSlots * sizeof(GPULight);
-            result.lightBuffer = std::unique_ptr<Buffer>(
-                device->createBuffer(static_cast<uint32_t>(bytes), BufferUsage::StorageBuffer));
-            auto *mapped = static_cast<GPULight *>(result.lightBuffer->mapForWriting());
-            if (result.lights.empty())
-            {
-                GPULight dummy{};
-                std::memcpy(mapped, &dummy, sizeof(GPULight));
-            }
-            else
-            {
-                std::memcpy(mapped, result.lights.data(), bytes);
-            }
-            result.lightBuffer->flush();
+            LightData ld = compileLights(device, scene);
+            result.lights = std::move(ld.lights);
+            result.lightCount = ld.lightCount;
+            result.lightBuffer = std::move(ld.lightBuffer);
         }
 
         // Empty scene is a valid editor state — every actor may be hidden,

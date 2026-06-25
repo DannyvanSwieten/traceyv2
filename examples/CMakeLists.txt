@@ -66,6 +66,10 @@ add_executable(exr_roundtrip_smoke
     exr_roundtrip_smoke/main.cpp
 )
 
+add_executable(skinning_smoke
+    skinning_smoke/main.cpp
+)
+
 add_executable(denoiser_smoke
     denoiser_smoke/main.cpp
 )
@@ -212,6 +216,12 @@ target_link_libraries(scene_export_smoke
 )
 
 target_link_libraries(exr_roundtrip_smoke
+    PRIVATE
+    tracey
+    glm
+)
+
+target_link_libraries(skinning_smoke
     PRIVATE
     tracey
     glm

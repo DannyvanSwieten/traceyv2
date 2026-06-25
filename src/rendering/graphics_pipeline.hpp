@@ -62,6 +62,19 @@ namespace tracey
         std::filesystem::path gizmoVertexShader;
         std::filesystem::path gizmoFragmentShader;
 
+        // Optional sixth sibling pipeline drawing composition guides (rule of
+        // thirds / safe-area lines) directly in NDC. LINE_LIST, depth-test off,
+        // alpha-blended so the guides overlay both geometry and the PT composite.
+        std::filesystem::path guidesVertexShader;
+        std::filesystem::path guidesFragmentShader;
+
+        // Optional seventh sibling pipeline drawing a skeleton overlay: a
+        // world-space LINE_LIST of bone segments from a vertex buffer (Vec3
+        // endpoints), MVP-transformed, depth-test off. Toggled by feeding it
+        // segments at runtime via Rasterizer::setBoneSegments.
+        std::filesystem::path bonesVertexShader;
+        std::filesystem::path bonesFragmentShader;
+
         // Vertex input layout (position only — vec3 per vertex, tight stride)
     };
 

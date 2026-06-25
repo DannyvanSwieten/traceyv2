@@ -367,6 +367,47 @@ std::optional<std::string> EditorServer::handle_graph_commands(
             if (m_broadcast) m_broadcast(R"({"event":"sop_graph_changed"})");
             return ok_response_null();
         }
+        if (cmd == "set_joint_pose") {
+            // FK pose: set one joint's local-rotation override (euler degrees)
+            // for a skinned actor. Stored editor-side (drives the bone overlay)
+            // and written to the owning gltf_import node's `pose_overrides`
+            // param, then re-cooked so the mesh deforms. The param is the
+            // persistent source of truth (saves with the .tracey). Payload:
+            // { actor_id, joint, rotation: [x,y,z] }.
+            if (!m_sop_graph) return err_response("no sop graph");
+            const uint64_t actorId = req.at("actor_id").get<uint64_t>();
+            const int joint = req.at("joint").get<int>();
+            const auto& rot = req.at("rotation");
+            const tracey::Vec3 euler(rot[0].get<float>(), rot[1].get<float>(),
+                                     rot[2].get<float>());
+
+            auto sit = m_actor_skeletons.find(actorId);
+            if (sit == m_actor_skeletons.end() || sit->second.gltfImportNode == 0)
+                return err_response("actor has no skinned import");
+
+            auto& poses = m_joint_poses[actorId];
+            if (euler == tracey::Vec3(0.0f))
+                poses.erase(joint);          // identity = clear the override
+            else
+                poses[joint] = euler;
+
+            // Serialize this actor's poses into the param string the SOP parses
+            // ("jointIndex ex ey ez ..."), then re-cook through the owning node.
+            std::string s;
+            for (const auto& [j, e] : poses)
+                s += std::to_string(j) + " " + std::to_string(e.x) + " " +
+                     std::to_string(e.y) + " " + std::to_string(e.z) + " ";
+
+            if (auto* node = findNodeRecursive(m_sop_graph.get(), sit->second.gltfImportNode)) {
+                node->setParamString("pose_overrides", s);
+                std::string json = tracey::sops::serializeSopGraph(*m_sop_graph);
+                m_last_pushed_graph_json = json;
+                post_cook_request(std::move(json), m_timeline.current_time);
+                if (m_broadcast) m_broadcast(R"({"event":"sop_graph_changed"})");
+            }
+            if (poses.empty()) m_joint_poses.erase(actorId);
+            return ok_response_null();
+        }
         if (cmd == "vop_demote_param") {
             // Strip a promotion + its host param. Any channels on it are
             // discarded — the user can re-promote and re-key if needed.

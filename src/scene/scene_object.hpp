@@ -3,9 +3,12 @@
 #include <string>
 #include <vector>
 #include <optional>
+#include <memory>
 
 namespace tracey
 {
+    class Skeleton;
+
     class SceneObject
     {
     public:
@@ -31,10 +34,33 @@ namespace tracey
         void setUvs(std::vector<Vec2> uvs) { m_uvs = std::move(uvs); }
         void setColors(std::vector<Vec3> colors) { m_colors = std::move(colors); }
 
+        // Skinning data (one entry per position, kept 1:1 with positions even
+        // after the loader expands an indexed primitive to a triangle list).
+        // jointIndices are packed as floats (glTF JOINTS_0); weights are
+        // normalized (WEIGHTS_0). The skeleton is the parsed rig + clips; a
+        // skinning deformer needs only (joints, weights, skeleton, time).
+        const std::vector<Vec4> &jointIndices() const { return m_jointIndices; }
+        const std::vector<Vec4> &jointWeights() const { return m_jointWeights; }
+        const std::shared_ptr<const Skeleton> &skeleton() const { return m_skeleton; }
+        // inverse(meshNodeBindWorld) — premultiplied into the skinning matrices
+        // so skinned vertices land in this mesh node's local space (the engine's
+        // actor transform then places them in the world). Identity until set.
+        const Mat4 &skinBindShift() const { return m_skinBindShift; }
+        void setJointIndices(std::vector<Vec4> j) { m_jointIndices = std::move(j); }
+        void setJointWeights(std::vector<Vec4> w) { m_jointWeights = std::move(w); }
+        void setSkeleton(std::shared_ptr<const Skeleton> s) { m_skeleton = std::move(s); }
+        void setSkinBindShift(const Mat4 &m) { m_skinBindShift = m; }
+
         bool hasIndices() const { return !m_indices.empty(); }
         bool hasNormals() const { return !m_normals.empty(); }
         bool hasUvs() const { return !m_uvs.empty(); }
         bool hasColors() const { return !m_colors.empty(); }
+        // True only when full skinning data is present (weights + skeleton).
+        bool hasSkin() const
+        {
+            return m_skeleton != nullptr && !m_jointIndices.empty() &&
+                   m_jointWeights.size() == m_positions.size();
+        }
 
         size_t vertexCount() const { return m_positions.size(); }
         size_t triangleCount() const;
@@ -68,6 +94,12 @@ namespace tracey
         std::vector<Vec3> m_normals;
         std::vector<Vec2> m_uvs;
         std::vector<Vec3> m_colors;
+
+        // Skinning (empty for non-skinned meshes).
+        std::vector<Vec4> m_jointIndices;
+        std::vector<Vec4> m_jointWeights;
+        std::shared_ptr<const Skeleton> m_skeleton;
+        Mat4 m_skinBindShift{1.0f}; // inverse(meshNodeBindWorld); identity until set
 
         // Future extension point for geometry modification graphs
         // std::unique_ptr<GeometryGraph> m_modifierGraph;

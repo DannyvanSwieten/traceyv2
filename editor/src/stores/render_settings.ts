@@ -9,7 +9,7 @@ import * as api from '../lib/api';
 
 const [ptPreviewSignal, setPtPreviewSignal] = createSignal(false);
 const [frameLockedSignal, setFrameLockedSignal] = createSignal(false);
-const [maxSamplesSignal, setMaxSamplesSignal] = createSignal(1024);
+const [maxSamplesSignal, setMaxSamplesSignal] = createSignal(16);
 const [maxBouncesSignal, setMaxBouncesSignal] = createSignal(8);
 // [w, h]. [0, 0] = match viewport pixel size; otherwise the PT renders at
 // this fixed resolution and the viewport blit scales to fit.

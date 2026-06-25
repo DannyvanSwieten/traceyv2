@@ -194,8 +194,17 @@ export const setCamera = (camera: Camera) => send<null>('set_camera', { camera }
 export const getCamera = () => send<Camera>('get_camera');
 // Push the active selection to the server so the orbital viewport camera can
 // pivot around it. Pass null to clear.
-export const selectActor = (actorId: number | null) =>
-  send<null>('select_actor', { actor_id: actorId });
+export const selectActor = (actorId: number | null, sopNodeUid?: number | null) =>
+  send<null>('select_actor', { actor_id: actorId, sop_node_uid: sopNodeUid ?? null });
+
+// FK posing: set one joint's local-rotation override (euler degrees) for a
+// skinned actor. Native writes the owning gltf_import node's pose_overrides
+// param and re-cooks, so the mesh deforms. (0,0,0) clears the override.
+export const setJointPose = (
+  actorId: number,
+  joint: number,
+  rotation: [number, number, number],
+) => send<null>('set_joint_pose', { actor_id: actorId, joint, rotation });
 
 // Scene-level light lifecycle. Lights are first-class entities authored
 // directly in the editor (no SOP node involved) — they live alongside the
@@ -280,6 +289,12 @@ export type CameraView =
 export const setCameraView = (view: CameraView) =>
   send<null>('set_camera_view', { view });
 
+// Glide the camera to frame geometry. selected=true frames the active selection
+// (falls back to the whole scene if nothing is selected); selected=false always
+// frames all. Mirrors the F / Shift+F keyboard shortcuts.
+export const frameView = (selected: boolean) =>
+  send<null>('frame_view', { selected });
+
 // ─── Scene resource queries ────────────────────────────────────────────────
 
 export const getActorInstances = (actorId: number) =>
@@ -361,6 +376,13 @@ export const setShowEdges = (value: boolean) =>
 export const getShowGround = () => send<boolean>('get_show_ground');
 export const setShowGround = (value: boolean) =>
   send<null>('set_show_ground', { value });
+
+// Composition-guide overlay (rule-of-thirds / safe-area framing lines drawn
+// in NDC over the viewport — both rasterizer and PT composite). Bitmask:
+// 0 = off, 1 = thirds, 2 = safe areas (action 90% + title 80%), 3 = both.
+export const getCompositionGuides = () => send<number>('get_composition_guides');
+export const setCompositionGuides = (mode: number) =>
+  send<null>('set_composition_guides', { value: mode });
 
 // Rasterizer viewport background. Returned/passed as [r,g,b,a] in linear
 // [0,1]. The set command accepts either 3 or 4 components — 3-element

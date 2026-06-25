@@ -547,10 +547,13 @@ uint64_t actor_transform_sig(const tracey::sops::EmittedActor &a) {
     return h;
 }
 
-// Hash of everything BUT the TRS — name, parent uid, light/subnet bits,
-// material library, geometry positions. A diff in any of these forces
-// the slow path (full scene rebuild).
-uint64_t actor_structural_sig(const tracey::sops::EmittedActor &a) {
+// Hash of the actor's IDENTITY — everything structural EXCEPT the geometry
+// content: name, parent, light/subnet bits, material library + inline override,
+// per-instance tint. Two cooks with the same identity_sig but different
+// structural_sig differ ONLY in geometry (a deforming skinned/animated mesh) —
+// which apply_emitted can absorb with an in-place geometry swap, keeping the
+// actor + uid stable instead of tearing it down and recreating it every frame.
+uint64_t actor_identity_sig(const tracey::sops::EmittedActor &a) {
     uint64_t h = kSigOffset;
     sig_mix(h, &a.parentNodeUid, sizeof(a.parentNodeUid));
     sig_mix(h, &a.isSubnetMarker, sizeof(a.isSubnetMarker));
@@ -594,12 +597,18 @@ uint64_t actor_structural_sig(const tracey::sops::EmittedActor &a) {
     // per-instance tint changes show up as stale color until the next
     // structural change (stamp / material library / etc.) — a future
     // dedicated material-refresh path closes that gap.
-    // Geometry digest — same shape as the dedup hash so a VOP-driven
-    // edit to Cd / N / uv (point or vertex class) shows up as a
-    // structural change. Previously this hashed only positions, which
-    // meant an attribute_vop writing geo_output.Cd left the apply_emitted
-    // fast path thinking nothing had changed and the rasterizer never
-    // saw the new colors.
+    return h;
+}
+
+// Hash of everything BUT the TRS — the identity above PLUS a digest of the
+// geometry content. A diff forces the slow path. The geometry digest matches
+// the dedup hash so a VOP-driven edit to Cd / N / uv (point or vertex class)
+// shows up as a structural change; previously hashing only positions left an
+// attribute_vop writing geo_output.Cd looking unchanged. When ONLY this digest
+// differs from last cook (identity_sig equal), it's a pure geometry deform —
+// see the in-place-update path in apply_emitted.
+uint64_t actor_structural_sig(const tracey::sops::EmittedActor &a) {
+    uint64_t h = actor_identity_sig(a);
     const uint64_t geo = geometry_dedup_hash(a.geometry);
     sig_mix(h, &geo, sizeof(geo));
     return h;
@@ -687,6 +696,117 @@ static uint64_t emitted_signature(const std::vector<tracey::sops::EmittedActor>&
     return h;
 }
 
+// World-space joint pivot positions for the selected skinned actor at the
+// current (looped) playhead. Empty if nothing skinned is selected or the
+// selected actor isn't in the scene. When `outParents` is non-null it's filled
+// with each joint's parent-joint index (or -1), parallel to the result. Shared
+// by the overlay draw and joint picking so both see identical positions.
+std::vector<glm::vec3>
+EditorServer::selected_joint_world_positions(std::vector<int>* outParents) {
+    std::vector<glm::vec3> out;
+    if (outParents) outParents->clear();
+    if (!m_engine || !m_selected_actor_id) return out;
+    const uint64_t uid = *m_selected_actor_id;
+    auto it = m_actor_skeletons.find(uid);
+    if (it == m_actor_skeletons.end() || !it->second.skeleton ||
+        it->second.skeleton->joints.empty())
+        return out;
+    const auto& skel = *it->second.skeleton;
+    // Selected actor's world transform — skip if it's no longer present.
+    bool found = false;
+    glm::mat4 actorWorld(1.0f);
+    for (const auto& node : m_engine->scene().flatten()) {
+        if (node.actor && node.actor->getUid() == uid) {
+            actorWorld = node.worldTransform;
+            found = true;
+            break;
+        }
+    }
+    if (!found) return out;
+    // Wrap the playhead to the clip duration, matching the import SOP's default
+    // looping so the bones track the deformed mesh.
+    double t = m_timeline.current_time;
+    if (!skel.clips.empty() && skel.clips[0].duration > 1e-6) {
+        t = std::fmod(t, static_cast<double>(skel.clips[0].duration));
+        if (t < 0.0) t += skel.clips[0].duration;
+    }
+    // FK pose overrides for this actor (so the bones follow the hand-posed
+    // joints, matching the deformed mesh). Built from the editor-side mirror.
+    tracey::Skeleton::PoseOverrides ov;
+    if (auto pit = m_joint_poses.find(uid);
+        pit != m_joint_poses.end() && !pit->second.empty()) {
+        ov.assign(skel.nodes.size(), glm::quat(1.0f, 0.0f, 0.0f, 0.0f));
+        for (const auto& [j, e] : pit->second) {
+            if (j < 0 || static_cast<size_t>(j) >= skel.joints.size()) continue;
+            const int node = skel.joints[j];
+            if (node >= 0 && static_cast<size_t>(node) < ov.size())
+                ov[node] = glm::quat(glm::radians(e));
+        }
+    }
+
+    // M maps a joint's posed scene-space pivot into world space: actorWorld
+    // places the mesh node; bindShift undoes the mesh-local skinning bake.
+    const glm::mat4 M = actorWorld * it->second.bindShift;
+    const auto jw = skel.jointWorldMatrices(t, 0, ov.empty() ? nullptr : &ov);
+    out.resize(jw.size());
+    for (size_t k = 0; k < jw.size(); ++k)
+        out[k] = glm::vec3(M * jw[k][3]);
+    if (outParents) *outParents = skel.jointParents();
+    return out;
+}
+
+void EditorServer::update_bone_overlay() {
+    if (!m_engine) return;
+
+    std::vector<int> parents;
+    const auto joints = selected_joint_world_positions(&parents);
+
+    std::vector<glm::vec3> segments;   // bone lines + per-joint dot markers
+    std::vector<glm::vec3> highlight;  // the picked joint (drawn in a hot color)
+
+    if (!joints.empty() && m_engine->scene().hasCamera()) {
+        const auto& cam = m_engine->scene().camera();
+        const glm::vec3 camPos = cam.position();
+        const glm::vec3 fwd = glm::normalize(cam.forward());
+        const glm::vec3 right = glm::normalize(cam.right());
+        const glm::vec3 up = glm::normalize(cam.up());
+        const float tanHalf = std::tan(glm::radians(cam.fov()) * 0.5f);
+
+        // A screen-constant cross marker at `p` — `frac` of the half-screen
+        // height, so it keeps the same on-screen size at any zoom. `axes3`
+        // adds a depth axis for a fuller 3D cross (used for the selection).
+        auto addCross = [&](std::vector<glm::vec3>& out, const glm::vec3& p,
+                            float frac, bool axes3) {
+            const float depth = std::max(1e-4f, glm::dot(p - camPos, fwd));
+            const float s = depth * tanHalf * frac;
+            out.push_back(p - right * s); out.push_back(p + right * s);
+            out.push_back(p - up * s);    out.push_back(p + up * s);
+            if (axes3) { out.push_back(p - fwd * s); out.push_back(p + fwd * s); }
+        };
+
+        segments.reserve(joints.size() * 6);
+        for (size_t k = 0; k < joints.size(); ++k) {
+            const int p = (k < parents.size()) ? parents[k] : -1;
+            if (p >= 0 && static_cast<size_t>(p) < joints.size()) {
+                segments.push_back(joints[k]);
+                segments.push_back(joints[p]);
+            }
+            // A small cross at every joint so the joints are visible and there's
+            // something to aim at when picking.
+            addCross(segments, joints[k], 0.018f, /*axes3=*/false);
+        }
+
+        // The picked joint: a larger 3-axis cross in the highlight color.
+        if (m_selected_joint >= 0 &&
+            static_cast<size_t>(m_selected_joint) < joints.size()) {
+            addCross(highlight, joints[m_selected_joint], 0.05f, /*axes3=*/true);
+        }
+    }
+
+    m_engine->set_bone_segments(std::move(segments));
+    m_engine->set_bone_highlight(std::move(highlight));
+}
+
 void EditorServer::apply_emitted(std::vector<tracey::sops::EmittedActor>&& emitted) {
     if (!m_engine) return;
 
@@ -713,6 +833,29 @@ void EditorServer::apply_emitted(std::vector<tracey::sops::EmittedActor>&& emitt
         return;
     }
 
+    // Hierarchy-only signature: the actor list + names + tree + light/marker
+    // flags the Scene Hierarchy panel displays — but NOT geometry or
+    // transforms. A per-frame skinned-animation recook deforms geometry every
+    // frame (and a transform-only cook changes the TRS); without this gate
+    // each frame would broadcast scene_changed, rebuilding the hierarchy UI
+    // every frame (blinking + lost selection). We broadcast scene_changed
+    // below only when this signature actually changes (actors added/removed/
+    // renamed/re-parented), so playback leaves the hierarchy untouched.
+    uint64_t hierSig = 1469598103934665603ull; // FNV-1a offset basis
+    {
+        auto mix = [&](uint64_t v) { hierSig = (hierSig ^ v) * 1099511628211ull; };
+        for (const auto& ea : emitted) {
+            mix(make_actor_key(ea));
+            for (unsigned char c : ea.name) mix(c);
+            mix(0x9E3779B97F4A7C15ull); // name terminator
+            mix(ea.parentNodeUid);
+            mix(ea.isLight ? 0x11ull : 0x22ull);
+            mix(ea.isSubnetMarker ? 0x33ull : 0x44ull);
+        }
+    }
+    const bool hierarchyChanged = !m_has_applied_once || hierSig != m_last_hierarchy_sig;
+    m_last_hierarchy_sig = hierSig;
+
     // Per-actor delta classification: build fresh sig pairs for each emitted
     // actor and compare against the previous apply. If every difference vs.
     // last time is a TRS-only delta (no actor added/removed, no structural
@@ -736,6 +879,7 @@ void EditorServer::apply_emitted(std::vector<tracey::sops::EmittedActor>&& emitt
         ActorSig s;
         s.transform_sig  = actor_transform_sig(a);
         s.structural_sig = actor_structural_sig(a);
+        s.identity_sig   = actor_identity_sig(a);
         newSigs[key] = s;
         if (!fastPathEligible) continue;
         auto it = m_actor_signatures.find(key);
@@ -820,7 +964,10 @@ void EditorServer::apply_emitted(std::vector<tracey::sops::EmittedActor>&& emitt
             m_last_emitted_signature = sig;
             m_has_applied_once = true;
             m_clear_next_frame = true;
-            if (m_broadcast) m_broadcast(R"({"event":"scene_changed"})");
+            // Transform-only cook → the hierarchy tree is unchanged; only
+            // broadcast when the actor list itself changed (avoids rebuilding
+            // the hierarchy UI every frame during animated playback).
+            if (m_broadcast && hierarchyChanged) m_broadcast(R"({"event":"scene_changed"})");
             // Animation overlay still wants to re-run after a transform
             // update so any animated channels write fresh values on top.
             m_timeline_dirty = true;
@@ -1027,6 +1174,19 @@ void EditorServer::apply_emitted(std::vector<tracey::sops::EmittedActor>&& emitt
     // actors would push duplicate child uids.
     std::unordered_set<uint64_t> recreatedKeys;
 
+    // Selection survives actor recreation. A deforming actor (skinned mesh,
+    // any animated geometry) changes its structural_sig every frame, so the
+    // loop below tears it down and recreates it with a NEW uid. Remember the
+    // stable actor *key* of the currently-selected actor now; after the loop
+    // we re-point m_selected_actor_id at the recreated actor's new uid so the
+    // selection — and the skeleton overlay keyed off it — survives playback.
+    std::optional<uint64_t> selectedKey;
+    if (m_selected_actor_id) {
+        for (const auto& [k, uid] : m_emitted_actor_to_actor) {
+            if (uid == *m_selected_actor_id) { selectedKey = k; break; }
+        }
+    }
+
     for (const auto& ea : emitted) {
         const uint64_t actorKey = make_actor_key(ea);
         // Skip-when-unchanged: if this composite key already has a live
@@ -1083,6 +1243,42 @@ void EditorServer::apply_emitted(std::vector<tracey::sops::EmittedActor>&& emitt
                 }
             }
             continue;
+        }
+
+        // In-place geometry deform: the actor's identity is unchanged (name,
+        // parent, material, light bits) and ONLY its mesh geometry differs —
+        // the per-frame case for a skinned / animated single-mesh actor. Keep
+        // the SAME actor + uid: overwrite its SceneObject content under the
+        // stable per-actor name and refresh its transform. compile_scene below
+        // rebuilds just this one BLAS (BlasCache keys on name + content hash).
+        // This avoids the teardown+recreate that handed the actor a new uid
+        // every frame during playback — the root cause of the hierarchy churn,
+        // dead selection uids, and the vanishing skeleton overlay.
+        if (sigIt != m_actor_signatures.end() &&
+            sigIt->second.identity_sig == newSig.identity_sig &&
+            !ea.isLight && !ea.isSubnetMarker && ea.geometry && ea.instances.empty())
+        {
+            auto actorIt = m_emitted_actor_to_actor.find(actorKey);
+            auto nameIt = m_sop_node_object_names.find(actorKey);
+            tracey::Actor* actor = (actorIt != m_emitted_actor_to_actor.end())
+                                       ? scene.getActor(actorIt->second) : nullptr;
+            if (actor && nameIt != m_sop_node_object_names.end() &&
+                scene.hasObject(nameIt->second))
+            {
+                const std::string& objectName = nameIt->second;
+                scene.addObject(objectName,
+                    tracey::GeometryConverter::toSceneObject(*ea.geometry, objectName));
+                tracey::Transform xf;
+                xf.setPosition(ea.translate);
+                xf.setRotation(tracey::Quaternion(ea.rotation.x, ea.rotation.y,
+                                                   ea.rotation.z, ea.rotation.w));
+                xf.setScale(ea.scale);
+                actor->setTransform(xf);
+                restoreVisibility(actor, ea.sourceNodeUid);
+                continue; // keep uid; do NOT recreate or touch recreatedKeys
+            }
+            // Couldn't resolve the live actor / object — fall through to the
+            // teardown+recreate path (correct, just not in-place).
         }
 
         // Structural change OR brand-new key: tear down any prior actor +
@@ -1247,6 +1443,54 @@ void EditorServer::apply_emitted(std::vector<tracey::sops::EmittedActor>&& emitt
             }
 #endif
         }
+
+        // Skeleton overlay capture (P2): if this actor's geometry came from a
+        // skinned glTF source, remember its skeleton + mesh-local bind shift
+        // keyed by the live actor uid. update_bone_overlay uses it to draw the
+        // selected character's bones at the playhead. getSourceScene shares the
+        // glTF cache, so this is a couple of map lookups for skinned imports
+        // and a no-op detail-attr check for everything else.
+        if (ea.geometry) {
+            const auto* pAttr = ea.geometry->detail().get<std::string>("_gltf_source_path");
+            const auto* mAttr = ea.geometry->detail().get<std::string>("_gltf_source_mesh");
+            if (pAttr && mAttr && !pAttr->data().empty() && !mAttr->data().empty()) {
+                if (auto src = getSourceScene(pAttr->data()[0])) {
+                    if (const auto* sobj = src->getObject(mAttr->data()[0])) {
+                        if (sobj->hasSkin()) {
+                            ActorSkeleton entry{ sobj->skeleton(), sobj->skinBindShift(), 0 };
+                            // The gltf_import node uid stamped on the geometry —
+                            // lets us read/write its pose_overrides for FK posing.
+                            if (const auto* nodeAttr =
+                                    ea.geometry->detail().get<std::string>("_gltf_import_node");
+                                nodeAttr && !nodeAttr->data().empty()) {
+                                try { entry.gltfImportNode =
+                                          std::stoull(nodeAttr->data()[0]); }
+                                catch (...) { /* leave 0 */ }
+                            }
+                            const uint64_t auid = actor->getUid();
+                            // Sync the editor-side pose mirror from the SOP param
+                            // (the persistent source of truth) so the bone overlay
+                            // reflects saved/posed joints after a .tracey reload —
+                            // not just the deformed mesh.
+                            if (entry.gltfImportNode != 0) {
+                                if (auto* inode = findNodeRecursive(m_sop_graph.get(),
+                                                                    entry.gltfImportNode)) {
+                                    std::istringstream in(inode->paramString("pose_overrides", ""));
+                                    std::map<int, glm::vec3> poses;
+                                    int j; float ex, ey, ez;
+                                    while (in >> j >> ex >> ey >> ez)
+                                        poses[j] = glm::vec3(ex, ey, ez);
+                                    if (!poses.empty()) m_joint_poses[auid] = std::move(poses);
+                                    else m_joint_poses.erase(auid);
+                                }
+                            }
+                            m_actor_skeletons[auid] = std::move(entry);
+                        }
+                    }
+                }
+            }
+        }
+
         // Per-instance albedo tint (Phase C of GPU instancing). When the
         // upstream cook attached a tint — e.g. `instance` SOP forwarding
         // a per-point Cd from the template — multiply it into the base
@@ -1350,6 +1594,15 @@ void EditorServer::apply_emitted(std::vector<tracey::sops::EmittedActor>&& emitt
         child->setParent(parent->getUid());
     }
 
+    // Re-point selection at the (possibly recreated) actor for its stable key,
+    // so a deforming selected actor keeps its selection + skeleton overlay
+    // across the per-frame recreate during playback.
+    if (selectedKey) {
+        auto it = m_emitted_actor_to_actor.find(*selectedKey);
+        if (it != m_emitted_actor_to_actor.end())
+            m_selected_actor_id = it->second;
+    }
+
     // Both diff passes have read m_actor_signatures (previous state) and
     // newSigs (this cook's state). Promote newSigs to the canonical
     // m_actor_signatures now that we're done diffing.
@@ -1362,7 +1615,12 @@ void EditorServer::apply_emitted(std::vector<tracey::sops::EmittedActor>&& emitt
         m_clear_next_frame = true;
     }
 
-    if (m_broadcast) {
+    // Only rebuild the hierarchy UI when the actor list/tree actually changed.
+    // A per-frame skinned-animation recook deforms geometry every frame but
+    // leaves the hierarchy identical — broadcasting here each frame made the
+    // panel blink and dropped selection. compile_scene above still re-rendered
+    // the deformed mesh; the hierarchy just doesn't need to know.
+    if (m_broadcast && hierarchyChanged) {
         m_broadcast(R"({"event":"scene_changed"})");
     }
 
@@ -1542,6 +1800,13 @@ bool EditorServer::detect_animated_sop_params() const {
             for (const auto& p : sn->parameters()) {
                 if (p.isAnimated() && !isEmitTrsFastPath(*sn, p)) return true;
             }
+            // Non-parameter time dependence (e.g. a skinned glTF import whose
+            // animation clip deforms the mesh per frame). Emit nodes are
+            // excluded — their keyed TRS uses the apply_animation_at fast path,
+            // not a full recook.
+            const std::string k = sn->kind();
+            const bool emitNode = (k == "object_output" || k == "subnet" || k == "light");
+            if (!emitNode && sn->isTimeDependent()) return true;
             if (sn->innerGraph() && walk(sn->innerGraph())) return true;
         }
         return false;
@@ -1819,6 +2084,15 @@ void EditorServer::pt_render_thread_main() {
 
         if (!m_engine) continue;
 
+        // A still/video export owns the path tracer for its whole duration: it
+        // reconfigures (resize / AOV mode) and renders the SAME backend on the
+        // export thread. The live preview worker must not also drive it —
+        // concurrent dispatch on one backend races on the accumulator, material
+        // program buffer and TLAS and corrupts them (manifests as a null TLAS one
+        // run, a clobbered program buffer the next). Drop this request; the next
+        // render_tick after the export finishes resumes the preview.
+        if (m_export_in_progress.load(std::memory_order_acquire)) continue;
+
         // Denoise-only pass: no new sample, no scene needed — run OIDN over the
         // converged accumulator and write the denoised result to the display
         // image. Bump the completed counter so the present picks it up.
@@ -2013,6 +2287,9 @@ void EditorServer::export_video_loop(VideoExportRequest req) {
             m_export_in_progress.store(false);
             return;
         }
+        // Fence out any in-flight live-preview render before reconfiguring and
+        // rendering the shared path tracer (same race as render_still_loop).
+        m_engine->wait_render_idle();
         const auto [r_w, r_h] = m_engine->resolution();
         const auto [p_w, p_h] = m_engine->pt_resolution();
         saved_raster_w = r_w;
@@ -2342,6 +2619,10 @@ void EditorServer::render_still_loop(RenderStillRequest req) {
             m_export_in_progress.store(false);
             return;
         }
+        // m_export_in_progress is already set (by the render_still command), so
+        // the PT worker will skip new renders — but one may be mid-flight right
+        // now. Fence it out before we reconfigure/render the shared path tracer.
+        m_engine->wait_render_idle();
         const auto [r_w, r_h] = m_engine->resolution();
         const auto [p_w, p_h] = m_engine->pt_resolution();
         saved_raster_w = r_w; saved_raster_h = r_h;
@@ -2606,6 +2887,15 @@ void EditorServer::import_usd_stage_worker(UsdStageImportRequest req) {
             m_orbit_pitch = std::asin(std::clamp(F.y, -1.0f, 1.0f));
             m_orbit_yaw = std::atan2(-F.x, -F.z);
             m_orbit_initialized = true;
+            // One-time import framing snaps (not an interactive glide): seed the
+            // smoothed pose to the target so update_camera_from_input doesn't ease
+            // away from the camera we set directly just below.
+            m_orbit_smooth_yaw = m_orbit_yaw;
+            m_orbit_smooth_pitch = m_orbit_pitch;
+            m_orbit_smooth_distance = m_orbit_distance;
+            m_orbit_smooth_pivot_x = m_orbit_pivot_x;
+            m_orbit_smooth_pivot_y = m_orbit_pivot_y;
+            m_orbit_smooth_pivot_z = m_orbit_pivot_z;
             const glm::quat qyaw = glm::angleAxis(m_orbit_yaw, glm::vec3(0, 1, 0));
             const glm::quat qpitch = glm::angleAxis(m_orbit_pitch, glm::vec3(1, 0, 0));
             const glm::quat rot = qyaw * qpitch;
@@ -2716,23 +3006,83 @@ bool EditorServer::update_camera_from_input(double dt) {
                                         : toCam);
         m_orbit_pitch = std::asin(std::clamp(fwd.y, -1.0f, 1.0f));
         m_orbit_yaw = std::atan2(-fwd.x, -fwd.z);
+        // Seed the smoothed (rendered) pose to the target so the first frame is
+        // exact — no glide from a stale default.
+        m_orbit_smooth_yaw = m_orbit_yaw;
+        m_orbit_smooth_pitch = m_orbit_pitch;
+        m_orbit_smooth_distance = m_orbit_distance;
+        m_orbit_smooth_pivot_x = m_orbit_pivot_x;
+        m_orbit_smooth_pivot_y = m_orbit_pivot_y;
+        m_orbit_smooth_pivot_z = m_orbit_pivot_z;
         m_orbit_initialized = true;
     }
 
-    bool changed = false;
+    // Direct manipulation (drag/scroll/fly) is tracked separately from the eased
+    // glide below: direct input snaps the smoothed pose to the target (1:1 feel),
+    // while a moved-but-not-touched target eases in.
+    bool directInput = false;
+
+    // One-shot framing (F / Home): set the orbit TARGET to frame the relevant
+    // geometry's world AABB, keeping the current view angle — the tick then
+    // glides there. F frames the selection (or the whole scene if nothing is
+    // selected); Home always frames all. Edge-triggered: clear the flags here.
+    if (input.frame_selected || input.frame_all) {
+        const bool onlySel = !input.frame_all && m_selected_actor_id.has_value();
+        input.frame_selected = false;
+        input.frame_all = false;
+        glm::vec3 mn(1e30f), mx(-1e30f);
+        bool any = false;
+        for (const auto& node : m_engine->scene().flatten()) {
+            if (!node.actor) continue;
+            if (onlySel && node.actor->getUid() != *m_selected_actor_id) continue;
+            for (const auto& inst : node.actor->instances()) {
+                const auto* obj = m_engine->scene().getObject(inst.objectRef());
+                if (!obj) continue;
+                glm::mat4 w = node.worldTransform;
+                if (inst.hasLocalTransform()) w = w * inst.localTransform()->toMatrix();
+                for (const auto& p : obj->positions()) {
+                    const glm::vec3 wp = glm::vec3(w * glm::vec4(p, 1.0f));
+                    mn = glm::min(mn, wp);
+                    mx = glm::max(mx, wp);
+                    any = true;
+                }
+            }
+        }
+        if (any) {
+            const glm::vec3 center = (mn + mx) * 0.5f;
+            const float radius = std::max(0.05f, glm::length(mx - mn) * 0.5f);
+            const float halfFov = glm::radians(std::max(1.0f, cam.fov()) * 0.5f);
+            // Fit the bounding sphere into the vertical FOV, plus a little margin.
+            const float dist = radius / std::max(0.09f, std::sin(halfFov)) * 1.1f;
+            m_orbit_pivot_x = center.x;
+            m_orbit_pivot_y = center.y;
+            m_orbit_pivot_z = center.z;
+            m_orbit_distance = std::max(0.1f, dist);
+            m_orbit_initialized = true;
+            // yaw/pitch untouched — frame from the current angle; the tick eases.
+        }
+    }
 
     // Drag-to-navigate: LMB tumbles, MMB pans, RMB dollies — no modifier key.
     constexpr float TUMBLE_SENS = 0.005f;  // radians per pixel
     constexpr float DOLLY_SENS  = 0.01f;   // log-units per pixel
     constexpr float WHEEL_SENS  = 0.05f;   // log-units per scroll tick
 
+    // LMB click-vs-drag: accumulate pointer path length since the press. A click
+    // (path under the dead-zone) selects the actor under the cursor on release;
+    // anything longer tumbles. The dead-zone keeps a click from nudging the view,
+    // so LMB-drag keeps orbiting exactly as before — no convention change.
+    constexpr float kLmbClickPx = 6.0f;
+    if (input.mouse_left && !m_lmb_was_down) m_lmb_drag_px = 0.0f;
+    if (input.mouse_left) m_lmb_drag_px += std::abs(input.mouse_dx) + std::abs(input.mouse_dy);
+
     if (input.mouse_dx != 0.0f || input.mouse_dy != 0.0f) {
-        if (input.mouse_left) {
+        if (input.mouse_left && m_lmb_drag_px > kLmbClickPx) {
             m_orbit_yaw   -= input.mouse_dx * TUMBLE_SENS;
             m_orbit_pitch -= input.mouse_dy * TUMBLE_SENS;
             constexpr float kPitchLimit = 1.5707f - 0.01f;
             m_orbit_pitch = std::clamp(m_orbit_pitch, -kPitchLimit, kPitchLimit);
-            changed = true;
+            directInput = true;
         } else if (input.mouse_middle) {
             // Pan: scale by distance + fov so a fixed pixel delta moves the
             // pivot by the same screen-space amount regardless of zoom.
@@ -2746,21 +3096,165 @@ bool EditorServer::update_camera_from_input(double dt) {
             m_orbit_pivot_x += delta.x;
             m_orbit_pivot_y += delta.y;
             m_orbit_pivot_z += delta.z;
-            changed = true;
+            directInput = true;
         } else if (input.mouse_right) {
             // Dolly: exponential so zooming stays smooth at any distance.
             m_orbit_distance *= std::exp(input.mouse_dy * DOLLY_SENS);
             m_orbit_distance = std::max(0.01f, m_orbit_distance);
-            changed = true;
+            directInput = true;
         }
     }
     input.mouse_dx = 0.0f;
     input.mouse_dy = 0.0f;
 
+    // LMB released as a click (not a drag) → select the actor under the cursor,
+    // or deselect on empty space. Native owns the selection (drives the viewport
+    // highlight) and broadcasts so the hierarchy + inspector follow.
+    if (!input.mouse_left && m_lmb_was_down && m_lmb_drag_px <= kLmbClickPx &&
+        input.viewport_w > 1.0f && input.viewport_h > 1.0f) {
+        const float ndcX = 2.0f * (input.mouse_x / input.viewport_w) - 1.0f;
+        const float ndcY = 1.0f - 2.0f * (input.mouse_y / input.viewport_h);
+        const auto hit = m_engine->pick(ndcX, ndcY);
+        if (input.key_shift) {
+            // Shift+click = focus pull: set the DOF focal distance to the clicked
+            // surface's depth along the view direction (a focus puller). No-op on
+            // empty space. Needs aperture > 0 (camera panel) to be visible.
+            if (hit && m_engine->scene().hasCamera()) {
+                tracey::Camera fc = m_engine->scene().camera();
+                const float fd = glm::dot(hit->point - fc.position(), fc.forward());
+                fc.setFocalDistance(std::max(0.01f, fd));
+                m_engine->scene().setCamera(fc);
+                m_clear_next_frame = true; // DOF changed → restart accumulation
+                // Tell the UI the camera changed so the DOF panel's Focal Dist
+                // field reflects the pulled focus.
+                if (m_broadcast) m_broadcast(R"({"event":"camera_changed"})");
+            }
+        } else {
+            // Plain click. If a skinned actor is selected, try to pick one of
+            // its joints first: project the posed joints to screen and take the
+            // nearest within a pixel threshold. A hit selects the joint and
+            // keeps the actor selected; a miss falls through to actor selection.
+            int pickedJoint = -1;
+            const auto joints = selected_joint_world_positions(nullptr);
+            if (!joints.empty() && m_engine->scene().hasCamera() &&
+                input.viewport_h > 1.0f) {
+                const auto& cam = m_engine->scene().camera();
+                const glm::vec3 camPos = cam.position();
+                const glm::vec3 fwd = glm::normalize(cam.forward());
+                const glm::vec3 right = glm::normalize(cam.right());
+                const glm::vec3 up = glm::normalize(cam.up());
+                const float tanHalf = std::tan(glm::radians(cam.fov()) * 0.5f);
+                const float aspect = input.viewport_w / input.viewport_h;
+                constexpr float kJointPickPx = 14.0f;
+                float best = kJointPickPx;
+                for (size_t k = 0; k < joints.size(); ++k) {
+                    // Invert the pick ray-gen: NDC = (cameraSpace / depth) / fov.
+                    const glm::vec3 v = joints[k] - camPos;
+                    const float d = glm::dot(v, fwd);
+                    if (d <= 1e-4f) continue; // behind the camera
+                    const float nx = (glm::dot(v, right) / d) / (tanHalf * aspect);
+                    const float ny = (glm::dot(v, up) / d) / tanHalf;
+                    if (std::fabs(nx) > 1.0f || std::fabs(ny) > 1.0f) continue;
+                    const float sx = (nx * 0.5f + 0.5f) * input.viewport_w;
+                    const float sy = (0.5f - ny * 0.5f) * input.viewport_h; // top-down
+                    const float dist = std::hypot(sx - input.mouse_x, sy - input.mouse_y);
+                    if (dist < best) { best = dist; pickedJoint = static_cast<int>(k); }
+                }
+            }
+
+            if (pickedJoint >= 0) {
+                m_selected_joint = pickedJoint;
+                if (m_broadcast) {
+                    json msg;
+                    msg["event"] = "joint_selected";
+                    msg["joint"] = pickedJoint;
+                    // The gltf_import node that owns this skeleton — the FK
+                    // joint-pose UI writes its pose_overrides param. 0 if unknown.
+                    size_t importNode = 0;
+                    if (m_selected_actor_id) {
+                        auto sit = m_actor_skeletons.find(*m_selected_actor_id);
+                        if (sit != m_actor_skeletons.end()) importNode = sit->second.gltfImportNode;
+                    }
+                    msg["import_node"] = importNode;
+                    // Current FK override euler for this joint (0,0,0 if none),
+                    // so the joint-pose UI opens on the existing pose.
+                    glm::vec3 e(0.0f);
+                    if (m_selected_actor_id) {
+                        auto p = m_joint_poses.find(*m_selected_actor_id);
+                        if (p != m_joint_poses.end()) {
+                            auto j = p->second.find(pickedJoint);
+                            if (j != p->second.end()) e = j->second;
+                        }
+                    }
+                    msg["rotation"] = {e.x, e.y, e.z};
+                    m_broadcast(msg.dump());
+                }
+            } else {
+                // No joint near the click → select the actor under the cursor
+                // (deselect on empty space). Clears any joint selection.
+                m_selected_joint = -1;
+                m_selected_actor_id = hit ? std::optional<uint64_t>(hit->actorUid) : std::nullopt;
+                if (m_broadcast) {
+                    json msg;
+                    msg["event"] = "actor_selected";
+                    if (hit) msg["actor_id"] = hit->actorUid;
+                    else msg["actor_id"] = nullptr;
+                    m_broadcast(msg.dump());
+                }
+            }
+        }
+    }
+    m_lmb_was_down = input.mouse_left;
+
     if (input.scroll_dy != 0.0f) {
-        m_orbit_distance *= std::exp(-input.scroll_dy * WHEEL_SENS);
-        m_orbit_distance = std::max(0.01f, m_orbit_distance);
-        changed = true;
+        const float zoom = std::exp(-input.scroll_dy * WHEEL_SENS); // <1 = zoom in
+        // Zoom toward the point under the cursor. The target is the exact surface
+        // hit when a BVH is available (PT preview on); otherwise — rasterizer-only
+        // mode, or the ray missing geometry (sky) — the cursor ray ∩ the plane
+        // through the pivot (perpendicular to the view). That gives a point under
+        // the cursor at the pivot's depth: approximate depth, but the cursor
+        // DIRECTION is exact, so zoom-to-cursor works in every mode with no BVH
+        // cost. (Only a degenerate viewport falls back to a plain pivot dolly.)
+        bool haveTarget = false;
+        glm::vec3 P(0.0f);
+        if (input.viewport_w > 1.0f && input.viewport_h > 1.0f) {
+            const float ndcX = 2.0f * (input.mouse_x / input.viewport_w) - 1.0f;
+            const float ndcY = 1.0f - 2.0f * (input.mouse_y / input.viewport_h);
+            if (auto h = m_engine->pick(ndcX, ndcY)) {
+                P = h->point;
+                haveTarget = true;
+            } else {
+                const float tanHalf = std::tan(glm::radians(cam.fov()) * 0.5f);
+                const glm::vec3 dir = glm::normalize(cam.forward() +
+                    ndcX * tanHalf * cam.aspectRatio() * cam.right() +
+                    ndcY * tanHalf * cam.up());
+                const glm::vec3 C = cam.position();
+                const glm::vec3 fwd = cam.forward();
+                const glm::vec3 pivot(m_orbit_pivot_x, m_orbit_pivot_y, m_orbit_pivot_z);
+                const float denom = glm::dot(dir, fwd);
+                const float t = (std::abs(denom) > 1e-4f)
+                                    ? glm::dot(pivot - C, fwd) / denom
+                                    : m_orbit_distance;
+                P = C + dir * std::max(0.05f, t);
+                haveTarget = true;
+            }
+        }
+        if (haveTarget) {
+            const glm::vec3 C   = cam.position();
+            const glm::vec3 fwd = cam.forward();
+            const float alpha   = 1.0f - zoom;          // >0 in, <0 out
+            const glm::vec3 Cn  = C + (P - C) * alpha;  // eye moves along C→P
+            const float dN      = std::max(0.05f, glm::dot(P - Cn, fwd));
+            const glm::vec3 On  = Cn + fwd * dN;        // pivot on the new view axis
+            m_orbit_pivot_x = On.x;
+            m_orbit_pivot_y = On.y;
+            m_orbit_pivot_z = On.z;
+            m_orbit_distance = dN;
+        } else {
+            m_orbit_distance *= zoom;
+            m_orbit_distance = std::max(0.01f, m_orbit_distance);
+        }
+        directInput = true;
     }
     input.scroll_dx = 0.0f;
     input.scroll_dy = 0.0f;
@@ -2794,19 +3288,73 @@ bool EditorServer::update_camera_from_input(double dt) {
             m_orbit_pivot_x += d.x;
             m_orbit_pivot_y += d.y;
             m_orbit_pivot_z += d.z;
+            directInput = true;
+        }
+    }
+
+    // Direct manipulation is 1:1 — snap the smoothed pose onto the target so the
+    // drag/fly has no lag (the ease below then sees zero error and no-ops).
+    if (directInput) {
+        m_orbit_smooth_yaw      = m_orbit_yaw;
+        m_orbit_smooth_pitch    = m_orbit_pitch;
+        m_orbit_smooth_distance = m_orbit_distance;
+        m_orbit_smooth_pivot_x  = m_orbit_pivot_x;
+        m_orbit_smooth_pivot_y  = m_orbit_pivot_y;
+        m_orbit_smooth_pivot_z  = m_orbit_pivot_z;
+    }
+
+    // Ease the smoothed pose toward the target. Non-zero only after a "jump"
+    // (view preset, focus/frame) moved the target without direct input — that's
+    // what makes those GLIDE instead of teleport. Frame-rate-independent
+    // exponential smoothing with a snap-to-target cutoff so it doesn't crawl.
+    bool changed = directInput;
+    {
+        auto wrapPi = [](float x) {
+            constexpr float kTwoPi = 6.2831853f;
+            while (x >  3.14159265f) x -= kTwoPi;
+            while (x < -3.14159265f) x += kTwoPi;
+            return x;
+        };
+        const float dyaw  = wrapPi(m_orbit_yaw      - m_orbit_smooth_yaw);
+        const float dpit  =        m_orbit_pitch    - m_orbit_smooth_pitch;
+        const float ddist =        m_orbit_distance - m_orbit_smooth_distance;
+        const float dpx   =        m_orbit_pivot_x  - m_orbit_smooth_pivot_x;
+        const float dpy   =        m_orbit_pivot_y  - m_orbit_smooth_pivot_y;
+        const float dpz   =        m_orbit_pivot_z  - m_orbit_smooth_pivot_z;
+        // Scale positional error by 1/distance so convergence is framing-invariant.
+        const float invD = 1.0f / std::max(0.01f, m_orbit_distance);
+        const float err = std::abs(dyaw) + std::abs(dpit) + std::abs(ddist) * invD +
+                          (std::abs(dpx) + std::abs(dpy) + std::abs(dpz)) * invD;
+        if (err > 2e-3f) {
+            const float a = 1.0f - std::exp(-14.0f * static_cast<float>(dt)); // ~0.2 s settle
+            m_orbit_smooth_yaw      += dyaw  * a;
+            m_orbit_smooth_pitch    += dpit  * a;
+            m_orbit_smooth_distance += ddist * a;
+            m_orbit_smooth_pivot_x  += dpx   * a;
+            m_orbit_smooth_pivot_y  += dpy   * a;
+            m_orbit_smooth_pivot_z  += dpz   * a;
+            changed = true;
+        } else if (err > 0.0f && !directInput) {
+            // Close enough — snap to kill the asymptotic tail.
+            m_orbit_smooth_yaw      = m_orbit_yaw;
+            m_orbit_smooth_pitch    = m_orbit_pitch;
+            m_orbit_smooth_distance = m_orbit_distance;
+            m_orbit_smooth_pivot_x  = m_orbit_pivot_x;
+            m_orbit_smooth_pivot_y  = m_orbit_pivot_y;
+            m_orbit_smooth_pivot_z  = m_orbit_pivot_z;
             changed = true;
         }
     }
 
     if (changed) {
-        // Compose yaw (around world Y) then pitch (around local X) and place
-        // the camera on the orbit sphere centred at the pivot.
-        glm::quat qyaw   = glm::angleAxis(m_orbit_yaw,   glm::vec3(0, 1, 0));
-        glm::quat qpitch = glm::angleAxis(m_orbit_pitch, glm::vec3(1, 0, 0));
+        // Compose yaw (around world Y) then pitch (around local X) and place the
+        // camera on the orbit sphere — from the SMOOTHED pose.
+        glm::quat qyaw   = glm::angleAxis(m_orbit_smooth_yaw,   glm::vec3(0, 1, 0));
+        glm::quat qpitch = glm::angleAxis(m_orbit_smooth_pitch, glm::vec3(1, 0, 0));
         glm::quat rotation = qyaw * qpitch;
         glm::vec3 forward = rotation * glm::vec3(0, 0, -1);
-        glm::vec3 pivot{m_orbit_pivot_x, m_orbit_pivot_y, m_orbit_pivot_z};
-        cam.setPosition(pivot - forward * m_orbit_distance);
+        glm::vec3 pivot{m_orbit_smooth_pivot_x, m_orbit_smooth_pivot_y, m_orbit_smooth_pivot_z};
+        cam.setPosition(pivot - forward * m_orbit_smooth_distance);
         cam.setRotation(rotation);
         if (m_viewport_pixel_h > 0)
             cam.setAspectRatio(static_cast<float>(m_viewport_pixel_w) /
@@ -2899,6 +3447,11 @@ void EditorServer::render_tick() {
             post_cook_request(m_last_pushed_graph_json, m_timeline.current_time);
         }
     }
+
+    // Refresh the skeleton overlay for the selected skinned actor at the
+    // current pose. Cheap when nothing skinned is selected (a single map
+    // miss); only walks the scene when there's a skeleton to draw.
+    update_bone_overlay();
 
     // Rate-limited timeline broadcast (~30 Hz) so the frontend playbar
     // follows the playhead without flooding the message bus.

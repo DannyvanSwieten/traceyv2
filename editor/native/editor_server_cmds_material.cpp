@@ -122,7 +122,14 @@ std::optional<std::string> EditorServer::handle_material_commands(
                 any_bound = true;
             }
             if (any_bound && m_engine->compiled_scene_ready()) {
-                m_engine->compile_scene();
+                // Only the shader-graph bytecode changed; the actors using it are
+                // the same, so program IDs / instance assignments / geometry are
+                // unchanged. Refresh just the program buffer in place instead of a
+                // full recompile (which would re-upload all geometry + freeze the
+                // UI on large scenes). Reassigning a material to an actor still
+                // goes through compile_scene (set_actor_material) — that DOES
+                // change assignments + the TLAS.
+                m_engine->update_material_programs();
                 m_clear_next_frame = true;
             }
             return ok_response_null();

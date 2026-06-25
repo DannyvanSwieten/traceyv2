@@ -108,9 +108,9 @@ export const RenderPanel: Component<RenderPanelProps> = (props) => {
             <input
               id="render-panel-samples"
               type="range"
-              min="16"
+              min="1"
               max="8192"
-              step="16"
+              step="1"
               value={props.maxSamples()}
               onInput={(e) => props.setMaxSamples(parseInt(e.currentTarget.value))}
             />

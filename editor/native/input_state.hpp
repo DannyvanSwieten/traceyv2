@@ -32,6 +32,12 @@ struct InputState {
     bool key_q = false;
     bool key_e = false;
     bool key_shift = false;
+    bool key_alt = false;  // Option — held to tumble (so a plain click can select)
+
+    // One-shot actions: set on key-DOWN, consumed (cleared) once by the render
+    // tick. Edge-triggered, unlike the held movement keys above.
+    bool frame_selected = false;  // F    — frame the selected actor (or all if none)
+    bool frame_all = false;       // Home — frame the whole scene
 
     // Viewport size (logical points, before backing-scale multiplication).
     float viewport_w = 0.0f;
