@@ -1,9 +1,48 @@
 # Focused task: 4-wide BVH (BVH4) for the CPU path tracer
 
-**Goal:** make the CPU path-tracer backend ~1.5–2× faster via a 4-wide BVH whose
-box tests use all 4 NEON lanes, **without changing the rendered image** (the box
-test must stay bit-identical to the scalar path). This is the big remaining CPU
-SIMD win after the contained ones below.
+> ## OUTCOME (2026-06-23): attempted, INEFFECTIVE — do not re-attempt as specced
+>
+> BVH4 was fully implemented and **verified byte-identical** (the collapse + the
+> NEON 4-box test below all work, on an Apple M3 Ultra). It delivered **~1.02×,
+> not 1.5–2×.** The premise — that the box-test *math* dominates and widening it
+> to 4 lanes will compound the single-box NEON win — does not hold on this
+> hardware. Measured, then reverted. Evidence:
+>
+> - **BVH4 (4-wide box test):** helmet 12.0→11.9 ms/spp, Duck 3.59→3.55. ~noise.
+> - **Collapse was healthy** (9963 BVH2 nodes → 2452 BVH4, 1031 full 4-wide), so
+>   it was not a build bug.
+> - **Not memory-bound:** cache-resident Duck showed no win either (if it were
+>   node-fetch latency, the small scene would have surfaced the compute win).
+> - **Not sort-bound:** dropping the near-far child sort made it *slower*.
+> - **Triangle-data locality** (slot-ordered leaf copy, so the leaf loop reads
+>   sequentially instead of gathering `m_triangleData[primId]`): also a wash
+>   (~0% helmet). Mesh index-order is locally coherent, so the "gather" wasn't
+>   actually missing cache.
+>
+> **Why:** the single-box NEON `intersectAABB` (commit `7405174`) already took the
+> easy SIMD win. The remaining traversal cost is the **latency-bound pointer-chase**
+> (pop → load node → test → branch → push), which neither a wider box test nor a
+> reordered triangle array touches. Ray packets would help coherent rays but the
+> doc correctly rules them out for incoherent GI bounces.
+>
+> ### Where the time actually goes (profiled, CPU backend, M3 Ultra)
+> Of compute self-time: `Blas::intersect` (box test + traversal glue) ~51%,
+> `intersectTriangle` ~15%, shading ~24%, `Tlas::intersect` ~5%. So intersection
+> dominates — but it's the *glue*, not the SIMD-able math.
+>
+> ### The real lever: multicore scaling, not BVH SIMD
+> Single-core helmet ≈ **4.9 Mray/s** (full path tracing incl. shading; ~372k
+> rays/spp at 75 ms/spp). 32 lanes → **~37 Mray/s aggregate** at ~10 ms/spp, i.e.
+> only **~7.5× on 32 lanes (~24% efficiency)**. The thread pool (mutex + condvar
+> + `notify_all` per `render()` dispatch) is the bottleneck — `__psynch_cvwait`
+> dominates the profile. Fixing scaling toward ~linear is worth **~2×+**, far more
+> than any BVH-width change, and is the recommended next perf work.
+> The one remaining byte-identical SIMD lever is the 4-triangle leaf test *done
+> right* with FMA-matched intrinsics (see "Already done" below) — realistic ~5%.
+
+**Goal (original, NOT MET):** make the CPU path-tracer backend ~1.5–2× faster via
+a 4-wide BVH whose box tests use all 4 NEON lanes, **without changing the rendered
+image** (the box test must stay bit-identical to the scalar path).
 
 **Why this is the win:** the box *traversal* dominates the CPU tracer (the leaf
 triangle test is a smaller fraction — measured ~5% from SIMD-ing it). A binary

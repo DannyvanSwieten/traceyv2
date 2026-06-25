@@ -4,6 +4,10 @@
 #include <algorithm>
 namespace tracey
 {
+    // See blas.cpp: cap tree depth so the fixed traversal stack can't overflow.
+    static constexpr int kTraversalStackSize = 64;
+    static constexpr int kMaxBvhDepth = 60; // < kTraversalStackSize, with headroom
+
 
     Tlas::Tlas(std::span<const Blas *> blases, std::span<const Instance> instances) : Tlas(blases, instances, Config{})
     {
@@ -113,7 +117,7 @@ namespace tracey
         node.boundsMax = bMax;
 
         int count = static_cast<int>(end - start);
-        if (count <= m_config.leafThreshold)
+        if (count <= m_config.leafThreshold || depth >= kMaxBvhDepth)
         { // create leaf
             node.primCountAndType = count;
             node.firstChildOrPrim = static_cast<uint32_t>(m_instanceIndices.size());
@@ -364,7 +368,7 @@ namespace tracey
         // AABB transform (the old code linearly scanned every instance and
         // recomputed one each ray — O(instances) per ray). Mirrors Blas::intersect.
         struct StackEntry { uint32_t nodeIndex; float tNear; };
-        StackEntry stack[64];
+        StackEntry stack[kTraversalStackSize];
         int stackTop = 0;
 
         // Test the root once; children are AABB-tested when pushed, so popped

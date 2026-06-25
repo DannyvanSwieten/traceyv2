@@ -426,10 +426,12 @@ float3 skyRadiance(device const float4 *lights, uint lightCount, float3 dir) {
         float3 tint = lights[domeIdx * 6u + 2u].xyz * lights[domeIdx * 6u + 1u].w;
         return sampleDomeGradient(lights, domeIdx, dir) * tint;
     }
-    float t = clamp(0.5 * (dir.y + 1.0), 0.0, 1.0);
-    float3 horizon = float3(1.0, 0.55, 0.20);
-    float3 zenith  = float3(0.15, 0.35, 1.00);
-    return mix(horizon, zenith, t);
+    // No Dome light in the scene → no environment radiance. Deleting the Dome
+    // light therefore truly disables environment lighting AND the sky background.
+    // (Previously this returned a hardcoded gradient, so the scene kept being lit
+    // and "the dome kept rendering" after it was removed.) Add a Dome light back
+    // to get a sky. Mirrored exactly in the CPU backend's skyRadiance().
+    return float3(0.0);
 }
 
 // ── Motion-blur intersect dispatch ─────────────────────────────────────────
@@ -972,6 +974,18 @@ void pathtraceImpl(
             const float3 offsetN = (dot(L, N) < 0.0) ? -N : N;
             r.origin = hitPos + offsetN * 0.001;
             r.direction = L;
+
+            // Russian roulette — exact mirror of the CPU backend (same start
+            // depth, survival probability, and single nextRandom draw) so the two
+            // stay in parity. Unbiased: terminate low-throughput paths and scale
+            // the survivors by 1/p, cutting wasted deep near-black bounces. Depths
+            // 0-1 are never rouletted; the [0.05,0.95] clamp bounds the firefly
+            // boost and the path length.
+            if (depth >= 2u) {
+                const float p = clamp(max(color.x, max(color.y, color.z)), 0.05, 0.95);
+                if (nextRandom(seed) >= p) break;
+                color /= p;
+            }
         }
 
         // ── resolve.glsl: fold this sample into the running mean ──

@@ -46,36 +46,103 @@ namespace tracey
         return tExit >= tEnter;
 #endif
     }
+    // Watertight ray/triangle intersection — Woop, Benthin & Wald, "Watertight
+    // Ray/Triangle Intersection" (JCGT 2013). Replaces Möller-Trumbore's strict
+    // u,v ∈ [0,1] test, which leaks: at a shared edge between two triangles,
+    // floating-point error can make *both* triangles reject the ray, so it slips
+    // through the crack in the mesh. Bounce/shadow rays that leak escape an
+    // enclosed scene and pick up the bright environment, washing out shadows.
+    // This formulation computes the shared-edge sign identically for both
+    // triangles (with a double-precision fallback exactly on an edge), so a ray
+    // can neither slip between adjacent triangles nor be counted by both — the
+    // watertight behaviour the Metal hardware ray tracer already has.
+    //
+    // Two-sided (no back-face cull): the renderer shadows and bounces off both
+    // faces. Same signature as before — v1/v2 are reconstructed from the edges,
+    // and (uOut,vOut) keep Möller-Trumbore's convention (barycentric weights of
+    // v1 and v2), so callers and attribute interpolation are unchanged.
     inline bool intersectTriangle(const Ray &ray, const Vec3 &v0, const Vec3 &edge1, const Vec3 &edge2, float &tOut, float &uOut, float &vOut)
     {
         const float EPSILON = 1e-8f;
-        Vec3 h = glm::cross(ray.direction, edge2);
-        float a = glm::dot(edge1, h);
-        if (a > -EPSILON && a < EPSILON)
-            return false; // This ray is parallel to this triangle.
+        const Vec3 v1 = v0 + edge1;
+        const Vec3 v2 = v0 + edge2;
+        const Vec3 &dir = ray.direction;
 
-        float f = 1.0f / a;
-        Vec3 s = ray.origin - v0;
-        float u = f * glm::dot(s, h);
-        if (u < 0.0f || u > 1.0f)
-            return false;
+        // Per-ray shear/permutation. kz is the axis of greatest |direction|;
+        // kx,ky cycle after it (swapped when dir[kz] < 0 to preserve winding so
+        // the edge-sign test is consistent across the shared edge). Cheap enough
+        // to recompute per triangle. dir[kz] is the largest-magnitude component,
+        // so it is non-zero for any real (non-degenerate) ray.
+        const Vec3 ad(std::abs(dir.x), std::abs(dir.y), std::abs(dir.z));
+        int kz = 0;
+        float amax = ad.x;
+        if (ad.y > amax) { kz = 1; amax = ad.y; }
+        if (ad.z > amax) { kz = 2; amax = ad.z; }
+        if (!(amax > 0.0f))
+            return false; // degenerate ray: zero-length or NaN direction
+        int kx = kz + 1; if (kx == 3) kx = 0;
+        int ky = kx + 1; if (ky == 3) ky = 0;
+        if (dir[kz] < 0.0f) { const int tmp = kx; kx = ky; ky = tmp; }
 
-        Vec3 q = glm::cross(s, edge1);
-        float v = f * glm::dot(ray.direction, q);
-        if (v < 0.0f || u + v > 1.0f)
-            return false;
+        const float Sx = dir[kx] / dir[kz];
+        const float Sy = dir[ky] / dir[kz];
+        const float Sz = 1.0f / dir[kz];
 
-        // At this stage we can compute t to find out where the intersection point is on the line.
-        float t = f * glm::dot(edge2, q);
-        if (t > EPSILON) // ray intersection
+        // Vertices translated to ray origin, then sheared into the (kx,ky) plane.
+        const Vec3 A = v0 - ray.origin;
+        const Vec3 B = v1 - ray.origin;
+        const Vec3 C = v2 - ray.origin;
+        const float Ax = A[kx] - Sx * A[kz];
+        const float Ay = A[ky] - Sy * A[kz];
+        const float Bx = B[kx] - Sx * B[kz];
+        const float By = B[ky] - Sy * B[kz];
+        const float Cx = C[kx] - Sx * C[kz];
+        const float Cy = C[ky] - Sy * C[kz];
+
+        // Scaled barycentrics (edge functions). U,V,W are the weights of v0,v1,v2.
+        float U = Cx * By - Cy * Bx;
+        float V = Ax * Cy - Ay * Cx;
+        float W = Bx * Ay - By * Ax;
+
+        // Fall back to double precision exactly on an edge (any function == 0).
+        // This is what makes the test watertight: the shared edge resolves to the
+        // same sign for both adjacent triangles instead of a fp coin-flip.
+        if (U == 0.0f || V == 0.0f || W == 0.0f)
         {
-            tOut = t;
-            uOut = u;
-            vOut = v;
-            return true;
+            U = static_cast<float>(static_cast<double>(Cx) * static_cast<double>(By) - static_cast<double>(Cy) * static_cast<double>(Bx));
+            V = static_cast<float>(static_cast<double>(Ax) * static_cast<double>(Cy) - static_cast<double>(Ay) * static_cast<double>(Cx));
+            W = static_cast<float>(static_cast<double>(Bx) * static_cast<double>(Ay) - static_cast<double>(By) * static_cast<double>(Ax));
         }
-        else // This means that there is a line intersection but not a ray intersection.
+
+        // Two-sided edge test: a hit requires U,V,W to all share a sign (zeros,
+        // i.e. edges/vertices, are allowed). Reject only when the signs disagree.
+        if ((U < 0.0f || V < 0.0f || W < 0.0f) && (U > 0.0f || V > 0.0f || W > 0.0f))
             return false;
+
+        const float det = U + V + W;
+        if (det == 0.0f)
+            return false; // ray coplanar with the triangle
+
+        // Interpolate the sheared z of each vertex → hit distance. The shear maps
+        // the ray direction to +z, so the interpolated z divided by det is t.
+        const float Az = Sz * A[kz];
+        const float Bz = Sz * B[kz];
+        const float Cz = Sz * C[kz];
+        const float T = U * Az + V * Bz + W * Cz;
+
+        const float rcpDet = 1.0f / det;
+        const float t = T * rcpDet; // det's sign cancels: t > 0 for forward hits
+        // Written as !(t > EPSILON) (not t <= EPSILON) so a NaN t is rejected —
+        // matches Möller-Trumbore's old final gate. A NaN/Inf hit must never be
+        // reported: it would slip past the caller's closestT cull and leave the
+        // BVH traversal unable to tighten, deepening the stack.
+        if (!(t > EPSILON))
+            return false;
+
+        tOut = t;
+        uOut = V * rcpDet; // barycentric weight of v1 (Möller-Trumbore's u)
+        vOut = W * rcpDet; // barycentric weight of v2 (Möller-Trumbore's v)
+        return true;
     }
 
     inline std::tuple<tracey::Vec3, tracey::Vec3> transformAABB(const float M[3][4],

@@ -3,6 +3,15 @@
 #include <cassert>
 namespace tracey
 {
+    // Traversal uses a fixed per-ray stack (kTraversalStackSize). The stack can
+    // hold up to one "far sibling" per level on the path to a leaf, so its peak
+    // depth is bounded by the BVH's tree depth. We cap the tree depth at build
+    // time (kMaxBvhDepth) so the stack can never overflow — without the cap, a
+    // pathological mesh whose SAH splits stay lopsided (1-vs-rest) can build a
+    // tree deeper than the stack, and the unchecked push corrupts the frame.
+    static constexpr int kTraversalStackSize = 64;
+    static constexpr int kMaxBvhDepth = 60; // < kTraversalStackSize, with headroom
+
     Blas::Blas(std::span<const Vec3> positions, const BVHConfig &config) : Blas(std::span<const float>(reinterpret_cast<const float *>(positions.data()), positions.size() * 3), 3, std::nullopt, config)
     {
     }
@@ -97,7 +106,7 @@ namespace tracey
             int nodeIndex;
             float tNear;
         };
-        StackEntry stack[64];
+        StackEntry stack[kTraversalStackSize];
         int stackTop = 0;
 
         // Test the root once; children are AABB-tested when pushed, so popped
@@ -223,7 +232,10 @@ namespace tracey
         node.boundsMax = bMax;
 
         int count = static_cast<int>(end - start);
-        if (count <= m_config.leafThreshold)
+        // Force a leaf at the depth cap too: a deeper subtree would overflow the
+        // traversal stack. The extra prims just become a larger linear-tested
+        // leaf — same closest hit, only this rare subtree traverses slower.
+        if (count <= m_config.leafThreshold || depth >= kMaxBvhDepth)
         { // create leaf
             node.primCountAndType = count;
             node.firstChildOrPrim = static_cast<uint32_t>(m_primIndices.size());

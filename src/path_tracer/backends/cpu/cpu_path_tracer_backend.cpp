@@ -15,6 +15,7 @@
 
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <stdexcept>
 
@@ -185,10 +186,12 @@ namespace tracey
                 const glm::vec3 tint = glm::vec3(slots[domeIdx * 6u + 2u]) * slots[domeIdx * 6u + 1u].w;
                 return sampleDomeGradient(lights, domeIdx, dir) * tint;
             }
-            const float t = glm::clamp(0.5f * (dir.y + 1.0f), 0.0f, 1.0f);
-            const glm::vec3 horizon(1.0f, 0.55f, 0.20f);
-            const glm::vec3 zenith(0.15f, 0.35f, 1.00f);
-            return glm::mix(horizon, zenith, t);
+            // No Dome light in the scene → no environment radiance. Deleting the
+            // Dome light therefore truly disables environment lighting AND the sky
+            // background. (Previously this returned a hardcoded gradient, so the
+            // scene kept being lit and "the dome kept rendering" after removal.)
+            // Add a Dome light back to get a sky. Mirrored in the Metal backend.
+            return glm::vec3(0.0f);
         }
 
         // ── Material VM over the packed buffer (material_vm.glsl + op 35) ──
@@ -329,17 +332,34 @@ namespace tracey
 
     void CpuPathTracerBackend::bindScene(const SceneCompiler::CompiledScene &scene)
     {
-        if (scene.revision == m_sceneRevision) return;
-        m_sceneRevision = scene.revision;
+        // Already bound to this scene AND the TLAS actually got built. The m_tlas
+        // check is essential: a prior bind that bailed before building the TLAS
+        // (scene not yet built for CPU tracing) must NOT count as "bound", or the
+        // trace loop would dereference a null m_tlas. m_sceneRevision is committed
+        // only on full success (end of this function), so this stays honest.
+        if (scene.revision == m_sceneRevision && m_tlas) return;
 
-        // BVH: the engine's own CPU acceleration structures.
-        m_blasPtrs.clear();
+        // BVH: the engine's own CPU acceleration structures. A scene compiled in
+        // raster-only mode (buildAccelerationStructures == false) leaves the BLAS
+        // pointers null — it isn't renderable on the CPU backend. Bail WITHOUT
+        // committing m_sceneRevision (so a later, complete compile rebinds) and
+        // WITHOUT touching m_tlas; dispatch() skips tracing when m_tlas is null,
+        // so this can never crash. Build into a local first so a mid-loop bail
+        // doesn't leave m_blasPtrs half-populated.
+        std::vector<const Blas *> blasPtrs;
+        blasPtrs.reserve(scene.blases.size());
         for (const auto *blas : scene.blases)
         {
             const Blas *cpu = blas ? blas->cpuBlas() : nullptr;
-            if (!cpu) throw std::runtime_error("CpuPathTracerBackend: BLAS without CPU data");
-            m_blasPtrs.push_back(cpu);
+            if (!cpu)
+            {
+                std::fprintf(stderr, "[cpu-pt] bindScene: a BLAS has no CPU data — "
+                                     "scene not built for CPU tracing; skipping bind\n");
+                return;
+            }
+            blasPtrs.push_back(cpu);
         }
+        m_blasPtrs = std::move(blasPtrs);
         m_instances = scene.instances;
         m_instancesEnd = scene.instancesEnd;
         m_hasMotion = scene.hasMotion && m_instancesEnd.size() == m_instances.size();
@@ -394,6 +414,12 @@ namespace tracey
         m_textures.clear();
         m_textures.reserve(scene.textureSources.size());
         for (const auto &src : scene.textureSources) m_textures.emplace_back(src);
+
+        // Commit only now that the bind fully succeeded (TLAS built, buffers
+        // copied). Stamping it up front — as this used to — meant an early bail or
+        // throw left the scene marked "bound" with m_tlas null, and the next
+        // dispatch early-returned straight into a null dereference.
+        m_sceneRevision = scene.revision;
     }
 
     double CpuPathTracerBackend::dispatch(const SceneCompiler::CompiledScene &scene,
@@ -404,6 +430,11 @@ namespace tracey
         const auto start = std::chrono::high_resolution_clock::now();
 
         bindScene(scene);
+        // bindScene leaves m_tlas null when the scene isn't built for CPU tracing
+        // (raster-only compile). Skip the trace rather than dereference null in the
+        // intersect loop — the frame stays as-is (cleared/empty) and no work is done.
+        if (!m_tlas)
+            return 0.0;
 
         const uint32_t W = m_config->width;
         const uint32_t H = m_config->height;
@@ -953,6 +984,24 @@ namespace tracey
                         ray.origin = hitPos + offsetN * 0.001f;
                         ray.direction = L;
                         ray.invDirection = glm::vec3(1.0f) / ray.direction;
+
+                        // Russian roulette: past the first couple of bounces,
+                        // terminate low-throughput paths probabilistically and
+                        // scale the survivors by 1/p (unbiased — the expected
+                        // contribution is unchanged), so deep near-black bounces
+                        // stop costing rays. The start depth, the survival prob,
+                        // and the single nextRandom draw MUST match the Metal
+                        // backend (pathtrace_msl.hpp) exactly to keep the two in
+                        // parity. Depths 0-1 are never rouletted (they carry most
+                        // of the energy); the [0.05,0.95] clamp bounds both the
+                        // firefly boost and the path length.
+                        if (depth >= 2u)
+                        {
+                            const float p = glm::clamp(
+                                std::max(color.x, std::max(color.y, color.z)), 0.05f, 0.95f);
+                            if (nextRandom(seed) >= p) break;
+                            color /= p;
+                        }
                     }
 
                     // ── resolve ──
