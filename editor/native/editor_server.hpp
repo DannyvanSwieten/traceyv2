@@ -767,6 +767,10 @@ private:
     // procedural SOP/DOP workflow is entirely unchanged.
     std::unique_ptr<tracey::StageDocument> m_stage_doc;
     bool m_shot_mode = false;
+    // Path of the open shot's root .usda (create_shot / open_shot). Saved into the
+    // .tracey so a project save persists the shot pointer and a project load can
+    // reopen the shot (and its USD animation) automatically.
+    std::string m_shot_path;
     // Compose the StageDocument's stage into the engine scene and flag a recompile
     // (deferred to render_tick, off-main). Call under m_mutex.
     void compose_shot_into_engine();

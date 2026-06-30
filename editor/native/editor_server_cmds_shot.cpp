@@ -71,6 +71,7 @@ std::optional<std::string> EditorServer::handle_shot_commands(
         if (!doc->save()) return err_response("create_shot: failed to save layers");
         m_stage_doc = std::move(doc);
         m_shot_mode = true;
+        m_shot_path = path;
         compose_shot_into_engine();
         return ok_response(shot_state_json(m_stage_doc.get(), m_shot_mode));
     }
@@ -81,12 +82,14 @@ std::optional<std::string> EditorServer::handle_shot_commands(
         if (!doc) return err_response("open_shot: failed to open " + path);
         m_stage_doc = std::move(doc);
         m_shot_mode = true;
+        m_shot_path = path;
         compose_shot_into_engine();
         return ok_response(shot_state_json(m_stage_doc.get(), m_shot_mode));
     }
     if (cmd == "close_shot") {
         m_stage_doc.reset();
         m_shot_mode = false;
+        m_shot_path.clear();
         if (m_broadcast)
             m_broadcast(json{{"event", "shot_state"},
                              {"state", shot_state_json(nullptr, false)}}.dump());

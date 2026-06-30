@@ -517,6 +517,18 @@ std::optional<std::string> EditorServer::handle_io_commands(
                 {"loop",         static_cast<int>(m_timeline.loop)},
             };
 
+#ifdef TRACEY_HAS_USD
+            // Persist the open shot too. The .tracey above does NOT carry the shot's
+            // USD time samples, so without this a project save (Cmd+S) would lose the
+            // animation — only the separate "Save Shot" wrote it. Save the shot's
+            // layers and record its path so load_scene can reopen it.
+            if (m_shot_mode && m_stage_doc) {
+                if (!m_stage_doc->save())
+                    std::fprintf(stderr, "[save] shot USD layer save failed\n");
+                root["shot"] = m_shot_path;
+            }
+#endif
+
             std::ofstream out(path);
             if (!out) return err_response("could not open file for writing: " + path);
             out << root.dump(2);
@@ -660,6 +672,29 @@ std::optional<std::string> EditorServer::handle_io_commands(
                 wire_dop_sop_provider();
                 m_has_dop_imports = false;
             }
+
+#ifdef TRACEY_HAS_USD
+            // Reopen the shot saved with this project (if any) so its USD animation
+            // comes back automatically — the saved .tracey scene above is just a
+            // snapshot; the shot's composed stage is the source of truth and overrides
+            // it. Defensive: only when a shot was recorded and the file still exists.
+            m_stage_doc.reset();
+            m_shot_mode = false;
+            m_shot_path.clear();
+            {
+                const std::string shotPath = root.value("shot", std::string{});
+                if (!shotPath.empty() && std::filesystem::exists(shotPath)) {
+                    if (auto doc = tracey::StageDocument::openShot(shotPath)) {
+                        m_stage_doc = std::move(doc);
+                        m_shot_mode = true;
+                        m_shot_path = shotPath;
+                        compose_shot_into_engine(); // adopts the composed scene + broadcasts shot_state
+                    } else {
+                        std::fprintf(stderr, "[load] failed to reopen shot %s\n", shotPath.c_str());
+                    }
+                }
+            }
+#endif
 
             // Force a redraw + tell the frontend its stores are stale. The
             // SOP store listens for `sop_graph_changed`, the timeline UI for
