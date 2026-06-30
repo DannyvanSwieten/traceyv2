@@ -184,6 +184,26 @@ const App: Component = () => {
   // actor-inspector's "New Material" flow can open it without prop
   // drilling. App just reads the signal for layout decisions.
   const materialEditorOpen = isMaterialEditorOpen;
+  // The asset/texture browser shows only in departments that work with the
+  // library (Assets manage it, Layout references it) — see WORKSPACES.browserOpen.
+  // In Animation/Lighting/Rendering you operate on objects already in the scene,
+  // so the browser is hidden to keep the department focused on its task.
+  const browserOpen = () => WORKSPACES[activeWorkspace()].browserOpen;
+  // Department-aware outliner: the tree shows only what this department works on
+  // (lights in Lighting, placed objects in Layout/Animation, everything in Assets),
+  // so it's not the same full scene list everywhere. The inspector still reads the
+  // full actor store, so a selection that's filtered out of the tree still inspects.
+  const outlinerActors = () => {
+    const f = WORKSPACES[activeWorkspace()].outliner;
+    const all = actors();
+    if (f === 'lights') return all.filter((a) => a.light != null);
+    if (f === 'geometry') return all.filter((a) => a.light == null);
+    return all;
+  };
+  const outlinerLabel = () => {
+    const f = WORKSPACES[activeWorkspace()].outliner;
+    return f === 'lights' ? 'Lights' : f === 'geometry' ? 'Objects' : 'Scene Hierarchy';
+  };
   // SOP dock defaults to open — it's the primary editing surface, so
   // there's no reason to hide it on first launch.
   const [sopEditorOpen, setSopEditorOpen] = createSignal(true);
@@ -919,9 +939,9 @@ const App: Component = () => {
         }}
       >
         <div class="left-panel panel">
-          <h3>Scene Hierarchy</h3>
+          <h3>{outlinerLabel()}</h3>
           <SceneHierarchy
-            actors={actors}
+            actors={outlinerActors}
             selectedActorId={selectedActorId}
             onActorSelect={setSelectedActorId}
             onLightAdd={async (type) => {
@@ -1083,19 +1103,21 @@ const App: Component = () => {
               </div>
             </Show>
           </div>
-          <Splitter
-            orientation="horizontal"
-            onDrag={(dy) => setBrowserH((h) => clamp(h - dy, 80, 600))}
-          />
-          <div class="resources-wrapper">
-            <ResourcesBrowser
-              assets={getAssets()}
-              currentAssetPath={currentScene}
-              onAssetSelect={(asset) => setCurrentScene(asset.path)}
-              onAssetLoad={handleLoadAsset}
-              onAssetRemove={removeAsset}
+          <Show when={browserOpen()}>
+            <Splitter
+              orientation="horizontal"
+              onDrag={(dy) => setBrowserH((h) => clamp(h - dy, 80, 600))}
             />
-          </div>
+            <div class="resources-wrapper">
+              <ResourcesBrowser
+                assets={getAssets()}
+                currentAssetPath={currentScene}
+                onAssetSelect={(asset) => setCurrentScene(asset.path)}
+                onAssetLoad={handleLoadAsset}
+                onAssetRemove={removeAsset}
+              />
+            </div>
+          </Show>
         </div>
 
         {/* Single dock slot, shared between the SOP/VOP and Material

@@ -23,20 +23,33 @@ export interface WorkspaceLayout {
   // Dopesheet height is squashed to 0 in 'render' mode so the viewport
   // grabs the full vertical space.
   dopesheetH: number;
+  // The asset/texture browser (left dock, below the outliner). Assets are
+  // *managed* in the Assets departments and *referenced/dressed* in Layout, so
+  // it shows there; in Animation/Lighting/Rendering it's just clutter — you're
+  // working with objects already in the scene, not browsing the library.
+  browserOpen: boolean;
+  // Department-aware outliner filter. The outliner shows only what THIS department
+  // works on: 'lights' (Lighting — your lights, not buried in geometry), 'geometry'
+  // (Layout/Animation — the placed objects you dress/animate), or 'all' (Assets —
+  // the whole asset). Keeps the tree focused on the task instead of the full scene.
+  outliner: 'all' | 'geometry' | 'lights';
 }
 
 export const WORKSPACES: Record<WorkspaceName, WorkspaceLayout> = {
-  modeling:   { sopOpen: true,  materialOpen: false, dopOpen: false, dopesheetH: 200 },
-  shading:    { sopOpen: false, materialOpen: true,  dopOpen: false, dopesheetH: 200 },
-  simulation: { sopOpen: false, materialOpen: false, dopOpen: true,  dopesheetH: 200 },
+  modeling:   { sopOpen: true,  materialOpen: false, dopOpen: false, dopesheetH: 200, browserOpen: true,  outliner: 'all'      },
+  shading:    { sopOpen: false, materialOpen: true,  dopOpen: false, dopesheetH: 200, browserOpen: true,  outliner: 'all'      },
+  simulation: { sopOpen: false, materialOpen: false, dopOpen: true,  dopesheetH: 200, browserOpen: true,  outliner: 'all'      },
   // Layout + Lighting have no dedicated graph dock yet — they work from the
   // viewport + outliner + Resources/properties (and set their USD edit target).
   // Layout is static set-dressing: nothing to keyframe, so the dopesheet collapses
   // (like render). The keyframe editor belongs to Animation, which opens it tall.
-  layout:     { sopOpen: false, materialOpen: false, dopOpen: false, dopesheetH: 0   },
-  animation:  { sopOpen: false, materialOpen: false, dopOpen: false, dopesheetH: 280 },
-  lighting:   { sopOpen: false, materialOpen: false, dopOpen: false, dopesheetH: 200 },
-  render:     { sopOpen: false, materialOpen: false, dopOpen: false, dopesheetH: 0   },
+  // Layout is where you reference assets → browser ON; the rest work on objects
+  // already placed → browser OFF. Lighting's dopesheet collapses too — it's about
+  // placing/tuning lights, not keyframing.
+  layout:     { sopOpen: false, materialOpen: false, dopOpen: false, dopesheetH: 0,   browserOpen: true,  outliner: 'geometry' },
+  animation:  { sopOpen: false, materialOpen: false, dopOpen: false, dopesheetH: 280, browserOpen: false, outliner: 'geometry' },
+  lighting:   { sopOpen: false, materialOpen: false, dopOpen: false, dopesheetH: 0,   browserOpen: false, outliner: 'lights'   },
+  render:     { sopOpen: false, materialOpen: false, dopOpen: false, dopesheetH: 0,   browserOpen: false, outliner: 'all'      },
 };
 
 export const WORKSPACE_LABELS: Record<WorkspaceName, string> = {
