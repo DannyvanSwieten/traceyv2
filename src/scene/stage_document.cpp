@@ -56,6 +56,7 @@ namespace tracey
 #include <glm/gtc/type_ptr.hpp>
 
 #include <algorithm>
+#include <filesystem>
 #include <iostream>
 #include <unordered_map>
 #include <vector>
@@ -83,6 +84,23 @@ namespace tracey
             if (!l) return false;
             stage->SetEditTarget(UsdEditTarget(l));
             return true;
+        }
+        // Express `assetPath` RELATIVE to the layer that will hold the opinion (the
+        // active layer), so references/sublayers are portable — no absolute paths
+        // baked into the project's USD. Falls back to the input if a relative path
+        // can't be formed (e.g. different volumes).
+        std::string relativeToActiveLayer(const std::string &assetPath) const
+        {
+            SdfLayerRefPtr l = activeLayer();
+            if (!l) return assetPath;
+            const std::string layerReal = l->GetRealPath();
+            if (layerReal.empty()) return assetPath;
+            std::error_code ec;
+            std::filesystem::path rel = std::filesystem::relative(
+                std::filesystem::path(assetPath),
+                std::filesystem::path(layerReal).parent_path(), ec);
+            if (ec || rel.empty()) return assetPath;
+            return rel.generic_string();
         }
     };
 
@@ -143,7 +161,8 @@ namespace tracey
             }
             doc->m->deptOrder.push_back(dept);
             doc->m->layers.emplace(dept, layer);
-            subLayers.push_back(layerPath);
+            // Relative sublayer path (same dir as shot.usda) so the shot is portable.
+            subLayers.push_back(dept + ".usda");
         }
         stage->GetRootLayer()->SetSubLayerPaths(subLayers);
 
@@ -217,7 +236,7 @@ namespace tracey
         if (!m->routeToActive()) return false;
         UsdPrim p = m->stage->DefinePrim(SdfPath(primPath));
         if (!p) return false;
-        return p.GetReferences().AddReference(assetPath);
+        return p.GetReferences().AddReference(m->relativeToActiveLayer(assetPath));
     }
 
     std::string StageDocument::referenceAssetAuto(const std::string &assetPath,
@@ -244,7 +263,7 @@ namespace tracey
 
         UsdPrim p = m->stage->DefinePrim(SdfPath(path));
         if (!p) return {};
-        if (!p.GetReferences().AddReference(assetPath)) return {};
+        if (!p.GetReferences().AddReference(m->relativeToActiveLayer(assetPath))) return {};
         return path;
     }
 

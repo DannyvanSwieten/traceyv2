@@ -554,7 +554,12 @@ std::optional<std::string> EditorServer::handle_io_commands(
             if (m_shot_mode && m_stage_doc) {
                 if (!m_stage_doc->save())
                     std::fprintf(stderr, "[save] shot USD layer save failed\n");
-                root["shot"] = m_shot_path;
+                // Store the shot pointer RELATIVE to the project dir so the project
+                // is portable (move/rename/share without breaking).
+                std::error_code rec;
+                std::filesystem::path rel =
+                    std::filesystem::relative(m_shot_path, m_project_dir, rec);
+                root["shot"] = (rec || rel.empty()) ? m_shot_path : rel.generic_string();
             }
 #endif
 
@@ -743,15 +748,21 @@ std::optional<std::string> EditorServer::handle_io_commands(
             m_shot_mode = false;
             m_shot_path.clear();
             {
-                const std::string shotPath = root.value("shot", std::string{});
-                if (!shotPath.empty() && std::filesystem::exists(shotPath)) {
-                    if (auto doc = tracey::StageDocument::openShot(shotPath)) {
-                        m_stage_doc = std::move(doc);
-                        m_shot_mode = true;
-                        m_shot_path = shotPath;
-                        compose_shot_into_engine(); // adopts the composed scene + broadcasts shot_state
-                    } else {
-                        std::fprintf(stderr, "[load] failed to reopen shot %s\n", shotPath.c_str());
+                const std::string shotRel = root.value("shot", std::string{});
+                if (!shotRel.empty()) {
+                    // Resolve relative to the project dir (tolerate an absolute path too).
+                    std::filesystem::path shotAbs = std::filesystem::path(shotRel).is_absolute()
+                        ? std::filesystem::path(shotRel)
+                        : (m_project_dir / shotRel);
+                    if (std::filesystem::exists(shotAbs)) {
+                        if (auto doc = tracey::StageDocument::openShot(shotAbs.string())) {
+                            m_stage_doc = std::move(doc);
+                            m_shot_mode = true;
+                            m_shot_path = shotAbs.string();
+                            compose_shot_into_engine(); // adopts the composed scene + broadcasts shot_state
+                        } else {
+                            std::fprintf(stderr, "[load] failed to reopen shot %s\n", shotAbs.string().c_str());
+                        }
                     }
                 }
             }
