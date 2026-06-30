@@ -105,10 +105,13 @@ std::optional<std::string> EditorServer::handle_graph_commands(
             if (m_project_dir.empty()) return err_response("publish_asset: save the project first");
             const std::string name = m_asset_names.count(m_current_asset_id)
                                          ? m_asset_names[m_current_asset_id] : m_current_asset_id;
+            // No spaces in published filenames/asset paths — they make USD asset
+            // resolution fragile. "Asset 1" → "Asset_1" (matches the prim-name
+            // sanitization in referenceAssetAuto, so file and reference agree).
             std::string safe;
             for (char c : name) {
                 const bool ok = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
-                                (c >= '0' && c <= '9') || c == '_' || c == '-' || c == ' ';
+                                (c >= '0' && c <= '9') || c == '_' || c == '-';
                 safe += ok ? c : '_';
             }
             if (safe.empty()) safe = "asset";

@@ -117,6 +117,11 @@ std::optional<std::string> EditorServer::handle_shot_commands(
         if (!m_stage_doc) return err_response("reference_asset: no shot open");
         const std::string assetPath = req.value("path", std::string{});
         if (assetPath.empty()) return err_response("reference_asset: 'path' required");
+        // Don't author a dangling reference — the asset USD must exist on disk
+        // (publish it first). Caught here so the user gets a clear error instead of
+        // a silently-empty instance in the shot.
+        if (!std::filesystem::exists(assetPath))
+            return err_response("reference_asset: asset not found (publish it first): " + assetPath);
         // Set dressing belongs to the layout layer — author there, but DON'T change the
         // user's active department (importing an asset shouldn't yank you to Layout).
         // Save / route-to-layout / restore around the authoring only.

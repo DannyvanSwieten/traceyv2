@@ -466,6 +466,13 @@ std::optional<std::string> EditorServer::handle_io_commands(
             std::error_code ec;
             std::filesystem::remove(tmp, ec);
 
+            // The actor list is re-derived on load (load_scene drops the restored
+            // actors and re-cooks the graph / re-composes the shot), so persisting it
+            // is dead weight. Keep the camera (the viewport pose IS used on load) and
+            // drop the actors.
+            if (sceneJson.is_object() && sceneJson.contains("actors"))
+                sceneJson["actors"] = json::array();
+
             json root;
             root["version"] = 3;
             root["scene"] = std::move(sceneJson);
