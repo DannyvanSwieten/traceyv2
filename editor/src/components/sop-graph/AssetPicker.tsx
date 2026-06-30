@@ -1,4 +1,4 @@
-import { createSignal, onMount, For } from 'solid-js';
+import { createSignal, onMount, onCleanup, For } from 'solid-js';
 import * as api from '../../lib/api';
 import { showToast } from '../../lib/toasts';
 import './AssetPicker.css';
@@ -11,7 +11,14 @@ export function AssetPicker() {
   const [summary, setSummary] = createSignal<api.AssetSummary>({ assets: [], current: null });
 
   const refresh = () => api.listAssets().then(setSummary).catch(() => {});
-  onMount(refresh);
+  onMount(() => {
+    refresh();
+    // Re-list after a project load (and any external graph change) so the asset
+    // registry restored from the .tracey shows up even if this picker was already
+    // mounted — load_scene broadcasts sop_graph_changed once the registry is in.
+    const off = api.listen('sop_graph_changed', refresh);
+    onCleanup(off);
+  });
 
   const onSwitch = async (id: string) => {
     try { setSummary(await api.switchAsset(id)); } catch (e) { console.error('[asset] switch', e); }

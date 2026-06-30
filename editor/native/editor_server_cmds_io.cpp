@@ -503,6 +503,35 @@ std::optional<std::string> EditorServer::handle_io_commands(
             } else {
                 root["dop_graph"] = json::object();
             }
+            // Per-asset graph registry (R3). The .tracey's "sop_graph" above is only
+            // the asset that's CURRENT; without this every other asset's graph (e.g. a
+            // "Cube" you'd switched away from) is lost on reopen. Stash the current
+            // asset's live graph first so its latest edits are captured, then write
+            // every asset's name + graph. Empty registry (user never touched the asset
+            // commands) → omitted; load migrates such projects lazily.
+            if (!m_current_asset_id.empty()) {
+                if (m_sop_graph)
+                    m_asset_graphs[m_current_asset_id] = tracey::sops::serializeSopGraph(*m_sop_graph);
+                json items = json::array();
+                for (const auto& id : m_asset_order) {
+                    json graphObj = json::object();
+                    auto it = m_asset_graphs.find(id);
+                    if (it != m_asset_graphs.end() && !it->second.empty()) {
+                        try { graphObj = json::parse(it->second); }
+                        catch (const std::exception&) { graphObj = json::object(); }
+                    }
+                    items.push_back({
+                        {"id", id},
+                        {"name", m_asset_names.count(id) ? m_asset_names.at(id) : id},
+                        {"graph", graphObj},
+                    });
+                }
+                root["assets"] = {
+                    {"current", m_current_asset_id},
+                    {"next_seq", m_next_asset_seq},
+                    {"items", items},
+                };
+            }
             root["render_settings"] = {
                 {"max_samples", m_engine->max_samples()},
                 {"max_bounces", m_engine->max_bounces()},
@@ -661,6 +690,38 @@ std::optional<std::string> EditorServer::handle_io_commands(
                             std::clamp(tl["loop"].get<int>(), 0, 2));
                     }
                     m_timeline_dirty = true;
+                }
+
+                // Per-asset graph registry (R3). Restore every asset's graph so the
+                // whole library round-trips — not just the asset that was current
+                // (its graph is the sop_graph loaded above). Old projects with no
+                // "assets" key migrate lazily (ensureCurrentAsset wraps the loaded
+                // graph as "Asset 1" the first time an asset command runs).
+                m_asset_graphs.clear();
+                m_asset_names.clear();
+                m_asset_order.clear();
+                m_current_asset_id.clear();
+                m_next_asset_seq = 1;
+                if (root.contains("assets") && root["assets"].is_object()) {
+                    const auto& a = root["assets"];
+                    m_current_asset_id = a.value("current", std::string());
+                    m_next_asset_seq   = a.value("next_seq", 1);
+                    if (a.contains("items") && a["items"].is_array()) {
+                        for (const auto& item : a["items"]) {
+                            const std::string id = item.value("id", std::string());
+                            if (id.empty()) continue;
+                            m_asset_names[id] = item.value("name", id);
+                            m_asset_graphs[id] =
+                                (item.contains("graph") && item["graph"].is_object() && !item["graph"].empty())
+                                    ? item["graph"].dump()
+                                    : std::string();
+                            m_asset_order.push_back(id);
+                        }
+                    }
+                    // The current asset's graph is the sop_graph already loaded + cooked
+                    // above, so we don't reload it; just keep the registry consistent.
+                    if (!m_current_asset_id.empty() && m_sop_graph)
+                        m_asset_graphs[m_current_asset_id] = tracey::sops::serializeSopGraph(*m_sop_graph);
                 }
             } else {
                 // Legacy v1 file: scene fields are at the root, no graphs
