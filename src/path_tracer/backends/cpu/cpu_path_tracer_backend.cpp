@@ -527,7 +527,11 @@ namespace tracey
 
                     for (uint32_t depth = 0; depth <= in.maxDepth && alive; ++depth)
                     {
-                        const auto hit = m_tlas->intersect(ray, 0.01f, 1000.0f, RAY_FLAG_NONE);
+                        // tmax 1e8 (was 1000, which clipped large USD scenes —
+                        // the path tracer couldn't see past 1000 units). Far
+                        // beyond any realistic scene; must match the Metal
+                        // backend's r.max_distance for pt_backend_compare parity.
+                        const auto hit = m_tlas->intersect(ray, 0.01f, 1.0e8f, RAY_FLAG_NONE);
 
                         if (!hit)
                         {
@@ -715,15 +719,22 @@ namespace tracey
                             const auto *slots = reinterpret_cast<const glm::vec4 *>(m_lights.data());
                             const glm::vec3 diffuseBrdf =
                                 albedo * (1.0f - metallic) * (1.0f / 3.14159265f);
-                            for (uint32_t li = 0; li < in.lightCount; ++li)
+                            // Single-sample NEE: pick ONE analytic light uniformly
+                            // and weight by lightCount, rather than looping every
+                            // light (O(lightCount) shadow rays per hit — fatal on a
+                            // 500+-light scene like Old Attic). Unbiased. Consumes
+                            // exactly one nextRandom() here, matching the Metal
+                            // backend so pt_backend_compare parity holds.
+                            const uint32_t nl = in.lightCount;
+                            const uint32_t li =
+                                std::min(static_cast<uint32_t>(nextRandom(seed) * nl), nl - 1u);
+                            const glm::vec4 posType = slots[li * 6u + 0u];
+                            const glm::vec4 dirIntens = slots[li * 6u + 1u];
+                            const glm::vec4 colorExtra = slots[li * 6u + 2u];
+
+                            const int ltype = static_cast<int>(posType.w);
+                            if (ltype != 2)  // skip Dome (handled by the miss shader)
                             {
-                                const glm::vec4 posType = slots[li * 6u + 0u];
-                                const glm::vec4 dirIntens = slots[li * 6u + 1u];
-                                const glm::vec4 colorExtra = slots[li * 6u + 2u];
-
-                                const int ltype = static_cast<int>(posType.w);
-                                if (ltype == 2) continue;  // Dome
-
                                 glm::vec3 Ldir;
                                 float falloff;
                                 float lightDist;  // shadow-ray reach
@@ -756,35 +767,39 @@ namespace tracey
                                 // this is the exact old `dot(N,Ldir) <= 0`
                                 // early-out (parity-safe).
                                 const float rawNdotL = glm::dot(N, Ldir);
-                                if (rawNdotL <= -subsurface) continue;
-                                const float NdotLlight = std::max(rawNdotL, 0.0f);
+                                if (rawNdotL > -subsurface)
+                                {
+                                    const float NdotLlight = std::max(rawNdotL, 0.0f);
 
-                                // Shadow ray: skip if the light is occluded.
-                                Ray sray;
-                                sray.origin = hitPos + N * 0.001f;
-                                sray.direction = Ldir;
-                                sray.invDirection = glm::vec3(1.0f) / sray.direction;
-                                sray.time = sampleTime;
-                                if (m_tlas->intersect(sray, 0.001f,
-                                                      std::max(lightDist - 0.002f, 0.002f),
-                                                      RAY_FLAG_NONE))
-                                    continue;
-
-                                const glm::vec3 Li = glm::vec3(colorExtra) * dirIntens.w * falloff;
-                                const glm::vec3 Hs = glm::normalize(Ldir + V);
-                                const float sheenBrdf =
-                                    sheen * std::pow(1.0f - std::max(glm::dot(Ldir, Hs), 0.0f), 5.0f);
-                                // Wrap-diffusion: blend Lambertian with a softened,
-                                // tinted response. mix(...,0) == Lambertian, so
-                                // subsurface==0 keeps the diffuse NEE bit-identical.
-                                const float wd = 1.0f + subsurface;
-                                const float wrapCos = glm::clamp(
-                                    (rawNdotL + subsurface) / (wd * wd), 0.0f, 1.0f);
-                                const glm::vec3 sssResp = subsurfaceColor *
-                                    (1.0f - metallic) * (1.0f / 3.14159265f) * wrapCos;
-                                const glm::vec3 diffuseLobe =
-                                    glm::mix(diffuseBrdf * NdotLlight, sssResp, subsurface);
-                                accum += color * (diffuseLobe + sheenBrdf * NdotLlight) * Li;
+                                    // Shadow ray: skip if the light is occluded.
+                                    Ray sray;
+                                    sray.origin = hitPos + N * 0.001f;
+                                    sray.direction = Ldir;
+                                    sray.invDirection = glm::vec3(1.0f) / sray.direction;
+                                    sray.time = sampleTime;
+                                    if (!m_tlas->intersect(sray, 0.001f,
+                                                           std::max(lightDist - 0.002f, 0.002f),
+                                                           RAY_FLAG_NONE))
+                                    {
+                                        const glm::vec3 Li = glm::vec3(colorExtra) * dirIntens.w * falloff;
+                                        const glm::vec3 Hs = glm::normalize(Ldir + V);
+                                        const float sheenBrdf =
+                                            sheen * std::pow(1.0f - std::max(glm::dot(Ldir, Hs), 0.0f), 5.0f);
+                                        // Wrap-diffusion: blend Lambertian with a softened,
+                                        // tinted response. mix(...,0) == Lambertian, so
+                                        // subsurface==0 keeps the diffuse NEE bit-identical.
+                                        const float wd = 1.0f + subsurface;
+                                        const float wrapCos = glm::clamp(
+                                            (rawNdotL + subsurface) / (wd * wd), 0.0f, 1.0f);
+                                        const glm::vec3 sssResp = subsurfaceColor *
+                                            (1.0f - metallic) * (1.0f / 3.14159265f) * wrapCos;
+                                        const glm::vec3 diffuseLobe =
+                                            glm::mix(diffuseBrdf * NdotLlight, sssResp, subsurface);
+                                        // * nl: weight the single picked light by the count.
+                                        accum += color * (diffuseLobe + sheenBrdf * NdotLlight) *
+                                                 Li * static_cast<float>(nl);
+                                    }
+                                }
                             }
                         }
 

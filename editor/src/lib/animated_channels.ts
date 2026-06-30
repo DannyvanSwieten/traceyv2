@@ -9,8 +9,25 @@
 // This module is a derived view over stores/sops; nothing here mutates state.
 
 import { Channels, Extrap, Keyframe, ParamValue, SopGraph, SopNode } from './sop_graph';
+import { selectedNodes } from '../stores/sops';
+import { actors, selectedActorId } from '../stores/actors';
 
 const AXIS = ['x', 'y', 'z'];
+
+// The set of SOP-node uids whose channels the dopesheet/curve editor should
+// show: the currently-selected graph node(s) plus the selected actor's source
+// node. Scoping to the selection is essential — a production scene (Marbles:
+// 574 animated subnets → ~1722 channels) would otherwise render every channel
+// at once and lock up the WebView. Empty set ⇒ show nothing (pick an object).
+export function channelScope(): Set<number> {
+  const s = new Set<number>(selectedNodes());
+  const aid = selectedActorId();
+  if (aid != null) {
+    const a = actors().find((x) => x.id === aid);
+    if (a?.sop_node_uid != null) s.add(a.sop_node_uid);
+  }
+  return s;
+}
 
 export interface AnimatedChannel {
   nodeUid: number;
@@ -62,9 +79,20 @@ function paramSlotCount(p: ParamValue): number {
 // subgraph. Path prefix accumulates ancestor labels (e.g. ["subnet_a"]) so
 // channel rows read like "subnet_a/cube.translate.x" without the user having
 // to think about subnet uids.
-function collectChannels(g: SopGraph, prefix: string[], out: AnimatedChannel[]): void {
+function collectChannels(
+  g: SopGraph,
+  prefix: string[],
+  out: AnimatedChannel[],
+  scope: Set<number> | null,
+): void {
   for (const n of g.nodes) {
     const label = [...prefix, nodeLabel(n)].join('/');
+    // Always walk into subgraphs (an in-scope node may be nested), but only
+    // emit a node's own channels when it's in scope (null scope ⇒ all).
+    if (scope && !scope.has(n.uid)) {
+      if (n.subgraph) collectChannels(n.subgraph, [...prefix, nodeLabel(n)], out, scope);
+      continue;
+    }
     for (const [paramName, p] of Object.entries(n.params)) {
       const chs = channelsOf(p);
       if (!chs) continue;
@@ -86,14 +114,19 @@ function collectChannels(g: SopGraph, prefix: string[], out: AnimatedChannel[]):
       }
     }
     if (n.subgraph) {
-      collectChannels(n.subgraph, [...prefix, nodeLabel(n)], out);
+      collectChannels(n.subgraph, [...prefix, nodeLabel(n)], out, scope);
     }
   }
 }
 
-export function listAnimatedChannels(graph: SopGraph): AnimatedChannel[] {
+// `scope` limits the result to channels owned by those node uids (see
+// channelScope) — pass null to collect every animated channel in the graph.
+export function listAnimatedChannels(
+  graph: SopGraph,
+  scope: Set<number> | null = null,
+): AnimatedChannel[] {
   const out: AnimatedChannel[] = [];
-  collectChannels(graph, [], out);
+  collectChannels(graph, [], out, scope);
   out.sort((a, b) => a.label.localeCompare(b.label));
   return out;
 }

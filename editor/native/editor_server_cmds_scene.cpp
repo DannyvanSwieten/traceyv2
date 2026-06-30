@@ -54,9 +54,37 @@ std::optional<std::string> EditorServer::handle_scene_commands(
             const std::string name = req.value("name", defaultName);
 
             auto* actor = m_engine->scene().createActor();
-            actor->setName(name);
             actor->setTransform(xform);
             actor->setLight(light);
+
+#ifdef TRACEY_HAS_USD
+            if (m_shot_mode && m_stage_doc) {
+                // Author the light into the active department layer at a stable prim
+                // path, and name the actor by that path so later transform edits route
+                // back to the same prim. (v1 routes every type → SphereLight; full
+                // UsdLux type coverage is a lighting-department task.)
+                std::string prim = "/shot/";
+                for (char c : name) {
+                    const bool an = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                                    (c >= '0' && c <= '9');
+                    prim += an ? c : '_';
+                }
+                prim += "_" + std::to_string(actor->getUid());
+                actor->setName(prim);
+                // Author the matching UsdLux type so the light survives a recompose
+                // from USD. A Dome MUST be a DomeLight — authoring it as a SphereLight
+                // (the old v1 catch-all) made it read back as a dim Point, so the
+                // environment lighting vanished on the next recompose. (Sun/Area still
+                // round-trip through SphereLight for now — a lighting-dept follow-up.)
+                if (light.type == tracey::LightType::Dome)
+                    m_stage_doc->defineDomeLight(prim, 1.0f, tracey::Vec3(1.0f));
+                else
+                    m_stage_doc->defineSphereLight(prim, xform.position(), 1.0f, tracey::Vec3(1.0f));
+            } else
+#endif
+            {
+                actor->setName(name);
+            }
 
             // Refresh ONLY the light buffer in place — adding a light changes no
             // geometry, so a full compile_scene() (which re-uploads every vertex
@@ -103,6 +131,20 @@ std::optional<std::string> EditorServer::handle_scene_commands(
             const uint64_t id = req.at("actor_id").get<uint64_t>();
             auto* a = m_engine->scene().getActor(id);
             if (!a) return ok_response(false);
+#ifdef TRACEY_HAS_USD
+            if (m_shot_mode && m_stage_doc) {
+                // Layout/shot: the actor is a USD-referenced instance. Removing it from
+                // the engine scene alone wouldn't stick — the next recompose re-derives
+                // it from the stage. Remove the instance's prim from the layout layer,
+                // then recompose so it's gone for good (and persisted in layout.usd).
+                const std::string primPath = a->name();
+                if (!m_stage_doc->removePrim(primPath))
+                    return err_response("delete_actor: could not remove " + primPath);
+                if (m_selected_actor_id && *m_selected_actor_id == id) m_selected_actor_id.reset();
+                compose_shot_into_engine();
+                return ok_response(true);
+            }
+#endif
             // A light-only actor (no geometry instances — e.g. a create_light
             // sun/dome) can refresh lights in place; anything carrying geometry
             // needs the full recompile so its instances/TLAS are rebuilt.
@@ -211,6 +253,29 @@ std::optional<std::string> EditorServer::handle_scene_commands(
             const auto xform = transform_from_json(req.at("transform"));
             a->setTransform(xform);
 
+#ifdef TRACEY_HAS_USD
+            // Shot mode: also author the edit into the active department layer (for
+            // persistence + non-destructive separation). The actor's name is its USD
+            // prim path (set by convertStageToScene); author the full transform as a
+            // matrix op (lossless — no quaternion→euler). Then refresh the TLAS in
+            // place (topology unchanged) so the move is visible without a full compile.
+            if (m_shot_mode && m_stage_doc) {
+                if (m_stage_doc->activeDepartment() == "anim") {
+                    // Auto-key: dragging in the Animation department writes a keyframe
+                    // (time sample) at the playhead, not a static placement. Keyed as
+                    // TRS euler channels so rotation interpolates in euler space.
+                    const double frame = m_timeline.current_time * m_timeline.fps;
+                    m_stage_doc->setPrimTRSAtTime(a->name(), frame, xform.position(),
+                                                  euler_xyz_deg_from_quat(xform.rotation()),
+                                                  xform.scale());
+                    if (m_broadcast) m_broadcast(R"({"event":"shot_keys_changed"})");
+                } else {
+                    m_stage_doc->setPrimMatrix(a->name(), xform.toMatrix());
+                }
+                if (m_engine->path_tracer_ready()) m_engine->refresh_tlas_only();
+            }
+#endif
+
             // If this actor was emitted by a SOP graph object_output node,
             // write the transform back into that node's parameters so the
             // edit survives the next cook (instead of getting clobbered).
@@ -263,6 +328,25 @@ std::optional<std::string> EditorServer::handle_scene_commands(
             tracey::Transform xf = a->transform();
             xf.setRotation(qz * qy * qx);
             a->setTransform(xf);
+
+#ifdef TRACEY_HAS_USD
+            // Shot mode: author the full (now-rotated) transform into the active
+            // department layer, same as set_actor_transform. Without this the rotation
+            // only lived on the engine actor and the next recompose reverted it.
+            if (m_shot_mode && m_stage_doc) {
+                if (m_stage_doc->activeDepartment() == "anim") {
+                    // Key as TRS euler channels using the euler the user actually typed
+                    // (deg), NOT a quat→euler round-trip — so a -180°→180° key sweeps a
+                    // full 360° instead of collapsing (the two are the same orientation).
+                    const double frame = m_timeline.current_time * m_timeline.fps;
+                    m_stage_doc->setPrimTRSAtTime(a->name(), frame, xf.position(), deg, xf.scale());
+                    if (m_broadcast) m_broadcast(R"({"event":"shot_keys_changed"})");
+                } else {
+                    m_stage_doc->setPrimMatrix(a->name(), xf.toMatrix());
+                }
+                if (m_engine->path_tracer_ready()) m_engine->refresh_tlas_only();
+            }
+#endif
 
             // Write back to the SOP node so the edit survives the next cook.
             // Same shape as set_actor_transform's writeback for translate/scale.

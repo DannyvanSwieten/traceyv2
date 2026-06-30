@@ -82,7 +82,11 @@ namespace tracey
         Quaternion m_rotation{1.0f, 0.0f, 0.0f, 0.0f}; // identity
         float m_fov = 45.0f;                           // degrees
         float m_nearPlane = 0.01f;
-        float m_farPlane = 1000.0f;
+        // Far plane is generous by default: production USD scenes (Kitchen Set,
+        // Marbles, Old Attic) span thousands of world units, and a 1000-unit far
+        // plane clipped them. The orbit camera additionally adapts near/far to
+        // the view distance (see update_camera_from_input) for depth precision.
+        float m_farPlane = 100000.0f;
         float m_aspectRatio = 1.0f;
         float m_aperture = 0.0f;        // lens radius (0 = pinhole)
         float m_focalDistance = 5.0f;   // in-focus distance along the view dir

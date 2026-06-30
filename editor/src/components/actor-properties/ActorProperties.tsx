@@ -13,11 +13,60 @@ import { MaterialOverride } from './MaterialOverride';
 import { sopGraph } from '../../stores/sops';
 import { findNodeRecursive } from '../../lib/sop_graph';
 import { autoKey, setKeyAtPlayhead } from '../../stores/timeline';
+import { refreshActors } from '../../stores/actors';
 import './ActorProperties.css';
 
 export type InstanceInfo = api.InstanceInfo;
 export type Transform = api.Transform;
 export type Actor = api.Actor;
+
+// Decompose a quaternion to XYZ Tait-Bryan euler degrees, matching the native
+// euler→quat convention (q = qz·qy·qx ⇒ rotation matrix R = Rz·Ry·Rx). Lets the
+// inspector read back the rotation of actors with no SOP node (USD/shot-referenced
+// instances), so the field shows the real value and accumulates across axes instead
+// of resetting to zero. Rounded to kill quaternion round-trip float noise (44.99998).
+function quatToEulerDegXYZ(q: { w: number; x: number; y: number; z: number }): [number, number, number] {
+  const { w, x, y, z } = q;
+  const r00 = 1 - 2 * (y * y + z * z);
+  const r10 = 2 * (x * y + w * z);
+  const r20 = 2 * (x * z - w * y);
+  const r21 = 2 * (y * z + w * x);
+  const r22 = 1 - 2 * (x * x + y * y);
+  const RAD = 180 / Math.PI;
+  let rx: number;
+  let rz: number;
+  const ry = Math.asin(Math.max(-1, Math.min(1, -r20)));
+  if (Math.abs(r20) < 0.99999) {
+    rx = Math.atan2(r21, r22);
+    rz = Math.atan2(r10, r00);
+  } else {
+    // Gimbal lock (pitch ≈ ±90°): fold roll into yaw.
+    const r01 = 2 * (x * y - w * z);
+    const r11 = 1 - 2 * (x * x + z * z);
+    rx = 0;
+    rz = Math.atan2(-r01, r11);
+  }
+  const round = (v: number): number => Math.round(v * RAD * 1e4) / 1e4;
+  return [round(rx), round(ry), round(rz)];
+}
+
+// Inverse: XYZ Tait-Bryan euler degrees → quaternion, matching the native order
+// q = qz·qy·qx. Used to rebuild the full transform from the inspector's rotation
+// draft so a position/scale edit carries the current rotation instead of a stale one.
+function eulerDegXYZToQuat(e: [number, number, number]): { w: number; x: number; y: number; z: number } {
+  const H = Math.PI / 360; // deg → half-radians
+  const cx = Math.cos(e[0] * H), sx = Math.sin(e[0] * H);
+  const cy = Math.cos(e[1] * H), sy = Math.sin(e[1] * H);
+  const cz = Math.cos(e[2] * H), sz = Math.sin(e[2] * H);
+  type Q = { w: number; x: number; y: number; z: number };
+  const mul = (a: Q, b: Q): Q => ({
+    w: a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z,
+    x: a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
+    y: a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
+    z: a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w,
+  });
+  return mul({ w: cz, x: 0, y: 0, z: sz }, mul({ w: cy, x: 0, y: sy, z: 0 }, { w: cx, x: sx, y: 0, z: 0 }));
+}
 
 interface ActorPropertiesProps {
   selectedActorId: Accessor<number | null>;
@@ -34,6 +83,20 @@ export const ActorProperties: Component<ActorPropertiesProps> = (props) => {
     const id = props.selectedActorId();
     if (id === null) return null;
     return props.actors().find((a) => a.id === id) || null;
+  };
+
+  // The selected actor's rotation as euler degrees. Read live off the actor so it
+  // tracks the current frame — when you scrub, the actor's transform is re-derived
+  // from USD and this updates with it (exactly like the position/scale fields). SOP
+  // actors read their node's lossless `rotate_euler_deg`; shot/USD actors (no node)
+  // derive euler from the live rotation quaternion.
+  const rotationEuler = (actor: Actor): [number, number, number] => {
+    if (actor.sop_node_uid != null) {
+      const node = findNodeRecursive(sopGraph(), actor.sop_node_uid);
+      const p = node?.params['rotate_euler_deg'];
+      if (p && p.type === 'vec3') return p.value;
+    }
+    return quatToEulerDegXYZ(actor.transform.rotation);
   };
 
   // The shared library signal is hydrated by whichever component mounts
@@ -135,6 +198,8 @@ export const ActorProperties: Component<ActorPropertiesProps> = (props) => {
   ) => {
     const newTransform: Transform = {
       position: { ...actor.transform.position },
+      // Carry the actor's current rotation (kept fresh in-place by handleRotationChange)
+      // so a position/scale edit never wipes it.
       rotation: { ...actor.transform.rotation },
       scale: { ...actor.transform.scale },
     };
@@ -158,22 +223,13 @@ export const ActorProperties: Component<ActorPropertiesProps> = (props) => {
           value,
         });
       }
+      // Re-read the authoritative pose so the cached actor (incl. its rotation
+      // quaternion) is fresh — a later rotation edit then builds on the true pose
+      // instead of a stale one, and the position/scale fields show the new value.
+      await refreshActors('after transform edit');
     } catch (error) {
       console.error('Failed to update transform:', error);
     }
-  };
-
-  // Read the actor's `rotate_euler_deg` straight off its source SOP node so
-  // the inspector mirrors the storage shape exactly (no quat → euler
-  // conversion to gimbal-mangle the user's edits). Returns [0,0,0] when the
-  // actor has no SOP source — those actors aren't rotatable through the
-  // current UI anyway.
-  const rotationEuler = (actor: Actor): [number, number, number] => {
-    if (actor.sop_node_uid == null) return [0, 0, 0];
-    const node = findNodeRecursive(sopGraph(), actor.sop_node_uid);
-    const p = node?.params['rotate_euler_deg'];
-    if (p && p.type === 'vec3') return p.value;
-    return [0, 0, 0];
   };
 
   const handleRotationChange = async (
@@ -185,6 +241,10 @@ export const ActorProperties: Component<ActorPropertiesProps> = (props) => {
     const cur = rotationEuler(actor);
     const next: [number, number, number] = [cur[0], cur[1], cur[2]];
     next[axis] = value;
+    // Update the cached pose in place IMMEDIATELY so the next axis edit accumulates
+    // onto this one. The engine doesn't echo the new rotation back synchronously, so
+    // without this each axis would read a stale base and only the last would stick.
+    actor.transform.rotation = eulerDegXYZToQuat(next);
     try {
       await api.setActorRotationEuler(actor.id, { x: next[0], y: next[1], z: next[2] });
       // Auto-key the rotated axis on rotate_euler_deg's channel.

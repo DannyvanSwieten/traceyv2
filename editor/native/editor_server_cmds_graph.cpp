@@ -5,10 +5,125 @@
 
 #include "editor_server_cmds_common.hpp"
 
+#include "scene/usd_exporter.hpp" // publish_asset → USD (guarded by TRACEY_HAS_USD)
+
 namespace tracey_editor {
 
 std::optional<std::string> EditorServer::handle_graph_commands(
     const std::string& cmd, const json& req) {
+        // ── Asset registry (R1: per-asset SOP graphs — "one graph models one object")
+        // Each asset is a named SOP graph; the CURRENT asset's graph is the live
+        // m_sop_graph, so the existing cook→scene→render previews it. The map stashes
+        // the others; switch_asset swaps which is live.
+        auto ensureCurrentAsset = [&]() {
+            if (!m_current_asset_id.empty()) return;
+            // Migrate the existing single global graph into the first asset.
+            const std::string id = "asset" + std::to_string(m_next_asset_seq++);
+            m_asset_graphs[id] = m_sop_graph ? tracey::sops::serializeSopGraph(*m_sop_graph) : std::string();
+            m_asset_names[id] = "Asset 1";
+            m_asset_order.push_back(id);
+            m_current_asset_id = id;
+        };
+        auto stashCurrent = [&]() {
+            if (!m_current_asset_id.empty() && m_sop_graph)
+                m_asset_graphs[m_current_asset_id] = tracey::sops::serializeSopGraph(*m_sop_graph);
+        };
+        auto assetSummary = [&]() -> json {
+            json arr = json::array();
+            for (const auto& id : m_asset_order)
+                arr.push_back({{"id", id}, {"name", m_asset_names.count(id) ? m_asset_names.at(id) : id}});
+            return json{{"assets", arr},
+                        {"current", m_current_asset_id.empty() ? json(nullptr) : json(m_current_asset_id)}};
+        };
+
+        if (cmd == "list_assets") {
+            ensureCurrentAsset();
+            stashCurrent();
+            return ok_response(assetSummary());
+        }
+        if (cmd == "create_asset") {
+            ensureCurrentAsset();
+            stashCurrent();
+            const std::string id = "asset" + std::to_string(m_next_asset_seq++);
+            const std::string name = req.value("name",
+                std::string("Asset ") + std::to_string(m_asset_order.size() + 1));
+            m_asset_graphs[id] = std::string(); // empty (blank) graph
+            m_asset_names[id] = name;
+            m_asset_order.push_back(id);
+            m_current_asset_id = id;
+            load_sop_graph_json("");             // blank the viewport for the new asset
+            if (m_broadcast) m_broadcast(R"({"event":"scene_changed"})");
+            return ok_response(assetSummary());
+        }
+        if (cmd == "switch_asset") {
+            const std::string id = req.value("id", std::string{});
+            if (!m_asset_graphs.count(id)) return err_response("switch_asset: unknown asset " + id);
+            ensureCurrentAsset();
+            stashCurrent();
+            m_current_asset_id = id;
+            load_sop_graph_json(m_asset_graphs[id]);
+            if (m_broadcast) {
+                m_broadcast(R"({"event":"scene_changed"})");
+                m_broadcast(R"({"event":"sop_graph_changed"})");
+            }
+            return ok_response(assetSummary());
+        }
+        if (cmd == "rename_asset") {
+            const std::string id = req.value("id", std::string{});
+            if (!m_asset_names.count(id)) return err_response("rename_asset: unknown asset " + id);
+            m_asset_names[id] = req.value("name", m_asset_names[id]);
+            return ok_response(assetSummary());
+        }
+        if (cmd == "delete_asset") {
+            const std::string id = req.value("id", std::string{});
+            if (!m_asset_graphs.count(id)) return err_response("delete_asset: unknown asset " + id);
+            m_asset_graphs.erase(id);
+            m_asset_names.erase(id);
+            m_asset_order.erase(std::remove(m_asset_order.begin(), m_asset_order.end(), id), m_asset_order.end());
+            if (m_current_asset_id == id) {
+                m_current_asset_id = m_asset_order.empty() ? std::string() : m_asset_order.front();
+                load_sop_graph_json(m_current_asset_id.empty() ? std::string()
+                                                               : m_asset_graphs[m_current_asset_id]);
+                if (m_broadcast) {
+                    m_broadcast(R"({"event":"scene_changed"})");
+                    m_broadcast(R"({"event":"sop_graph_changed"})");
+                }
+            }
+            return ok_response(assetSummary());
+        }
+        // Publish the CURRENT asset's cooked geometry → <project>/assets/<name>/<name>.usd
+        // (the asset's USD model). It then appears in the project Assets tab and can be
+        // referenced into a shot's layout (→ Shot). This is how a modeled asset enters
+        // the USD scene — composing multiple objects happens by referencing, not by one
+        // graph emitting many actors.
+        if (cmd == "publish_asset") {
+#ifndef TRACEY_HAS_USD
+            return err_response("publish_asset: this build has no OpenUSD support");
+#else
+            ensureCurrentAsset();
+            if (m_current_asset_id.empty()) return err_response("publish_asset: no current asset");
+            if (m_project_dir.empty()) return err_response("publish_asset: save the project first");
+            const std::string name = m_asset_names.count(m_current_asset_id)
+                                         ? m_asset_names[m_current_asset_id] : m_current_asset_id;
+            std::string safe;
+            for (char c : name) {
+                const bool ok = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                                (c >= '0' && c <= '9') || c == '_' || c == '-' || c == ' ';
+                safe += ok ? c : '_';
+            }
+            if (safe.empty()) safe = "asset";
+            const std::filesystem::path dir = m_project_dir / "assets" / safe;
+            std::error_code ec;
+            std::filesystem::create_directories(dir, ec);
+            const std::string path = (dir / (safe + ".usd")).string();
+            std::string err;
+            if (!tracey::UsdExporter::exportToFile(m_engine->scene(), path, &err))
+                return err_response("publish_asset: " + err);
+            if (m_broadcast) m_broadcast(R"({"event":"assets_changed"})");
+            return ok_response(json{{"name", name}, {"path", path}});
+#endif
+        }
+
         // ── SOP graph (scene-level Houdini-style /obj network) ──
         // Mirrors the material-graph commands: catalog query + get/set the
         // whole graph as JSON. Frontend mutates locally and debounce-pushes
@@ -76,6 +191,9 @@ std::optional<std::string> EditorServer::handle_graph_commands(
             // Cache so the auto re-cook in render_tick can re-post without
             // a round-trip to the frontend.
             m_last_pushed_graph_json = graph_json;
+            // Keep the current asset's stored recipe in sync (R1). Editing the live
+            // graph edits the current asset; switch_asset later restores from here.
+            if (!m_current_asset_id.empty()) m_asset_graphs[m_current_asset_id] = graph_json;
             // Refresh the dop_import gate eagerly so the very first cook
             // after the user adds a dop_import SOP picks up its stamp.
             // The post-cook refresh in apply_emitted runs later, but

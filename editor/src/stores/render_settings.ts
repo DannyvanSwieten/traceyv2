@@ -8,6 +8,9 @@ import { createSignal } from 'solid-js';
 import * as api from '../lib/api';
 
 const [ptPreviewSignal, setPtPreviewSignal] = createSignal(false);
+// Realtime preview: trace live while the camera moves vs. freeze-until-settle.
+// Defaults ON (interactive); the engine default matches.
+const [ptRealtimeSignal, setPtRealtimeSignal] = createSignal(true);
 const [frameLockedSignal, setFrameLockedSignal] = createSignal(false);
 const [maxSamplesSignal, setMaxSamplesSignal] = createSignal(16);
 const [maxBouncesSignal, setMaxBouncesSignal] = createSignal(8);
@@ -29,6 +32,7 @@ const [denoiseSignal, setDenoiseSignal] = createSignal<boolean>(
 const [denoiserAvailableSignal, setDenoiserAvailableSignal] = createSignal(false);
 
 export const ptPreviewEnabled = ptPreviewSignal;
+export const ptRealtime = ptRealtimeSignal;
 export const frameLocked = frameLockedSignal;
 export const maxSamples = maxSamplesSignal;
 export const maxBounces = maxBouncesSignal;
@@ -43,6 +47,9 @@ export function initRenderSettings(): void {
   api.getPtPreview()
     .then(setPtPreviewSignal)
     .catch((e) => console.warn('initial pt_preview fetch failed:', e));
+  api.getPtRealtime()
+    .then(setPtRealtimeSignal)
+    .catch((e) => console.warn('initial pt_realtime fetch failed:', e));
   api.timelineGetFrameLocked()
     .then(setFrameLockedSignal)
     .catch((e) => console.warn('initial frame_locked fetch failed:', e));
@@ -86,6 +93,19 @@ export async function setPtPreview(next: boolean): Promise<boolean> {
   } catch (e) {
     console.warn('set_pt_preview failed:', e);
     setPtPreviewSignal(!next);
+    return false;
+  }
+}
+
+// Optimistic flip + native push, rolled back on failure.
+export async function setPtRealtime(next: boolean): Promise<boolean> {
+  setPtRealtimeSignal(next);
+  try {
+    await api.setPtRealtime(next);
+    return true;
+  } catch (e) {
+    console.warn('set_pt_realtime failed:', e);
+    setPtRealtimeSignal(!next);
     return false;
   }
 }

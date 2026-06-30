@@ -10,7 +10,7 @@ import {
   onMount,
 } from 'solid-js';
 import * as api from '../../lib/api';
-import { AnimatedChannel, listAnimatedChannels } from '../../lib/animated_channels';
+import { AnimatedChannel, channelScope, listAnimatedChannels } from '../../lib/animated_channels';
 import { autoTangent, channelValueRange, evalChannel, evalSegment } from '../../lib/curve_eval';
 import { Extrap, Keyframe } from '../../lib/sop_graph';
 import { animPanelMode, setAnimPanelMode } from '../../lib/anim_panel_mode';
@@ -130,7 +130,9 @@ interface ChannelMenuState {
 }
 
 export const CurveEditor: Component = () => {
-  const channels = createMemo(() => listAnimatedChannels(sopGraph()));
+  // Scope to the selected node/actor (see Dopesheet) so a production scene's
+  // thousands of channels don't all render at once.
+  const channels = createMemo(() => listAnimatedChannels(sopGraph(), channelScope()));
   const visibleChannels = createMemo(() =>
     channels().filter((ch) => !hiddenIds().has(channelId(ch))),
   );

@@ -7,6 +7,71 @@
 
 namespace tracey_editor {
 
+namespace {
+// Standard location for named projects (one folder per project). User-visible so
+// artists can find their work; the per-project folder gets the scaffolded layout.
+std::filesystem::path standard_projects_dir() {
+#if defined(__APPLE__)
+    if (const char* home = std::getenv("HOME"))
+        return std::filesystem::path(home) / "Documents" / "Tracey" / "Projects";
+#elif defined(_WIN32)
+    if (const char* prof = std::getenv("USERPROFILE"))
+        return std::filesystem::path(prof) / "Documents" / "Tracey" / "Projects";
+#else
+    if (const char* home = std::getenv("HOME"))
+        return std::filesystem::path(home) / "Tracey" / "Projects";
+#endif
+    return std::filesystem::current_path() / "TraceyProjects";
+}
+
+// Keep a user-typed project name safe as a folder/file name (alnum, space, _ , -).
+std::string sanitize_project_name(const std::string& raw) {
+    std::string s;
+    for (char c : raw) {
+        const bool ok = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                        (c >= '0' && c <= '9') || c == '_' || c == '-' || c == ' ';
+        if (ok) s += c;
+    }
+    while (!s.empty() && s.front() == ' ') s.erase(s.begin());
+    while (!s.empty() && s.back() == ' ') s.pop_back();
+    return s.empty() ? "Untitled" : s;
+}
+
+// Scaffold the USD pipeline folder layout (docs/pipeline_layout.md) at the project
+// root when a project is saved. Idempotent + non-destructive: create_directories is a
+// no-op when dirs already exist, and the marker / .gitattributes files are written
+// only when absent — so re-saving an existing project never clobbers anything.
+void scaffold_project_layout(const std::filesystem::path& root) {
+    std::error_code ec;
+    for (const char* sub : {"assets", "shots", "edit", "materials"})
+        std::filesystem::create_directories(root / sub, ec);
+
+    // .gitkeep so the (initially empty) structure persists under version control.
+    for (const char* sub : {"assets", "shots", "edit"}) {
+        const auto keep = root / sub / ".gitkeep";
+        if (!std::filesystem::exists(keep)) std::ofstream(keep) << "";
+    }
+
+    // git-LFS attributes for the heavy binary payloads — the documented store
+    // (docs/pipeline_layout.md). Department layers stay text-mergeable (*.usda).
+    // Written only if the user doesn't already have a .gitattributes.
+    const auto attrs = root / ".gitattributes";
+    if (!std::filesystem::exists(attrs)) {
+        std::ofstream f(attrs);
+        f << "# traceyv2 USD pipeline — large binaries via git-LFS\n"
+          << "*.usdc filter=lfs diff=lfs merge=lfs -text\n"
+          << "*.usdz filter=lfs diff=lfs merge=lfs -text\n"
+          << "*.exr  filter=lfs diff=lfs merge=lfs -text\n"
+          << "*.png  filter=lfs diff=lfs merge=lfs -text\n"
+          << "*.jpg  filter=lfs diff=lfs merge=lfs -text\n"
+          << "*.dds  filter=lfs diff=lfs merge=lfs -text\n"
+          << "*.abc  filter=lfs diff=lfs merge=lfs -text\n"
+          << "*.vdb  filter=lfs diff=lfs merge=lfs -text\n"
+          << "# department layers (*.usda) stay text so they diff/merge in git\n";
+    }
+}
+}  // namespace
+
 std::optional<std::string> EditorServer::handle_io_commands(
     const std::string& cmd, const json& req) {
         // ── Project folder ──
@@ -20,6 +85,133 @@ std::optional<std::string> EditorServer::handle_io_commands(
         // materials for free.
         if (cmd == "get_project_dir") {
             return ok_response(m_project_dir.string());
+        }
+        // Map a project NAME to its file path in the standard projects location
+        // (~/Documents/Tracey/Projects/<name>/<name>.tracey). The save flow prompts
+        // for a name, resolves it here, then save_scene writes + scaffolds the folder.
+        if (cmd == "resolve_project_path") {
+            const std::string name = sanitize_project_name(req.value("name", std::string{}));
+            const std::filesystem::path dir = standard_projects_dir() / name;
+            const std::filesystem::path file = dir / (name + ".tracey");
+            return ok_response(json{{"name", name},
+                                    {"dir", dir.string()},
+                                    {"path", file.string()}});
+        }
+        // Return a base64 PNG thumbnail for a project asset, if one ships alongside it
+        // under the usdview/Omniverse `.thumbs/` convention (e.g. Marbles assets). null
+        // when none — the Resources card then falls back to its type glyph.
+        if (cmd == "get_asset_thumbnail") {
+            const std::string assetPath = req.value("path", std::string{});
+            if (assetPath.empty()) return ok_response(json(nullptr));
+            const std::filesystem::path p(assetPath);
+            const std::filesystem::path dir = p.parent_path();
+            const std::string fname = p.filename().string();
+            const std::filesystem::path candidates[] = {
+                dir / ".thumbs" / "256x256" / (fname + ".png"),
+                dir / ".thumbs" / "256x256" / (fname + ".auto.png"),
+                dir / ".thumbs" / "512x512" / (fname + ".png"),
+            };
+            std::error_code ec;
+            for (const auto& c : candidates) {
+                if (!std::filesystem::is_regular_file(c, ec)) continue;
+                std::ifstream f(c, std::ios::binary);
+                if (!f) continue;
+                f.seekg(0, std::ios::end);
+                const std::streamoff n = f.tellg();
+                f.seekg(0);
+                if (n <= 0) continue;
+                std::vector<unsigned char> bytes(static_cast<size_t>(n));
+                f.read(reinterpret_cast<char*>(bytes.data()), n);
+                return ok_response(json{{"base64", base64_encode(bytes.data(), bytes.size())},
+                                        {"mime_type", "image/png"}});
+            }
+            return ok_response(json(nullptr));
+        }
+        // List saved projects in the standard location for the startup launcher.
+        // A project = a subfolder of ~/Documents/Tracey/Projects holding a .tracey
+        // (prefer <name>.tracey). Sorted most-recently-modified first.
+        if (cmd == "list_projects") {
+            json arr = json::array();
+            const std::filesystem::path root = standard_projects_dir();
+            std::error_code ec;
+            if (std::filesystem::is_directory(root, ec)) {
+                struct Entry { std::string name, path, dir; std::filesystem::file_time_type mtime; };
+                std::vector<Entry> entries;
+                for (const auto& e : std::filesystem::directory_iterator(root, ec)) {
+                    if (!e.is_directory(ec)) continue;
+                    const std::string name = e.path().filename().string();
+                    std::filesystem::path file = e.path() / (name + ".tracey");
+                    if (!std::filesystem::exists(file, ec)) {
+                        file.clear();
+                        for (const auto& f : std::filesystem::directory_iterator(e.path(), ec))
+                            if (f.is_regular_file(ec) && f.path().extension() == ".tracey") { file = f.path(); break; }
+                    }
+                    if (file.empty()) continue;
+                    entries.push_back({name, file.string(), e.path().string(),
+                                       std::filesystem::last_write_time(file, ec)});
+                }
+                std::sort(entries.begin(), entries.end(),
+                          [](const Entry& a, const Entry& b) { return a.mtime > b.mtime; });
+                for (const auto& en : entries)
+                    arr.push_back({{"name", en.name}, {"path", en.path}, {"dir", en.dir}});
+            }
+            return ok_response(arr);
+        }
+        // List the project's asset library: scan <project>/assets/ for asset
+        // entries. An asset is a subfolder assets/<name>/ holding an interface
+        // file (prefer <name>.usd[a|c|z], else the first .usd*/.gltf/.glb inside),
+        // or a loose .usd*/.gltf/.glb directly under assets/. Powers the Resources
+        // panel's project-backed library (disk-backed, not the session import list).
+        if (cmd == "list_project_assets") {
+            json arr = json::array();
+            if (!m_project_dir.empty()) {
+                const std::filesystem::path assetsDir = m_project_dir / "assets";
+                std::error_code ec;
+                auto lower = [](std::string s) {
+                    for (char& c : s) if (c >= 'A' && c <= 'Z') c = char(c + 32);
+                    return s;
+                };
+                auto isAssetExt = [](const std::string& e) {
+                    return e == ".usd" || e == ".usda" || e == ".usdc" || e == ".usdz" ||
+                           e == ".gltf" || e == ".glb";
+                };
+                if (std::filesystem::is_directory(assetsDir, ec)) {
+                    std::vector<std::filesystem::directory_entry> entries;
+                    for (const auto& e : std::filesystem::directory_iterator(assetsDir, ec))
+                        entries.push_back(e);
+                    std::sort(entries.begin(), entries.end(),
+                              [](const auto& a, const auto& b) { return a.path().filename() < b.path().filename(); });
+                    for (const auto& e : entries) {
+                        std::filesystem::path entryFile;
+                        std::string name;
+                        if (e.is_directory(ec)) {
+                            name = e.path().filename().string();
+                            for (const char* ext : {".usd", ".usda", ".usdc", ".usdz"}) {
+                                const std::filesystem::path cand = e.path() / (name + ext);
+                                if (std::filesystem::exists(cand, ec)) { entryFile = cand; break; }
+                            }
+                            if (entryFile.empty()) {
+                                for (const auto& f : std::filesystem::directory_iterator(e.path(), ec)) {
+                                    if (f.is_regular_file(ec) && isAssetExt(lower(f.path().extension().string()))) {
+                                        entryFile = f.path();
+                                        break;
+                                    }
+                                }
+                            }
+                        } else if (e.is_regular_file(ec) && isAssetExt(lower(e.path().extension().string()))) {
+                            entryFile = e.path();
+                            name = e.path().stem().string();
+                        }
+                        if (entryFile.empty()) continue;
+                        const std::string ext = lower(entryFile.extension().string());
+                        arr.push_back({{"name", name},
+                                       {"path", entryFile.string()},
+                                       {"dir", e.path().string()},
+                                       {"type", (ext == ".gltf" || ext == ".glb") ? "gltf" : "usd"}});
+                    }
+                }
+            }
+            return ok_response(arr);
         }
         // Make the project self-contained: walk the SOP graph for
         // external file references (currently: gltf_import paths +
@@ -254,9 +446,12 @@ std::optional<std::string> EditorServer::handle_io_commands(
                 std::filesystem::path parent = std::filesystem::path(path).parent_path();
                 if (!parent.empty()) {
                     std::error_code ec;
-                    std::filesystem::create_directories(parent / "materials", ec);
                     m_project_dir = std::filesystem::weakly_canonical(parent, ec);
                     if (ec) m_project_dir = parent;
+                    // Scaffold the USD pipeline folder layout (assets/ shots/ edit/
+                    // materials/ + git-LFS attributes). Idempotent — re-saving an
+                    // existing project is a no-op; a brand-new project gets the structure.
+                    scaffold_project_layout(m_project_dir);
                 }
             }
             // Write a temp v1-payload to disk, read it back into json, embed.

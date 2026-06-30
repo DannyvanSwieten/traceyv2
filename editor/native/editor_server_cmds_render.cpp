@@ -216,29 +216,34 @@ std::optional<std::string> EditorServer::handle_render_commands(
             // compile_scene either builds BLAS+TLAS or skips them.
             if (m_engine) m_engine->set_build_acceleration_structures(v);
             if (v && !was_enabled) {
-                // OFF→ON: the live CompiledScene was built without a
-                // BVH so the path tracer has nothing to trace against.
-                // Re-run compile_scene against the current scene so the
-                // BLAS/TLAS/material programs come up. Synchronous on
-                // purpose — the user just asked for PT and expects to
-                // see it on the next tick.
-                if (m_engine) {
-                    try { m_engine->compile_scene(); }
-                    catch (const std::exception& e) {
-                        std::fprintf(stderr,
-                            "[set_pt_preview] compile_scene failed: %s\n", e.what());
-                    }
-                }
-                // Accumulator may hold stale pixels from before the
-                // preview was disabled (camera / scene moved since).
-                // Clear on the next render so the user doesn't see
-                // ghosted geometry for the first sample.
+                // OFF→ON: the live CompiledScene was built without a BVH so the
+                // path tracer has nothing to trace against — it needs a full
+                // recompile (BLAS/TLAS/material programs + texture upload). That
+                // compile is heavy on a production scene, and THIS handler runs
+                // on the main thread, so doing it here beachballs the UI for the
+                // whole compile. Defer it: render_tick performs the compile off
+                // the main thread on its next iteration. The viewport briefly
+                // pauses while it builds, but the UI stays responsive.
+                m_pending_recompile = true;
+                // Accumulator may hold stale pixels from before the preview was
+                // disabled; clear on the next render so the first sample is fresh.
                 m_clear_next_frame = true;
             }
             return ok_response_null();
         }
         if (cmd == "get_pt_fullscreen") {
             return ok_response(m_pt_fullscreen);
+        }
+        if (cmd == "get_pt_realtime") {
+            return ok_response(m_pt_realtime);
+        }
+        if (cmd == "set_pt_realtime") {
+            m_pt_realtime = req.at("value").get<bool>();
+            // Re-trace immediately so the switch takes effect this frame (turning
+            // it on unfreezes the current moving view; turning it off lets the
+            // pending settle-restart resume normally).
+            m_clear_next_frame = true;
+            return ok_response_null();
         }
         if (cmd == "reset_pt_accumulator") {
             // Restart accumulation from sample 0 on the next tick. Used by

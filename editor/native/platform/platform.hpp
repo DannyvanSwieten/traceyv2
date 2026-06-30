@@ -83,6 +83,10 @@ public:
     virtual std::string save_file_dialog(const char* title,
                                          const char* default_name,
                                          const std::vector<FileFilter>& filters) = 0;
+    // Single-line text prompt (e.g. "Project name"). Returns the entered text, or
+    // empty if the user cancelled.
+    virtual std::string prompt_text(const char* title, const char* message,
+                                    const char* default_value) = 0;
 };
 
 std::unique_ptr<EditorWindow> create_editor_window();

@@ -8,7 +8,11 @@
 #import <WebKit/WebKit.h>
 
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <cstdio>
+#include <mutex>
+#include <thread>
 
 // This platform shim deliberately uses a handful of APIs deprecated in recent
 // macOS SDKs (CVDisplayLink, WKWebView.javaScriptEnabled, NSSavePanel.
@@ -217,6 +221,18 @@ static BOOL traceyIsSupportedAsset(NSURL* url) {
     return YES;
 }
 - (BOOL)canBecomeKeyView {
+    return YES;
+}
+
+// Deliver the FIRST click straight to the viewport even when the editor window
+// was inactive (you Cmd-Tabbed away or clicked another app, then clicked back
+// into the viewport). Without this, AppKit swallows that first click just to
+// activate the window — mouseDown: never fires, focus isn't grabbed, and the
+// click appears to "do nothing" until you click a second time. Intermittent
+// because it only bites when the window wasn't already key. A 3D viewport should
+// always react to a click immediately, so we opt in unconditionally.
+- (BOOL)acceptsFirstMouse:(NSEvent*)event {
+    (void)event;
     return YES;
 }
 
@@ -470,10 +486,24 @@ struct MacEditorWindow : EditorWindow {
     RenderTickCallback render_tick_cb;
 
     CVDisplayLinkRef display_link = nullptr;
-    // Set to 1 by the display-link callback when a tick has been queued on the
-    // main queue and not yet drained — prevents tick backlog if the renderer
-    // is slower than the display refresh rate.
-    std::atomic<int> tick_in_flight{0};
+
+    // Dedicated render-tick thread. The CVDisplayLink fires on a system thread
+    // and USED to dispatch render_tick onto the MAIN queue. But render_tick does
+    // real work (drain cook results, re-evaluate animation + rebuild the TLAS,
+    // present), and on a heavy scene that occupied the main thread long enough to
+    // starve the WebView — the whole UI froze during playback while the Metal
+    // viewport kept animating. So the display-link callback now just SIGNALS this
+    // thread, which runs render_tick OFF the main thread; the main thread is then
+    // free to service the WebView + IPC. The viewport present is a MoltenVK/Vulkan
+    // present, which is safe to call off the main thread. `tick_pending` coalesces
+    // ticks that fire while one is still running into a single pending run, so a
+    // renderer slower than the refresh rate never builds a backlog (the role the
+    // old `tick_in_flight` atomic played).
+    std::thread             tick_thread;
+    std::mutex              tick_mutex;
+    std::condition_variable tick_cv;
+    bool                    tick_pending = false;
+    bool                    tick_thread_exit = false;
 
     uint32_t vp_w = 0;
     uint32_t vp_h = 0;
@@ -667,6 +697,13 @@ struct MacEditorWindow : EditorWindow {
 
         webview = [[TraceyWebView alloc] initWithFrame:content.bounds configuration:config];
         webview.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+        // Allow attaching the Safari Web Inspector to the editor UI (Develop menu
+        // → this app, or right-click → Inspect Element). Needed to profile the
+        // WebView's own main thread — DOM size, scripting vs layout vs paint —
+        // when the UI gets sluggish on heavy scenes. macOS 13.3+.
+        if (@available(macOS 13.3, *)) {
+            webview.inspectable = YES;
+        }
         msg_handler.webView = webview;
         window.editorWebView = webview;
 
@@ -762,28 +799,49 @@ struct MacEditorWindow : EditorWindow {
                                     const CVTimeStamp* /*outputTime*/, CVOptionFlags /*flagsIn*/,
                                     CVOptionFlags* /*flagsOut*/, void* userInfo) {
         auto* self = static_cast<MacEditorWindow*>(userInfo);
-        // Drop frames if a tick is already queued and not yet drained.
-        int expected = 0;
-        if (!self->tick_in_flight.compare_exchange_strong(expected, 1))
-            return kCVReturnSuccess;
-
-        dispatch_async(dispatch_get_main_queue(), ^{
-            if (self->render_tick_cb) self->render_tick_cb();
-            self->tick_in_flight.store(0);
-        });
+        // Just wake the render-tick thread. If a tick is already running, this
+        // collapses into a single pending run (no backlog) — the worker clears
+        // tick_pending when it starts a run.
+        {
+            std::lock_guard<std::mutex> lk(self->tick_mutex);
+            self->tick_pending = true;
+        }
+        self->tick_cv.notify_one();
         return kCVReturnSuccess;
     }
 
     void start_render_tick() override {
         if (display_link) return;
+        // Render-tick worker: blocks until the display link (or a forced wake)
+        // signals, then runs render_tick OFF the main thread. See the member
+        // declarations for why this is not on the main queue any more.
+        tick_thread = std::thread([this] {
+            for (;;) {
+                {
+                    std::unique_lock<std::mutex> lk(tick_mutex);
+                    tick_cv.wait(lk, [this] { return tick_pending || tick_thread_exit; });
+                    if (tick_thread_exit) return;
+                    tick_pending = false;
+                }
+                if (render_tick_cb) render_tick_cb();
+            }
+        });
         CVDisplayLinkCreateWithActiveCGDisplays(&display_link);
         CVDisplayLinkSetOutputCallback(display_link, &display_link_cb, this);
         CVDisplayLinkStart(display_link);
     }
 
     void stop_render_tick() override {
-        if (!display_link) return;
-        CVDisplayLinkStop(display_link);
+        // Stop new ticks first so the worker won't be re-signalled mid-teardown.
+        if (display_link) CVDisplayLinkStop(display_link);
+        // Tear down the worker. Idempotent: after the first call tick_thread is
+        // joined and not joinable, so the destructor's second call is a no-op.
+        {
+            std::lock_guard<std::mutex> lk(tick_mutex);
+            tick_thread_exit = true;
+        }
+        tick_cv.notify_one();
+        if (tick_thread.joinable()) tick_thread.join();
     }
 
     void show() override {
@@ -877,6 +935,25 @@ struct MacEditorWindow : EditorWindow {
 
         if ([panel runModal] == NSModalResponseOK) {
             return [[panel.URL path] UTF8String];
+        }
+        return {};
+    }
+
+    std::string prompt_text(const char* title, const char* message,
+                            const char* default_value) override {
+        NSAlert* alert = [[NSAlert alloc] init];
+        alert.messageText = title ? [NSString stringWithUTF8String:title] : @"";
+        if (message) alert.informativeText = [NSString stringWithUTF8String:message];
+        [alert addButtonWithTitle:@"OK"];
+        [alert addButtonWithTitle:@"Cancel"];
+
+        NSTextField* input = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, 260, 24)];
+        input.stringValue = default_value ? [NSString stringWithUTF8String:default_value] : @"";
+        alert.accessoryView = input;
+        [alert.window setInitialFirstResponder:input];
+
+        if ([alert runModal] == NSAlertFirstButtonReturn) {
+            return [[input stringValue] UTF8String];
         }
         return {};
     }

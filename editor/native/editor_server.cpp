@@ -1712,7 +1712,40 @@ bool EditorServer::advance_playhead(double dt) {
 // Other animated params (primitive sizes, etc.) need a full re-cook to take
 // effect, not just a recompile; for v1 we only handle object_output / subnet
 // transforms.
-void EditorServer::apply_animation_at(double time) {
+void EditorServer::load_sop_graph_json(const std::string& graphJson) {
+    // Swap the live SOP graph (R1 asset switch). Mirrors load_scene's graph-load:
+    // parse → clear prior SOP actors + reset identity maps → cook. Empty → blank asset.
+    if (graphJson.empty()) {
+        m_sop_graph = std::make_unique<tracey::sops::SopGraph>(0);
+    } else {
+        try {
+            m_sop_graph = tracey::sops::deserializeSopGraph(graphJson);
+        } catch (const std::exception& e) {
+            std::fprintf(stderr, "[asset] graph parse error: %s\n", e.what());
+            m_sop_graph = std::make_unique<tracey::sops::SopGraph>(0);
+        }
+    }
+    m_last_pushed_graph_json = graphJson;
+
+    // Drop prior SOP-emitted actors + reset SOP-side tracking so apply_emitted's
+    // diff starts clean against the now-empty scene (same as load_scene).
+    auto& liveScene = m_engine->scene();
+    std::vector<size_t> staleUids;
+    for (const auto& a : liveScene.actors())
+        if (a) staleUids.push_back(a->getUid());
+    for (size_t uid : staleUids) liveScene.removeActor(uid);
+    m_sop_node_to_actor.clear();
+    m_emitted_actor_to_actor.clear();
+    m_actor_signatures.clear();
+    m_has_applied_once = false;
+    m_has_dop_imports = detect_dop_imports();
+    m_has_animated_sop_params = detect_animated_sop_params();
+    if (m_dop_graph) m_dop_graph->markDirty();
+    cook_and_apply();
+    m_clear_next_frame = true;
+}
+
+void EditorServer::apply_animation_at(double time, bool rebuildTlas) {
     if (!m_sop_graph || !m_engine) return;
 
     bool any_changed = false;
@@ -1760,14 +1793,23 @@ void EditorServer::apply_animation_at(double time) {
     }
     if (any_changed) {
         m_clear_next_frame = true;
-        // Rebuild the TLAS with the new instance transforms. Without this the
-        // path tracer + rasterizer keep rendering the cached compile-time
-        // transforms and the override is invisible.
-        if (m_engine->path_tracer_ready() && m_engine->compiled_scene_ready()) {
+        // Transform-only animation: rebuild ONLY the TLAS from the new instance
+        // transforms. A full compile_scene() here would re-upload every vertex
+        // buffer AND re-decode/re-upload every texture every frame — that is the
+        // timeline beach-ball on texture-heavy scenes (e.g. Marbles). This path
+        // never touches geometry (skinned-mesh deform goes through the SOP recook,
+        // not here), so refresh_tlas_only() — which leaves geometry/BLAS/materials/
+        // textures untouched and just rewrites the per-instance transforms — is the
+        // correct and milliseconds-cheap update. It also updates
+        // m_compiled_scene->instances so the rasterizer reflects the move with PT
+        // off. Fall back to a full compile only if the instance topology drifted
+        // (refresh returns false).
+        if (m_engine->compiled_scene_ready()) {
             try {
-                m_engine->compile_scene();
+                if (!m_engine->refresh_tlas_only(rebuildTlas))
+                    m_engine->compile_scene();
             } catch (const std::exception& e) {
-                std::fprintf(stderr, "[anim] compile_scene failed: %s\n", e.what());
+                std::fprintf(stderr, "[anim] tlas refresh failed: %s\n", e.what());
             }
         }
     }
@@ -2421,31 +2463,68 @@ void EditorServer::export_video_loop(VideoExportRequest req) {
         {
             std::lock_guard<std::mutex> lock(m_mutex);
             m_timeline.current_time = frame_time;
-            // Skip the per-frame cook+apply on static scenes after the
-            // first frame — the BLAS / scene state is already correct.
-            if (!scene_static || !cooked_once) {
-                cook_and_apply();
-                cooked_once = true;
-            }
-            apply_animation_at(frame_time);
+#ifdef TRACEY_HAS_USD
+            if (m_shot_mode && m_stage_doc) {
+                // Shot mode: USD time samples drive the animation, so re-derive the
+                // composed scene at this frame — exactly like render_tick's playback
+                // eval. The SOP cook/apply path below NEVER touches the USD stage, so
+                // without this the export rendered the same (static) frame N times.
+                // (detect_any_animation() sees no SOP channels in a shot, so the
+                // static-scene fast path would otherwise kick in.) compile_scene fully
+                // rebuilds for the path tracer; the export is offline so the per-frame
+                // rebuild is fine — a transform-only re-eval is the perf follow-up.
+                const double frame = m_timeline.current_time * m_timeline.fps;
+                if (auto scene = m_stage_doc->toSceneAtTime(frame)) {
+                    m_engine->adoptScene(std::move(scene));
+                    m_engine->compile_scene();
+                }
+                // Motion blur: snapshot the shutter-close pose from a slightly later
+                // frame, then restore the shutter-open pose. endFrame = frame + shutter
+                // (shutter is in frames; matches the SOP path's frame_time + shutter/fps).
+                const float shutter = m_engine->scene().camera().shutter();
+                if (shutter > 0.0f && m_engine->compiled_scene_ready()) {
+                    if (auto endScene = m_stage_doc->toSceneAtTime(frame + static_cast<double>(shutter))) {
+                        m_engine->adoptScene(std::move(endScene));
+                        m_engine->compile_scene();
+                        std::vector<tracey::Tlas::Instance> endInstances;
+                        if (auto snap = m_engine->compiled_scene_snapshot())
+                            endInstances = snap->instances;
+                        if (auto startScene = m_stage_doc->toSceneAtTime(frame)) {
+                            m_engine->adoptScene(std::move(startScene));
+                            m_engine->compile_scene();
+                        }
+                        m_engine->set_motion_end_instances(std::move(endInstances));
+                    }
+                }
+            } else
+#endif
+            {
+                // Skip the per-frame cook+apply on static scenes after the
+                // first frame — the BLAS / scene state is already correct.
+                if (!scene_static || !cooked_once) {
+                    cook_and_apply();
+                    cooked_once = true;
+                }
+                apply_animation_at(frame_time);
 
-            // R4 motion blur: build shutter-close instance poses so moving
-            // objects blur. Evaluate the animation at frame_time + shutter·(1/fps),
-            // snapshot those instances as instancesEnd, then restore the start
-            // pose and stamp a fresh revision so the path-tracer backend rebuilds
-            // with the hardware/swept motion AS. Rigid per-instance (keyed TRS)
-            // motion only; camera + deformation blur are follow-ups.
-            const float shutter = m_engine->scene().camera().shutter();
-            if (shutter > 0.0f && m_engine->compiled_scene_ready()) {
-                const double dt = static_cast<double>(shutter) / std::max(req.fps, 1e-6);
-                apply_animation_at(frame_time + dt);
-                m_engine->compile_scene();
-                std::vector<tracey::Tlas::Instance> endInstances;
-                if (auto snap = m_engine->compiled_scene_snapshot())
-                    endInstances = snap->instances;
-                apply_animation_at(frame_time);   // restore the shutter-open pose
-                m_engine->compile_scene();
-                m_engine->set_motion_end_instances(std::move(endInstances));
+                // R4 motion blur: build shutter-close instance poses so moving
+                // objects blur. Evaluate the animation at frame_time + shutter·(1/fps),
+                // snapshot those instances as instancesEnd, then restore the start
+                // pose and stamp a fresh revision so the path-tracer backend rebuilds
+                // with the hardware/swept motion AS. Rigid per-instance (keyed TRS)
+                // motion only; camera + deformation blur are follow-ups.
+                const float shutter = m_engine->scene().camera().shutter();
+                if (shutter > 0.0f && m_engine->compiled_scene_ready()) {
+                    const double dt = static_cast<double>(shutter) / std::max(req.fps, 1e-6);
+                    apply_animation_at(frame_time + dt);
+                    m_engine->compile_scene();
+                    std::vector<tracey::Tlas::Instance> endInstances;
+                    if (auto snap = m_engine->compiled_scene_snapshot())
+                        endInstances = snap->instances;
+                    apply_animation_at(frame_time);   // restore the shutter-open pose
+                    m_engine->compile_scene();
+                    m_engine->set_motion_end_instances(std::move(endInstances));
+                }
             }
 
             for (int s = 0; s < req.samples_per_frame; ++s) {
@@ -3359,6 +3438,13 @@ bool EditorServer::update_camera_from_input(double dt) {
         if (m_viewport_pixel_h > 0)
             cam.setAspectRatio(static_cast<float>(m_viewport_pixel_w) /
                                static_cast<float>(m_viewport_pixel_h));
+        // Adapt the near/far planes to the orbit distance so large scenes never
+        // clip and depth precision stays usable at any zoom (near/far track the
+        // distance, keeping a stable ratio). Far floors at 100k so a distant
+        // background is still visible even when zoomed in close to one object.
+        const float od = std::max(0.01f, m_orbit_smooth_distance);
+        cam.setNearPlane(std::max(0.01f, od * 0.01f));
+        cam.setFarPlane(std::max(100000.0f, od * 5000.0f));
         m_engine->scene().setCamera(cam);
     }
     return changed;
@@ -3408,9 +3494,9 @@ void EditorServer::render_tick() {
     // resets actor transforms to constants; apply_emitted sets
     // m_timeline_dirty so we re-evaluate animation overrides below.
     // Wrap in a try/catch: an exception escaping here would terminate the
-    // process because the tick runs on the main thread (CVDisplayLink →
-    // dispatch_async(main_queue)). The render-pass try/catch further down
-    // doesn't cover this region.
+    // process. render_tick runs on the platform render-tick thread, not the
+    // main thread, but an uncaught exception still aborts; the render-pass
+    // try/catch further down doesn't cover this region.
     {
         const auto t0 = clock::now();
         try {
@@ -3419,6 +3505,21 @@ void EditorServer::render_tick() {
             std::fprintf(stderr, "[render_tick] drain_cook_result failed: %s\n", e.what());
         }
         rebuild_ms = elapsedMs(t0);
+    }
+
+    // Deferred full recompile requested by a main-thread IPC handler (e.g.
+    // enabling the Render tab / PT preview). We run the heavy compile_scene HERE,
+    // on the render-tick thread, so it never blocks the main thread / WebView.
+    // The viewport briefly pauses while the BLAS/textures build, but the UI stays
+    // live instead of beachballing.
+    if (m_pending_recompile) {
+        m_pending_recompile = false;
+        try {
+            m_engine->compile_scene();
+            m_clear_next_frame = true;
+        } catch (const std::exception& e) {
+            std::fprintf(stderr, "[render_tick] deferred recompile failed: %s\n", e.what());
+        }
     }
 
     // Advance the playhead during playback. Seeks via timeline_set_playhead
@@ -3430,23 +3531,70 @@ void EditorServer::render_tick() {
     // was edited / cook completed.
     const bool time_changed = playhead_moved || m_timeline_dirty;
     if (time_changed) {
-        apply_animation_at(m_timeline.current_time);
-        m_timeline_dirty = false;
+#ifdef TRACEY_HAS_USD
+        if (m_shot_mode && m_stage_doc) {
+            // Shot mode: USD time samples drive the animation. Re-derive the composed
+            // scene at the playhead frame and refresh transforms in place. (v1 re-reads
+            // geometry each evaluated frame — fine for small shots; a transform-only
+            // sample at time t is the perf follow-up for heavy shots.)
+            const double frame = m_timeline.current_time * m_timeline.fps;
+            try {
+                auto scene = m_stage_doc->toSceneAtTime(frame);
+                if (scene) {
+                    m_engine->adoptScene(std::move(scene));
+                    if (m_engine->compiled_scene_ready())
+                        m_engine->refresh_tlas_only(/*rebuildTlas=*/!m_timeline.playing);
+                    else
+                        m_pending_recompile = true;
+                }
+            } catch (const std::exception& e) {
+                std::fprintf(stderr, "[shot] playback eval failed: %s\n", e.what());
+                m_pending_recompile = true;
+            }
+            m_timeline_dirty = false;
+        } else
+#endif
+        {
+            // While playing, skip the per-frame TLAS rebuild — the viewport shows the
+            // rasterized preview (which reads instance transforms, not the TLAS), so
+            // rebuilding the BVH every frame just stalls this thread on the unique GPU
+            // lock for nothing. A seek/scrub while paused passes rebuildTlas=true so
+            // the path-traced view is correct. The TLAS is rebuilt on the play→pause
+            // edge below before the path tracer resumes.
+            apply_animation_at(m_timeline.current_time, /*rebuildTlas=*/!m_timeline.playing);
+            m_timeline_dirty = false;
 
-        // Auto re-cook when the graph has animated VOP promotions: the
-        // override path can't reach VOP-side knobs (only actor transforms),
-        // so we re-cook the cached root JSON with the new playhead time.
-        // Latest-wins in the worker keeps this cheap during rapid scrub.
-        // Also fire when the graph has dop_import nodes — those need a
-        // fresh sim-state stamp every frame (post_cook_request collects
-        // the stamps automatically via collect_dop_stamps). The two
-        // branches share the post; combine into one condition.
-        const bool need_recook = (m_has_animated_sop_params || m_has_dop_imports)
-                                 && !m_last_pushed_graph_json.empty();
-        if (need_recook) {
-            post_cook_request(m_last_pushed_graph_json, m_timeline.current_time);
+            // Auto re-cook when the graph has animated VOP promotions: the
+            // override path can't reach VOP-side knobs (only actor transforms),
+            // so we re-cook the cached root JSON with the new playhead time.
+            // Latest-wins in the worker keeps this cheap during rapid scrub.
+            // Also fire when the graph has dop_import nodes — those need a
+            // fresh sim-state stamp every frame (post_cook_request collects
+            // the stamps automatically via collect_dop_stamps). The two
+            // branches share the post; combine into one condition.
+            const bool need_recook = (m_has_animated_sop_params || m_has_dop_imports)
+                                     && !m_last_pushed_graph_json.empty();
+            if (need_recook) {
+                post_cook_request(m_last_pushed_graph_json, m_timeline.current_time);
+            }
         }
     }
+
+    // Play→pause edge: during playback we showed the rasterized preview and
+    // skipped the per-frame TLAS rebuild, so the path tracer's TLAS is stale at
+    // the moment we stop. Rebuild it once from the final pose and restart
+    // accumulation so the held frame resolves to full path-traced quality.
+    if (m_was_playing && !m_timeline.playing) {
+        if (m_engine->compiled_scene_ready()) {
+            try {
+                m_engine->refresh_tlas_only(/*rebuildTlas=*/true);
+            } catch (const std::exception& e) {
+                std::fprintf(stderr, "[anim] pause refresh failed: %s\n", e.what());
+            }
+        }
+        m_clear_next_frame = true;
+    }
+    m_was_playing = m_timeline.playing;
 
     // Refresh the skeleton overlay for the selected skinned actor at the
     // current pose. Cheap when nothing skinned is selected (a single map
@@ -3474,6 +3622,15 @@ void EditorServer::render_tick() {
                              m_window->viewport_pixel_height());
     if (!m_viewport) return;
 
+    // NOTE (threading): render_tick now runs on the platform's render-tick
+    // thread, not the main thread, so this reads InputState (written by the
+    // Cocoa event handlers on the main thread) across threads. The accumulated
+    // mouse/scroll deltas are the only field where the read/reset can race with
+    // a write (worst case: one delta double-counted → a 1-frame camera jitter).
+    // On arm64 the aligned scalar loads/stores don't tear, so it's benign in
+    // practice; a small input mutex around the delta accumulators + this
+    // consume is the clean follow-up.
+    //
     // Suppress camera orbit/pan/dolly while the JS modal grab owns the
     // mouse; broadcast pointer state instead so the grab math can run.
     if (m_viewport_grab_active) {
@@ -3509,18 +3666,39 @@ void EditorServer::render_tick() {
     }
 
     const bool has_geometry = m_engine->has_renderable_geometry();
+    // During timeline PLAYBACK, show the fast rasterized viewport and skip the
+    // per-frame path trace — a moving scene can't accumulate (every PT frame
+    // would be 1 spp of noise). We deliberately do NOT do this for camera
+    // navigation (orbit/dolly/scroll): the rasterizer is untextured, so flipping
+    // to it while scrolling a path-traced scene in the Render panel is jarring.
+    // Camera moves instead just restart the PT accumulation (noisy while moving,
+    // converges once the camera settles), preserving the textured look.
+    const bool preview_active = m_timeline.playing && has_geometry;
     // Once the PT worker has accumulated at least one sample its output image is
     // valid to present. Used both to gate the rasterizer (below) and to choose
     // what to present (further down).
     const bool pt_ready = m_pt_frames_completed.load(std::memory_order_acquire) > 0;
     try {
-        // Only consume the pending clear when the PT actually dispatches —
-        // otherwise a clear request raised while preview is off (camera
-        // move, scene edit) would be silently lost. set_pt_preview's
-        // off→on handler also raises this flag, so the very first frame
-        // after enabling always starts a fresh accumulation.
-        const bool clear = m_pt_preview_enabled && m_clear_next_frame;
-        if (m_pt_preview_enabled) m_clear_next_frame = false;
+        // Path tracer "render on settle". m_clear_next_frame is raised on any
+        // view change (camera move, edit, scene change). Rather than re-tracing a
+        // view that's still moving (noisy, wasteful) or flipping to the untextured
+        // rasterizer, we stamp the change time + latch a pending restart, and the
+        // PT only (re)starts once the view has held still for kViewSettleSec.
+        // Until then the last completed PT frame stays on screen.
+        if (m_pt_preview_enabled && m_clear_next_frame) {
+            m_last_view_change_time = now;
+            m_pt_restart_pending = true;
+            m_clear_next_frame = false;
+        }
+        // Realtime mode treats the view as always "settled" so the PT dispatches
+        // every tick — the clear/restart latch below still resets accumulation on
+        // each moving frame (so it follows the camera) and accumulates once still.
+        // Scoped to the FULLSCREEN Render view, where the PT *is* the viewport and
+        // the rasterizer isn't drawn. In PiP mode the rasterizer is the main view
+        // and already real-time; a live PT inset would just contend with it for the
+        // GPU and make navigation choppy, so there the PT keeps render-on-settle.
+        const bool view_settled = (m_pt_realtime && m_pt_fullscreen) ||
+                                  (now - m_last_view_change_time) >= kViewSettleSec;
         // Rasterizer is offloaded to a worker thread. Snapshot the scene
         // + camera under m_mutex (we already hold it via the tick's
         // try_lock above), then hand off to the worker. The worker writes
@@ -3538,20 +3716,55 @@ void EditorServer::render_tick() {
         // CPU/GPU and contend for the shared GPU lock with the PT worker). We
         // keep it alive only until that first sample, as the present fallback
         // while a slow (CPU) PT computes sample 0.
-        const bool raster_needed =
+        const bool raster_needed = preview_active ||
             !(m_pt_preview_enabled && m_pt_fullscreen && pt_ready);
         if (raster_needed && m_engine->compiled_scene_ready() &&
             m_engine->scene().hasCamera())
         {
-            RenderRequest req;
-            req.scene = m_engine->compiled_scene_snapshot();
-            req.camera = m_engine->scene().camera();
-            req.generation = m_engine->scene_generation();
-            {
-                std::lock_guard<std::mutex> rlk(m_render_mutex);
-                m_pending_render_request = std::move(req);
+            // Only re-rasterize when the image would actually differ — otherwise
+            // we redraw an identical frame every tick, which on a heavy textured
+            // scene saturates the GPU and starves the WebView (see the member
+            // declarations). When nothing changed we leave the worker idle and
+            // re-present its existing output below.
+            const tracey::Camera& rcam = m_engine->scene().camera();
+            const uint64_t gen = m_engine->scene_generation();
+            const uint64_t sel = m_selected_actor_id.value_or(0);
+            const bool raster_dirty =
+                !m_raster_valid ||
+                preview_active ||                       // playback / camera move
+                gen != m_last_raster_gen ||
+                sel != m_last_raster_sel ||
+                m_selected_joint != m_last_raster_joint ||
+                m_viewport_pixel_w != m_last_raster_vpw ||
+                m_viewport_pixel_h != m_last_raster_vph ||
+                rcam.position() != m_last_raster_cam_pos ||
+                rcam.rotation() != m_last_raster_cam_rot ||
+                rcam.fov() != m_last_raster_cam_fov ||
+                rcam.aspectRatio() != m_last_raster_cam_aspect ||
+                (now - m_last_raster_time) > 1.0;       // safety re-draw
+            if (raster_dirty) {
+                RenderRequest req;
+                req.scene = m_engine->compiled_scene_snapshot();
+                req.camera = rcam;
+                req.generation = gen;
+                {
+                    std::lock_guard<std::mutex> rlk(m_render_mutex);
+                    m_pending_render_request = std::move(req);
+                }
+                m_render_cv.notify_one();
+                // Remember what we drew so the next tick can skip an identical frame.
+                m_raster_valid = true;
+                m_last_raster_gen = gen;
+                m_last_raster_sel = sel;
+                m_last_raster_joint = m_selected_joint;
+                m_last_raster_vpw = m_viewport_pixel_w;
+                m_last_raster_vph = m_viewport_pixel_h;
+                m_last_raster_cam_pos = rcam.position();
+                m_last_raster_cam_rot = rcam.rotation();
+                m_last_raster_cam_fov = rcam.fov();
+                m_last_raster_cam_aspect = rcam.aspectRatio();
+                m_last_raster_time = now;
             }
-            m_render_cv.notify_one();
         }
         // The worker reports its measured ms back; we just read the
         // most recent value for the profiler bucket.
@@ -3559,12 +3772,17 @@ void EditorServer::render_tick() {
         // Expensive path tracer pass: needs a BVH, so it only runs once the
         // scene has at least one instance. Accumulates into the inset rect,
         // one sample per tick, until max_samples is reached.
+        // First sample of a freshly-settled view clears the accumulator.
+        const bool clear = m_pt_restart_pending;
         const bool at_cap = !clear &&
             m_engine->current_samples() >= m_engine->max_samples();
-        // The path tracer dispatch is the most expensive thing in
-        // render_tick — skip it entirely when the inset preview is off.
-        // We still run the rasterizer above so the viewport stays live.
-        if (m_pt_preview_enabled && has_geometry && !at_cap) {
+        // The path tracer dispatch is the most expensive thing in render_tick —
+        // skip it when the inset preview is off, during playback (we show the
+        // rasterized preview then), OR while the view hasn't settled yet (camera
+        // move / edit in progress — we keep the last PT frame up instead of
+        // re-tracing a moving view or swapping to the rasterizer).
+        if (m_pt_preview_enabled && has_geometry && !at_cap && !preview_active &&
+            view_settled) {
             // Offload the sample to the PT worker thread. The Metal backend just
             // dispatches to the GPU, but the CPU backend computes the whole
             // sample synchronously — doing that here would beach-ball the UI
@@ -3587,6 +3805,9 @@ void EditorServer::render_tick() {
                 m_pending_pt_request = std::move(req);
             }
             m_pt_cv.notify_one();
+            // The settled view's restart has now been issued; subsequent ticks
+            // accumulate onto it (clear=false) until the next view change.
+            m_pt_restart_pending = false;
             // Profiler reads the worker's last sample time; sizes track the PT.
             m_last_render_time_ms = m_pt_sample_ms.load(std::memory_order_relaxed);
             if (auto* t = m_engine->path_tracer()) {
@@ -3643,7 +3864,7 @@ void EditorServer::render_tick() {
         // failure: drop the frame and zero the tracked size so the next tick
         // recreates the swapchain at the real size — never let it crash the app.
         try {
-        if (m_pt_preview_enabled && has_geometry && m_pt_fullscreen) {
+        if (m_pt_preview_enabled && has_geometry && m_pt_fullscreen && !preview_active) {
             // Render workspace: PT replaces the rasterizer entirely. Before the
             // first PT sample lands, fall back to the rasterizer so the frame
             // isn't blank/garbage while the CPU backend computes sample 0.
@@ -3658,9 +3879,11 @@ void EditorServer::render_tick() {
             }
         } else if (raster_output && raster_ready) {
             auto* pt_output = pt_ready ? tracer->outputImage() : nullptr;
-            if (!has_geometry || !m_pt_preview_enabled || !pt_output) {
+            if (!has_geometry || !m_pt_preview_enabled || !pt_output || preview_active) {
                 // Raster-only present. Most common path during scene editing;
-                // also the fallback until the PT worker's first inset sample.
+                // playback (playback_preview) also forces this so the moving
+                // scene shows the live rasterized frame, not a frozen PT image.
+                // Also the fallback until the PT worker's first inset sample.
                 // The rasterizer-only branch skips the composite sampler bind +
                 // inset blit in ViewportRenderer.
                 if (!m_viewport->present(raster_output)) {
@@ -3780,6 +4003,20 @@ std::string EditorServer::handle_command(const std::string& json_request) {
             return err_response(std::string{"dialog error: "} + e.what());
         }
     }
+    // Native single-line text prompt (e.g. project name). Same above-the-mutex
+    // handling as the file dialogs — it runs a modal that pumps the main loop.
+    if (cmd == "prompt_text") {
+        if (!m_window) return err_response("No window for dialog");
+        try {
+            const auto title = req.value("title", std::string{});
+            const auto message = req.value("message", std::string{});
+            const auto def = req.value("default_value", std::string{});
+            std::string s = m_window->prompt_text(title.c_str(), message.c_str(), def.c_str());
+            return ok_response(s.empty() ? json(nullptr) : json(s));
+        } catch (const std::exception& e) {
+            return err_response(std::string{"dialog error: "} + e.what());
+        }
+    }
 
     std::lock_guard<std::mutex> lock(m_mutex);
 
@@ -3793,6 +4030,7 @@ std::string EditorServer::handle_command(const std::string& json_request) {
         if (auto r = handle_graph_commands(cmd, req))    return *r;
         if (auto r = handle_timeline_commands(cmd, req)) return *r;
         if (auto r = handle_io_commands(cmd, req))       return *r;
+        if (auto r = handle_shot_commands(cmd, req))     return *r;
 
         // Native dialog commands are handled above the mutex, before this
         // switch — their runModal pumps the main run loop and can't safely

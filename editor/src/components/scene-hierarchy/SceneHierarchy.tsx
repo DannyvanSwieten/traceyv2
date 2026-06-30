@@ -1,4 +1,13 @@
-import { Component, For, Show, createSignal } from 'solid-js';
+import {
+  Component,
+  For,
+  Show,
+  createSignal,
+  createMemo,
+  createEffect,
+  onMount,
+  onCleanup,
+} from 'solid-js';
 import * as api from '../../lib/api';
 import type { Actor as ApiActor, LightKind } from '../../lib/api';
 import './SceneHierarchy.css';
@@ -11,6 +20,22 @@ interface TreeNode {
 }
 
 export type DropMode = 'before' | 'inside' | 'after';
+
+// One row of the FLATTENED, currently-visible tree (the unit the virtualizer
+// renders). Flattening + windowing is what lets the hierarchy scale to a
+// production scene (Marbles imports thousands of actors): only the ~viewport's
+// worth of rows are ever in the DOM, instead of the whole expanded tree.
+interface FlatRow {
+  node: TreeNode;
+  depth: number;
+}
+
+// Fixed row height (px). The CSS pins .tree-item-row to exactly this so the
+// windowing math (index → translateY) lines up with what's painted; keep the
+// two in sync.
+const ROW_H = 28;
+// Rows rendered above/below the viewport so a fast scroll never shows a gap.
+const OVERSCAN = 8;
 
 interface SceneHierarchyProps {
   actors: () => Actor[];
@@ -74,229 +99,6 @@ function buildActorTree(actors: Actor[]): TreeNode[] {
 // the editor, files, etc.) can't be mistaken for hierarchy reorders.
 const DRAG_MIME = 'application/x-tracey-actor-id';
 
-interface TreeItemProps {
-  node: TreeNode;
-  depth: number;
-  selectedId: () => number | null;
-  onSelect: (id: number) => void;
-  onVisibilityChange?: (actorId: number, visible: boolean) => void;
-  onDelete?: (actorId: number) => void;
-  onReorder?: (sourceId: number, targetId: number, mode: DropMode) => void;
-  canDropInside?: (targetId: number) => boolean;
-  onRename?: (actorId: number, name: string) => void;
-}
-
-const TreeItem: Component<TreeItemProps> = (props) => {
-  const [expanded, setExpanded] = createSignal(true);
-  const [dropZone, setDropZone] = createSignal<DropMode | null>(null);
-  const [renaming, setRenaming] = createSignal(false);
-  const hasChildren = () => props.node.children.length > 0;
-  // Default to visible when the server omits the field (older serialisations).
-  const isVisible = () => props.node.actor.visible !== false;
-
-  const toggleVisibility = async (e: MouseEvent) => {
-    e.stopPropagation();
-    const next = !isVisible();
-    // Optimistic update so the icon flips immediately.
-    props.onVisibilityChange?.(props.node.actor.id, next);
-    try {
-      await api.setActorVisible(props.node.actor.id, next);
-    } catch (err) {
-      // Revert if the server rejected the toggle.
-      console.warn('setActorVisible failed:', err);
-      props.onVisibilityChange?.(props.node.actor.id, !next);
-    }
-  };
-
-  const handleDelete = (e: MouseEvent) => {
-    e.stopPropagation();
-    props.onDelete?.(props.node.actor.id);
-  };
-
-  const commitRename = (raw: string) => {
-    setRenaming(false);
-    const next = raw.trim();
-    if (!next || next === props.node.actor.name) return;
-    props.onRename?.(props.node.actor.id, next);
-  };
-
-  // ── Drag-and-drop wiring ──────────────────────────────────────────────
-  const onDragStart = (e: DragEvent) => {
-    if (!props.onReorder) return;
-    e.dataTransfer?.setData(DRAG_MIME, String(props.node.actor.id));
-    e.dataTransfer!.effectAllowed = 'move';
-    e.stopPropagation();
-  };
-
-  // Map the pointer's Y inside the row to one of three drop zones. The
-  // middle ("inside") band is only allowed when the target row can host
-  // children — otherwise the whole row splits into before/after halves.
-  const computeZone = (e: DragEvent): DropMode | null => {
-    const row = e.currentTarget as HTMLElement;
-    const rect = row.getBoundingClientRect();
-    const y = e.clientY - rect.top;
-    const h = rect.height || 1;
-    const allowInside =
-      props.canDropInside?.(props.node.actor.id) !== false;
-    if (allowInside) {
-      if (y < h * 0.3) return 'before';
-      if (y > h * 0.7) return 'after';
-      return 'inside';
-    }
-    return y < h * 0.5 ? 'before' : 'after';
-  };
-
-  const onDragOver = (e: DragEvent) => {
-    if (!props.onReorder) return;
-    // Accept the drop only when our payload type is present. Without this,
-    // page-level drag sources (files, etc.) would light up the row.
-    if (!e.dataTransfer?.types.includes(DRAG_MIME)) return;
-    e.preventDefault();
-    e.dataTransfer.dropEffect = 'move';
-    setDropZone(computeZone(e));
-  };
-
-  const onDragLeave = (e: DragEvent) => {
-    // Pointer can briefly cross between child elements inside the row;
-    // ignore those phantom leaves by checking relatedTarget containment.
-    const row = e.currentTarget as HTMLElement;
-    if (e.relatedTarget && row.contains(e.relatedTarget as Node)) return;
-    setDropZone(null);
-  };
-
-  const onDrop = (e: DragEvent) => {
-    if (!props.onReorder) return;
-    e.preventDefault();
-    const sourceIdStr = e.dataTransfer?.getData(DRAG_MIME);
-    setDropZone(null);
-    if (!sourceIdStr) return;
-    const sourceId = parseInt(sourceIdStr, 10);
-    if (Number.isNaN(sourceId) || sourceId === props.node.actor.id) return;
-    const zone = computeZone(e) ?? 'after';
-    props.onReorder(sourceId, props.node.actor.id, zone);
-  };
-
-  return (
-    <div class="tree-item">
-      <div
-        class="tree-item-row"
-        classList={{
-          'tree-item-row--selected': props.selectedId() === props.node.actor.id,
-          'tree-item-row--hidden': !isVisible(),
-          'tree-item-row--drop-before': dropZone() === 'before',
-          'tree-item-row--drop-inside': dropZone() === 'inside',
-          'tree-item-row--drop-after': dropZone() === 'after',
-        }}
-        ref={(el) => el.style.setProperty('--tree-depth', String(props.depth))}
-        draggable={true}
-        onDragStart={onDragStart}
-        onDragOver={onDragOver}
-        onDragLeave={onDragLeave}
-        onDrop={onDrop}
-        onClick={() => props.onSelect(props.node.actor.id)}
-      >
-        <Show when={hasChildren()}>
-          <span
-            class="tree-expand"
-            onClick={(e) => {
-              e.stopPropagation();
-              setExpanded(!expanded());
-            }}
-          >
-            {expanded() ? '▼' : '▶'}
-          </span>
-        </Show>
-        <Show when={!hasChildren()}>
-          <span class="tree-expand-placeholder" />
-        </Show>
-        <button
-          type="button"
-          class="tree-visibility"
-          classList={{ 'tree-visibility--hidden': !isVisible() }}
-          title={isVisible() ? 'Hide actor' : 'Show actor'}
-          onClick={toggleVisibility}
-        >
-          {isVisible() ? '👁' : '⊘'}
-        </button>
-        <span class="tree-icon">
-          {props.node.actor.light ? '💡' : '🎯'}
-        </span>
-        <Show
-          when={renaming()}
-          fallback={
-            <span
-              class="tree-name"
-              title={props.onRename ? 'Double-click to rename' : undefined}
-              onDblClick={(e) => {
-                if (!props.onRename) return;
-                e.stopPropagation();
-                setRenaming(true);
-              }}
-            >
-              {props.node.actor.name}
-            </span>
-          }
-        >
-          <input
-            class="tree-rename-input"
-            type="text"
-            title="Rename actor"
-            aria-label="Rename actor"
-            value={props.node.actor.name}
-            ref={(el) => {
-              // Focus after mount; requestAnimationFrame because the input
-              // is inside a freshly-created Show branch.
-              requestAnimationFrame(() => {
-                el.focus();
-                el.select();
-              });
-            }}
-            onClick={(e) => e.stopPropagation()}
-            onBlur={(e) => commitRename(e.currentTarget.value)}
-            onKeyDown={(e) => {
-              e.stopPropagation();
-              if (e.key === 'Enter') {
-                commitRename(e.currentTarget.value);
-              } else if (e.key === 'Escape') {
-                setRenaming(false);
-              }
-            }}
-          />
-        </Show>
-        <Show when={props.onDelete}>
-          <button
-            type="button"
-            class="tree-delete"
-            title="Delete actor"
-            onClick={handleDelete}
-          >
-            🗑
-          </button>
-        </Show>
-      </div>
-      <Show when={expanded() && hasChildren()}>
-        <div class="tree-children">
-          <For each={props.node.children}>
-            {(child) => (
-              <TreeItem
-                node={child}
-                depth={props.depth + 1}
-                selectedId={props.selectedId}
-                onSelect={props.onSelect}
-                onVisibilityChange={props.onVisibilityChange}
-                onDelete={props.onDelete}
-                onReorder={props.onReorder}
-                canDropInside={props.canDropInside}
-                onRename={props.onRename}
-              />
-            )}
-          </For>
-        </div>
-      </Show>
-    </div>
-  );
-};
-
 // Filter the tree to nodes whose name matches `query` (case-insensitive
 // substring) — keeping ancestors of matches so the hierarchy context stays
 // visible while filtering.
@@ -314,12 +116,87 @@ function filterTree(nodes: TreeNode[], query: string): TreeNode[] {
 
 export const SceneHierarchy: Component<SceneHierarchyProps> = (props) => {
   const [search, setSearch] = createSignal('');
-  const tree = () => {
+  const [lightMenuOpen, setLightMenuOpen] = createSignal(false);
+
+  // ── Tree state, lifted out of the per-row components ──────────────────────
+  // Virtualization recycles row components as you scroll, so transient row
+  // state can't live inside them. Expanded-set is keyed by actor id: absence
+  // means COLLAPSED. The tree defaults to collapsed (only roots visible) so a
+  // production-scale import (Marbles = thousands of actors) opens to a handful
+  // of rows you drill into, instead of dumping the whole nested tree open.
+  const [expandedIds, setExpandedIds] = createSignal<Set<number>>(new Set());
+  const [renamingId, setRenamingId] = createSignal<number | null>(null);
+  const [drag, setDrag] = createSignal<{ id: number; zone: DropMode } | null>(null);
+
+  const toggleExpanded = (id: number) =>
+    setExpandedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+
+  const searchActive = () => search().trim().length > 0;
+
+  const tree = createMemo(() => {
     const full = buildActorTree(props.actors());
     const q = search().trim();
     return q ? filterTree(full, q) : full;
-  };
-  const [lightMenuOpen, setLightMenuOpen] = createSignal(false);
+  });
+
+  // Flatten the visible tree (respecting collapse state) into the linear row
+  // list the virtualizer windows over. While a filter is active everything is
+  // treated as expanded so matches deep in the tree stay visible.
+  const flatRows = createMemo<FlatRow[]>(() => {
+    const out: FlatRow[] = [];
+    const expandedSet = expandedIds();
+    const expandAll = searchActive();
+    const walk = (nodes: TreeNode[], depth: number) => {
+      for (const node of nodes) {
+        out.push({ node, depth });
+        if (node.children.length > 0 && (expandAll || expandedSet.has(node.actor.id))) {
+          walk(node.children, depth + 1);
+        }
+      }
+    };
+    walk(tree(), 0);
+    return out;
+  });
+
+  // ── Virtual window ────────────────────────────────────────────────────────
+  let scrollEl: HTMLDivElement | undefined;
+  let sizerEl: HTMLDivElement | undefined;
+  let windowEl: HTMLDivElement | undefined;
+  const [scrollTop, setScrollTop] = createSignal(0);
+  const [viewportH, setViewportH] = createSignal(600);
+
+  const range = createMemo(() => {
+    const total = flatRows().length;
+    const first = Math.max(0, Math.floor(scrollTop() / ROW_H) - OVERSCAN);
+    const visibleCount = Math.ceil(viewportH() / ROW_H) + OVERSCAN * 2;
+    const last = Math.min(total, first + visibleCount);
+    return { first, last };
+  });
+  const visibleRows = createMemo(() => flatRows().slice(range().first, range().last));
+
+  // Drive the scroll geometry through CSS custom properties (the lint config
+  // blocks dynamic style={...} attributes — same reason --tree-depth is set via
+  // a ref). --sizer-h reserves the full scroll range; --vy offsets the rendered
+  // window to its true position.
+  createEffect(() => {
+    if (sizerEl) sizerEl.style.setProperty('--sizer-h', `${flatRows().length * ROW_H}px`);
+  });
+  createEffect(() => {
+    if (windowEl) windowEl.style.setProperty('--vy', `${range().first * ROW_H}px`);
+  });
+
+  onMount(() => {
+    if (!scrollEl) return;
+    setViewportH(scrollEl.clientHeight || 600);
+    const ro = new ResizeObserver(() => setViewportH(scrollEl!.clientHeight || 600));
+    ro.observe(scrollEl);
+    onCleanup(() => ro.disconnect());
+  });
 
   // Delete/Backspace on the panel deletes the selected actor — same gesture
   // the SOP canvas uses for the node version.
@@ -337,6 +214,176 @@ export const SceneHierarchy: Component<SceneHierarchyProps> = (props) => {
     props.onActorDelete?.(id);
   };
 
+  // ── Per-row rendering ───────────────────────────────────────────────────
+  // Defined inside the component so it closes over the lifted state + props
+  // instead of threading a dozen callbacks through. One flattened row; no
+  // recursion (children are their own rows in the flat list).
+  const Row: Component<{ row: FlatRow }> = (rp) => {
+    const actor = () => rp.row.node.actor;
+    const hasChildren = () => rp.row.node.children.length > 0;
+    const expanded = () => searchActive() || expandedIds().has(actor().id);
+    const isVisible = () => actor().visible !== false;
+    const renaming = () => renamingId() === actor().id;
+    const dropZone = () => (drag()?.id === actor().id ? drag()!.zone : null);
+
+    const toggleVisibility = async (e: MouseEvent) => {
+      e.stopPropagation();
+      const next = !isVisible();
+      props.onActorVisibilityChange?.(actor().id, next);
+      try {
+        await api.setActorVisible(actor().id, next);
+      } catch (err) {
+        console.warn('setActorVisible failed:', err);
+        props.onActorVisibilityChange?.(actor().id, !next);
+      }
+    };
+
+    const commitRename = (raw: string) => {
+      setRenamingId(null);
+      const next = raw.trim();
+      if (!next || next === actor().name) return;
+      props.onActorRename?.(actor().id, next);
+    };
+
+    const computeZone = (e: DragEvent): DropMode | null => {
+      const row = e.currentTarget as HTMLElement;
+      const rect = row.getBoundingClientRect();
+      const y = e.clientY - rect.top;
+      const h = rect.height || 1;
+      const allowInside = props.canDropInside?.(actor().id) !== false;
+      if (allowInside) {
+        if (y < h * 0.3) return 'before';
+        if (y > h * 0.7) return 'after';
+        return 'inside';
+      }
+      return y < h * 0.5 ? 'before' : 'after';
+    };
+
+    const onDragStart = (e: DragEvent) => {
+      if (!props.onActorReorder) return;
+      e.dataTransfer?.setData(DRAG_MIME, String(actor().id));
+      e.dataTransfer!.effectAllowed = 'move';
+      e.stopPropagation();
+    };
+    const onDragOver = (e: DragEvent) => {
+      if (!props.onActorReorder) return;
+      if (!e.dataTransfer?.types.includes(DRAG_MIME)) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      setDrag({ id: actor().id, zone: computeZone(e) ?? 'after' });
+    };
+    const onDragLeave = (e: DragEvent) => {
+      const row = e.currentTarget as HTMLElement;
+      if (e.relatedTarget && row.contains(e.relatedTarget as Node)) return;
+      setDrag((d) => (d?.id === actor().id ? null : d));
+    };
+    const onDrop = (e: DragEvent) => {
+      if (!props.onActorReorder) return;
+      e.preventDefault();
+      const sourceIdStr = e.dataTransfer?.getData(DRAG_MIME);
+      setDrag(null);
+      if (!sourceIdStr) return;
+      const sourceId = parseInt(sourceIdStr, 10);
+      if (Number.isNaN(sourceId) || sourceId === actor().id) return;
+      props.onActorReorder(sourceId, actor().id, computeZone(e) ?? 'after');
+    };
+
+    return (
+      <div
+        class="tree-item-row"
+        classList={{
+          'tree-item-row--selected': props.selectedActorId() === actor().id,
+          'tree-item-row--hidden': !isVisible(),
+          'tree-item-row--drop-before': dropZone() === 'before',
+          'tree-item-row--drop-inside': dropZone() === 'inside',
+          'tree-item-row--drop-after': dropZone() === 'after',
+        }}
+        ref={(el) => el.style.setProperty('--tree-depth', String(rp.row.depth))}
+        draggable={true}
+        onDragStart={onDragStart}
+        onDragOver={onDragOver}
+        onDragLeave={onDragLeave}
+        onDrop={onDrop}
+        onClick={() => props.onActorSelect(actor().id)}
+      >
+        <Show
+          when={hasChildren()}
+          fallback={<span class="tree-expand-placeholder" />}
+        >
+          <span
+            class="tree-expand"
+            onClick={(e) => {
+              e.stopPropagation();
+              toggleExpanded(actor().id);
+            }}
+          >
+            {expanded() ? '▼' : '▶'}
+          </span>
+        </Show>
+        <button
+          type="button"
+          class="tree-visibility"
+          classList={{ 'tree-visibility--hidden': !isVisible() }}
+          title={isVisible() ? 'Hide actor' : 'Show actor'}
+          onClick={toggleVisibility}
+        >
+          {isVisible() ? '👁' : '⊘'}
+        </button>
+        <span class="tree-icon">{actor().light ? '💡' : '🎯'}</span>
+        <Show
+          when={renaming()}
+          fallback={
+            <span
+              class="tree-name"
+              title={props.onActorRename ? 'Double-click to rename' : undefined}
+              onDblClick={(e) => {
+                if (!props.onActorRename) return;
+                e.stopPropagation();
+                setRenamingId(actor().id);
+              }}
+            >
+              {actor().name}
+            </span>
+          }
+        >
+          <input
+            class="tree-rename-input"
+            type="text"
+            title="Rename actor"
+            aria-label="Rename actor"
+            value={actor().name}
+            ref={(el) => {
+              requestAnimationFrame(() => {
+                el.focus();
+                el.select();
+              });
+            }}
+            onClick={(e) => e.stopPropagation()}
+            onBlur={(e) => commitRename(e.currentTarget.value)}
+            onKeyDown={(e) => {
+              e.stopPropagation();
+              if (e.key === 'Enter') commitRename(e.currentTarget.value);
+              else if (e.key === 'Escape') setRenamingId(null);
+            }}
+          />
+        </Show>
+        <Show when={props.onActorDelete}>
+          <button
+            type="button"
+            class="tree-delete"
+            title="Delete actor"
+            onClick={(e) => {
+              e.stopPropagation();
+              props.onActorDelete?.(actor().id);
+            }}
+          >
+            🗑
+          </button>
+        </Show>
+      </div>
+    );
+  };
+
   return (
     <div class="scene-hierarchy" tabIndex={0} onKeyDown={onKeyDown}>
       <div class="hierarchy-toolbar">
@@ -348,8 +395,6 @@ export const SceneHierarchy: Component<SceneHierarchyProps> = (props) => {
           value={search()}
           onInput={(e) => setSearch(e.currentTarget.value)}
           onKeyDown={(e) => {
-            // Keep Backspace/Delete from bubbling to the panel's
-            // delete-selected-actor handler while typing a query.
             e.stopPropagation();
             if (e.key === 'Escape') {
               setSearch('');
@@ -400,28 +445,22 @@ export const SceneHierarchy: Component<SceneHierarchyProps> = (props) => {
           </div>
         }
       >
-        <div class="hierarchy-tree">
-          <Show
-            when={tree().length > 0}
-            fallback={<div class="hierarchy-empty">No actors match “{search()}”</div>}
+        <Show
+          when={flatRows().length > 0}
+          fallback={<div class="hierarchy-empty">No actors match “{search()}”</div>}
+        >
+          <div
+            class="hierarchy-tree"
+            ref={scrollEl}
+            onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
           >
-            <For each={tree()}>
-              {(node) => (
-                <TreeItem
-                  node={node}
-                  depth={0}
-                  selectedId={props.selectedActorId}
-                  onSelect={props.onActorSelect}
-                  onVisibilityChange={props.onActorVisibilityChange}
-                  onDelete={props.onActorDelete}
-                  onReorder={props.onActorReorder}
-                  canDropInside={props.canDropInside}
-                  onRename={props.onActorRename}
-                />
-              )}
-            </For>
-          </Show>
-        </div>
+            <div class="hierarchy-sizer" ref={sizerEl}>
+              <div class="hierarchy-window" ref={windowEl}>
+                <For each={visibleRows()}>{(row) => <Row row={row} />}</For>
+              </div>
+            </div>
+          </div>
+        </Show>
       </Show>
     </div>
   );

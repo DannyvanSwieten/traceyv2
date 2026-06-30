@@ -1,4 +1,4 @@
-import { Component, createEffect, onMount } from 'solid-js';
+import { Component, createEffect, createSignal, onCleanup, onMount, For, Show } from 'solid-js';
 import {
   autoKey,
   bootTimeline,
@@ -11,6 +11,8 @@ import {
   toggleAutoKey,
   togglePlayPause,
 } from '../../stores/timeline';
+import { selectedActorId } from '../../stores/actors';
+import * as api from '../../lib/api';
 import { NumberInput } from '../number-input/NumberInput';
 import './Playbar.css';
 
@@ -26,6 +28,29 @@ const ICON_SKIP_FWD = '⏭';
 // whole frames (matching Houdini's playbar feel).
 export const Playbar: Component = () => {
   onMount(bootTimeline);
+
+  // Keyframe markers for the selected actor (shot-mode USD time samples). Refreshed
+  // when the selection changes or after a key is authored (shot_state) / recompose.
+  const [keys, setKeys] = createSignal<number[]>([]);
+  const refreshKeys = () => {
+    const id = selectedActorId();
+    if (id == null) { setKeys([]); return; }
+    api.getShotActorKeys(id).then(setKeys).catch(() => setKeys([]));
+  };
+  createEffect(() => { selectedActorId(); refreshKeys(); }); // re-run on selection change
+  onMount(() => {
+    const offShot = api.listen('shot_state', () => refreshKeys());
+    const offScene = api.listen('scene_changed', () => refreshKeys());
+    const offKeys = api.listen('shot_keys_changed', () => refreshKeys());
+    onCleanup(() => { offShot(); offScene(); offKeys(); });
+  });
+  // A key's timecode T was authored at playhead frame T+1 (the playbar is 1-based);
+  // map to the same 0..1 fraction the playhead uses so markers align with it.
+  const keyFrac = (k: number): number => {
+    const t = timeline();
+    const span = Math.max(t.frame_end - t.frame_start, 1);
+    return Math.min(Math.max((k + 1 - t.frame_start) / span, 0), 1);
+  };
 
   // Reactive write of the playhead position to a CSS variable on the track
   // element. Avoids inline `style={...}` while still tracking signal changes.
@@ -178,6 +203,11 @@ export const Playbar: Component = () => {
         onPointerMove={onScrub}
         onPointerUp={onScrubEnd}
       >
+        {/* Keyframe markers for the selected actor (Animation hue). Dynamic position
+            → inline left is unavoidable here. */}
+        <For each={keys()}>
+          {(k) => <div class="playbar-key" style={{ left: `${keyFrac(k) * 100}%` }} />}
+        </For>
         <div class="playbar-playhead" />
       </div>
 
@@ -232,6 +262,16 @@ export const Playbar: Component = () => {
       >
         AK
       </button>
+
+      <Show when={selectedActorId() != null}>
+        <span
+          class="playbar-keycount"
+          classList={{ 'is-empty': keys().length === 0 }}
+          title="Keyframes on the selected actor in this shot (green ticks on the track)"
+        >
+          ◆ {keys().length} key{keys().length === 1 ? '' : 's'}
+        </span>
+      </Show>
 
       <div class="playbar-loop-group">
         <span class="playbar-loop-label" id="playbar-loop-label">

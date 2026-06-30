@@ -11,6 +11,7 @@
 #include "scene_instance.hpp"
 #include "scene_object.hpp"
 #include "transform.hpp"
+#include "usd_internal.hpp"
 
 #include <pxr/usd/usd/stage.h>
 #include <pxr/usd/usd/primRange.h>
@@ -226,10 +227,145 @@ namespace tracey
                     m.setAlbedo(Vec3(colors[0][0], colors[0][1], colors[0][2]));
             }
 
-            UsdShadeMaterial mat = UsdShadeMaterialBindingAPI(prim).ComputeBoundMaterial();
+            // Resolve the bound material. ComputeBoundMaterial() (via
+            // BindingsAtPrim) logs a per-prim warning when a prim has material
+            // bindings but never applied the MaterialBindingAPI schema — common
+            // in Omniverse / NVIDIA assets (e.g. Marbles), which set the
+            // material:binding relationship directly. Use the full resolver only
+            // when the API is actually applied; otherwise resolve the direct
+            // binding relationship ourselves — no warning, and it covers the
+            // legacy direct-binding case those assets use.
+            UsdShadeMaterial mat;
+            if (prim.HasAPI<UsdShadeMaterialBindingAPI>())
+            {
+                mat = UsdShadeMaterialBindingAPI(prim).ComputeBoundMaterial();
+            }
+            else if (UsdRelationship rel = prim.GetRelationship(TfToken("material:binding")))
+            {
+                SdfPathVector targets;
+                if (rel.GetForwardedTargets(&targets) && !targets.empty())
+                    mat = UsdShadeMaterial(prim.GetStage()->GetPrimAtPath(targets[0]));
+            }
             if (!mat) return m;
+
+            // ── OmniPBR / OmniGlass (MDL) materials ──────────────────────────
+            // NVIDIA Omniverse assets (Marbles, Old Attic, …) don't author a
+            // UsdPreviewSurface; they reference an MDL module (OmniPBR/OmniGlass)
+            // and expose its parameters as interface inputs on the Material prim
+            // (e.g. inputs:diffuse_color_constant). We don't run MDL, but reading
+            // those well-known constants + direct texture-asset inputs imports the
+            // material in its authored look instead of flat grey. A real
+            // UsdPreviewSurface (handled below) takes precedence.
+            {
+                // Omniverse authors OmniPBR/OmniGlass parameters in two styles:
+                //  (a) as interface inputs on the Material prim — paint
+                //      containers etc. read via mat.GetInput(...);
+                //  (b) directly on the MDL Shader prim that outputs:mdl:surface
+                //      points at — the marbles themselves.
+                // Read BOTH: for each param prefer whichever prim actually
+                // authored a value (Material interface first, then the shader).
+                UsdShadeShader mdlShader =
+                    mat.ComputeSurfaceSource(TfTokenVector{TfToken("mdl")});
+
+                auto findInput = [&](const char *name) -> UsdShadeInput {
+                    UsdShadeInput mi = mat.GetInput(TfToken(name));
+                    if (mi && mi.GetAttr().HasAuthoredValue()) return mi;
+                    if (mdlShader)
+                    {
+                        UsdShadeInput si = mdlShader.GetInput(TfToken(name));
+                        if (si && si.GetAttr().HasAuthoredValue()) return si;
+                    }
+                    return mi; // possibly invalid — getters guard with `if (in)`
+                };
+                auto omF = [&](const char *name, float def) {
+                    float v = def;
+                    if (UsdShadeInput in = findInput(name)) in.Get(&v);
+                    return v;
+                };
+                auto omB = [&](const char *name, bool def) {
+                    bool v = def;
+                    if (UsdShadeInput in = findInput(name)) in.Get(&v);
+                    return v;
+                };
+                auto omC = [&](const char *name, const GfVec3f &def) {
+                    GfVec3f v = def;
+                    if (UsdShadeInput in = findInput(name)) in.Get(&v);
+                    return v;
+                };
+                auto omAsset = [&](const char *name) -> std::string {
+                    UsdShadeInput in = findInput(name);
+                    if (!in) return {};
+                    SdfAssetPath a;
+                    if (!in.Get(&a)) return {};
+                    std::string p = a.GetResolvedPath();
+                    if (p.empty()) p = a.GetAssetPath();
+                    return p;
+                };
+
+                // Identify the MDL by its sub-identifier (OmniPBR / OmniGlass),
+                // falling back to the presence of signature inputs.
+                TfToken subId;
+                if (mdlShader)
+                    if (UsdAttribute a = mdlShader.GetPrim().GetAttribute(
+                            TfToken("info:mdl:sourceAsset:subIdentifier")))
+                        a.Get(&subId);
+                const bool isGlass =
+                    subId == TfToken("OmniGlass") || (bool)findInput("glass_color");
+                const bool isPBR = !isGlass &&
+                    (subId == TfToken("OmniPBR") ||
+                     (bool)findInput("diffuse_color_constant") ||
+                     (bool)findInput("diffuse_texture"));
+
+                if (isPBR)
+                {
+                    const GfVec3f dc = omC("diffuse_color_constant", GfVec3f(0.2f, 0.2f, 0.2f));
+                    const GfVec3f tint = omC("diffuse_tint", GfVec3f(1.0f, 1.0f, 1.0f));
+                    m.setAlbedo(Vec3(dc[0] * tint[0], dc[1] * tint[1], dc[2] * tint[2]));
+                    m.setMetallic(omF("metallic_constant", 0.0f));
+                    m.setRoughness(omF("reflection_roughness_constant", 0.5f));
+                    if (omB("enable_emission", false))
+                    {
+                        const GfVec3f ec = omC("emissive_color", GfVec3f(0.0f, 0.0f, 0.0f));
+                        m.setEmission(Vec3(ec[0], ec[1], ec[2]));
+                        m.setFloat("emissionStrength", omF("emissive_intensity", 1.0f));
+                    }
+                    if (omB("enable_opacity", false))
+                        m.setFloat("opacity", omF("opacity_constant", 1.0f));
+
+                    auto omniTex = [&](const char *input, const char *slot) {
+                        std::string f = omAsset(input);
+                        if (!f.empty()) m.setTexture(slot, f);
+                    };
+                    omniTex("diffuse_texture", TEXTURE_ALBEDO);
+                    omniTex("normalmap_texture", TEXTURE_NORMAL);
+                    // ORM (occlusion/roughness/metallic) packed texture → MR slot;
+                    // fall back to a roughness-only texture.
+                    std::string mr = omAsset("ORM_texture");
+                    if (mr.empty()) mr = omAsset("reflectionroughness_texture");
+                    if (!mr.empty()) m.setTexture(TEXTURE_METALLIC_ROUGHNESS, mr);
+                }
+                else if (isGlass)
+                {
+                    // OmniGlass → refractive dielectric (transmission on).
+                    const GfVec3f gc = omC("glass_color", GfVec3f(1.0f, 1.0f, 1.0f));
+                    m.setAlbedo(Vec3(gc[0], gc[1], gc[2]));
+                    m.setFloat("ior", omF("glass_ior", 1.5f));
+                    m.setRoughness(omF("frosting_roughness", 0.0f));
+                    m.setMetallic(0.0f);
+                    m.setFloat("transmission", 1.0f);
+                }
+            }
+
             UsdShadeShader surface = mat.ComputeSurfaceSource();
             if (!surface) return m;
+            // Only run the UsdPreviewSurface reads when the surface really is one.
+            // For an MDL (OmniPBR/Glass) surface the inputs use different names and
+            // the getF/getC defaults below would clobber the values set above.
+            {
+                TfToken sid;
+                surface.GetIdAttr().Get(&sid);
+                if (sid != TfToken("UsdPreviewSurface")) return m;
+            }
 
             auto getF = [&](const char *name, float def) {
                 float v = def;
@@ -562,7 +698,15 @@ namespace tracey
             std::cerr << "[usd] failed to open stage: " << path << std::endl;
             return nullptr;
         }
+        return convertStageToScene(stage, path);
+    }
 
+    // Shared conversion body: an already-open, composed stage → Scene. Reused by
+    // loadFromFile (above) and StageDocument::toScene (the live-stage render bridge).
+    std::unique_ptr<Scene> convertStageToScene(const UsdStageRefPtr &stage,
+                                               const std::string &sourceLabel,
+                                               const UsdTimeCode &time)
+    {
         auto scene = std::make_unique<Scene>();
         const glm::mat4 upM = upAxisToYup(stage); // Z-up → Y-up when needed
         int meshes = 0, lights = 0, instances = 0;
@@ -620,7 +764,7 @@ namespace tracey
                     if (!it->second.empty())
                     {
                         const glm::mat4 instWorld = upM * toGlm(
-                            UsdGeomXformable(prim).ComputeLocalToWorldTransform(UsdTimeCode::Default()));
+                            UsdGeomXformable(prim).ComputeLocalToWorldTransform(time));
                         Actor *actor = scene->createActor();
                         actor->setName("instance:" + prim.GetPath().GetString());
                         for (const auto &pm : it->second)
@@ -636,7 +780,7 @@ namespace tracey
             }
 
             const glm::mat4 world = upM * toGlm(
-                UsdGeomXformable(prim).ComputeLocalToWorldTransform(UsdTimeCode::Default()));
+                UsdGeomXformable(prim).ComputeLocalToWorldTransform(time));
 
             // First camera found becomes the scene camera.
             if (!gotCamera && prim.IsA<UsdGeomCamera>())
@@ -649,7 +793,7 @@ namespace tracey
                 rot[2] = glm::normalize(rot[2]);
                 camera.setRotation(glm::quat_cast(rot));
                 const float vfov = static_cast<float>(
-                    UsdGeomCamera(prim).GetCamera(UsdTimeCode::Default())
+                    UsdGeomCamera(prim).GetCamera(time)
                         .GetFieldOfView(GfCamera::FOVVertical));
                 if (vfov > 0.0f) camera.setFov(vfov);
                 scene->setCamera(camera);
@@ -694,7 +838,7 @@ namespace tracey
 
         std::cout << "[usd] imported " << meshes << " mesh(es), " << instances
                   << " instance(s), " << lights << " light(s)"
-                  << (gotCamera ? ", 1 camera" : "") << " from " << path << std::endl;
+                  << (gotCamera ? ", 1 camera" : "") << " from " << sourceLabel << std::endl;
         return scene;
     }
 

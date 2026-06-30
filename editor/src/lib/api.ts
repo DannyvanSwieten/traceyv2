@@ -170,6 +170,83 @@ export function listen(event: string, fn: EventListener): () => void {
   return () => set!.delete(fn);
 }
 
+// ─── USD shot mode (department-layered pipeline) ────────────────────────────
+// A "shot" is a composed multi-layer USD stage; each department (layout / anim /
+// lighting / …) authors its own sublayer file via an edit target. See
+// docs/pipeline_layout.md. Parallel/opt-in: the procedural workflow is unaffected
+// until a shot is opened.
+
+export interface ShotState {
+  open: boolean;
+  departments: string[]; // strongest first
+  active: string | null;
+  name?: string | null; // human label, e.g. "seq01/sh01"
+}
+
+// path '' → the native side defaults it (under the project folder, else a temp dir),
+// so a simple toolbar button needs no file dialog yet.
+export const createShot = (path = '', departments?: string[]) =>
+  send<ShotState>('create_shot', departments ? { path, departments } : { path });
+export const openShot = (path = '') => send<ShotState>('open_shot', { path });
+export const closeShot = () => send<ShotState>('close_shot');
+export const setActiveDepartment = (department: string) =>
+  send<ShotState>('set_active_department', { department });
+export const saveShot = () => send<boolean>('save_shot');
+export const getShotState = () => send<ShotState>('get_shot_state');
+
+// Reference a project asset into the active shot (authored into the layout layer as
+// a USD reference — non-destructive composition). Returns the prim path used.
+export const referenceAsset = (path: string) =>
+  send<{ prim: string; shot: ShotState }>('reference_asset', { path });
+
+// Key the actor's current transform at the playhead as a USD time sample in the
+// shot's anim layer (a keyframe). Shot mode only. Returns the keyed frame.
+export const shotKeyActor = (actorId: number) =>
+  send<{ frame: number; prim: string }>('shot_key_actor', { actor_id: actorId });
+
+// The frames (USD time-sample timecodes) at which the actor's transform is keyed in
+// the shot — for drawing keyframe markers on the timeline. Empty when not in a shot.
+export const getShotActorKeys = (actorId: number) =>
+  send<number[]>('get_shot_actor_keys', { actor_id: actorId });
+
+// ─── Project asset library (the project's assets/ folder) ───────────────────
+export interface ProjectAsset {
+  name: string;
+  path: string; // the asset interface file (e.g. assets/chair/chair.usd)
+  dir: string; // the asset folder
+  type: 'usd' | 'gltf';
+}
+export const listProjectAssets = () => send<ProjectAsset[]>('list_project_assets');
+
+// ─── Asset registry (per-asset SOP graphs — "one graph models one object") ──
+// Each asset is a named SOP graph; the current asset's graph is what the SOP canvas
+// edits and the viewport previews. Switching swaps the live graph (native broadcasts
+// sop_graph_changed / scene_changed, which reload the canvas + actor list).
+export interface AssetSummary {
+  assets: { id: string; name: string }[];
+  current: string | null;
+}
+export const listAssets = () => send<AssetSummary>('list_assets');
+export const createAsset = (name?: string) =>
+  send<AssetSummary>('create_asset', name ? { name } : {});
+export const switchAsset = (id: string) => send<AssetSummary>('switch_asset', { id });
+export const renameAsset = (id: string, name: string) =>
+  send<AssetSummary>('rename_asset', { id, name });
+export const deleteAsset = (id: string) => send<AssetSummary>('delete_asset', { id });
+// Publish the current asset's cooked geometry → <project>/assets/<name>/<name>.usd, so
+// it appears in the Assets tab and can be referenced into a shot. Broadcasts
+// 'assets_changed'. Returns the asset name + written path.
+export const publishAsset = () => send<{ name: string; path: string }>('publish_asset');
+
+export interface AssetThumbnail {
+  base64: string;
+  mime_type: string;
+}
+// A PNG thumbnail for an asset if one ships under the .thumbs/ convention; null
+// otherwise (the card falls back to a type glyph).
+export const getAssetThumbnail = (path: string) =>
+  send<AssetThumbnail | null>('get_asset_thumbnail', { path });
+
 // ─── Scene management ──────────────────────────────────────────────────────
 
 export const createActor = (name: string) => send<number>('create_actor', { name });
@@ -411,6 +488,14 @@ export const getPtFullscreen = () => send<boolean>('get_pt_fullscreen');
 export const setPtFullscreen = (value: boolean) =>
   send<null>('set_pt_fullscreen', { value });
 
+// Realtime preview: when true, the path tracer traces LIVE during camera motion
+// (follows the camera, noisy, converges once still) instead of freezing on the
+// last frame until the view settles. Turn off for very heavy scenes where
+// per-frame tracing can't keep up.
+export const getPtRealtime = () => send<boolean>('get_pt_realtime');
+export const setPtRealtime = (value: boolean) =>
+  send<null>('set_pt_realtime', { value });
+
 // Clear the path tracer's accumulator on the next tick. Equivalent to
 // camera-moved invalidation but explicit — for "Reset Render" buttons.
 export const resetPtAccumulator = () =>
@@ -530,6 +615,31 @@ export const setActorMaterial = (actorId: number, libraryName: string) =>
 
 export const saveScene = (path: string) => send<null>('save_scene', { path });
 export const loadScene = (path: string) => send<null>('load_scene', { path });
+
+// Native single-line text prompt (e.g. a project name). Returns the entered text,
+// or null if the user cancelled. (window.prompt is unavailable in the WKWebView.)
+export const promptText = (title: string, message: string, defaultValue = '') =>
+  send<string | null>('prompt_text', { title, message, default_value: defaultValue });
+
+export interface ResolvedProjectPath {
+  name: string;
+  dir: string;
+  path: string;
+}
+// Map a project name → its .tracey path in the standard projects location
+// (~/Documents/Tracey/Projects/<name>/<name>.tracey). save_scene then writes +
+// scaffolds the folder there.
+export const resolveProjectPath = (name: string) =>
+  send<ResolvedProjectPath>('resolve_project_path', { name });
+
+export interface ProjectEntry {
+  name: string;
+  path: string; // the .tracey file
+  dir: string; // the project folder
+}
+// Saved projects in the standard location, most-recently-modified first — for the
+// startup launcher.
+export const listProjects = () => send<ProjectEntry[]>('list_projects');
 export const exportImage = (path: string, format: string) =>
   send<null>('export_image', { path, format });
 

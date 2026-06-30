@@ -10,6 +10,7 @@
 
 import { Component, For, Show, createMemo } from 'solid-js';
 import { SopGraphPanel } from './SopGraphPanel';
+import { AssetPicker } from './AssetPicker';
 import {
   currentGraph,
   flushSopGraph,
@@ -69,6 +70,11 @@ export const SopGraphEditor: Component<SopGraphEditorProps> = (props) => {
           Close
         </button>
       </div>
+      {/* Asset selector — which object's graph you're editing. Hidden inside a VOP
+          drill-in (the breadcrumb owns that level). */}
+      <Show when={!isVopEditorOpen()}>
+        <AssetPicker />
+      </Show>
       <nav class="sop-breadcrumb" aria-label="Subnet navigation">
         <button
           type="button"

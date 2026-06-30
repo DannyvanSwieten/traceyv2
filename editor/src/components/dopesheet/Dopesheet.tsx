@@ -1,6 +1,6 @@
 import { Component, For, Index, Show, createEffect, createMemo, createSignal, onCleanup } from 'solid-js';
 import * as api from '../../lib/api';
-import { AnimatedChannel, listAnimatedChannels } from '../../lib/animated_channels';
+import { AnimatedChannel, channelScope, listAnimatedChannels } from '../../lib/animated_channels';
 import { animPanelMode, setAnimPanelMode } from '../../lib/anim_panel_mode';
 import { sopGraph } from '../../stores/sops';
 import {
@@ -45,7 +45,9 @@ interface DragState {
 // through the keyframe dot in the inspector. The dopesheet only edits keys
 // that already exist.
 export const Dopesheet: Component = () => {
-  const channels = createMemo(() => listAnimatedChannels(sopGraph()));
+  // Scope to the selected node/actor — a production scene has thousands of
+  // channels and rendering them all locks up the WebView.
+  const channels = createMemo(() => listAnimatedChannels(sopGraph(), channelScope()));
 
   const tickFrames = createMemo(() => {
     const t = timeline();
@@ -367,9 +369,9 @@ export const Dopesheet: Component = () => {
           </For>
           <Show when={channels().length === 0}>
             <div class="dopesheet-empty">
-              No animated channels.
+              Select an object to edit its animation.
               <br />
-              Click a keyframe diamond next to a parameter to start animating.
+              The dopesheet shows the selected node's keyframe channels.
             </div>
           </Show>
         </div>

@@ -92,8 +92,14 @@ namespace tracey
         /// @param scene The compiled scene to render
         /// @param camera The camera to render from
         /// @return Rendering time in milliseconds
+        // `sceneGeneration` identifies the compiled scene's revision (bumped by
+        // compile_scene / refresh_tlas_only). The per-instance GPU buffers are
+        // cached and only rebuilt when it changes — during camera-only navigation
+        // it's stable, so we skip the per-frame allocate+upload. Pass 0 to force a
+        // rebuild every frame (legacy behaviour).
         double render(const SceneCompiler::CompiledScene &scene,
-                      const Camera &camera);
+                      const Camera &camera,
+                      uint64_t sceneGeneration = 0);
 
         /// Get the output image
         /// Valid after calling render(). The pipeline owns this image; the
@@ -177,7 +183,7 @@ namespace tracey
 
         // Render helpers
         void updateCameraUniforms(const Camera &camera);
-        void renderScene(const SceneCompiler::CompiledScene &scene);
+        void renderScene(const SceneCompiler::CompiledScene &scene, uint64_t sceneGeneration);
 
         // Not owned
         Device *m_device;
@@ -193,12 +199,22 @@ namespace tracey
         // Color target is owned by m_pipeline; readback buffer is ours.
         std::unique_ptr<Buffer> m_readbackBuffer;
 
-        // Per-batch INPUT_RATE_INSTANCE buffers built each render(). One
-        // entry per BLAS group; they stay alive until the GPU drains
-        // the dispatch (Rasterizer::render waits on its own fence before
-        // returning). Cleared at the top of every render so we don't
-        // accumulate across cooks.
+        // Per-frame transient buffers for the OVERLAYS (skeleton, guides) — small
+        // and conditional, rebuilt each render. Cleared at the top of every render.
         std::vector<std::unique_ptr<Buffer>> m_transientInstanceBuffers;
+
+        // CACHED per-batch INPUT_RATE_INSTANCE buffers for the main geometry. Built
+        // once per scene revision and REUSED across frames — during camera-only
+        // navigation the scene generation is stable, so we don't reallocate/upload
+        // every frame (that per-frame allocator churn caused random nav hitches even
+        // on light scenes). Rebuilt only when m_cachedInstanceGen != sceneGeneration.
+        struct CachedInstanceBatch {
+            uint32_t blasIndex = 0;
+            uint32_t count = 0;
+            std::unique_ptr<Buffer> instBuf;
+        };
+        std::vector<CachedInstanceBatch> m_cachedInstanceBatches;
+        uint64_t m_cachedInstanceGen = ~0ull;
 
         bool m_showPoints = false;
         bool m_showEdges = false;

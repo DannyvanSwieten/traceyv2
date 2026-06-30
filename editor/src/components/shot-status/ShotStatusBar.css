@@ -1,0 +1,147 @@
+.shotbar {
+  --accent: #5cc8ff;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 30px;
+  padding: 0 12px;
+  background: #202023;
+  border-bottom: 1px solid #3c3c3c;
+  border-left: 3px solid var(--accent);
+  font-size: 12px;
+  color: #b9b9c0;
+  overflow: hidden;
+}
+.shotbar--shot {
+  background: linear-gradient(#1f2a33, #202023 80%);
+}
+/* Department wayfinding hues, applied as the bar accent + the department label colour. */
+.shotbar--accent-asset    { --accent: #a78bfa; }
+.shotbar--accent-layout   { --accent: #5cc8ff; }
+.shotbar--accent-anim     { --accent: #34d399; }
+.shotbar--accent-lighting { --accent: #fbbf24; }
+.shotbar--accent-render   { --accent: #f472b6; }
+
+/* "what you're editing" pieces */
+.shotbar-mode--asset { color: #a78bfa; border-color: #4b3a6e; }
+.shotbar-dept {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  padding: 1px 7px;
+  flex: none;
+}
+.shotbar-arrow {
+  color: #8b8b93;
+  flex: none;
+}
+.shotbar-arrow b {
+  color: var(--accent);
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+}
+.shotbar-selected {
+  color: #8b8b93;
+  flex: none;
+  white-space: nowrap;
+}
+.shotbar-selected b { color: #ddd; }
+
+.shotbar-mode {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #5cc8ff;
+  border: 1px solid #2f566e;
+  border-radius: 4px;
+  padding: 2px 7px;
+  flex: none;
+}
+.shotbar-mode--idle {
+  color: #8b8b93;
+  border-color: #3a3a40;
+}
+.shotbar-hint {
+  color: #8b8b93;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.shotbar-name {
+  font-weight: 600;
+  color: #fff;
+  flex: none;
+}
+.shotbar-label {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #6a6a72;
+  flex: none;
+}
+
+.shotbar-stack {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex: none;
+}
+.shotbar-layer {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 11px;
+  color: #8b8b93;
+  background: #2a2a2e;
+  border: 1px solid #36363c;
+  border-radius: 4px;
+  padding: 2px 7px;
+}
+.shotbar-layer--edit {
+  color: #fff;
+  background: #25394b;
+  border-color: #5cc8ff;
+}
+.shotbar-edit-tag {
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #5cc8ff;
+}
+
+.shotbar-spacer { flex: 1; }
+
+.shotbar-editing {
+  color: #8b8b93;
+  white-space: nowrap;
+  flex: none;
+}
+.shotbar-editing b {
+  color: #d8d8db;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+.shotbar-btn {
+  flex: none;
+  padding: 3px 10px;
+  background: #2a2a2a;
+  color: #ddd;
+  border: 1px solid #444;
+  border-radius: 4px;
+  cursor: pointer;
+  font: 11px system-ui, -apple-system, sans-serif;
+}
+.shotbar-btn:hover { background: #353535; }
+.shotbar-btn:disabled { opacity: 0.5; cursor: default; }
+.shotbar-btn--primary {
+  background: #3a4a5e;
+  border-color: #6cf;
+  color: #fff;
+}
+.shotbar-btn--primary:hover { background: #455a72; }

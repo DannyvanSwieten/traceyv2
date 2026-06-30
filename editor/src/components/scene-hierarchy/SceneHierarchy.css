@@ -1,12 +1,14 @@
 .scene-hierarchy {
   margin-top: 8px;
-  overflow-y: auto;
+  /* Flex column: the toolbar stays pinned and the tree scrolls INTERNALLY
+     (.hierarchy-tree is the scroll container the virtualizer measures). The
+     panel itself doesn't scroll, so a long actor list never pushes the
+     sibling Camera & View section past the left panel's fold. */
+  display: flex;
+  flex-direction: column;
   flex: 1;
-  /* Allow the list to shrink below its content height and scroll internally,
-     instead of expanding and pushing the camera section (a sibling in the
-     left panel) past the panel's scroll fold. Without this, a long actor
-     list hides the Camera & View controls entirely. */
   min-height: 0;
+  overflow: hidden;
 }
 
 .hierarchy-empty {
@@ -17,7 +19,31 @@
 }
 
 .hierarchy-tree {
+  /* Virtualization scroll container: only the rows currently in view are in
+     the DOM, so a 10k-actor scene costs the same as a 10-actor one. */
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  position: relative;
   padding: 4px 0;
+}
+
+/* Reserves the full scroll range (height = rowCount * ROW_H, written to
+   --sizer-h by the component) so the scrollbar reflects the whole tree. */
+.hierarchy-sizer {
+  position: relative;
+  height: var(--sizer-h, 0);
+}
+
+/* The rendered window of rows, offset to its true scroll position
+   (--vy = firstVisibleIndex * ROW_H). Rows stack in normal flow inside it,
+   each pinned to ROW_H so what's painted lines up with the windowing math. */
+.hierarchy-window {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  transform: translateY(var(--vy, 0px));
 }
 
 .tree-item {
@@ -34,7 +60,13 @@
   padding-left: calc(var(--tree-depth, 0) * 16px + 8px);
   cursor: pointer;
   border-radius: 4px;
-  margin: 1px 4px;
+  /* Fixed height (matches ROW_H in SceneHierarchy.tsx) with NO vertical margin
+     — the virtualizer positions rows by index, so any per-row vertical margin
+     (and its collapsing) would drift the rows out of alignment. Horizontal
+     inset stays as margin. */
+  height: 28px;
+  box-sizing: border-box;
+  margin: 0 4px;
   transition: background-color 0.1s ease;
   /* Drop-zone hints live as offset insets so they don't shift the row's
      baseline height while a drag hovers. */

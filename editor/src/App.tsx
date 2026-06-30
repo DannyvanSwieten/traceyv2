@@ -12,6 +12,7 @@ import { MaterialGraphEditor } from './components/material-graph/MaterialGraphEd
 import { SopGraphEditor } from './components/sop-graph/SopGraphEditor';
 import { DopGraphPanel } from './components/dop-graph/DopGraphPanel';
 import { ExportVideoDialog } from './components/export-video/ExportVideoDialog';
+import { StartupProjects } from './components/startup/StartupProjects';
 import { Splitter } from './components/splitter/Splitter';
 import { Playbar } from './components/playbar/Playbar';
 import {
@@ -46,6 +47,7 @@ import {
 } from './stores/actors';
 import {
   ptPreviewEnabled,
+  ptRealtime,
   frameLocked,
   maxSamples,
   maxBounces,
@@ -55,6 +57,7 @@ import {
   denoiserAvailable,
   initRenderSettings,
   setPtPreview,
+  setPtRealtime,
   setFrameLocked,
   setMaxSamples,
   setMaxBounces,
@@ -74,7 +77,8 @@ import { toggleCommandPalette, registerCommands } from './lib/command_palette';
 import { GrabOverlay } from './components/viewport-grab/GrabOverlay';
 import { installAppInput } from './lib/app_input';
 import { PieMenu } from './components/pie-menu/PieMenu';
-import { WorkspaceTabs } from './components/workspaces/WorkspaceTabs';
+import { DepartmentBar } from './components/departments/DepartmentBar';
+import { ShotStatusBar } from './components/shot-status/ShotStatusBar';
 import { WorkspaceBar } from './components/workspaces/WorkspaceBar';
 import {
   WORKSPACES,
@@ -87,6 +91,17 @@ import { togglePlayPause, setRange as setTimelineRange } from './stores/timeline
 import './App.css';
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(Math.max(v, lo), hi);
+
+// In a shot, the active USD department layer maps 1:1 to a workspace preset. The App
+// follows the shot's active department so the toolbar highlight, panel layout, and USD
+// edit target always agree (no "toolbar says Asset while edits go to layout"). Assets
+// (Model/Look/Sim) is not a shot layer, so it's intentionally absent here.
+const SHOT_LAYER_TO_WORKSPACE: Record<string, WorkspaceName> = {
+  layout: 'layout',
+  anim: 'animation',
+  lighting: 'lighting',
+  render: 'render',
+};
 
 // Persisted UI layout. Panel widths/heights are stored as one JSON blob in
 // localStorage so the editor reopens at the size the user last left it. Bump
@@ -398,6 +413,22 @@ const App: Component = () => {
   // directly when set; Cmd+Shift+S (or first save) always prompts and
   // updates it.
   const [currentScenePath, setCurrentScenePath] = createSignal<string | null>(null);
+  // Startup launcher (project list). Shown on first render; dismissable.
+  const [startupOpen, setStartupOpen] = createSignal(true);
+
+  // Open a project by path (used by the startup launcher and "Open Other…").
+  const handleOpenProjectPath = async (path: string) => {
+    try {
+      await api.loadScene(path);
+      setCurrentScenePath(path);
+      await refreshActors('refresh after open project');
+      if (viewportRef) viewportRef.render();
+      setStartupOpen(false);
+    } catch (e) {
+      console.error('Open project failed:', e);
+      showToast('Open project failed', { kind: 'error', detail: String(e) });
+    }
+  };
 
   const handleOpenScene = async () => {
     try {
@@ -430,21 +461,31 @@ const App: Component = () => {
     await handleSaveSceneAs();
   };
 
-  // Save As (Cmd+Shift+S) — always prompt for a destination and remember
-  // it so subsequent Cmd+S writes silently.
-  const handleSaveSceneAs = async () => {
+  // Save As — ask only for a NAME and save the project under that name in the
+  // standard projects location (~/Documents/Tracey/Projects/<name>/<name>.tracey).
+  // save_scene scaffolds the pipeline folder layout there. Remembered so subsequent
+  // Cmd+S writes silently.
+  const handleSaveSceneAs = async (): Promise<string | null> => {
     try {
-      const selected = await api.saveFileDialog(
-        'Save Scene As',
-        currentScenePath() ?? 'scene.tracey',
-        [{ description: 'Tracey Scene', extensions: ['tracey', 'json'] }],
-      );
-      if (!selected) return;
-      await api.saveScene(selected);
-      setCurrentScenePath(selected);
+      const name = await api.promptText('Save Project', 'Project name', 'Untitled');
+      if (!name || !name.trim()) return null;
+      const resolved = await api.resolveProjectPath(name.trim());
+      await api.saveScene(resolved.path);
+      setCurrentScenePath(resolved.path);
+      showToast(`Saved project “${resolved.name}”`, { kind: 'success', detail: resolved.dir });
+      return resolved.path;
     } catch (e) {
-      console.error('Save Scene As failed:', e);
+      console.error('Save Project failed:', e);
+      showToast('Save failed', { kind: 'error', detail: String(e) });
+      return null;
     }
+  };
+
+  // Startup launcher's "New Project": run the name-prompt save flow, and dismiss the
+  // launcher once a project is actually created.
+  const handleNewProjectFromStartup = async () => {
+    const saved = await handleSaveSceneAs();
+    if (saved) setStartupOpen(false);
   };
 
   // Export the cooked scene geometry to glTF/GLB/OBJ. Prompts for a path with
@@ -692,6 +733,26 @@ const App: Component = () => {
       });
     });
 
+    // Follow the shot's active department: when it changes (a new shot defaults to
+    // layout; a department pick changes it), apply the matching workspace so the
+    // toolbar highlight, panels, and edit target stay in agreement. Operations that
+    // author into a specific layer (referencing → layout, keying → anim) deliberately
+    // leave the active department unchanged, so they never trigger a switch here.
+    let lastShotActive: string | null = null;
+    const applyShotWorkspace = (s?: api.ShotState) => {
+      if (!s?.open) { lastShotActive = null; return; }
+      const active = s.active ?? null;
+      if (!active || active === lastShotActive) return;
+      lastShotActive = active;
+      const ws = SHOT_LAYER_TO_WORKSPACE[active];
+      if (ws) applyWorkspace(ws);
+    };
+    const offShotSync = api.listen('shot_state', (msg) =>
+      applyShotWorkspace((msg as { state?: api.ShotState }).state),
+    );
+    onCleanup(offShotSync);
+    api.getShotState().then(applyShotWorkspace).catch(() => {}); // catch an already-open shot
+
     // Keep the scene hierarchy live across cooks (rAF-coalesced
     // scene_changed → refreshActors, see stores/actors.ts).
     unlistenSceneChanged = attachSceneChangedListener();
@@ -740,11 +801,12 @@ const App: Component = () => {
     <div class="app">
       <div class="toolbar">
         <h1>Tracey Editor</h1>
-        {/* Workspace tabs replace the per-editor toggle buttons (Material /
-            SOP / DOP). Picking a workspace sets the dock visibility; the
-            Cmd+K command palette still has individual "Toggle SOP Graph"
-            entries for when the user wants to deviate from a preset. */}
-        <WorkspaceTabs onApply={applyWorkspace} />
+        {/* Department bar — the film pipeline as navigation. A department sets
+            the tool layout (the old workspace presets) AND, in shot mode, the USD
+            edit target. Assets carries the Model/Look/Sim sub-modes (the former
+            modeling/shading/simulation). Cmd+K still has individual workspace
+            toggles for deviating from a preset. */}
+        <DepartmentBar onApplyWorkspace={applyWorkspace} />
         <button
           class="toolbar-button"
           classList={{ 'toolbar-button--active': frameLocked() }}
@@ -770,6 +832,21 @@ const App: Component = () => {
         >
           PT Preview
         </button>
+        <Show when={ptPreviewEnabled()}>
+          <button
+            class="toolbar-button"
+            classList={{ 'toolbar-button--active': ptRealtime() }}
+            type="button"
+            title={
+              ptRealtime()
+                ? 'Realtime ON — in the Render view the path tracer follows the camera live while you navigate (noisy, converges when you stop). Turn off for very heavy scenes. (In the small PiP inset the rasterizer drives navigation regardless.)'
+                : 'Realtime OFF — the Render view freezes while you move the camera and re-renders once the view settles. Turn on for live navigation.'
+            }
+            onClick={() => void setPtRealtime(!ptRealtime())}
+          >
+            Realtime
+          </button>
+        </Show>
         <button
           class="toolbar-button"
           type="button"
@@ -778,6 +855,11 @@ const App: Component = () => {
           Export Video…
         </button>
       </div>
+
+      {/* Shot status bar — always visible. Shows the current mode (procedural vs a
+          shot), the shot's layer stack, and which department layer edits author into,
+          plus New/Open/Save/Close. Makes the department workflow legible. */}
+      <ShotStatusBar />
 
       {/* Viewport-overlay sub-toolbar: rasterizer display toggles
           (points, edges, ground). Lives below the main toolbar so the
@@ -1159,6 +1241,16 @@ const App: Component = () => {
       <GrabOverlay />
       <PieMenu />
       <ToastHost />
+
+      {/* Startup launcher — rendered LAST so its setViewportVisible(false) effect
+          runs after the Viewport's own visibility setup and wins at startup (the
+          Metal layer composites above the web content). Dismissable. */}
+      <StartupProjects
+        open={startupOpen}
+        onOpenProject={handleOpenProjectPath}
+        onNewProject={handleNewProjectFromStartup}
+        onClose={() => setStartupOpen(false)}
+      />
     </div>
   );
 };

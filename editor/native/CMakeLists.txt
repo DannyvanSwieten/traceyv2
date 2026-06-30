@@ -23,6 +23,7 @@ set(TRACEY_EDITOR_SRCS
     editor_server_cmds_graph.cpp
     editor_server_cmds_timeline.cpp
     editor_server_cmds_io.cpp
+    editor_server_cmds_shot.cpp
     render_engine.cpp
     scene_state.cpp
     viewport_renderer.cpp)

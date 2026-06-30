@@ -59,10 +59,49 @@ const LazyTextureThumb: Component<{ id: string }> = (props) => {
   );
 };
 
+// Project-asset thumbnail (the .thumbs/ PNG many USD assets ship). Lazy + cached by
+// asset path, like LazyTextureThumb; falls back to the asset's type glyph when an
+// asset has no thumbnail (most non-Omniverse assets won't).
+const assetThumbCache = new Map<string, string>();
+const LazyAssetThumb: Component<{ path: string; glyph: string }> = (props) => {
+  const [src, setSrc] = createSignal<string | null>(assetThumbCache.get(props.path) ?? null);
+  let el: HTMLDivElement | undefined;
+
+  onMount(() => {
+    if (src()) return;
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (!entries[0]?.isIntersecting) return;
+        io.disconnect();
+        api
+          .getAssetThumbnail(props.path)
+          .then((d) => {
+            if (!d) return; // no thumbnail → keep the glyph
+            const url = `data:${d.mime_type};base64,${d.base64}`;
+            assetThumbCache.set(props.path, url);
+            setSrc(url);
+          })
+          .catch(() => {});
+      },
+      { rootMargin: '150px' }
+    );
+    if (el) io.observe(el);
+    onCleanup(() => io.disconnect());
+  });
+
+  return (
+    <div class="asset-thumb" ref={el}>
+      <Show when={src()} fallback={<span class="asset-thumb-glyph">{props.glyph}</span>}>
+        <img class="asset-thumb-img" src={src()!} alt="" decoding="async" />
+      </Show>
+    </div>
+  );
+};
+
 type MeshInfo = api.MeshInfo;
 type TextureInfo = api.TextureInfo;
 
-type TabType = 'scenes' | 'meshes' | 'textures' | 'profiler';
+type TabType = 'scenes' | 'assets' | 'meshes' | 'textures' | 'profiler';
 
 interface ResourcesBrowserProps {
   assets: () => ImportedAsset[];
@@ -88,6 +127,45 @@ export const ResourcesBrowser: Component<ResourcesBrowserProps> = (props) => {
   const filteredAssets = createMemo(() => props.assets().filter((a) => matches(a.name)));
   const filteredMeshes = createMemo(() => meshes().filter((m) => matches(m.name || '')));
   const filteredTextures = createMemo(() => textures().filter((t) => matches(t.id)));
+
+  // ── Project asset library (disk-backed: the project's assets/ folder) ──
+  const [projectAssets, setProjectAssets] = createSignal<api.ProjectAsset[]>([]);
+  const [shotOpen, setShotOpen] = createSignal(false);
+  const filteredProjectAssets = createMemo(() => projectAssets().filter((a) => matches(a.name)));
+
+  const refreshProjectAssets = async () => {
+    try {
+      setProjectAssets(await api.listProjectAssets());
+    } catch {
+      setProjectAssets([]); // no USD build / no project open
+    }
+  };
+
+  // Reference a project asset into the current shot (layout layer). The native side
+  // re-derives the composed scene, so the geometry appears in the viewport.
+  const referenceIntoShot = async (pa: api.ProjectAsset) => {
+    try {
+      await api.referenceAsset(pa.path);
+    } catch (e) {
+      console.error('[resources] reference failed', e);
+      try { alert('Reference into shot failed: ' + (e as Error).message); } catch { /* WKWebView */ }
+    }
+  };
+
+  onMount(() => {
+    void refreshProjectAssets();
+    api.getShotState().then((s) => setShotOpen(s.open)).catch(() => {});
+    // A shot open/close changes both the project context and what referencing does,
+    // and may have just scaffolded assets/ — refresh on every shot-state change.
+    const off = api.listen('shot_state', (msg) => {
+      const s = (msg as { state?: api.ShotState }).state;
+      if (s) setShotOpen(s.open);
+      void refreshProjectAssets();
+    });
+    // A published asset lands in assets/ — refresh the library so it appears.
+    const offAssets = api.listen('assets_changed', () => void refreshProjectAssets());
+    onCleanup(() => { off(); offAssets(); });
+  });
 
   // Per-node cook timings from the most recent cook, sorted by ms desc.
   // Rows expose their source uid so a future "click to focus the offender
@@ -134,6 +212,15 @@ export const ResourcesBrowser: Component<ResourcesBrowserProps> = (props) => {
             onClick={() => setActiveTab('scenes')}
           >
             Scenes ({props.assets().length})
+          </button>
+          <button
+            type="button"
+            class="resources-tab"
+            classList={{ 'resources-tab--active': activeTab() === 'assets' }}
+            onClick={() => { setActiveTab('assets'); void refreshProjectAssets(); }}
+            title="Project asset library — the open project's assets/ folder"
+          >
+            Assets ({projectAssets().length})
           </button>
           <button
             type="button"
@@ -223,6 +310,79 @@ export const ResourcesBrowser: Component<ResourcesBrowserProps> = (props) => {
                 )}
               </For>
             </div>
+            </Show>
+          </Show>
+        </Show>
+
+        <Show when={activeTab() === 'assets'}>
+          <div class="resources-assets-bar">
+            <span class="resources-assets-hint">
+              {shotOpen()
+                ? 'Double-click: load procedurally · → Shot: reference into the current shot (layout)'
+                : 'Double-click: load procedurally · open a shot to reference assets into it'}
+            </span>
+            <button
+              type="button"
+              class="resources-refresh"
+              title="Rescan the project's assets/ folder"
+              onClick={() => void refreshProjectAssets()}
+            >
+              ⟳
+            </button>
+          </div>
+          <Show
+            when={projectAssets().length > 0}
+            fallback={
+              <div class="resources-empty">
+                No project assets. Save a project, then add asset folders under its
+                <code> assets/ </code> directory (or run Consolidate Project).
+              </div>
+            }
+          >
+            <Show
+              when={filteredProjectAssets().length > 0}
+              fallback={<div class="resources-empty">No assets match the filter.</div>}
+            >
+              <div class="asset-grid">
+                <For each={filteredProjectAssets()}>
+                  {(pa) => (
+                    <div
+                      class="asset-card"
+                      onDblClick={() =>
+                        props.onAssetLoad({
+                          id: pa.path,
+                          name: pa.name,
+                          path: pa.path,
+                          type: 'scene',
+                          importedAt: 0,
+                        })
+                      }
+                      title={`${pa.path}\nDouble-click: load procedurally (SOP).${
+                        shotOpen() ? '\n→ Shot: reference into the current shot (layout layer).' : ''
+                      }`}
+                    >
+                      <LazyAssetThumb path={pa.path} glyph={pa.type === 'gltf' ? '🧩' : '📦'} />
+                      <div class="asset-card-meta">
+                        <span class="asset-card-name">{pa.name}</span>
+                        <span class="asset-card-type">{pa.type === 'gltf' ? 'glTF' : 'USD'}</span>
+                      </div>
+                      <Show when={shotOpen()}>
+                        <button
+                          type="button"
+                          class="asset-card-ref"
+                          title="Reference this asset into the current shot (layout layer)"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void referenceIntoShot(pa);
+                          }}
+                        >
+                          → Shot
+                        </button>
+                      </Show>
+                    </div>
+                  )}
+                </For>
+              </div>
             </Show>
           </Show>
         </Show>

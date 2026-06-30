@@ -22,6 +22,7 @@
 #include "scene/camera.hpp"    // tracey::Camera (held by value in RenderRequest)
 #include "scene/skeleton.hpp"  // tracey::Skeleton (per-actor skeleton overlay)
 #include "sops/sop_node.hpp"   // tracey::sops::EmittedActor (used in cook-result slot)
+#include "scene/stage_document.hpp"  // USD-free; tracey::StageDocument (shot mode, guarded by TRACEY_HAS_USD)
 #include "sops/sop_graph.hpp"  // tracey::sops::NodeCookTiming
 #include "sops/cook_cache.hpp"
 #include "dops/eval_context.hpp"   // tracey::dops::SopGeometryProvider
@@ -83,6 +84,7 @@ private:
     std::optional<std::string> handle_graph_commands(const std::string& cmd, const nlohmann::json& req);
     std::optional<std::string> handle_timeline_commands(const std::string& cmd, const nlohmann::json& req);
     std::optional<std::string> handle_io_commands(const std::string& cmd, const nlohmann::json& req);
+    std::optional<std::string> handle_shot_commands(const std::string& cmd, const nlohmann::json& req);
 
     // Re-wire DopGraph's SopGeometryProvider after every m_dop_graph
     // reset (constructor + load_scene). The provider itself is owned by
@@ -166,6 +168,14 @@ private:
     // false, the path tracer is never dispatched and the composite
     // falls back to a plain rasterizer present.
     bool m_pt_preview_enabled = false;
+
+    // Realtime preview: when true, the path tracer traces the view LIVE during
+    // camera motion (1 spp/frame, accumulation reset each moving frame → follows
+    // the camera, noisy, converges once still) instead of freezing on the last
+    // frame until the view settles. The PT is fast enough to be interactive on
+    // most scenes; turn this OFF for very heavy (multi-million-triangle) scenes
+    // where per-frame tracing can't keep up and render-on-settle reads cleaner.
+    bool m_pt_realtime = true;
 
     // When true (and m_pt_preview_enabled also true), the path-tracer
     // output takes the entire viewport instead of the top-right PiP
@@ -335,6 +345,21 @@ private:
     // creation/edits flow through here.
     std::unique_ptr<tracey::sops::SopGraph> m_sop_graph;
 
+    // ── Asset registry (R1: per-asset SOP graphs — "one graph models one object") ──
+    // Each asset is a named SOP graph (one object's recipe). The CURRENT asset's graph
+    // IS m_sop_graph above, so the existing cook→scene→render previews the asset being
+    // edited; the map just stashes every asset's serialized graph and switch_asset
+    // swaps which one is live. Layout / shots reference PUBLISHED assets (R2), so this
+    // registry owns only the recipes.
+    std::unordered_map<std::string, std::string> m_asset_graphs; // id → SopGraph JSON
+    std::unordered_map<std::string, std::string> m_asset_names;  // id → display name
+    std::vector<std::string> m_asset_order;                      // stable listing order
+    std::string m_current_asset_id;
+    int m_next_asset_seq = 1;
+    // Load `graphJson` as the live SOP graph: clears prior SOP-emitted actors + resets
+    // the identity maps, then cooks (mirrors load_scene's graph swap). Empty → blank.
+    void load_sop_graph_json(const std::string& graphJson);
+
     // Top-level DOP graph — the simulation network, peer of the root
     // SOP graph (NOT nested inside it). Cooks one frame at a time,
     // caching SimState per frame. SOPs read sim output via a `dop_import`
@@ -419,11 +444,54 @@ private:
     // Last wall-clock time we broadcast a timeline_tick (rate-limit ~30 Hz so
     // render_tick at 60+ fps doesn't flood the message bus).
     double m_last_timeline_broadcast = 0.0;
+    // Tracks the previous tick's play state so render_tick can detect the
+    // play→pause edge (rebuild the TLAS + restart PT accumulation on stop —
+    // during playback we run the rasterized preview and skip the TLAS rebuild).
+    bool m_was_playing = false;
+    // Deferred full recompile. IPC command handlers (e.g. enabling the Render
+    // tab / path-tracer preview) run on the MAIN thread; calling the heavy
+    // compile_scene() there blocks the UI (beachball) for the whole BLAS-build +
+    // texture-upload. Instead they set this flag and render_tick performs the
+    // compile OFF the main thread on its next iteration. Guarded by m_mutex
+    // (both setter and consumer hold it).
+    bool m_pending_recompile = false;
+    // Path-tracer "render on settle". The PT only (re)starts accumulating once
+    // the view has held still for kViewSettleSec — it does NOT path-trace a view
+    // that's still moving/animating/being edited, and it never swaps to the
+    // (untextured) rasterizer for it; the last completed PT frame stays on screen
+    // until the view settles. m_last_view_change_time is stamped on every view
+    // change (camera/edit/scene); m_pt_restart_pending latches that the next
+    // settled dispatch must clear the accumulator.
+    double m_last_view_change_time = -1.0e9;
+    bool m_pt_restart_pending = false;
+    static constexpr double kViewSettleSec = 0.25;
+
+    // Rasterizer re-render gate. The raster image only changes when the camera,
+    // the compiled scene, the selection, or the viewport size changes — yet the
+    // tick was re-rasterizing every frame regardless. On a heavy *textured*
+    // scene (Marbles: 574 textured meshes) each pass is 100–250 ms and pins the
+    // GPU, which starves the WebView's compositor and makes the whole UI
+    // unresponsive (an untextured scene like Kitchen Set is cheap enough that it
+    // didn't show). We track the last-drawn state and skip the re-render
+    // (re-presenting the existing frame) when nothing changed.
+    bool m_raster_valid = false;
+    glm::vec3 m_last_raster_cam_pos{0.0f};
+    glm::quat m_last_raster_cam_rot{1.0f, 0.0f, 0.0f, 0.0f};
+    float m_last_raster_cam_fov = 0.0f;
+    float m_last_raster_cam_aspect = 0.0f;
+    uint64_t m_last_raster_gen = 0;
+    uint64_t m_last_raster_sel = 0;
+    int m_last_raster_joint = -1;
+    uint32_t m_last_raster_vpw = 0;
+    uint32_t m_last_raster_vph = 0;
+    double m_last_raster_time = -1.0e9;
 
     // Sample animated SOP parameters at `time` and override the corresponding
     // live actors' transforms. No-op for non-animated parameters. Mutex must
-    // be held; main-thread only.
-    void apply_animation_at(double time);
+    // be held. rebuildTlas=false (live playback) updates instance transforms for
+    // the rasterized preview but skips the per-frame TLAS rebuild; the default
+    // (seek/pause/export) rebuilds it for the path tracer.
+    void apply_animation_at(double time, bool rebuildTlas = true);
 
     // Advance the playhead by `dt` seconds, applying loop semantics. Returns
     // true if `current_time` changed.
@@ -690,6 +758,19 @@ private:
     std::atomic<bool> m_import_in_progress{false};
     std::thread m_import_thread;
     void import_usd_stage_worker(UsdStageImportRequest req);
+
+#ifdef TRACEY_HAS_USD
+    // ── USD shot mode (parallel / opt-in; see docs/pipeline_layout.md) ──────
+    // When a StageDocument is open the editor is in "shot mode": the viewport shows
+    // its composed multi-layer stage, and scene edits also author USD opinions into
+    // the *active department* layer (non-destructive). Null + false otherwise — the
+    // procedural SOP/DOP workflow is entirely unchanged.
+    std::unique_ptr<tracey::StageDocument> m_stage_doc;
+    bool m_shot_mode = false;
+    // Compose the StageDocument's stage into the engine scene and flag a recompile
+    // (deferred to render_tick, off-main). Call under m_mutex.
+    void compose_shot_into_engine();
+#endif
 };
 
 }  // namespace tracey_editor

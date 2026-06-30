@@ -110,6 +110,33 @@ if(TRACEY_WITH_USD)
     # Diagnostic: dump a stage's material/texture structure (raw USD).
     add_executable(usd_inspect usd_inspect/main.cpp)
     target_link_libraries(usd_inspect PRIVATE usd usdGeom usdShade)
+
+    # Phase-0 authoring smoke: edit targets → separate sublayer files → composition
+    # with a strength order (the department-layer mechanism). Authoring only — sdf
+    # for SdfLayer::CreateNew/SetSubLayerPaths, usd/usdGeom for the prims.
+    add_executable(usd_write_smoke usd_write_smoke/main.cpp)
+    target_link_libraries(usd_write_smoke PRIVATE usd usdGeom sdf)
+
+    # Phase-0 golden round-trip: UsdExporter writes a layer that re-imports to the
+    # same scene (geometry + baked transforms + materials). Uses tracey_usd both ways.
+    add_executable(usd_roundtrip_smoke usd_roundtrip_smoke/main.cpp)
+    target_link_libraries(usd_roundtrip_smoke PRIVATE tracey_usd glm)
+
+    # Phase-0 EXIT: a multi-file composed stage round-trips through the loader with a
+    # sublayer `over` composed in. Authors via pxr, imports via tracey_usd's UsdLoader.
+    add_executable(usd_compose_smoke usd_compose_smoke/main.cpp)
+    target_link_libraries(usd_compose_smoke PRIVATE tracey_usd usd usdGeom usdShade sdf glm)
+
+    # Phase-1a vertical slice: StageDocument — department edit targets → separate
+    # layer files → one composed Scene, persistent + non-destructive. USD-free API
+    # (links tracey_usd only; the asset is written via UsdExporter).
+    add_executable(stage_document_smoke stage_document_smoke/main.cpp)
+    target_link_libraries(stage_document_smoke PRIVATE tracey_usd glm)
+
+    # Shot-mode animation: keyframe (USD time-sampled xformOp) authoring + time-aware
+    # composition (setPrimMatrixAtTime / toSceneAtTime) interpolate over the timeline.
+    add_executable(usd_anim_smoke usd_anim_smoke/main.cpp)
+    target_link_libraries(usd_anim_smoke PRIVATE tracey_usd glm)
 endif()
 
 target_link_libraries(blas

@@ -560,7 +560,13 @@ void pathtraceImpl(
             r.direction = normalize(focus - r.origin);
         }
         r.min_distance = 0.01;
-        r.max_distance = 1000.0;
+        // Ray reach for primary + all bounce rays (r is reused across the bounce
+        // loop and max_distance isn't reset per bounce). 1000 clipped large USD
+        // scenes (Kitchen/Marbles/Old Attic span thousands of units) — the path
+        // tracer simply couldn't see anything past 1000 units. 1e8 is far beyond
+        // any realistic scene / camera far plane and float-safe. Must match the
+        // CPU backend's intersect tmax for pt_backend_compare parity.
+        r.max_distance = 1.0e8;
         // Motion blur: per-sample shutter time in [0,1), passed to every
         // intersect of the path. hashSeed is pure → it never perturbs the
         // nextRandom bounce stream, and the static path ignores it entirely.
@@ -754,14 +760,20 @@ void pathtraceImpl(
             // term).
             if (U.lightCount > 0u && !isGlass) {
                 const float3 diffuseBrdf = albedo * (1.0 - metallic) * (1.0 / 3.14159265);
-                for (uint li = 0u; li < U.lightCount; ++li) {
-                    const float4 posType    = lights[li * 6u + 0u];
-                    const float4 dirIntens  = lights[li * 6u + 1u];
-                    const float4 colorExtra = lights[li * 6u + 2u];
+                // Single-sample NEE: pick ONE analytic light uniformly and weight
+                // by lightCount, rather than looping every light (which was
+                // O(lightCount) shadow rays per hit — fatal on a 500+-light scene
+                // like Old Attic). Unbiased — E over the random pick equals the
+                // full sum. Consumes exactly one nextRandom() here (mirrored in
+                // the CPU backend so pt_backend_compare parity holds).
+                const uint nl = U.lightCount;
+                const uint li = min(uint(nextRandom(seed) * float(nl)), nl - 1u);
+                const float4 posType    = lights[li * 6u + 0u];
+                const float4 dirIntens  = lights[li * 6u + 1u];
+                const float4 colorExtra = lights[li * 6u + 2u];
 
-                    const int ltype = int(posType.w);
-                    if (ltype == 2) continue;  // Dome
-
+                const int ltype = int(posType.w);
+                if (ltype != 2) {  // skip Dome (handled by the miss shader)
                     float3 Ldir;
                     float falloff;
                     float lightDist;  // shadow-ray reach
@@ -788,30 +800,32 @@ void pathtraceImpl(
                     // by `subsurface`; at subsurface==0 this is the exact old
                     // `dot(N,Ldir) <= 0` early-out (parity-safe).
                     const float rawNdotL = dot(N, Ldir);
-                    if (rawNdotL <= -subsurface) continue;
-                    const float NdotLlight = max(rawNdotL, 0.0);
+                    if (rawNdotL > -subsurface) {
+                        const float NdotLlight = max(rawNdotL, 0.0);
 
-                    // Shadow ray: skip this light's contribution if blocked.
-                    // Offset along N to avoid self-shadow acne; stop just short
-                    // of the light so the light's own geometry doesn't occlude.
-                    ray sray;
-                    sray.origin = hitPos + N * 0.001;
-                    sray.direction = Ldir;
-                    sray.min_distance = 0.001;
-                    sray.max_distance = max(lightDist - 0.002, 0.002);
-                    if (doOccluded(isect, accel, sray, sampleTime)) continue;
-
-                    const float3 Li = colorExtra.xyz * dirIntens.w * falloff;
-                    const float3 Hs = normalize(Ldir + V);
-                    const float sheenBrdf = sheen * pow(1.0 - max(dot(Ldir, Hs), 0.0), 5.0);
-                    // Wrap-diffusion: blend Lambertian with a softened, tinted
-                    // response. mix(...,0) == Lambertian, so subsurface==0 is a
-                    // no-op and the diffuse NEE stays bit-identical.
-                    const float wd = 1.0 + subsurface;
-                    const float wrapCos = saturate((rawNdotL + subsurface) / (wd * wd));
-                    const float3 sssResp = subsurfaceColor * (1.0 - metallic) * (1.0 / 3.14159265) * wrapCos;
-                    const float3 diffuseLobe = mix(diffuseBrdf * NdotLlight, sssResp, subsurface);
-                    accum += color * (diffuseLobe + sheenBrdf * NdotLlight) * Li;
+                        // Shadow ray: skip this light's contribution if blocked.
+                        // Offset along N to avoid self-shadow acne; stop just short
+                        // of the light so the light's own geometry doesn't occlude.
+                        ray sray;
+                        sray.origin = hitPos + N * 0.001;
+                        sray.direction = Ldir;
+                        sray.min_distance = 0.001;
+                        sray.max_distance = max(lightDist - 0.002, 0.002);
+                        if (!doOccluded(isect, accel, sray, sampleTime)) {
+                            const float3 Li = colorExtra.xyz * dirIntens.w * falloff;
+                            const float3 Hs = normalize(Ldir + V);
+                            const float sheenBrdf = sheen * pow(1.0 - max(dot(Ldir, Hs), 0.0), 5.0);
+                            // Wrap-diffusion: blend Lambertian with a softened, tinted
+                            // response. mix(...,0) == Lambertian, so subsurface==0 is a
+                            // no-op and the diffuse NEE stays bit-identical.
+                            const float wd = 1.0 + subsurface;
+                            const float wrapCos = saturate((rawNdotL + subsurface) / (wd * wd));
+                            const float3 sssResp = subsurfaceColor * (1.0 - metallic) * (1.0 / 3.14159265) * wrapCos;
+                            const float3 diffuseLobe = mix(diffuseBrdf * NdotLlight, sssResp, subsurface);
+                            // * float(nl): weight the single picked light by the count.
+                            accum += color * (diffuseLobe + sheenBrdf * NdotLlight) * Li * float(nl);
+                        }
+                    }
                 }
             }
 

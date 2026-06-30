@@ -16,6 +16,151 @@
 
 // stb_image header (implementation is in gltf_loader.cpp)
 #include <stb_image.h>
+#define BCDEC_IMPLEMENTATION
+#include "bcdec.h"
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
+#include <cstdio>
+#include <vector>
+
+namespace
+{
+    // Decode a DDS file (BC1/BC3/BC5/BC7, classic or DX10 header) to a freshly
+    // malloc'd RGBA8 buffer — stb_image can't read DDS, but Omniverse/NVIDIA
+    // assets (Marbles: 991 textures, all BC7) ship everything as BC-compressed
+    // DDS. Returns the top mip, box-downsampled so the larger side is <= maxDim
+    // (those sets are 2K–4K with no mip chain, so a cap keeps the decoded RGBA
+    // footprint bounded). nullptr on unsupported/failed; caller frees().
+    unsigned char *decodeDDStoRGBA(const char *path, int *outW, int *outH, int maxDim)
+    {
+        FILE *fp = std::fopen(path, "rb");
+        if (!fp) return nullptr;
+        std::fseek(fp, 0, SEEK_END);
+        long sz = std::ftell(fp);
+        std::fseek(fp, 0, SEEK_SET);
+        if (sz < 128) { std::fclose(fp); return nullptr; }
+        std::vector<unsigned char> f(static_cast<size_t>(sz));
+        size_t rd = std::fread(f.data(), 1, f.size(), fp);
+        std::fclose(fp);
+        if (rd != f.size()) return nullptr;
+        if (!(f[0] == 'D' && f[1] == 'D' && f[2] == 'S' && f[3] == ' ')) return nullptr;
+
+        auto u32 = [&](size_t o) {
+            return (uint32_t)f[o] | ((uint32_t)f[o + 1] << 8) |
+                   ((uint32_t)f[o + 2] << 16) | ((uint32_t)f[o + 3] << 24);
+        };
+        auto CC = [](char a, char b, char c, char d) {
+            return (uint32_t)(unsigned char)a | ((uint32_t)(unsigned char)b << 8) |
+                   ((uint32_t)(unsigned char)c << 16) | ((uint32_t)(unsigned char)d << 24);
+        };
+        int h = (int)u32(12), w = (int)u32(16);
+        if (w <= 0 || h <= 0) return nullptr;
+        const uint32_t fourCC = u32(84);
+
+        enum Fmt { BC1, BC3, BC5, BC7, NONE } fmt = NONE;
+        size_t dataOff = 128;
+        if (fourCC == CC('D', 'X', '1', '0'))
+        {
+            if (f.size() < 148) return nullptr;
+            dataOff = 148;
+            switch (u32(128)) // DXGI_FORMAT
+            {
+                case 70: case 71: case 72: fmt = BC1; break;
+                case 76: case 77: case 78: fmt = BC3; break;
+                case 82: case 83: case 84: fmt = BC5; break;
+                case 97: case 98: case 99: fmt = BC7; break;
+                default: return nullptr;
+            }
+        }
+        else if (fourCC == CC('D', 'X', 'T', '1')) fmt = BC1;
+        else if (fourCC == CC('D', 'X', 'T', '5')) fmt = BC3;
+        else if (fourCC == CC('A', 'T', 'I', '2') || fourCC == CC('B', 'C', '5', 'U')) fmt = BC5;
+        else return nullptr;
+
+        const int blockBytes = (fmt == BC1) ? 8 : 16;
+        const int bxn = (w + 3) / 4, byn = (h + 3) / 4;
+        if (f.size() < dataOff + (size_t)bxn * byn * blockBytes) return nullptr;
+        const unsigned char *src = f.data() + dataOff;
+
+        unsigned char *rgba = (unsigned char *)std::malloc((size_t)w * h * 4);
+        if (!rgba) return nullptr;
+
+        for (int yb = 0; yb < byn; ++yb)
+            for (int xb = 0; xb < bxn; ++xb)
+            {
+                const void *blk = src + (size_t)(yb * bxn + xb) * blockBytes;
+                if (fmt == BC5)
+                {
+                    unsigned char rg[4 * 4 * 2];
+                    bcdec_bc5(blk, rg, 4 * 2);
+                    for (int py = 0; py < 4; ++py)
+                        for (int px = 0; px < 4; ++px)
+                        {
+                            int x = xb * 4 + px, y = yb * 4 + py;
+                            if (x >= w || y >= h) continue;
+                            unsigned char r = rg[(py * 4 + px) * 2 + 0];
+                            unsigned char g = rg[(py * 4 + px) * 2 + 1];
+                            float nx = r / 127.5f - 1.f, ny = g / 127.5f - 1.f;
+                            float nz = std::sqrt(std::max(0.f, 1.f - nx * nx - ny * ny));
+                            unsigned char *d = rgba + ((size_t)y * w + x) * 4;
+                            d[0] = r; d[1] = g;
+                            d[2] = (unsigned char)((nz * 0.5f + 0.5f) * 255.f); d[3] = 255;
+                        }
+                }
+                else
+                {
+                    unsigned char tmp[4 * 4 * 4];
+                    if (fmt == BC1) bcdec_bc1(blk, tmp, 4 * 4);
+                    else if (fmt == BC3) bcdec_bc3(blk, tmp, 4 * 4);
+                    else bcdec_bc7(blk, tmp, 4 * 4);
+                    for (int py = 0; py < 4; ++py)
+                        for (int px = 0; px < 4; ++px)
+                        {
+                            int x = xb * 4 + px, y = yb * 4 + py;
+                            if (x >= w || y >= h) continue;
+                            const unsigned char *s = tmp + (py * 4 + px) * 4;
+                            unsigned char *d = rgba + ((size_t)y * w + x) * 4;
+                            d[0] = s[0]; d[1] = s[1]; d[2] = s[2]; d[3] = s[3];
+                        }
+                }
+            }
+
+        // Halve (2x2 box) until within the cap.
+        while (maxDim > 0 && (w > maxDim || h > maxDim) && w > 1 && h > 1)
+        {
+            int nw = std::max(1, w / 2), nh = std::max(1, h / 2);
+            unsigned char *dn = (unsigned char *)std::malloc((size_t)nw * nh * 4);
+            if (!dn) break;
+            for (int y = 0; y < nh; ++y)
+                for (int x = 0; x < nw; ++x)
+                {
+                    int sx = x * 2, sy = y * 2;
+                    int sx1 = std::min(sx + 1, w - 1), sy1 = std::min(sy + 1, h - 1);
+                    for (int c = 0; c < 4; ++c)
+                        dn[((size_t)y * nw + x) * 4 + c] = (unsigned char)((
+                            rgba[((size_t)sy * w + sx) * 4 + c] +
+                            rgba[((size_t)sy * w + sx1) * 4 + c] +
+                            rgba[((size_t)sy1 * w + sx) * 4 + c] +
+                            rgba[((size_t)sy1 * w + sx1) * 4 + c]) / 4);
+                }
+            std::free(rgba);
+            rgba = dn; w = nw; h = nh;
+        }
+
+        *outW = w;
+        *outH = h;
+        return rgba;
+    }
+
+    bool hasDDSExtension(const std::string &p)
+    {
+        if (p.size() < 4) return false;
+        std::string ext = p.substr(p.size() - 4);
+        for (char &c : ext) c = (char)std::tolower((unsigned char)c);
+        return ext == ".dds";
+    }
+} // namespace
 
 namespace tracey
 {
@@ -87,6 +232,13 @@ namespace tracey
         // without one stomping the other. Suffix is opaque — just keeps the
         // two paths distinguishable in the map.
         const std::string cacheKey = texturePath + (isColorData ? "|srgb" : "|linear");
+        // Per-texture "Loaded …" logging flushes stdout once per texture (it
+        // ends in std::endl). On a many-texture scene that is hundreds of
+        // blocking syscalls on the main thread inside compile_scene — gate it
+        // behind the same TRACEY_VERBOSE_COMPILE switch the rest of the compiler
+        // uses so a normal compile stays quiet (and fast).
+        static const bool verboseCompile =
+            std::getenv("TRACEY_VERBOSE_COMPILE") != nullptr;
         // Check if texture is already loaded
         auto it = result.texturePathToIndex.find(cacheKey);
         if (it != result.texturePathToIndex.end())
@@ -161,7 +313,26 @@ namespace tracey
                 needsPlainFree = true;
             }
 
-            std::cout << "Loaded embedded texture: " << texturePath << " (" << width << "x" << height << ")" << std::endl;
+            if (verboseCompile) std::cout << "Loaded embedded texture: " << texturePath << " (" << width << "x" << height << ")" << std::endl;
+        }
+        else if (hasDDSExtension(texturePath))
+        {
+            // BC-compressed DDS (Omniverse/Marbles ship everything this way) —
+            // stb_image can't read these, so decode via bcdec. Capped to 1024
+            // on the long side to bound the decoded RGBA footprint across a few
+            // hundred 2K–4K textures.
+            unsigned char *ddsData = decodeDDStoRGBA(texturePath.c_str(), &width, &height, 1024);
+            if (!ddsData)
+            {
+                std::cerr << "Warning: Failed to load DDS texture: " << texturePath << std::endl;
+                return -1;
+            }
+
+            data = ddsData;
+            dataSize = static_cast<size_t>(width) * static_cast<size_t>(height) * 4;
+            needsPlainFree = true;
+
+            if (verboseCompile) std::cout << "Loaded DDS texture: " << texturePath << " (" << width << "x" << height << ")" << std::endl;
         }
         else
         {
@@ -179,7 +350,7 @@ namespace tracey
             dataSize = static_cast<size_t>(width) * static_cast<size_t>(height) * 4;
             needsStbiFree = true;
 
-            std::cout << "Loaded texture: " << texturePath << " (" << width << "x" << height << ")" << std::endl;
+            if (verboseCompile) std::cout << "Loaded texture: " << texturePath << " (" << width << "x" << height << ")" << std::endl;
         }
 
         // Create GPU texture. Color-data textures (albedo, emissive) use

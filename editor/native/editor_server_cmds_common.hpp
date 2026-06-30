@@ -53,6 +53,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cmath>
 #include <cstring>
 #include <exception>
 #include <filesystem>
@@ -65,6 +66,32 @@
 namespace tracey_editor {
 
 using json = nlohmann::json;
+
+// Decompose a quaternion to XYZ Tait-Bryan euler DEGREES matching the editor's
+// euler→quat convention (q = qz·qy·qx ⇒ R = Rz·Ry·Rx), which is also what a USD
+// rotateXYZ op encodes. Used to key transforms as TRS euler channels (so rotation
+// interpolates in euler space). Mirrors the frontend's quatToEulerDegXYZ.
+inline tracey::Vec3 euler_xyz_deg_from_quat(const tracey::Quaternion& q) {
+    const float w = q.w, x = q.x, y = q.y, z = q.z;
+    const float r00 = 1.0f - 2.0f * (y * y + z * z);
+    const float r10 = 2.0f * (x * y + w * z);
+    const float r20 = 2.0f * (x * z - w * y);
+    const float r21 = 2.0f * (y * z + w * x);
+    const float r22 = 1.0f - 2.0f * (x * x + y * y);
+    const float kRad2Deg = 180.0f / 3.1415926535f;
+    const float ry = std::asin(std::max(-1.0f, std::min(1.0f, -r20)));
+    float rx, rz;
+    if (std::fabs(r20) < 0.99999f) {
+        rx = std::atan2(r21, r22);
+        rz = std::atan2(r10, r00);
+    } else { // gimbal lock (pitch ≈ ±90°): fold roll into yaw
+        const float r01 = 2.0f * (x * y - w * z);
+        const float r11 = 1.0f - 2.0f * (x * x + z * z);
+        rx = 0.0f;
+        rz = std::atan2(-r01, r11);
+    }
+    return tracey::Vec3(rx * kRad2Deg, ry * kRad2Deg, rz * kRad2Deg);
+}
 
 // Top-right path-tracer PiP geometry. ~25% of viewport width, square-pixel
 // matched to the viewport's aspect so projection is the same in both views.

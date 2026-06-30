@@ -207,11 +207,16 @@ void main() {
 
     vec3 color = directAccum + iblAccum + fragEmissive;
 
-    // Unlit-albedo fallback when no lights exist (fresh project before
-    // the user adds a Dome). Keeps geometry legible instead of rendering
-    // the scene as a black silhouette.
+    // No scene lights yet — e.g. modeling an asset before it's lit. Flat unlit
+    // albedo hides all form (you can't even see faces), so light it with a camera
+    // "headlight" plus a little ambient so the shape reads. Viewport aid only: as
+    // soon as the scene has real lights they take over (this branch isn't reached
+    // when lightCount > 0), so it never fights authored lighting.
     if (pc.misc.x == 0u) {
-        color = albedo + fragEmissive;
+        vec3 headDir = normalize(V + vec3(0.0, 0.35, 0.0)); // key from just above the camera
+        vec3 lit     = directLight(N, V, headDir, vec3(3.0),
+                                   albedo, metallic, roughness, F0);
+        color = lit + albedo * 0.20 + fragEmissive;          // + ambient to lift the shadow side
     }
 
     // Last-ditch NaN guard: any numerical hiccup falls back to flat

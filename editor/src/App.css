@@ -58,6 +58,28 @@
   background: #455a72;
 }
 
+/* USD shot-mode controls (New/Open Shot + department selector). Sits at the
+   right end of the toolbar, set off by a divider. */
+.shot-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-left: 16px;
+  border-left: 1px solid #3c3c3c;
+}
+.shot-controls__label {
+  font-size: 11px;
+  color: #999;
+}
+.shot-controls__select {
+  padding: 4px 8px;
+  background: #2a2a2a;
+  color: #ddd;
+  border: 1px solid #444;
+  border-radius: 4px;
+  font: 12px system-ui, -apple-system, sans-serif;
+}
+
 /* Cook status — overlaid on the viewport (bottom-left corner) so the
    badge's appearance/disappearance doesn't reflow the toolbar. The
    container is position:absolute against `.viewport-container`, which

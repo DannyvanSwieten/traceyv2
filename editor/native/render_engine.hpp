@@ -68,6 +68,13 @@ public:
     tracey::Scene& scene() { return *m_scene; }
     const tracey::Scene& scene() const { return *m_scene; }
 
+    // Replace the working scene wholesale (e.g. composing a USD shot via
+    // StageDocument::toScene). The caller then triggers compile_scene() — directly,
+    // or deferred via the editor's m_pending_recompile — under the usual GPU lock
+    // protocol. Safe to call off the render path: workers read the CompiledScene
+    // snapshot, not m_scene.
+    void adoptScene(std::unique_ptr<tracey::Scene> scene);
+
     void compile_scene();
 
     // Refresh ONLY the analytic lights, in place, without recompiling geometry.
@@ -246,7 +253,15 @@ public:
     //     the per-instance material/program indices line up wrong.
     //   • only `actor->transform()` values changed since last compile.
     // Returns false if the precondition fails or no compiled scene exists.
-    bool refresh_tlas_only();
+    //
+    // rebuildTlas=false updates the per-instance transforms (which the
+    // rasterizer reads) but SKIPS the TopLevelAccelerationStructure rebuild,
+    // leaving the previous TLAS in place. Used during timeline playback, where
+    // the viewport shows the rasterized preview (the TLAS isn't consumed) — so
+    // rebuilding the whole BVH every frame is wasted work that stalls the render
+    // thread on the unique GPU lock. The next full refresh (on pause) rebuilds
+    // it for the path tracer. Default true preserves the original behaviour.
+    bool refresh_tlas_only(bool rebuildTlas = true);
     // True only when the compiled scene has at least one TLAS instance; the
     // rasterizer can still draw the reference ground grid without geometry,
     // so this gates the path tracer (which needs a BVH) specifically.

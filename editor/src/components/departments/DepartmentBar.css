@@ -1,0 +1,77 @@
+.dept-bar {
+  display: flex;
+  align-items: stretch;
+  height: 100%;
+}
+
+.dept-group {
+  display: flex;
+  align-items: center;
+}
+.dept-group--active {
+  background: linear-gradient(#25394b, transparent 90%);
+}
+
+.dept-tab {
+  appearance: none;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  color: #8b8b93;
+  font: 13px system-ui, -apple-system, sans-serif;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 13px;
+  height: 100%;
+}
+.dept-tab:hover {
+  color: #d8d8db;
+}
+.dept-tab--active {
+  color: #fff;
+  border-bottom-color: #5cc8ff;
+}
+.dept-hue {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: none;
+  opacity: 0.85;
+}
+.dept-editing {
+  color: #5cc8ff;
+  font-size: 9px;
+  line-height: 1;
+}
+
+.dept-submodes {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding-left: 8px;
+  margin-right: 4px;
+  border-left: 1px solid #2e2e33;
+}
+.dept-submodes--dim {
+  opacity: 0.4;
+}
+.dept-submode {
+  appearance: none;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: #6a6a72;
+  font: 11px ui-monospace, "SF Mono", Menlo, monospace;
+  letter-spacing: 0.02em;
+  padding: 3px 7px;
+  border-radius: 4px;
+}
+.dept-submode:hover {
+  color: #d8d8db;
+}
+.dept-submode--active {
+  color: #fff;
+  background: #2c2c30;
+}

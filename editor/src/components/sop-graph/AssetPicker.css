@@ -1,0 +1,47 @@
+.asset-picker {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  background: #202023;
+  border-bottom: 1px solid #2e2e33;
+}
+.asset-picker-label {
+  font: 10px ui-monospace, "SF Mono", Menlo, monospace;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #6a6a72;
+}
+.asset-picker-select {
+  flex: 1;
+  min-width: 0;
+  padding: 3px 6px;
+  background: #2a2a2e;
+  color: #ddd;
+  border: 1px solid #3a3a40;
+  border-radius: 4px;
+  font: 12px system-ui, -apple-system, sans-serif;
+}
+.asset-picker-btn {
+  flex: none;
+  padding: 3px 8px;
+  background: #2a2a2a;
+  color: #ddd;
+  border: 1px solid #444;
+  border-radius: 4px;
+  cursor: pointer;
+  font: 11px system-ui, -apple-system, sans-serif;
+}
+.asset-picker-btn:hover { background: #353535; }
+.asset-picker-btn--primary {
+  background: #3a4a5e;
+  border-color: #6cf;
+  color: #fff;
+}
+.asset-picker-btn--primary:hover { background: #455a72; }
+.asset-picker-btn--publish {
+  background: #1f2a1f;
+  border-color: #3a5a3a;
+  color: #bde8bd;
+}
+.asset-picker-btn--publish:hover { background: #294029; border-color: #4caf50; color: #fff; }

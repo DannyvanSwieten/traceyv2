@@ -7,9 +7,6 @@
 import { batch, createSignal } from 'solid-js';
 import * as api from '../lib/api';
 import type { Actor } from '../components/scene-hierarchy/SceneHierarchy';
-import { findNodeRecursive } from '../lib/sop_graph';
-import { sopGraph } from './sops';
-import { setKeyAtPlayhead } from './timeline';
 
 const [actorsSignal, setActorsSignal] = createSignal<Actor[]>([]);
 const [selectedActorIdSignal, setSelectedActorIdSignal] = createSignal<number | null>(null);
@@ -77,35 +74,22 @@ export function attachSceneChangedListener(): () => void {
   };
 }
 
-// Key the selected actor's translate/scale/rotate at the playhead. Used
-// by the K hotkey, the WorkspaceBar's "Set Key" button, and the Auto-Key
-// toggle after every transform commit.
+// Key the selected actor's transform at the playhead. Used by the K hotkey, the
+// "Set Key" button, and the Auto-Key toggle after every transform commit.
+//
+// Object/transform animation is a SHOT concern: it authors a USD time sample on the
+// placed instance (anim.usd). When no shot is open you're editing an ASSET — a static
+// recipe — so transform keying is a deliberate no-op (we no longer write SOP transform
+// channels onto the asset graph; procedural param animation is keyed on the param in
+// the graph, not on the object's pose).
 export function keySelectedActorPose(): void {
   const actor = selectedActor();
-  if (!actor || actor.sop_node_uid == null) return;
-  const uid = actor.sop_node_uid;
-  const tx = actor.transform.position;
-  const sc = actor.transform.scale;
-  const writes: Promise<void>[] = [
-    setKeyAtPlayhead({ nodeUid: uid, paramName: 'translate', component: 0, value: tx.x }),
-    setKeyAtPlayhead({ nodeUid: uid, paramName: 'translate', component: 1, value: tx.y }),
-    setKeyAtPlayhead({ nodeUid: uid, paramName: 'translate', component: 2, value: tx.z }),
-    setKeyAtPlayhead({ nodeUid: uid, paramName: 'scale',     component: 0, value: sc.x }),
-    setKeyAtPlayhead({ nodeUid: uid, paramName: 'scale',     component: 1, value: sc.y }),
-    setKeyAtPlayhead({ nodeUid: uid, paramName: 'scale',     component: 2, value: sc.z }),
-  ];
-  const node = findNodeRecursive(sopGraph(), uid);
-  const rot = node?.params['rotate_euler_deg'];
-  if (rot && rot.type === 'vec3') {
-    writes.push(setKeyAtPlayhead({ nodeUid: uid, paramName: 'rotate_euler_deg', component: 0, value: rot.value[0] }));
-    writes.push(setKeyAtPlayhead({ nodeUid: uid, paramName: 'rotate_euler_deg', component: 1, value: rot.value[1] }));
-    writes.push(setKeyAtPlayhead({ nodeUid: uid, paramName: 'rotate_euler_deg', component: 2, value: rot.value[2] }));
-  }
-  void Promise.allSettled(writes).then((results) => {
-    const failed = results.filter((r) => r.status === 'rejected');
-    if (failed.length > 0) {
-      console.error(`keySelectedActorPose: ${failed.length}/${results.length} keyframe writes failed`,
-                    failed.map((f) => (f as PromiseRejectedResult).reason));
-    }
-  });
+  if (!actor) return;
+  void api
+    .getShotState()
+    .then((shot) => {
+      if (shot.open) void api.shotKeyActor(actor.id).catch((e) => console.error('shotKeyActor failed', e));
+      // else: editing an asset → static; no transform keying.
+    })
+    .catch(() => {});
 }

@@ -143,6 +143,22 @@ void RenderEngine::set_material_parameter(uint32_t program_id, uint32_t param_id
     m_path_tracer->setMaterialParameter(program_id, param_idx, tracey::Vec4(x, y, z, w));
 }
 
+void RenderEngine::adoptScene(std::unique_ptr<tracey::Scene> scene) {
+    // Just swap the pointer; render workers read the CompiledScene snapshot, not
+    // m_scene, so this is safe as long as no compile runs concurrently (callers hold
+    // the editor's m_mutex; render_tick try_locks it). The new geometry reaches the
+    // GPU on the next compile_scene().
+    if (!scene) return;
+    // Preserve the editor's current camera (its position AND the viewport-correct
+    // aspect ratio) onto the new scene. The camera is the user's navigation state and
+    // must survive a recompose / playback re-derive; the composed scene's own camera
+    // (default aspect, or none) would otherwise render with the wrong aspect + a
+    // jumped view until the next camera move — update_camera_from_input only
+    // re-applies the camera when it actually moves (gated on `changed`).
+    if (m_scene && m_scene->hasCamera()) scene->setCamera(m_scene->camera());
+    m_scene = std::move(scene);
+}
+
 void RenderEngine::compile_scene() {
     // Unique lock: rebuilding GPU buffers/BLAS must exclude both render workers
     // (rasterizer + PT) for its whole duration — see m_gpu_mutex.
@@ -335,7 +351,7 @@ void RenderEngine::set_background_color(float r, float g, float b, float a) {
 
 void RenderEngine::render_rasterizer() {
     if (!m_rasterizer || !m_compiled_scene || !m_scene->hasCamera()) return;
-    m_rasterizer->render(*m_compiled_scene, m_scene->camera());
+    m_rasterizer->render(*m_compiled_scene, m_scene->camera(), scene_generation());
 }
 
 double RenderEngine::render_rasterizer_with(
@@ -352,7 +368,7 @@ double RenderEngine::render_rasterizer_with(
     if (m_scene_generation.load(std::memory_order_acquire) != expectedGeneration)
         return 0.0;
     if (!m_rasterizer) return 0.0;
-    return m_rasterizer->render(scene, camera);
+    return m_rasterizer->render(scene, camera, expectedGeneration);
 }
 
 double RenderEngine::render_path_tracer_with(
@@ -385,7 +401,7 @@ bool RenderEngine::denoise_path_tracer()
     return m_path_tracer->denoise();
 }
 
-bool RenderEngine::refresh_tlas_only() {
+bool RenderEngine::refresh_tlas_only(bool rebuildTlas) {
     if (!m_compiled_scene) return false;
     // Note: tlas may legitimately be null when PT preview is off
     // (compile_scene skips BLAS/TLAS build via buildAccelerationStructures
@@ -529,7 +545,7 @@ bool RenderEngine::refresh_tlas_only() {
     // exact "PT toggle off doesn't restore FPS" symptom. Now: if PT
     // is off, we both skip the rebuild AND drop any lingering TLAS
     // so the rasterizer-only path stays cheap.
-    if (m_build_acceleration_structures) {
+    if (m_build_acceleration_structures && rebuildTlas) {
         m_compiled_scene->tlas = std::unique_ptr<tracey::TopLevelAccelerationStructure>(
             m_device->createTopLevelAccelerationStructure(
                 std::span<const tracey::BottomLevelAccelerationStructure *>(
@@ -537,9 +553,13 @@ bool RenderEngine::refresh_tlas_only() {
                 std::span<const tracey::Tlas::Instance>(
                     m_compiled_scene->instances.data(),
                     m_compiled_scene->instances.size())));
-    } else if (m_compiled_scene->tlas) {
+    } else if (!m_build_acceleration_structures && m_compiled_scene->tlas) {
         m_compiled_scene->tlas.reset();
     }
+    // (m_build_acceleration_structures && !rebuildTlas): the instance transforms
+    // above are updated for the rasterizer, but we deliberately leave the old
+    // TLAS untouched — the path tracer isn't consuming it this frame (playback
+    // shows the rasterized preview), and a full refresh on pause rebuilds it.
     // In-place mutation: stamp a fresh revision so path tracer backends
     // that cache per-scene resources (acceleration structures, buffer
     // copies) see the change. Skipping this renders stale transforms on

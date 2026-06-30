@@ -459,9 +459,15 @@ if(TRACEY_WITH_USD)
     add_library(tracey_usd
         src/scene/usd_loader.hpp
         src/scene/usd_loader.cpp
+        src/scene/usd_exporter.hpp
+        src/scene/usd_exporter.cpp
+        src/scene/stage_document.hpp
+        src/scene/stage_document.cpp
         src/sops/nodes/usd_import_sop.cpp)
     target_link_libraries(tracey_usd PUBLIC tracey)
-    target_link_libraries(tracey_usd PRIVATE usd usdGeom usdShade usdLux glm::glm)
+    # sdf + tf added for the authoring (write) path: SdfLayer/SdfPath + UsdEditTarget
+    # composition (UsdExporter, the StageDocument's per-department layer writes).
+    target_link_libraries(tracey_usd PRIVATE usd usdGeom usdShade usdLux sdf tf glm::glm)
     target_compile_definitions(tracey_usd PRIVATE TRACEY_HAS_USD=1)
     message(STATUS "OpenUSD: enabled (${TRACEY_USD_DIR})")
 endif()

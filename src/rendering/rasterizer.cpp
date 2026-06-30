@@ -141,13 +141,15 @@ namespace tracey
     }
 
     double Rasterizer::render(const SceneCompiler::CompiledScene &scene,
-                              const Camera &camera)
+                              const Camera &camera,
+                              uint64_t sceneGeneration)
     {
         auto startTime = std::chrono::high_resolution_clock::now();
 
-        // Free last render's per-instance batch buffers. We can't drop
-        // them until the GPU has drained the previous dispatch, which
-        // already happened in the prior render()'s waitForCompletion().
+        // Free last render's transient OVERLAY buffers (skeleton/guides). Safe to
+        // drop now — the prior render()'s waitForCompletion() already drained the
+        // GPU. The main per-instance buffers are NOT freed here: they're cached and
+        // reused across frames (see m_cachedInstanceBatches in renderScene).
         m_transientInstanceBuffers.clear();
 
         // Record + submit happen under the process-wide Vulkan queue
@@ -222,7 +224,7 @@ namespace tracey
 
             updateCameraUniforms(camera);
             m_currentLightCount = scene.lightCount;
-            renderScene(scene);
+            renderScene(scene, sceneGeneration);
 
             m_commandBuffer->endRenderPass();
             m_commandBuffer->end();
@@ -259,7 +261,7 @@ namespace tracey
         m_projectionMatrix[1][1] *= -1.0f; // Flip Y-axis for Vulkan
     }
 
-    void Rasterizer::renderScene(const SceneCompiler::CompiledScene &scene)
+    void Rasterizer::renderScene(const SceneCompiler::CompiledScene &scene, uint64_t sceneGeneration)
     {
         // Optional reference ground grid. Drawn first so opaque scene geometry
         // overlays it; the ground pipeline has depth-write off so it doesn't
@@ -335,98 +337,108 @@ namespace tracey
         };
         static_assert(sizeof(InstanceData) == 112, "InstanceData layout must match shader binding");
 
-        // Helper: pull a batch's per-instance data, allocate a transient
-        // vertex buffer, upload, bind, and draw once.
-        auto drawBatch = [&](size_t blasIndex, size_t startInst, size_t count) {
-            if (count == 0 || blasIndex >= scene.vertexBuffers.size()) return;
-            const Buffer *vb = scene.vertexBuffers[blasIndex];
-            const uint32_t vertexCount = scene.vertexCounts[blasIndex];
-            if (!vb || vertexCount == 0) return;
-
-            // Build the per-instance buffer in parallel — every entry
-            // touches only its own index, so parallel_for_chunks across
-            // hardware_concurrency workers is safe. At 400k particles
-            // the serial build was ~5–10 ms; the parallel version
-            // drops it to ~1 ms on M3 Ultra. The lambda below is the
-            // body of the original serial loop, unchanged.
-            std::vector<InstanceData> insts(count);
-            tracey::parallel_for_chunks(count,
-                [&insts, &scene, startInst](size_t kBegin, size_t kEnd) {
-                    for (size_t k = kBegin; k < kEnd; ++k)
-                    {
-                        const auto &inst = scene.instances[startInst + k];
-                        glm::mat4 model(1.0f);
-                        for (int r = 0; r < 3; ++r)
-                            for (int c = 0; c < 4; ++c)
-                                model[c][r] = inst.transform[r][c];
-                        glm::vec4 albedo(0.8f, 0.8f, 0.8f, 1.0f);
-                        glm::vec4 mrx(0.0f, 0.5f, 0.0f, 0.0f);  // metallic, roughness, emissive strength
-                        glm::vec4 emissive(0.0f, 0.0f, 0.0f, 0.0f);
-                        const size_t mi = startInst + k;
-                        if (mi < scene.instanceToMaterialIndex.size())
-                        {
-                            const uint32_t matIdx = scene.instanceToMaterialIndex[mi];
-                            if (matIdx < scene.materials.size())
-                            {
-                                const auto &m = scene.materials[matIdx];
-                                albedo  = glm::vec4(m.baseColorR, m.baseColorG, m.baseColorB, m.baseColorA);
-                                mrx.x   = m.metallicFactor;
-                                mrx.y   = m.roughnessFactor;
-                                // emissive on the GPUMaterial is split
-                                // across two struct slots — recombine.
-                                emissive = glm::vec4(m.emissiveR, m.emissiveG, m.emissiveB, 0.0f);
-                                // Use a strength of 1 when any channel is
-                                // set; the frag shader multiplies these.
-                                mrx.z   = (m.emissiveR + m.emissiveG + m.emissiveB) > 0.0f ? 1.0f : 0.0f;
-                            }
-                        }
-                        insts[k].model    = model;
-                        insts[k].albedo   = albedo;
-                        insts[k].mrx      = mrx;
-                        insts[k].emissive = emissive;
-                    }
-                });
-
-            const uint32_t bytes = static_cast<uint32_t>(insts.size() * sizeof(InstanceData));
-            auto instBuf = std::unique_ptr<Buffer>(
-                m_device->createBuffer(bytes, BufferUsage::VertexBuffer));
-            std::memcpy(instBuf->mapForWriting(), insts.data(), bytes);
-            instBuf->flush();
-
-            m_commandBuffer->bindVertexBuffer(vb, 0);
-            if (blasIndex < scene.colorBuffers.size() && scene.colorBuffers[blasIndex])
-            {
-                m_commandBuffer->bindVertexBufferAt(
-                    scene.colorBuffers[blasIndex], 1, 0);
-            }
-            m_commandBuffer->bindVertexBufferAt(instBuf.get(), 2, 0);
-            m_commandBuffer->draw(vertexCount, static_cast<uint32_t>(count), 0, 0);
-
-            // Keep the buffer alive until the GPU has consumed it. The
-            // Rasterizer::render call doesn't return until
-            // waitForCompletion(), so dropping the unique_ptr at end of
-            // this lambda is safe — but we still need to keep it inside
-            // the lambda body. Move it into a per-render keepalive list
-            // so it survives across batches.
-            m_transientInstanceBuffers.push_back(std::move(instBuf));
-        };
-
-        // Single linear scan grouping consecutive instances by blasIndex.
-        // compile_scene emits instances in actor order, and each actor's
-        // SceneInstances share the same BLAS (instance group case) or
-        // are a single entry — so consecutive runs are exactly the
-        // batchable chunks. Non-contiguous repeats are rare in practice
-        // and just produce more, smaller batches.
-        size_t i = 0;
-        while (i < scene.instances.size())
+        // Build (or reuse) the cached per-instance buffers. The instance data is a
+        // function of the scene (transforms + materials), not the camera — so it's
+        // rebuilt ONLY when the scene generation changes. During camera-only
+        // navigation the generation is stable and the buffers are reused as-is,
+        // eliminating the per-frame allocate+upload that churned the GPU allocator
+        // and caused random navigation hitches even on light scenes.
+        const bool rebuild = sceneGeneration == 0 ||
+                             sceneGeneration != m_cachedInstanceGen ||
+                             m_cachedInstanceBatches.empty();
+        if (rebuild)
         {
-            const size_t blasIndex = static_cast<size_t>(scene.instances[i].blasAddress);
-            size_t j = i + 1;
-            while (j < scene.instances.size() &&
-                   static_cast<size_t>(scene.instances[j].blasAddress) == blasIndex)
-                ++j;
-            drawBatch(blasIndex, i, j - i);
-            i = j;
+            m_cachedInstanceBatches.clear();
+            // Single linear scan grouping consecutive instances by blasIndex.
+            // compile_scene emits instances in actor order, and each actor's
+            // SceneInstances share the same BLAS — so consecutive runs are exactly
+            // the batchable chunks. Each batch's per-instance data is packed into one
+            // INPUT_RATE_INSTANCE vertex buffer.
+            size_t i = 0;
+            while (i < scene.instances.size())
+            {
+                const size_t blasIndex = static_cast<size_t>(scene.instances[i].blasAddress);
+                size_t j = i + 1;
+                while (j < scene.instances.size() &&
+                       static_cast<size_t>(scene.instances[j].blasAddress) == blasIndex)
+                    ++j;
+                const size_t startInst = i;
+                const size_t count = j - i;
+                i = j;
+                if (count == 0 || blasIndex >= scene.vertexBuffers.size()) continue;
+                const Buffer *vb = scene.vertexBuffers[blasIndex];
+                const uint32_t vertexCount = scene.vertexCounts[blasIndex];
+                if (!vb || vertexCount == 0) continue;
+
+                // Build the per-instance buffer in parallel — every entry touches
+                // only its own index, so parallel_for_chunks is safe. ~1 ms at 400k
+                // instances on M3 Ultra.
+                std::vector<InstanceData> insts(count);
+                tracey::parallel_for_chunks(count,
+                    [&insts, &scene, startInst](size_t kBegin, size_t kEnd) {
+                        for (size_t k = kBegin; k < kEnd; ++k)
+                        {
+                            const auto &inst = scene.instances[startInst + k];
+                            glm::mat4 model(1.0f);
+                            for (int r = 0; r < 3; ++r)
+                                for (int c = 0; c < 4; ++c)
+                                    model[c][r] = inst.transform[r][c];
+                            glm::vec4 albedo(0.8f, 0.8f, 0.8f, 1.0f);
+                            glm::vec4 mrx(0.0f, 0.5f, 0.0f, 0.0f);  // metallic, roughness, emissive strength
+                            glm::vec4 emissive(0.0f, 0.0f, 0.0f, 0.0f);
+                            const size_t mi = startInst + k;
+                            if (mi < scene.instanceToMaterialIndex.size())
+                            {
+                                const uint32_t matIdx = scene.instanceToMaterialIndex[mi];
+                                if (matIdx < scene.materials.size())
+                                {
+                                    const auto &m = scene.materials[matIdx];
+                                    albedo  = glm::vec4(m.baseColorR, m.baseColorG, m.baseColorB, m.baseColorA);
+                                    mrx.x   = m.metallicFactor;
+                                    mrx.y   = m.roughnessFactor;
+                                    // emissive on the GPUMaterial is split across two
+                                    // struct slots — recombine.
+                                    emissive = glm::vec4(m.emissiveR, m.emissiveG, m.emissiveB, 0.0f);
+                                    mrx.z   = (m.emissiveR + m.emissiveG + m.emissiveB) > 0.0f ? 1.0f : 0.0f;
+                                }
+                            }
+                            insts[k].model    = model;
+                            insts[k].albedo   = albedo;
+                            insts[k].mrx      = mrx;
+                            insts[k].emissive = emissive;
+                        }
+                    });
+
+                const uint32_t bytes = static_cast<uint32_t>(insts.size() * sizeof(InstanceData));
+                std::unique_ptr<Buffer> instBuf(
+                    m_device->createBuffer(bytes, BufferUsage::VertexBuffer));
+                std::memcpy(instBuf->mapForWriting(), insts.data(), bytes);
+                instBuf->flush();
+
+                CachedInstanceBatch cb;
+                cb.blasIndex = static_cast<uint32_t>(blasIndex);
+                cb.count = static_cast<uint32_t>(count);
+                cb.instBuf = std::move(instBuf);
+                m_cachedInstanceBatches.push_back(std::move(cb));
+            }
+            m_cachedInstanceGen = sceneGeneration;
+        }
+
+        // Draw every cached batch (cheap: bind + one instanced draw). The vertex /
+        // color buffers come from the current snapshot — stable for this generation,
+        // since a compile/refresh that rebuilt them would have bumped the generation
+        // and forced a rebuild above.
+        for (const auto &b : m_cachedInstanceBatches)
+        {
+            if (b.blasIndex >= scene.vertexBuffers.size() || !b.instBuf) continue;
+            const Buffer *vb = scene.vertexBuffers[b.blasIndex];
+            const uint32_t vertexCount = scene.vertexCounts[b.blasIndex];
+            if (!vb || vertexCount == 0) continue;
+            m_commandBuffer->bindVertexBuffer(vb, 0);
+            if (b.blasIndex < scene.colorBuffers.size() && scene.colorBuffers[b.blasIndex])
+                m_commandBuffer->bindVertexBufferAt(scene.colorBuffers[b.blasIndex], 1, 0);
+            m_commandBuffer->bindVertexBufferAt(b.instBuf.get(), 2, 0);
+            m_commandBuffer->draw(vertexCount, b.count, 0, 0);
         }
 
         // Optional wireframe overlay: bind the lines pipeline (POLYGON_MODE_LINE,
