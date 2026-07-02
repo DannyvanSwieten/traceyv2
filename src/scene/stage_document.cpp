@@ -23,8 +23,7 @@ namespace tracey
     bool StageDocument::referenceAsset(const std::string &, const std::string &) { return false; }
     bool StageDocument::removePrim(const std::string &) { return false; }
     bool StageDocument::setPrimTransform(const std::string &, const Vec3 &, const Vec3 &, const Vec3 &) { return false; }
-    bool StageDocument::defineSphereLight(const std::string &, const Vec3 &, float, const Vec3 &) { return false; }
-    bool StageDocument::defineDomeLight(const std::string &, float, const Vec3 &) { return false; }
+    bool StageDocument::defineLight(const std::string &, const Light &, const Mat4 &) { return false; }
     std::unique_ptr<Scene> StageDocument::toScene() const { return nullptr; }
     std::unique_ptr<Scene> StageDocument::toSceneAtTime(double) const { return nullptr; }
     bool StageDocument::setPrimMatrixAtTime(const std::string &, double, const Mat4 &) { return false; }
@@ -50,7 +49,10 @@ namespace tracey
 #include <pxr/usd/usdGeom/tokens.h>
 #include <pxr/usd/usdGeom/xform.h>
 #include <pxr/usd/usdGeom/xformable.h>
+#include <pxr/usd/usdLux/distantLight.h>
 #include <pxr/usd/usdLux/domeLight.h>
+#include <pxr/usd/usdLux/lightAPI.h>
+#include <pxr/usd/usdLux/rectLight.h>
 #include <pxr/usd/usdLux/sphereLight.h>
 
 #include <glm/gtc/type_ptr.hpp>
@@ -327,26 +329,86 @@ namespace tracey
         return true;
     }
 
-    bool StageDocument::defineSphereLight(const std::string &primPath, const Vec3 &position,
-                                          float intensity, const Vec3 &color)
+    bool StageDocument::defineLight(const std::string &primPath, const Light &light, const Mat4 &mtx)
     {
         if (!m->routeToActive()) return false;
-        UsdLuxSphereLight light = UsdLuxSphereLight::Define(m->stage, SdfPath(primPath));
-        if (!light) return false;
-        light.CreateIntensityAttr(VtValue(intensity));
-        light.CreateColorAttr(VtValue(GfVec3f(color.x, color.y, color.z)));
-        UsdGeomXformable(light.GetPrim()).AddTranslateOp().Set(GfVec3d(position.x, position.y, position.z));
-        return true;
-    }
+        const SdfPath path(primPath);
+        if (path.IsEmpty() || !path.IsAbsolutePath()) return false;
 
-    bool StageDocument::defineDomeLight(const std::string &primPath, float intensity, const Vec3 &color)
-    {
-        if (!m->routeToActive()) return false;
-        UsdLuxDomeLight light = UsdLuxDomeLight::Define(m->stage, SdfPath(primPath));
-        if (!light) return false;
-        light.CreateIntensityAttr(VtValue(intensity));
-        light.CreateColorAttr(VtValue(GfVec3f(color.x, color.y, color.z)));
-        return true; // dome is transform-independent — no placement op
+        // Type change (Dome → Sun etc.): remove the old spec from the edit-target
+        // layer first, or the fresh Define fights the stale typeName.
+        static const std::unordered_map<int, TfToken> kTypeName = {
+            {static_cast<int>(LightType::Point),   TfToken("SphereLight")},
+            {static_cast<int>(LightType::Distant), TfToken("DistantLight")},
+            {static_cast<int>(LightType::Dome),    TfToken("DomeLight")},
+            {static_cast<int>(LightType::Area),    TfToken("RectLight")},
+        };
+        const TfToken want = kTypeName.at(static_cast<int>(light.type));
+        if (UsdPrim existing = m->stage->GetPrimAtPath(path);
+            existing && existing.GetTypeName() != want)
+            m->stage->RemovePrim(path);
+
+        UsdPrim prim;
+        switch (light.type)
+        {
+        case LightType::Distant:
+            prim = UsdLuxDistantLight::Define(m->stage, path).GetPrim();
+            break;
+        case LightType::Dome:
+            prim = UsdLuxDomeLight::Define(m->stage, path).GetPrim();
+            break;
+        case LightType::Area:
+        {
+            UsdLuxRectLight rect = UsdLuxRectLight::Define(m->stage, path);
+            if (rect)
+            {
+                rect.CreateWidthAttr(VtValue(light.size.x));
+                rect.CreateHeightAttr(VtValue(light.size.y));
+            }
+            prim = rect.GetPrim();
+            break;
+        }
+        default: // Point
+        {
+            UsdLuxSphereLight sph = UsdLuxSphereLight::Define(m->stage, path);
+            if (sph) sph.CreateRadiusAttr(VtValue(light.radius));
+            prim = sph.GetPrim();
+            break;
+        }
+        }
+        if (!prim) return false;
+
+        UsdLuxLightAPI api(prim);
+        api.CreateIntensityAttr(VtValue(light.intensity));
+        api.CreateColorAttr(VtValue(GfVec3f(light.color.x, light.color.y, light.color.z)));
+
+        if (light.type == LightType::Dome)
+        {
+            // Procedural sky gradient: tracey-specific, no UsdLux fields — ride as
+            // custom attrs so the editor round-trips them (foreign DCCs ignore them).
+            auto setColor = [&prim](const char *name, const Vec3 &v) {
+                prim.CreateAttribute(TfToken(name), SdfValueTypeNames->Color3f, /*custom=*/true)
+                    .Set(GfVec3f(v.x, v.y, v.z));
+            };
+            setColor("tracey:skyColor", light.skyColor);
+            setColor("tracey:horizonColor", light.horizonColor);
+            setColor("tracey:groundColor", light.groundColor);
+            if (!light.hdriPath.empty())
+                UsdLuxDomeLight(prim).CreateTextureFileAttr(
+                    VtValue(SdfAssetPath(m->relativeToActiveLayer(light.hdriPath))));
+        }
+        else
+        {
+            // Placement/orientation: position for Point/Area, -Z direction for
+            // Distant, plane orientation for Area — all from the actor's matrix.
+            UsdGeomXformable x(prim);
+            x.ClearXformOpOrder();
+            const float *pp = glm::value_ptr(mtx);
+            GfMatrix4d gf(pp[0], pp[1], pp[2], pp[3], pp[4], pp[5], pp[6], pp[7],
+                          pp[8], pp[9], pp[10], pp[11], pp[12], pp[13], pp[14], pp[15]);
+            x.MakeMatrixXform().Set(gf);
+        }
+        return true;
     }
 
     std::unique_ptr<Scene> StageDocument::toScene() const

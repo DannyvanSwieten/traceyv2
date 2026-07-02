@@ -100,6 +100,12 @@ std::optional<std::string> EditorServer::handle_graph_commands(
 #ifndef TRACEY_HAS_USD
             return err_response("publish_asset: this build has no OpenUSD support");
 #else
+            // Publishing exports the ENGINE scene — in shot mode that's the whole
+            // composed shot, and exporting it would silently overwrite the asset's
+            // USD with the entire shot (cube + lights + everything). Refuse.
+            if (m_shot_mode)
+                return err_response(
+                    "publish_asset: a shot is open — close it first (assets publish from asset mode)");
             ensureCurrentAsset();
             if (m_current_asset_id.empty()) return err_response("publish_asset: no current asset");
             if (m_project_dir.empty()) return err_response("publish_asset: save the project first");

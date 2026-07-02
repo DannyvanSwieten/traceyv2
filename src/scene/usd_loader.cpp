@@ -452,6 +452,19 @@ namespace tracey
                 if (UsdLuxDomeLight(prim).GetTextureFileAttr().Get(&tex) &&
                     !tex.GetResolvedPath().empty())
                     out.hdriPath = tex.GetResolvedPath();
+                // Editor-authored procedural sky gradient (custom tracey:* attrs —
+                // see StageDocument::defineLight). Absent on foreign domes → the
+                // Light struct's daytime defaults hold.
+                auto getColor = [&prim](const char *name, Vec3 &v) {
+                    if (UsdAttribute a = prim.GetAttribute(TfToken(name)))
+                    {
+                        GfVec3f g;
+                        if (a.Get(&g)) v = Vec3(g[0], g[1], g[2]);
+                    }
+                };
+                getColor("tracey:skyColor", out.skyColor);
+                getColor("tracey:horizonColor", out.horizonColor);
+                getColor("tracey:groundColor", out.groundColor);
             }
         }
 

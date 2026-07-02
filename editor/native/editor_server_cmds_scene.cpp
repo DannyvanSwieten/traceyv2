@@ -71,15 +71,16 @@ std::optional<std::string> EditorServer::handle_scene_commands(
                 }
                 prim += "_" + std::to_string(actor->getUid());
                 actor->setName(prim);
-                // Author the matching UsdLux type so the light survives a recompose
-                // from USD. A Dome MUST be a DomeLight — authoring it as a SphereLight
-                // (the old v1 catch-all) made it read back as a dim Point, so the
-                // environment lighting vanished on the next recompose. (Sun/Area still
-                // round-trip through SphereLight for now — a lighting-dept follow-up.)
-                if (light.type == tracey::LightType::Dome)
-                    m_stage_doc->defineDomeLight(prim, 1.0f, tracey::Vec3(1.0f));
-                else
-                    m_stage_doc->defineSphereLight(prim, xform.position(), 1.0f, tracey::Vec3(1.0f));
+                // Lights belong to the lighting department — route the authoring there
+                // and restore (adding a light from Animation must not land it in
+                // anim.usda, nor retarget where your other edits go). defineLight
+                // authors the matching UsdLux type + full params + transform, so every
+                // type survives a recompose (Sun/Area used to degrade via SphereLight).
+                const std::string prevActive = m_stage_doc->activeDepartment();
+                for (const auto& d : m_stage_doc->departments())
+                    if (d == "lighting") { m_stage_doc->setActiveDepartment("lighting"); break; }
+                m_stage_doc->defineLight(prim, light, xform.toMatrix());
+                if (!prevActive.empty()) m_stage_doc->setActiveDepartment(prevActive);
             } else
 #endif
             {
@@ -195,6 +196,22 @@ std::optional<std::string> EditorServer::handle_scene_commands(
             }
             if (req.contains("hdri_path")) light.hdriPath = req.at("hdri_path").get<std::string>();
             a->setLight(light);
+
+#ifdef TRACEY_HAS_USD
+            // Shot mode: sync the FULL light state to its UsdLux prim, or the edit
+            // only lives on the engine actor and the next recompose / save-reopen
+            // reverts it to the creation defaults. Routed to the lighting layer
+            // (same as create_light); defineLight re-authors type changes too.
+            // Guarded on the name being a prim path — stage-derived and shot-created
+            // lights are; procedural-era lights ("Dome") are not and stay engine-only.
+            if (m_shot_mode && m_stage_doc && !a->name().empty() && a->name()[0] == '/') {
+                const std::string prevActive = m_stage_doc->activeDepartment();
+                for (const auto& d : m_stage_doc->departments())
+                    if (d == "lighting") { m_stage_doc->setActiveDepartment("lighting"); break; }
+                m_stage_doc->defineLight(a->name(), light, a->transform().toMatrix());
+                if (!prevActive.empty()) m_stage_doc->setActiveDepartment(prevActive);
+            }
+#endif
 
             // Light-only edit → in-place light refresh (no geometry recompile).
             if (m_engine->path_tracer_ready()) m_engine->update_lights();

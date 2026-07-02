@@ -22,6 +22,7 @@
 #include "core/types.hpp"
 
 #include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
 
 #include <cmath>
 #include <cstdio>
@@ -90,6 +91,14 @@ namespace
         return p;
     }
 
+    // First light of `type` in the composed scene, or nullptr.
+    const Light *findLight(const Scene &scene, LightType type)
+    {
+        for (const auto *a : scene.actors())
+            if (a && a->hasLight() && a->light()->type == type) return a->light();
+        return nullptr;
+    }
+
     std::string readFile(const std::string &path)
     {
         std::ifstream f(path);
@@ -119,7 +128,32 @@ int main(int argc, char **argv)
     authored &= doc->setActiveDepartment("anim");
     authored &= doc->setPrimTransform("/shot/cube", Vec3(0, 3, 0), Vec3(0), Vec3(1, 1, 1));
     authored &= doc->setActiveDepartment("lighting");
-    authored &= doc->defineSphereLight("/shot/keyLight", Vec3(0, 10, 0), 1000.0f, Vec3(1, 1, 1));
+    // Every editor light type through defineLight, with distinctive params — the
+    // reopened scene must give them back type-correct AND param-correct (the old
+    // author-everything-as-SphereLight bug degraded Sun/Area/Dome on recompose).
+    Light key;                      // Point
+    key.type = LightType::Point;
+    key.intensity = 1000.0f;
+    key.radius = 0.25f;
+    authored &= doc->defineLight("/shot/keyLight", key,
+                                 glm::translate(glm::mat4(1.0f), glm::vec3(0, 10, 0)));
+    Light sun;                      // Distant
+    sun.type = LightType::Distant;
+    sun.intensity = 5.0f;
+    sun.color = Vec3(1.0f, 0.9f, 0.8f);
+    authored &= doc->defineLight("/shot/sun", sun, glm::mat4(1.0f));
+    Light panel;                    // Area
+    panel.type = LightType::Area;
+    panel.intensity = 40.0f;
+    panel.size = Vec2(2.0f, 0.5f);
+    authored &= doc->defineLight("/shot/panel", panel,
+                                 glm::translate(glm::mat4(1.0f), glm::vec3(0, 5, 0)));
+    Light env;                      // Dome, custom gradient
+    env.type = LightType::Dome;
+    env.intensity = 2.0f;
+    env.skyColor = Vec3(0.1f, 0.2f, 0.9f);
+    env.groundColor = Vec3(0.3f, 0.2f, 0.1f);
+    authored &= doc->defineLight("/shot/env", env, glm::mat4(1.0f));
     if (!authored) { std::fprintf(stderr, "FAIL: authoring returned false\n"); return 1; }
 
     // ── Compose (before save) ──
@@ -153,9 +187,26 @@ int main(int argc, char **argv)
 
     // Composition correct, both before and after a save/reopen.
     check(pl.meshActors == 1 && pr.meshActors == 1, "expected exactly 1 mesh actor");
-    check(pl.lights == 1 && pr.lights == 1, "expected exactly 1 light");
+    check(pl.lights == 4 && pr.lights == 4, "expected exactly 4 lights");
     check(std::fabs(pl.meshWorldY - 3.0f) < 1e-3f, "live mesh not at anim y=3");
     check(std::fabs(pr.meshWorldY - 3.0f) < 1e-3f, "reopened mesh not at anim y=3 (persistence)");
+
+    // Light round-trip: every type comes back type-correct with its params.
+    {
+        const Light *pt = findLight(*rs, LightType::Point);
+        check(pt && std::fabs(pt->intensity - 1000.0f) < 1e-2f && std::fabs(pt->radius - 0.25f) < 1e-4f,
+              "Point light params lost in round-trip");
+        const Light *dst = findLight(*rs, LightType::Distant);
+        check(dst && std::fabs(dst->intensity - 5.0f) < 1e-4f && std::fabs(dst->color.z - 0.8f) < 1e-4f,
+              "Distant light lost/degraded in round-trip");
+        const Light *ar = findLight(*rs, LightType::Area);
+        check(ar && std::fabs(ar->size.x - 2.0f) < 1e-4f && std::fabs(ar->size.y - 0.5f) < 1e-4f,
+              "Area light size lost in round-trip");
+        const Light *dm = findLight(*rs, LightType::Dome);
+        check(dm && std::fabs(dm->intensity - 2.0f) < 1e-4f &&
+                  std::fabs(dm->skyColor.z - 0.9f) < 1e-4f && std::fabs(dm->groundColor.x - 0.3f) < 1e-4f,
+              "Dome light gradient (tracey:* attrs) lost in round-trip");
+    }
 
     // The reference lives only in layout (USD nests scopes, so check the asset ref +
     // the cube prim rather than a flattened "/shot/cube" path).

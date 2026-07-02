@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../core/types.hpp"
+#include "light.hpp"
 
 #include <memory>
 #include <string>
@@ -85,13 +86,15 @@ namespace tracey
         // identical orientations as no motion. This is the shot-mode transform keyer.
         bool setPrimTRSAtTime(const std::string &primPath, double timeCode,
                               const Vec3 &translate, const Vec3 &rotateEulerDeg, const Vec3 &scale);
-        // Define a UsdLux SphereLight at `primPath` (lighting).
-        bool defineSphereLight(const std::string &primPath, const Vec3 &position,
-                               float intensity, const Vec3 &color);
-        // Define a UsdLux DomeLight at `primPath` — environment lighting. Transform-
-        // independent, so no placement. Round-trips back to LightType::Dome (a SphereLight
-        // would come back as a dim Point and the environment lighting would vanish).
-        bool defineDomeLight(const std::string &primPath, float intensity, const Vec3 &color);
+        // Author (or RE-author) an editor light at `primPath` as its matching UsdLux
+        // type with its full parameter set + transform (lighting). Point→SphereLight,
+        // Distant→DistantLight, Area→RectLight, Dome→DomeLight — the matching type is
+        // load-bearing: convertLight maps them back, so anything else degrades on
+        // recompose (the original bug: a Dome authored as SphereLight came back a dim
+        // Point). Re-authoring with a different type replaces the old prim spec, so
+        // this is also the light-EDIT sync (param tweaks + type changes persist).
+        // Dome gradient colors ride as custom `tracey:*` attrs (no UsdLux equivalent).
+        bool defineLight(const std::string &primPath, const Light &light, const Mat4 &localToWorld);
 
         // ── Bridge + persistence ────────────────────────────────────────────
         std::unique_ptr<Scene> toScene() const; // composed stage → Scene (render bridge)
