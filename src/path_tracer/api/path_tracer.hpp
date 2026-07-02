@@ -163,7 +163,8 @@ namespace tracey
     private:
         void createOutputImage();
         void createShaderInputs();
-        void updateCameraUniforms(const Camera &camera, uint32_t lightCount);
+        void updateCameraUniforms(const Camera &camera, uint32_t lightCount,
+                                  uint32_t analyticLightCount);
         // CpuPixels backends: push the backend's host-memory frame into the
         // façade-owned Vulkan image for the viewport compositor.
         void uploadCpuOutput();

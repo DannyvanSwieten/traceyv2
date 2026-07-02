@@ -69,6 +69,8 @@ struct Uniforms {
     uint   linearOutput;  // 0/1 — skip tonemap+gamma, emit linear (offset 100)
     float  aperture;      // thin-lens radius (offset 104; 0 = pinhole)
     float  focalDistance; // in-focus distance along the view dir (offset 108)
+    uint   analyticLightCount; // non-Dome prefix of the light buffer (offset 112);
+                               // NEE picks from [0, this) — domes via the miss shader
 };
 
 // ── RNG (bit-exact ports of ray_gen.glsl hash / pbr_lib.glsl nextRandom) ──
@@ -758,15 +760,18 @@ void pathtraceImpl(
             // NEE — direct lighting with shadow rays. Dome is handled by the
             // miss shader; skipped for glass (pure delta lobes have no diffuse
             // term).
-            if (U.lightCount > 0u && !isGlass) {
+            if (U.analyticLightCount > 0u && !isGlass) {
                 const float3 diffuseBrdf = albedo * (1.0 - metallic) * (1.0 / 3.14159265);
                 // Single-sample NEE: pick ONE analytic light uniformly and weight
-                // by lightCount, rather than looping every light (which was
+                // by the ANALYTIC count, rather than looping every light (which was
                 // O(lightCount) shadow rays per hit — fatal on a 500+-light scene
-                // like Old Attic). Unbiased — E over the random pick equals the
-                // full sum. Consumes exactly one nextRandom() here (mirrored in
-                // the CPU backend so pt_backend_compare parity holds).
-                const uint nl = U.lightCount;
+                // like Old Attic). The buffer is packed analytic-first (domes last —
+                // they're lit by the miss shader), so the pick never wastes a sample
+                // on a dome nor inflates the ×count weight on the analytic lights.
+                // Unbiased — E over the random pick equals the full sum. Consumes
+                // exactly one nextRandom() here (mirrored in the CPU backend so
+                // pt_backend_compare parity holds; dome-only: neither consumes one).
+                const uint nl = U.analyticLightCount;
                 const uint li = min(uint(nextRandom(seed) * float(nl)), nl - 1u);
                 const float4 posType    = lights[li * 6u + 0u];
                 const float4 dirIntens  = lights[li * 6u + 1u];

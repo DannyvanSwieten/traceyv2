@@ -29,6 +29,8 @@ namespace tracey
         uint32_t lightCount = 0;
         float aperture = 0.0f;       // thin-lens radius (0 = pinhole)
         float focalDistance = 5.0f;  // in-focus distance along the view dir
+        // Non-Dome prefix of the light buffer; NEE picks from [0, this).
+        uint32_t analyticLightCount = 0;
     };
 
     inline ShaderInputsView readShaderInputs(const ShaderInputsBuffer &inputs)
@@ -50,6 +52,7 @@ namespace tracey
         std::memcpy(&out.lightCount, bytes + 88, sizeof(uint32_t));
         std::memcpy(&out.aperture, bytes + 92, sizeof(float));
         std::memcpy(&out.focalDistance, bytes + 96, sizeof(float));
+        std::memcpy(&out.analyticLightCount, bytes + 100, sizeof(uint32_t));
         inputs.buffer()->unmap();
         return out;
     }

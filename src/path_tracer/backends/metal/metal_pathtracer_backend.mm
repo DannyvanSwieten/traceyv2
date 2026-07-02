@@ -62,6 +62,7 @@ namespace tracey
             uint32_t lightCount;
             float aperture;       // thin-lens radius (0 = pinhole)
             float focalDistance;  // in-focus distance along the view dir
+            uint32_t analyticLightCount; // non-Dome prefix; NEE picks from [0, this)
         };
 
         ShaderInputsView readShaderInputs(const ShaderInputsBuffer &inputs)
@@ -83,6 +84,7 @@ namespace tracey
             std::memcpy(&out.lightCount, bytes + 88, sizeof(uint32_t));
             std::memcpy(&out.aperture, bytes + 92, sizeof(float));
             std::memcpy(&out.focalDistance, bytes + 96, sizeof(float));
+            std::memcpy(&out.analyticLightCount, bytes + 100, sizeof(uint32_t));
             inputs.buffer()->unmap();
             return out;
         }
@@ -112,6 +114,7 @@ namespace tracey
             uint32_t linearOutput;  // 0/1 — skip tonemap+gamma, emit linear (offset 100)
             float aperture;         // thin-lens radius (offset 104; 0 = pinhole)
             float focalDistance;    // in-focus distance (offset 108)
+            uint32_t analyticLightCount; // non-Dome light prefix (offset 112)
         };
 
         id<MTLBuffer> makeSharedBuffer(id<MTLDevice> device, const void *data, size_t bytes)
@@ -727,6 +730,7 @@ namespace tracey
             U.linearOutput = impl.config->linearOutput ? 1u : 0u;
             U.aperture = inputs.aperture;
             U.focalDistance = inputs.focalDistance;
+            U.analyticLightCount = inputs.analyticLightCount;
 
             id<MTLCommandBuffer> cmd = [impl.queue commandBuffer];
 

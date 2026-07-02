@@ -223,6 +223,7 @@ void RenderEngine::update_lights() {
     auto ld = tracey::SceneCompiler::compileLights(m_device.get(), *m_scene);
     m_compiled_scene->lights = std::move(ld.lights);
     m_compiled_scene->lightCount = ld.lightCount;
+    m_compiled_scene->analyticLightCount = ld.analyticLightCount;
     m_compiled_scene->lightBuffer = std::move(ld.lightBuffer);
     // Bump the generation so a snapshot captured before the swap is skipped, and
     // the revision so the path-tracer backends re-read lights next dispatch.

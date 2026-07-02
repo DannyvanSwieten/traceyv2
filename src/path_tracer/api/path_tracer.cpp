@@ -87,11 +87,16 @@ namespace tracey
         // land at std140 offsets 92/96 (mirrored in ShaderInputsView).
         m_shaderInputsLayout.addMember({"aperture",       "float", 0, false, 0});
         m_shaderInputsLayout.addMember({"focalDistance",  "float", 0, false, 0});
+        // Non-Dome prefix of the light buffer (std140 offset 100 — appended last
+        // so earlier offsets stay put). NEE picks its single light from
+        // [0, analyticLightCount); domes are lit by the miss shader.
+        m_shaderInputsLayout.addMember({"analyticLightCount", "uint", 0, false, 0});
 
         m_shaderInputs = std::make_unique<ShaderInputsBuffer>(m_device, m_shaderInputsLayout);
     }
 
-    void PathTracer::updateCameraUniforms(const Camera &camera, uint32_t lightCount)
+    void PathTracer::updateCameraUniforms(const Camera &camera, uint32_t lightCount,
+                                          uint32_t analyticLightCount)
     {
         m_shaderInputs->setFloat("fov", camera.fov());
         m_shaderInputs->setVec3("cameraPosition", camera.position());
@@ -103,6 +108,7 @@ namespace tracey
         m_shaderInputs->setUint("lightCount", lightCount);
         m_shaderInputs->setFloat("aperture", camera.aperture());
         m_shaderInputs->setFloat("focalDistance", camera.focalDistance());
+        m_shaderInputs->setUint("analyticLightCount", analyticLightCount);
         m_shaderInputs->upload();
     }
 
@@ -116,7 +122,7 @@ namespace tracey
             m_sampleCount = 0;
         }
 
-        updateCameraUniforms(camera, scene.lightCount);
+        updateCameraUniforms(camera, scene.lightCount, scene.analyticLightCount);
 
         const double t = m_backend->dispatch(scene, m_sampleCount, clearAccumulation, wantReadback);
 

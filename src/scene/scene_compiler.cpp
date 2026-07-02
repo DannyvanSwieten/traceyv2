@@ -696,6 +696,23 @@ namespace tracey
             out.lights.push_back(gpu);
         }
 
+        // Analytic lights (Point/Distant/Area) FIRST, Domes last — stable, so
+        // relative order within each group is preserved. NEE picks a light
+        // uniformly from [0, analyticLightCount): domes are lit by the miss
+        // shader, so keeping them out of the pick set avoids wasted picks and
+        // the inflated ×lightCount weighting on the analytic lights (variance,
+        // not bias — but real noise on the common dome+sun scene).
+        std::stable_partition(out.lights.begin(), out.lights.end(),
+                              [](const GPULight &g) {
+                                  return static_cast<int>(g.positionAndType[3]) !=
+                                         static_cast<int>(LightType::Dome);
+                              });
+        out.analyticLightCount = static_cast<uint32_t>(std::count_if(
+            out.lights.begin(), out.lights.end(), [](const GPULight &g) {
+                return static_cast<int>(g.positionAndType[3]) !=
+                       static_cast<int>(LightType::Dome);
+            }));
+
         out.lightCount = static_cast<uint32_t>(out.lights.size());
 
         // Always upload at least one slot — Vulkan binds need a non-null SSBO;
@@ -1204,6 +1221,7 @@ namespace tracey
             LightData ld = compileLights(device, scene);
             result.lights = std::move(ld.lights);
             result.lightCount = ld.lightCount;
+            result.analyticLightCount = ld.analyticLightCount;
             result.lightBuffer = std::move(ld.lightBuffer);
         }
 

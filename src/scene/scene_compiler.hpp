@@ -236,9 +236,14 @@ namespace tracey
             // one dummy entry) so the wavefront descriptor set always has a
             // valid SSBO bound; `lightCount` gates the NEE loop in the hit
             // shader. Scene with zero lights → lightCount = 0, NEE skipped.
+            // Packed analytic-first (Point/Distant/Area in [0, analyticLightCount),
+            // Domes after) so NEE picks only among analytic lights — domes are lit
+            // by the miss shader, and including them in the pick set wasted samples
+            // and inflated the ×count weighting (noise on dome+sun scenes).
             std::vector<GPULight> lights;
             std::unique_ptr<Buffer> lightBuffer;
             uint32_t lightCount = 0;
+            uint32_t analyticLightCount = 0;
 
             // Emissive geometry, flattened to world-space triangles, for the
             // path tracer's next-event estimation (sampling emitters directly
@@ -300,8 +305,9 @@ namespace tracey
         // light edit never changes.
         struct LightData
         {
-            std::vector<GPULight> lights;
+            std::vector<GPULight> lights; // analytic-first, domes last
             uint32_t lightCount = 0;
+            uint32_t analyticLightCount = 0; // non-Dome prefix length
             std::unique_ptr<Buffer> lightBuffer;
         };
         static LightData compileLights(Device *device, const Scene &scene);

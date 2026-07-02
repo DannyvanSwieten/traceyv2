@@ -714,18 +714,22 @@ namespace tracey
                             accum += color * emission;
                         }
 
-                        if (in.lightCount > 0 && !isGlass)
+                        if (in.analyticLightCount > 0 && !isGlass)
                         {
                             const auto *slots = reinterpret_cast<const glm::vec4 *>(m_lights.data());
                             const glm::vec3 diffuseBrdf =
                                 albedo * (1.0f - metallic) * (1.0f / 3.14159265f);
-                            // Single-sample NEE: pick ONE analytic light uniformly
-                            // and weight by lightCount, rather than looping every
+                            // Single-sample NEE: pick ONE analytic light uniformly and
+                            // weight by the ANALYTIC count, rather than looping every
                             // light (O(lightCount) shadow rays per hit — fatal on a
-                            // 500+-light scene like Old Attic). Unbiased. Consumes
-                            // exactly one nextRandom() here, matching the Metal
-                            // backend so pt_backend_compare parity holds.
-                            const uint32_t nl = in.lightCount;
+                            // 500+-light scene like Old Attic). The buffer is packed
+                            // analytic-first (domes last — they're lit by the miss
+                            // shader), so the pick never wastes a sample on a dome nor
+                            // inflates the ×count weight on the analytic lights.
+                            // Unbiased. Consumes exactly one nextRandom() here,
+                            // matching the Metal backend so pt_backend_compare parity
+                            // holds (dome-only scene: neither backend consumes one).
+                            const uint32_t nl = in.analyticLightCount;
                             const uint32_t li =
                                 std::min(static_cast<uint32_t>(nextRandom(seed) * nl), nl - 1u);
                             const glm::vec4 posType = slots[li * 6u + 0u];
