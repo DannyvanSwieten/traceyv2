@@ -2139,6 +2139,12 @@ void EditorServer::pt_render_thread_main() {
         // converged accumulator and write the denoised result to the display
         // image. Bump the completed counter so the present picks it up.
         if (request.denoiseOnly) {
+            // Stale-check at pickup: if the user started moving the camera since
+            // this was posted, skip — running a heavy OIDN pass now would make the
+            // rasterized navigation fence-wait behind it (choppy viewport). The
+            // motion resets accumulation, which re-arms the denoise for the next
+            // convergence, so nothing is lost.
+            if (!m_pt_denoise_ok.load(std::memory_order_relaxed)) continue;
             try {
                 m_engine->denoise_path_tracer();
                 m_pt_frames_completed.fetch_add(1, std::memory_order_release);
@@ -3821,9 +3827,19 @@ void EditorServer::render_tick() {
         // convergence denoises exactly once; toggling the Denoise setting also
         // re-arms it (set_denoise_preview) so enabling it cleans up the image
         // that's already on screen without a re-render.
+        //
+        // Gated on kDenoiseSettleSec of stillness (not just view_settled): with a
+        // small max-samples cap the accumulator converges after almost every brief
+        // pause while navigating, and OIDN is heavy (a large GPU dispatch on the
+        // Metal backend) — firing it between drags made the next camera grab
+        // fence-wait behind the denoise ("raster ms spikes, viewport choppy").
+        // The worker double-checks m_pt_denoise_ok at pickup for the same reason.
+        const bool denoise_still =
+            (now - m_last_view_change_time) >= kDenoiseSettleSec;
+        m_pt_denoise_ok.store(denoise_still, std::memory_order_relaxed);
         if (clear) {
             m_pt_denoised_at_cap = false;
-        } else if (at_cap && m_pt_preview_enabled && has_geometry &&
+        } else if (at_cap && denoise_still && m_pt_preview_enabled && has_geometry &&
                    !m_pt_denoised_at_cap && m_engine->denoise_preview() &&
                    tracey::denoiserAvailable()) {
             PtRenderRequest req;

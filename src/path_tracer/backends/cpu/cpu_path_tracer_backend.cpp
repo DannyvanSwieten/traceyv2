@@ -18,6 +18,7 @@
 #include <cstdio>
 #include <cstring>
 #include <stdexcept>
+#include <thread>
 
 namespace tracey
 {
@@ -1099,11 +1100,17 @@ namespace tracey
             if (nAov.size() == pixelCount)
                 normal = reinterpret_cast<const float *>(nAov.data());
         }
+        // Interactive preview denoise: leave a few cores for the editor's tick /
+        // raster / UI threads — all-cores OIDN starves them and navigation stutters.
+        // (Offline export calls denoiseImage directly with the default full pool.)
+        const unsigned hw = std::max(2u, std::thread::hardware_concurrency());
+        const int interactiveThreads = static_cast<int>(hw > 6 ? hw - 4 : hw / 2 + 1);
         if (!tracey::denoiseImage(static_cast<int>(m_config->width),
                                   static_cast<int>(m_config->height),
                                   reinterpret_cast<const float *>(m_accumulator.data()),
                                   albedo, normal,
-                                  reinterpret_cast<float *>(m_denoiseScratch.data())))
+                                  reinterpret_cast<float *>(m_denoiseScratch.data()),
+                                  nullptr, interactiveThreads))
             return false;
 
         const bool hdr = m_config->hdrOutput;

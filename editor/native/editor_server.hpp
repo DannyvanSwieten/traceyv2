@@ -336,6 +336,15 @@ private:
     // (max samples reached). Re-armed when accumulation resets (clear) or the
     // denoise toggle changes, so each convergence denoises exactly once.
     bool m_pt_denoised_at_cap = false;
+    // Written by render_tick each iteration (= view still for kDenoiseSettleSec),
+    // read by the PT worker before running a queued denoise-only request. A
+    // convergence denoise is HEAVY (OIDN — a big GPU dispatch on the Metal
+    // backend, all-cores CPU otherwise); if the user has started moving the
+    // camera since the request was posted, running it anyway makes the raster
+    // fence-wait behind it → the "raster ms spikes, viewport goes choppy" hitch.
+    // Motion implies an accumulation restart, so the skipped denoise re-arms
+    // and re-fires at the next convergence.
+    std::atomic<bool> m_pt_denoise_ok{false};
 
     void pt_render_thread_main();
     void stop_pt_render_thread();
@@ -465,6 +474,13 @@ private:
     double m_last_view_change_time = -1.0e9;
     bool m_pt_restart_pending = false;
     static constexpr double kViewSettleSec = 0.25;
+    // Stillness required before the convergence DENOISE may fire — deliberately
+    // longer than kViewSettleSec. With a small max-samples cap the accumulator
+    // converges after almost every brief navigation pause; firing OIDN then means
+    // the next camera grab contends with a heavy denoise (GPU dispatch on Metal,
+    // all-cores CPU otherwise) → rhythmic hitching while orbiting. 0.75s of
+    // stillness means "actually stopped", not "between drags".
+    static constexpr double kDenoiseSettleSec = 0.75;
 
     // Rasterizer re-render gate. The raster image only changes when the camera,
     // the compiled scene, the selection, or the viewport size changes — yet the

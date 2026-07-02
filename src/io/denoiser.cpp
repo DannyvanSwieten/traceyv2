@@ -20,11 +20,12 @@ namespace tracey
                       const float *albedoRGBA,
                       const float *normalRGBA,
                       float *outRGBA,
-                      std::string *error)
+                      std::string *error,
+                      int maxThreads)
     {
 #ifndef TRACEY_HAS_OIDN
         (void)width; (void)height; (void)colorRGBA;
-        (void)albedoRGBA; (void)normalRGBA; (void)outRGBA;
+        (void)albedoRGBA; (void)normalRGBA; (void)outRGBA; (void)maxThreads;
         if (error) *error = "denoiser not built (configure with -DTRACEY_WITH_OIDN=ON)";
         return false;
 #else
@@ -48,6 +49,10 @@ namespace tracey
             if (error) *error = "OIDN: failed to create CPU device";
             return false;
         }
+        // Cap the worker pool for interactive callers (0 = OIDN default = all
+        // cores, which starves the editor's tick/raster threads mid-navigation).
+        if (maxThreads > 0)
+            oidnSetDeviceInt(device, "numThreads", maxThreads);
         oidnCommitDevice(device);
         {
             const char *msg = nullptr;

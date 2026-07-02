@@ -14,10 +14,14 @@ namespace tracey
     // untouched. `albedoRGBA` / `normalRGBA` may be null (no guide). `outRGBA`
     // may alias `colorRGBA` for in-place denoising. Returns false + fills
     // `error` on failure (including when no denoiser is built in).
+    // `maxThreads` caps OIDN's CPU worker pool (0 = OIDN default, all cores).
+    // Interactive preview denoises pass a capped count so the UI / render-tick /
+    // raster threads keep breathing while OIDN runs; offline export passes 0.
     bool denoiseImage(int width, int height,
                       const float *colorRGBA,
                       const float *albedoRGBA,
                       const float *normalRGBA,
                       float *outRGBA,
-                      std::string *error = nullptr);
+                      std::string *error = nullptr,
+                      int maxThreads = 0);
 } // namespace tracey
