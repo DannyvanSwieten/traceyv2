@@ -3532,7 +3532,7 @@ void EditorServer::render_tick() {
     const bool time_changed = playhead_moved || m_timeline_dirty;
     if (time_changed) {
 #ifdef TRACEY_HAS_USD
-        if (m_shot_mode && m_stage_doc) {
+        if (m_shot_mode && m_stage_doc && !m_shot_suspended) {
             // Shot mode: USD time samples drive the animation. Re-derive the composed
             // scene at the playhead frame and refresh transforms in place. (v1 re-reads
             // geometry each evaluated frame — fine for small shots; a transform-only

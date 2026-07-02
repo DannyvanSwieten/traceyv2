@@ -103,9 +103,10 @@ std::optional<std::string> EditorServer::handle_graph_commands(
             // Publishing exports the ENGINE scene — in shot mode that's the whole
             // composed shot, and exporting it would silently overwrite the asset's
             // USD with the entire shot (cube + lights + everything). Refuse.
-            if (m_shot_mode)
+            if (m_shot_mode && !m_shot_suspended)
                 return err_response(
-                    "publish_asset: a shot is open — close it first (assets publish from asset mode)");
+                    "publish_asset: the shot is active — switch to an Assets department first "
+                    "(publishing would export the whole composed shot as the asset)");
             ensureCurrentAsset();
             if (m_current_asset_id.empty()) return err_response("publish_asset: no current asset");
             if (m_project_dir.empty()) return err_response("publish_asset: save the project first");

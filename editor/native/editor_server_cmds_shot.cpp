@@ -29,9 +29,14 @@ namespace {
         return (base / "shot.usda").string();
     }
 
-    json shot_state_json(const tracey::StageDocument* doc, bool shotMode) {
+    json shot_state_json(const tracey::StageDocument* doc, bool shotMode,
+                         bool suspended = false) {
         json j;
         j["open"] = shotMode && doc != nullptr;
+        // Suspended = shot stays open (and saves with the project) but the user is
+        // editing an ASSET; the viewport shows the cooked asset, not the composed
+        // shot, and shot keying/authoring is paused. Frontend gates on this.
+        j["suspended"] = suspended;
         j["departments"] = json::array();
         j["active"] = nullptr;
         j["name"] = nullptr;
@@ -51,7 +56,7 @@ std::optional<std::string> EditorServer::handle_shot_commands(
     static const std::unordered_set<std::string> kShotCmds = {
         "create_shot", "open_shot", "close_shot",
         "set_active_department", "save_shot", "get_shot_state", "reference_asset",
-        "shot_key_actor", "get_shot_actor_keys"};
+        "shot_key_actor", "get_shot_actor_keys", "suspend_shot"};
     if (!kShotCmds.count(cmd)) return std::nullopt;
 
 #ifndef TRACEY_HAS_USD
@@ -71,9 +76,10 @@ std::optional<std::string> EditorServer::handle_shot_commands(
         if (!doc->save()) return err_response("create_shot: failed to save layers");
         m_stage_doc = std::move(doc);
         m_shot_mode = true;
+        m_shot_suspended = false;
         m_shot_path = path;
         compose_shot_into_engine();
-        return ok_response(shot_state_json(m_stage_doc.get(), m_shot_mode));
+        return ok_response(shot_state_json(m_stage_doc.get(), m_shot_mode, m_shot_suspended));
     }
     if (cmd == "open_shot") {
         std::string path = req.value("path", std::string{});
@@ -82,13 +88,15 @@ std::optional<std::string> EditorServer::handle_shot_commands(
         if (!doc) return err_response("open_shot: failed to open " + path);
         m_stage_doc = std::move(doc);
         m_shot_mode = true;
+        m_shot_suspended = false;
         m_shot_path = path;
         compose_shot_into_engine();
-        return ok_response(shot_state_json(m_stage_doc.get(), m_shot_mode));
+        return ok_response(shot_state_json(m_stage_doc.get(), m_shot_mode, m_shot_suspended));
     }
     if (cmd == "close_shot") {
         m_stage_doc.reset();
         m_shot_mode = false;
+        m_shot_suspended = false;
         m_shot_path.clear();
         if (m_broadcast)
             m_broadcast(json{{"event", "shot_state"},
@@ -100,10 +108,38 @@ std::optional<std::string> EditorServer::handle_shot_commands(
         const std::string dept = req.value("department", std::string{});
         if (!m_stage_doc->setActiveDepartment(dept))
             return err_response("set_active_department: unknown department '" + dept + "'");
+        // Picking a shot department RESUMES a suspended shot: recompose so the
+        // viewport flips from the asset preview back to the composed shot. (The
+        // asset preview's SOP actors are replaced wholesale by adoptScene; the next
+        // suspend_shot does a clean recook, so no identity-map cleanup needed here.)
+        if (m_shot_suspended) {
+            m_shot_suspended = false;
+            compose_shot_into_engine();
+        }
         if (m_broadcast)
             m_broadcast(json{{"event", "shot_state"},
-                             {"state", shot_state_json(m_stage_doc.get(), m_shot_mode)}}.dump());
-        return ok_response(shot_state_json(m_stage_doc.get(), m_shot_mode));
+                             {"state", shot_state_json(m_stage_doc.get(), m_shot_mode, m_shot_suspended)}}.dump());
+        return ok_response(shot_state_json(m_stage_doc.get(), m_shot_mode, m_shot_suspended));
+    }
+    if (cmd == "suspend_shot") {
+        // Entering an Assets department while a shot is open: pause the shot and
+        // show the CURRENT ASSET's cooked preview. load_sop_graph_json does the
+        // full clean swap (clear actors, reset SOP identity maps, cook_and_apply)
+        // — the same tested path asset-switching uses. Without the map reset,
+        // apply_emitted's diff thinks the wiped actors still exist and suppresses
+        // re-emission (the "instancing shows nothing" bug).
+        if (!m_shot_mode || !m_stage_doc)
+            return ok_response(shot_state_json(m_stage_doc.get(), m_shot_mode, m_shot_suspended));
+        if (!m_shot_suspended) {
+            m_shot_suspended = true;
+            load_sop_graph_json(m_sop_graph ? tracey::sops::serializeSopGraph(*m_sop_graph)
+                                            : std::string());
+            if (m_broadcast)
+                m_broadcast(json{{"event", "shot_state"},
+                                 {"state", shot_state_json(m_stage_doc.get(), m_shot_mode,
+                                                           m_shot_suspended)}}.dump());
+        }
+        return ok_response(shot_state_json(m_stage_doc.get(), m_shot_mode, m_shot_suspended));
     }
     if (cmd == "save_shot") {
         if (!m_stage_doc) return err_response("save_shot: no shot open");
@@ -111,7 +147,7 @@ std::optional<std::string> EditorServer::handle_shot_commands(
         return ok_response(true);
     }
     if (cmd == "get_shot_state") {
-        return ok_response(shot_state_json(m_stage_doc.get(), m_shot_mode));
+        return ok_response(shot_state_json(m_stage_doc.get(), m_shot_mode, m_shot_suspended));
     }
     if (cmd == "reference_asset") {
         if (!m_stage_doc) return err_response("reference_asset: no shot open");
@@ -132,12 +168,17 @@ std::optional<std::string> EditorServer::handle_shot_commands(
         const std::string prim = m_stage_doc->referenceAssetAuto(assetPath, base);
         if (!prevActive.empty()) m_stage_doc->setActiveDepartment(prevActive);
         if (prim.empty()) return err_response("reference_asset: failed to author reference");
-        compose_shot_into_engine(); // re-derive so the referenced geometry appears
+        // Re-derive so the referenced geometry appears — but NOT while the shot is
+        // suspended (the viewport is showing an asset preview; composing would
+        // clobber it). The reference is authored; it shows on resume.
+        if (!m_shot_suspended) compose_shot_into_engine();
         return ok_response(json{{"prim", prim},
-                                {"shot", shot_state_json(m_stage_doc.get(), m_shot_mode)}});
+                                {"shot", shot_state_json(m_stage_doc.get(), m_shot_mode, m_shot_suspended)}});
     }
     if (cmd == "shot_key_actor") {
         if (!m_stage_doc) return err_response("shot_key_actor: no shot open");
+        if (m_shot_suspended)
+            return err_response("shot_key_actor: shot is suspended (editing an asset)");
         const uint64_t id = req.value("actor_id", static_cast<uint64_t>(0));
         auto* a = m_engine->scene().getActor(id);
         if (!a) return err_response("shot_key_actor: actor not found");
@@ -158,7 +199,7 @@ std::optional<std::string> EditorServer::handle_shot_commands(
         m_clear_next_frame = true;
         if (m_broadcast)
             m_broadcast(json{{"event", "shot_state"},
-                             {"state", shot_state_json(m_stage_doc.get(), m_shot_mode)}}.dump());
+                             {"state", shot_state_json(m_stage_doc.get(), m_shot_mode, m_shot_suspended)}}.dump());
         return ok_response(json{{"frame", frame}, {"prim", a->name()}});
     }
     if (cmd == "get_shot_actor_keys") {
@@ -187,7 +228,7 @@ void EditorServer::compose_shot_into_engine() {
     if (m_broadcast) {
         m_broadcast(R"({"event":"scene_changed"})");
         m_broadcast(json{{"event", "shot_state"},
-                         {"state", shot_state_json(m_stage_doc.get(), m_shot_mode)}}.dump());
+                         {"state", shot_state_json(m_stage_doc.get(), m_shot_mode, m_shot_suspended)}}.dump());
     }
 }
 #endif

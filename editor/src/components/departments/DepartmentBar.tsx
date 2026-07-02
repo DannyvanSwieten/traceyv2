@@ -74,7 +74,16 @@ export const DepartmentBar: Component<Props> = (props) => {
 
   const pick = (d: Dept, preset: WorkspaceName) => {
     props.onApplyWorkspace(preset); // tool layout (always)
-    if (shotOpen() && d.shotLayer) api.setActiveDepartment(d.shotLayer).catch(() => {}); // edit target (shot mode)
+    if (shotOpen() && d.shotLayer) {
+      // Shot department: set the edit target — this also RESUMES a suspended shot
+      // (the native side recomposes so the viewport flips back to the shot).
+      api.setActiveDepartment(d.shotLayer).catch(() => {});
+    } else if (shotOpen() && d.id === 'assets') {
+      // Assets with a shot open: SUSPEND the shot — the viewport switches to the
+      // current asset's cooked preview (one engine scene = one mode at a time;
+      // without this the shot recompose wiped the asset preview on every tick).
+      api.suspendShot().catch(() => {});
+    }
   };
 
   return (

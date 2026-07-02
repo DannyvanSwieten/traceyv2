@@ -753,6 +753,7 @@ std::optional<std::string> EditorServer::handle_io_commands(
             // it. Defensive: only when a shot was recorded and the file still exists.
             m_stage_doc.reset();
             m_shot_mode = false;
+            m_shot_suspended = false;
             m_shot_path.clear();
             {
                 const std::string shotRel = root.value("shot", std::string{});

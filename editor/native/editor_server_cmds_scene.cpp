@@ -58,7 +58,7 @@ std::optional<std::string> EditorServer::handle_scene_commands(
             actor->setLight(light);
 
 #ifdef TRACEY_HAS_USD
-            if (m_shot_mode && m_stage_doc) {
+            if (m_shot_mode && m_stage_doc && !m_shot_suspended) {
                 // Author the light into the active department layer at a stable prim
                 // path, and name the actor by that path so later transform edits route
                 // back to the same prim. (v1 routes every type → SphereLight; full
@@ -133,7 +133,7 @@ std::optional<std::string> EditorServer::handle_scene_commands(
             auto* a = m_engine->scene().getActor(id);
             if (!a) return ok_response(false);
 #ifdef TRACEY_HAS_USD
-            if (m_shot_mode && m_stage_doc) {
+            if (m_shot_mode && m_stage_doc && !m_shot_suspended) {
                 // Layout/shot: the actor is a USD-referenced instance. Removing it from
                 // the engine scene alone wouldn't stick — the next recompose re-derives
                 // it from the stage. Remove the instance's prim from the layout layer,
@@ -204,7 +204,7 @@ std::optional<std::string> EditorServer::handle_scene_commands(
             // (same as create_light); defineLight re-authors type changes too.
             // Guarded on the name being a prim path — stage-derived and shot-created
             // lights are; procedural-era lights ("Dome") are not and stay engine-only.
-            if (m_shot_mode && m_stage_doc && !a->name().empty() && a->name()[0] == '/') {
+            if (m_shot_mode && m_stage_doc && !m_shot_suspended && !a->name().empty() && a->name()[0] == '/') {
                 const std::string prevActive = m_stage_doc->activeDepartment();
                 for (const auto& d : m_stage_doc->departments())
                     if (d == "lighting") { m_stage_doc->setActiveDepartment("lighting"); break; }
@@ -280,7 +280,7 @@ std::optional<std::string> EditorServer::handle_scene_commands(
             // prim path (set by convertStageToScene); author the full transform as a
             // matrix op (lossless — no quaternion→euler). Then refresh the TLAS in
             // place (topology unchanged) so the move is visible without a full compile.
-            if (m_shot_mode && m_stage_doc) {
+            if (m_shot_mode && m_stage_doc && !m_shot_suspended) {
                 if (m_stage_doc->activeDepartment() == "anim") {
                     // Auto-key: dragging in the Animation department writes a keyframe
                     // (time sample) at the playhead, not a static placement. Keyed as
@@ -354,7 +354,7 @@ std::optional<std::string> EditorServer::handle_scene_commands(
             // Shot mode: author the full (now-rotated) transform into the active
             // department layer, same as set_actor_transform. Without this the rotation
             // only lived on the engine actor and the next recompose reverted it.
-            if (m_shot_mode && m_stage_doc) {
+            if (m_shot_mode && m_stage_doc && !m_shot_suspended) {
                 if (m_stage_doc->activeDepartment() == "anim") {
                     // Key as TRS euler channels using the euler the user actually typed
                     // (deg), NOT a quat→euler round-trip — so a -180°→180° key sweeps a

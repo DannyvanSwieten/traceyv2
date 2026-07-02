@@ -178,6 +178,10 @@ export function listen(event: string, fn: EventListener): () => void {
 
 export interface ShotState {
   open: boolean;
+  // True while the user edits an ASSET with a shot open: the shot stays open (and
+  // saves with the project) but the viewport shows the cooked asset preview and
+  // shot keying/authoring is paused. Resumed by picking a shot department.
+  suspended?: boolean;
   departments: string[]; // strongest first
   active: string | null;
   name?: string | null; // human label, e.g. "seq01/sh01"
@@ -193,6 +197,10 @@ export const setActiveDepartment = (department: string) =>
   send<ShotState>('set_active_department', { department });
 export const saveShot = () => send<boolean>('save_shot');
 export const getShotState = () => send<ShotState>('get_shot_state');
+// Pause the shot to edit an ASSET (Assets departments): the viewport switches to
+// the current asset's cooked preview; the shot stays open and resumes (recomposes)
+// on the next setActiveDepartment.
+export const suspendShot = () => send<ShotState>('suspend_shot');
 
 // Reference a project asset into the active shot (authored into the layout layer as
 // a USD reference — non-destructive composition). Returns the prim path used.

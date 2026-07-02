@@ -767,6 +767,16 @@ private:
     // procedural SOP/DOP workflow is entirely unchanged.
     std::unique_ptr<tracey::StageDocument> m_stage_doc;
     bool m_shot_mode = false;
+    // Shot SUSPENDED: a shot is open but the user is editing an ASSET (Assets/Model|
+    // Look|Sim). The engine scene shows the cooked asset preview; the shot's USD
+    // stays open (still saved with the project) but render_tick must NOT recompose
+    // it into the engine — that adoptScene wiped the cooked preview actors on every
+    // timeline tick, and the stale SOP identity maps then suppressed re-emission
+    // ("instancing shows nothing"). One engine scene = ONE mode at a time:
+    // suspend_shot → clean recook of the asset; set_active_department → resume
+    // (recompose). Shot-authoring branches in the scene commands are gated off
+    // while suspended (the actors are SOP actors, not stage prims).
+    bool m_shot_suspended = false;
     // Path of the open shot's root .usda (create_shot / open_shot). Saved into the
     // .tracey so a project save persists the shot pointer and a project load can
     // reopen the shot (and its USD animation) automatically.

@@ -88,7 +88,10 @@ export function keySelectedActorPose(): void {
   void api
     .getShotState()
     .then((shot) => {
-      if (shot.open) void api.shotKeyActor(actor.id).catch((e) => console.error('shotKeyActor failed', e));
+      // Suspended = editing an asset (the actor is a SOP preview, not a shot prim),
+      // so transform keying is paused along with the rest of shot authoring.
+      if (shot.open && !shot.suspended)
+        void api.shotKeyActor(actor.id).catch((e) => console.error('shotKeyActor failed', e));
       // else: editing an asset → static; no transform keying.
     })
     .catch(() => {});

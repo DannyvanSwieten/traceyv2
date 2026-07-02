@@ -54,8 +54,11 @@ export function ShotStatusBar() {
 
   const activeLayer = () => s().active ?? '';
   const deptLabel = () => LAYER_LABEL[activeLayer()] ?? activeLayer();
-  // Which accent (CSS var) to apply: the active shot layer, or 'asset' when not in a shot.
-  const accentKey = () => (s().open ? (activeLayer() || 'layout') : 'asset');
+  // Suspended = shot open but paused while editing an asset → the bar reads as
+  // ASSET mode (that's what the viewport shows), with a small "shot paused" chip.
+  const shotActive = () => s().open && !s().suspended;
+  // Which accent (CSS var) to apply: the active shot layer, or 'asset' otherwise.
+  const accentKey = () => (shotActive() ? (activeLayer() || 'layout') : 'asset');
   const submode = () => SUBMODE[activeWorkspace()] ?? '';
   const selectedName = () => {
     const n = selectedActor()?.name ?? '';
@@ -65,10 +68,10 @@ export function ShotStatusBar() {
   return (
     <div
       class="shotbar"
-      classList={{ 'shotbar--shot': s().open, [`shotbar--accent-${accentKey()}`]: true }}
+      classList={{ 'shotbar--shot': shotActive(), [`shotbar--accent-${accentKey()}`]: true }}
     >
       <Show
-        when={s().open}
+        when={shotActive()}
         fallback={
           <>
             <span class="shotbar-mode shotbar-mode--asset">◆ Asset</span>
@@ -77,20 +80,31 @@ export function ShotStatusBar() {
             <Show when={selectedName()}>
               <span class="shotbar-selected">· selected <b>{selectedName()}</b></span>
             </Show>
-            <span class="shotbar-hint">a static object — animate it by referencing it into a shot</span>
-            <span class="shotbar-spacer" />
-            <button
-              type="button"
-              class="shotbar-btn shotbar-btn--primary"
-              disabled={busy()}
-              title="Create a shot (layout / anim / lighting / render layers) and enter shot mode."
-              onClick={() => void run(() => api.createShot())}
+            <Show
+              when={s().open}
+              fallback={
+                <span class="shotbar-hint">a static object — animate it by referencing it into a shot</span>
+              }
             >
-              + New Shot
-            </button>
-            <button type="button" class="shotbar-btn" disabled={busy()} onClick={() => void run(() => api.openShot())}>
-              Open Shot
-            </button>
+              <span class="shotbar-hint">
+                ▣ shot “{s().name ?? 'shot'}” paused — pick a shot department (Layout/Animation/…) to resume
+              </span>
+            </Show>
+            <span class="shotbar-spacer" />
+            <Show when={!s().open}>
+              <button
+                type="button"
+                class="shotbar-btn shotbar-btn--primary"
+                disabled={busy()}
+                title="Create a shot (layout / anim / lighting / render layers) and enter shot mode."
+                onClick={() => void run(() => api.createShot())}
+              >
+                + New Shot
+              </button>
+              <button type="button" class="shotbar-btn" disabled={busy()} onClick={() => void run(() => api.openShot())}>
+                Open Shot
+              </button>
+            </Show>
           </>
         }
       >
