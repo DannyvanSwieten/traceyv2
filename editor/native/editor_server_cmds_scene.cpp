@@ -215,6 +215,10 @@ std::optional<std::string> EditorServer::handle_scene_commands(
 
             // Light-only edit → in-place light refresh (no geometry recompile).
             if (m_engine->path_tracer_ready()) m_engine->update_lights();
+            // The raster dirty-check keys on scene generation, which update_lights
+            // doesn't bump — without this the viewport's rasterized view kept the OLD
+            // lighting until the 1s safety redraw (or a camera move). Force a redraw.
+            m_raster_valid = false;
             m_clear_next_frame = true;
             if (m_broadcast) m_broadcast(R"({"event":"scene_changed"})");
             return ok_response(true);
