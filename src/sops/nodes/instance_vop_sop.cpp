@@ -63,8 +63,8 @@ namespace tracey
                 InputsAndOutputs ports() const override
                 {
                     InputsAndOutputs io;
-                    io.addInput(PortInfo::createInput("stamp",    DataType::Scene3D));
-                    io.addInput(PortInfo::createInput("template", DataType::Scene3D));
+                    io.addInput(PortInfo::createInput("geo",      DataType::Scene3D));
+                    io.addInput(PortInfo::createInput("points",   DataType::Scene3D));
                     return io;
                 }
 
