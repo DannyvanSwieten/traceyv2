@@ -361,12 +361,11 @@ namespace tracey
 
     bool VulkanPresenter::present(VulkanImage2D *sourceImage, bool /*waitForRender*/)
     {
-        // Whole-present lock — covers swapchain acquire, command-pool
-        // alloc, record, queue submit + present. See vulkan_queue_sync.hpp.
-        std::lock_guard<std::mutex> gpuLock(vulkanQueueMutex());
-
         if (m_needsRecreation)
         {
+            // Swapchain rebuild touches the queue + images — exclude the render
+            // workers for the (rare) rebuild only.
+            std::lock_guard<std::mutex> gpuLock(vulkanQueueMutex());
             // recreateSwapchain() owns the flag now: it clears it on success
             // and KEEPS it set when it defers on a transient 0×0 surface, so
             // we retry next present instead of acquiring from a stale/missing
@@ -397,6 +396,13 @@ namespace tracey
         vkResetFences(m_context.device(), 1, &m_frameSync[m_currentFrame].inFlightFence);
 
         // Record command buffer
+        // Queue mutex from HERE: recording + submit + present. The blocking waits
+        // above (own in-flight fence, swapchain acquire = Metal nextDrawable)
+        // deliberately sit OUTSIDE this mutex — holding it through a drawable
+        // stall blocked the raster worker's recording on the same mutex and
+        // showed up as multi-frame "raster ms" spikes while navigating.
+        std::lock_guard<std::mutex> gpuLock(vulkanQueueMutex());
+
         VkCommandBuffer cmd = m_commandBuffers[m_currentFrame];
         vkResetCommandBuffer(cmd, 0);
 
@@ -439,7 +445,7 @@ namespace tracey
         presentInfo.pImageIndices = &imageIndex;
         presentInfo.pResults = nullptr;
 
-        // Lock held since function entry — see top of present().
+        // Queue mutex held — taken above, before recording.
         if (vkQueueSubmit(m_context.graphicsQueue(), 1, &submitInfo, m_frameSync[m_currentFrame].inFlightFence) != VK_SUCCESS)
         {
             throw std::runtime_error("Failed to submit command buffer");
@@ -467,11 +473,11 @@ namespace tracey
                                          uint32_t dstWidth, uint32_t dstHeight,
                                          bool /*waitForRender*/)
     {
-        // Whole-present lock — see vulkan_queue_sync.hpp.
-        std::lock_guard<std::mutex> gpuLock(vulkanQueueMutex());
-
         if (m_needsRecreation)
         {
+            // Swapchain rebuild touches the queue + images — exclude the render
+            // workers for the (rare) rebuild only.
+            std::lock_guard<std::mutex> gpuLock(vulkanQueueMutex());
             // recreateSwapchain() owns the flag now: it clears it on success
             // and KEEPS it set when it defers on a transient 0×0 surface, so
             // we retry next present instead of acquiring from a stale/missing
@@ -502,6 +508,13 @@ namespace tracey
         vkResetFences(m_context.device(), 1, &m_frameSync[m_currentFrame].inFlightFence);
 
         // Record command buffer
+        // Queue mutex from HERE: recording + submit + present. The blocking waits
+        // above (own in-flight fence, swapchain acquire = Metal nextDrawable)
+        // deliberately sit OUTSIDE this mutex — holding it through a drawable
+        // stall blocked the raster worker's recording on the same mutex and
+        // showed up as multi-frame "raster ms" spikes while navigating.
+        std::lock_guard<std::mutex> gpuLock(vulkanQueueMutex());
+
         VkCommandBuffer cmd = m_commandBuffers[m_currentFrame];
         vkResetCommandBuffer(cmd, 0);
 
@@ -544,7 +557,7 @@ namespace tracey
         presentInfo.pImageIndices = &imageIndex;
         presentInfo.pResults = nullptr;
 
-        // Lock held since function entry — see top of present().
+        // Queue mutex held — taken above, before recording.
         if (vkQueueSubmit(m_context.graphicsQueue(), 1, &submitInfo, m_frameSync[m_currentFrame].inFlightFence) != VK_SUCCESS)
         {
             throw std::runtime_error("Failed to submit command buffer");
@@ -573,11 +586,11 @@ namespace tracey
                                           uint32_t insetWidth, uint32_t insetHeight,
                                           bool /*waitForRender*/)
     {
-        // Whole-present lock — see vulkan_queue_sync.hpp.
-        std::lock_guard<std::mutex> gpuLock(vulkanQueueMutex());
-
         if (m_needsRecreation)
         {
+            // Swapchain rebuild touches the queue + images — exclude the render
+            // workers for the (rare) rebuild only.
+            std::lock_guard<std::mutex> gpuLock(vulkanQueueMutex());
             // recreateSwapchain() owns the flag now: it clears it on success
             // and KEEPS it set when it defers on a transient 0×0 surface, so
             // we retry next present instead of acquiring from a stale/missing
@@ -603,6 +616,13 @@ namespace tracey
         }
 
         vkResetFences(m_context.device(), 1, &m_frameSync[m_currentFrame].inFlightFence);
+
+        // Queue mutex from HERE: recording + submit + present. The blocking waits
+        // above (own in-flight fence, swapchain acquire = Metal nextDrawable)
+        // deliberately sit OUTSIDE this mutex — holding it through a drawable
+        // stall blocked the raster worker's recording on the same mutex and
+        // showed up as multi-frame "raster ms" spikes while navigating.
+        std::lock_guard<std::mutex> gpuLock(vulkanQueueMutex());
 
         VkCommandBuffer cmd = m_commandBuffers[m_currentFrame];
         vkResetCommandBuffer(cmd, 0);
