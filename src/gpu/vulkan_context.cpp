@@ -4,6 +4,7 @@
 #include <stdexcept>
 #include <fstream>
 #include <cstdio>
+#include <cstdlib>
 #include <algorithm>
 #include <cstdint>
 #include <iostream>
@@ -115,8 +116,15 @@ namespace tracey
 #ifndef NDEBUG
         m_enableValidation = true;
 #else
-        m_enableValidation = false;
+        // Release: validation is opt-in (set TRACEY_VK_VALIDATION=1) — the layer's
+        // per-submit CPU overhead is large and spiky, which reads as random
+        // viewport hitches in the editor.
+        m_enableValidation = std::getenv("TRACEY_VK_VALIDATION") != nullptr;
 #endif
+        if (m_enableValidation)
+            std::fprintf(stderr,
+                         "[vulkan] KHRONOS validation layer ENABLED — expect significantly "
+                         "reduced/spiky performance (debug builds enable it by default)\n");
         VkResult res = volkInitialize();
         if (res != VK_SUCCESS)
         {
